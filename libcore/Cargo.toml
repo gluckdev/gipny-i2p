@@ -1,0 +1,38 @@
+[package]
+name = "gipny-libcore"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "gipny_libcore"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+serde-big-array = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+argon2 = { workspace = true }
+rusqlite = { workspace = true }
+arti-client = { workspace = true }
+tor-hsservice = { workspace = true }
+tor-rtcompat = { workspace = true }
+tor-cell = { workspace = true }
+futures = { workspace = true }
+libc = { workspace = true }
+async-trait = "0.1"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+] }

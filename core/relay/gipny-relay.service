@@ -1,0 +1,24 @@
+[Unit]
+Description=gipny relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gipny
+Group=gipny
+WorkingDirectory=/var/lib/gipny-relay
+Environment=GIPNY_RELAY_DATA=/var/lib/gipny-relay
+ExecStart=/usr/local/bin/gipny-relay
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/gipny-relay
+
+[Install]
+WantedBy=multi-user.target

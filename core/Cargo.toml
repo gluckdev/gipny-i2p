@@ -1,0 +1,60 @@
+[package]
+name = "gipny"
+version = "0.2.2"
+edition = "2021"
+
+[lib]
+name = "gipny_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "gipny"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+image = { version = "0.25", features = ["png", "ico"], default-features = false }
+
+[dependencies]
+gipny-libcore = { path = "../libcore" }
+
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+
+argon2 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+serde-big-array = { workspace = true }
+bincode = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+libc = { workspace = true }
+rusqlite = { workspace = true }
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+arti-client = { workspace = true }
+tor-hsservice = { workspace = true }
+tor-rtcompat = { workspace = true }
+tor-cell = { workspace = true }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+arboard = { version = "3", default-features = false, features = ["image-data"] }
+png = "0.17"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rodio = { version = "0.20", default-features = false, features = ["wav"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Memory",
+    "Win32_UI_Shell",
+] }
