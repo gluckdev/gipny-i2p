@@ -15,6 +15,8 @@ export interface Contact {
   created_at: number;
   last_seen: number | null;
   is_bot: boolean;
+  pinned_at: number | null;
+  last_message_at: number | null;
 }
 
 export interface Button { text: string; callback_data: string; }
@@ -39,6 +41,8 @@ export interface Group {
   id: string;
   name: string;
   created_at: number;
+  pinned_at: number | null;
+  last_message_at: number | null;
 }
 
 export interface GroupMember {
@@ -102,7 +106,7 @@ export interface ApkArtifact { arch: string; size: number; }
 export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 
 export type CoreEvent =
-  | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number } }
+  | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null } }
   | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
   | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
@@ -188,6 +192,9 @@ export class Api {
   static resetContactSession(id: number): Promise<void> {
     return invoke('reset_contact_session', { id });
   }
+  static messagePosition(contactId: number | null, groupId: string | null, messageId: number): Promise<number | null> {
+    return invoke('message_position', { contactId, groupId, messageId });
+  }
   static listMessages(contactId: number, limit = 100, beforeId: number | null = null): Promise<Message[]> {
     return invoke('list_messages', { contactId, limit, beforeId });
   }
@@ -254,8 +261,26 @@ export class Api {
   static sendTyping(contactId: number | null, groupId: string | null, typing: boolean): Promise<void> {
     return invoke('send_typing', { contactId, groupId, typing });
   }
-  static playNotifySound(): Promise<void> {
-    return invoke('play_notify_sound');
+  static playNotifySound(name?: string | null): Promise<void> {
+    return invoke('play_notify_sound', { name: name ?? null });
+  }
+  static notifyOs(title: string, body: string): Promise<void> {
+    return invoke('notify_os', { title, body });
+  }
+  static notifyProbe(): Promise<string> {
+    return invoke('notify_probe');
+  }
+  static pinChat(contactId: number | null, groupId: string | null): Promise<void> {
+    return invoke('pin_chat', { contactId, groupId });
+  }
+  static unpinChat(contactId: number | null, groupId: string | null): Promise<void> {
+    return invoke('unpin_chat', { contactId, groupId });
+  }
+  static updateTrayBadge(count: number): Promise<void> {
+    return invoke('update_tray_badge', { count });
+  }
+  static forwardMessage(sourceMessageId: number, contactId: number | null, groupId: string | null): Promise<number> {
+    return invoke('forward_message', { sourceMessageId, contactId, groupId });
   }
   static listGroups(): Promise<Group[]> {
     return invoke('list_groups');

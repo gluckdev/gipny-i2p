@@ -76,6 +76,18 @@ export function short(s: string, n = 22): string {
   return s.slice(0, 10) + '…' + s.slice(-8);
 }
 
+export function fmtAgo(ts: number): string {
+  const d = Math.max(0, Date.now() - ts);
+  if (d < 60_000) return 'just now';
+  const m = Math.floor(d / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
 export function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;

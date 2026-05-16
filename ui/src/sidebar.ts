@@ -1,6 +1,7 @@
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget } from './state';
 import { View, h, short } from './view';
+import { attachContextMenu, type MenuItem } from './actions';
 import type { App } from './app';
 import { AddContactModal } from './contact';
 import { CreateGroupModal } from './group';
@@ -18,6 +19,12 @@ export class Sidebar extends View {
     this.listEl = h('div', { class: 'contact-list' });
     const footer = h('div', { class: 'sidebar-footer' });
     const profile = store.currentProfile.get();
+    const collapseBtn = h('button', {
+      class: 'icon-btn sidebar-collapse',
+      title: 'toggle sidebar',
+      onClick: () => this.store.toggleSidebar(),
+    }, store.sidebarCollapsed.get() ? '▶' : '◀');
+    this.sub(store.sidebarCollapsed, (c) => { collapseBtn.textContent = c ? '▶' : '◀'; }, false);
     this.el = h('div', { class: 'sidebar' },
       h('div', { class: 'sidebar-header' },
         h('div', { class: 'sidebar-title' }, `── ${profile ?? 'chats'} ──`),
@@ -28,6 +35,7 @@ export class Sidebar extends View {
           h('button', { class: 'icon-btn', title: 'security', onClick: () => this.security() }, '⛨'),
           h('button', { class: 'icon-btn', title: 'settings', onClick: () => this.settings() }, '⚙'),
           h('button', { class: 'icon-btn', title: 'lock', onClick: () => this.store.lock() }, '🔒'),
+          collapseBtn,
         ),
       ),
       this.listEl,
@@ -61,8 +69,9 @@ export class Sidebar extends View {
       for (const g of groups) {
         const target: ChatTarget = { kind: 'group', id: g.id };
         const u = unread.get(targetKey(target)) ?? 0;
+        const pinned = g.pinned_at != null;
         const row = h('div', {
-          class: 'contact' + (sameTarget(selected, target) ? ' active' : ''),
+          class: 'contact' + (sameTarget(selected, target) ? ' active' : '') + (pinned ? ' pinned' : ''),
           onClick: () => this.store.selectChat(target),
         },
           h('div', { class: 'contact-status group' }, '◫'),
@@ -70,8 +79,10 @@ export class Sidebar extends View {
             h('div', { class: 'contact-name' }, g.name),
             h('div', { class: 'contact-sub' }, 'group · ' + g.id.slice(0, 10)),
           ),
+          pinned && h('div', { class: 'contact-pin', title: 'pinned' }, '⚑'),
           u > 0 && h('div', { class: 'contact-badge' }, String(u)),
         );
+        attachContextMenu(row, () => this.chatMenu(target, pinned));
         this.listEl.appendChild(row);
       }
     }
@@ -83,8 +94,9 @@ export class Sidebar extends View {
       for (const c of contacts) {
         const target: ChatTarget = { kind: 'contact', id: c.id };
         const u = unread.get(targetKey(target)) ?? 0;
+        const pinned = c.pinned_at != null;
         const row = h('div', {
-          class: 'contact' + (sameTarget(selected, target) ? ' active' : ''),
+          class: 'contact' + (sameTarget(selected, target) ? ' active' : '') + (pinned ? ' pinned' : ''),
           onClick: () => this.store.selectChat(target),
         },
           h('div', { class: 'contact-status' + (online.has(c.id) ? ' online' : '') }),
@@ -92,11 +104,23 @@ export class Sidebar extends View {
             h('div', { class: 'contact-name' }, c.name),
             h('div', { class: 'contact-sub' }, short(c.onion)),
           ),
+          pinned && h('div', { class: 'contact-pin', title: 'pinned' }, '⚑'),
           u > 0 && h('div', { class: 'contact-badge' }, String(u)),
         );
+        attachContextMenu(row, () => this.chatMenu(target, pinned));
         this.listEl.appendChild(row);
       }
     }
+  }
+
+  private chatMenu(target: ChatTarget, pinned: boolean): MenuItem[] {
+    return [{
+      label: pinned ? 'unpin chat' : 'pin to top',
+      onClick: () => {
+        const op = pinned ? this.store.unpinChat(target) : this.store.pinChat(target);
+        op.catch((e: unknown) => this.store.showToast(String(e), true));
+      },
+    }];
   }
 
   private addContact(): void {

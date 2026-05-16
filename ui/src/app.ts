@@ -205,6 +205,9 @@ class MainView extends View {
     const empty = h('div', { class: 'empty' }, '── select chat ──');
     chatSlot.appendChild(empty);
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
+    this.subs.push(store.sidebarCollapsed.subscribe((c: boolean) => {
+      main.classList.toggle('sidebar-collapsed', c);
+    }));
     this.subs.push(store.selectedChat.subscribe((target: ChatTarget | null) => {
       chatSlot.replaceChildren();
       if (!target) {

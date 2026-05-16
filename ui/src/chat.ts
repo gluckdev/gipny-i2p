@@ -3,13 +3,14 @@ import { Api } from './api';
 import type { Message } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
-import { View, h, fmtTime, fmtDate, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
+import { View, h, fmtTime, fmtDate, fmtAgo, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
 import { PinnedBanner, EditInline, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
 import { ContactModal } from './contact';
 import { GroupModal } from './group';
 import { SearchModal } from './search';
 import { MediaModal } from './media';
+import { ForwardModal } from './forward';
 
 interface PendingFile { name: string; path: string; size: number }
 
@@ -50,10 +51,25 @@ export class ChatView extends View {
 
     const subEl = h('div', { class: 'chat-sub' });
     this.typingHeader = h('div', { class: 'chat-typing', style: { display: 'none' } });
+    const statusEl = h('div', { class: 'chat-status' });
     const computeSub = (): string => isGroup
       ? `group · ${(store.groupMembers.get().get(target.id)?.length ?? 0)} members`
       : short(store.contacts.get().find((c) => c.id === target.id)?.onion ?? '');
     subEl.textContent = computeSub();
+    const renderStatus = (): void => {
+      if (isGroup) { statusEl.textContent = ''; return; }
+      const cid = target.id as number;
+      const online = store.peerOnline.get().has(cid);
+      if (online) {
+        statusEl.textContent = '● online';
+        statusEl.className = 'chat-status online';
+        return;
+      }
+      const ls = store.contacts.get().find((c) => c.id === cid)?.last_seen ?? null;
+      statusEl.className = 'chat-status';
+      statusEl.textContent = ls != null ? `last seen ${fmtAgo(ls)}` : '';
+    };
+    renderStatus();
 
     this.log = h('div', { class: 'chat-log' });
     this.jumpBtn = h('button', {
@@ -84,9 +100,22 @@ export class ChatView extends View {
       if (isTouch) return;
       if (ke.key === 'Enter' && !ke.shiftKey) { e.preventDefault(); this.send(); }
     });
+    const supportsFieldSizing = ((): boolean => {
+      try { return typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content'); }
+      catch { return false; }
+    })();
+    let resizePending = false;
+    const resizeInput = (): void => {
+      if (supportsFieldSizing || resizePending) return;
+      resizePending = true;
+      requestAnimationFrame(() => {
+        resizePending = false;
+        this.input.style.height = 'auto';
+        this.input.style.height = Math.min(this.input.scrollHeight, 180) + 'px';
+      });
+    };
     this.input.addEventListener('input', () => {
-      this.input.style.height = 'auto';
-      this.input.style.height = Math.min(this.input.scrollHeight, 180) + 'px';
+      resizeInput();
       this.bumpTyping();
     });
     this.pasteHandler = (e: ClipboardEvent) => this.handlePaste(e);
@@ -129,6 +158,7 @@ export class ChatView extends View {
         h('div', null,
           h('div', { class: 'chat-title' }, title),
           subEl,
+          statusEl,
           this.typingHeader,
         ),
         headerRight,
@@ -163,6 +193,9 @@ export class ChatView extends View {
       void this.scrollToMessage(s.messageId);
     }, false);
     this.sub(store.typing, (m) => this.renderTypingHeader(m), true);
+    this.sub(store.peerOnline, () => renderStatus(), false);
+    this.sub(store.onlineTick, () => renderStatus(), false);
+    this.sub(store.contacts, () => renderStatus(), false);
 
     if (isGroup && !store.groupMembers.get().has(target.id)) {
       Api.listGroupMembers(target.id as string).then((members) => {
@@ -471,7 +504,12 @@ export class ChatView extends View {
         meta && h('div', { class: 'msg-meta' }, meta),
       ),
     );
-    attachContextMenu(wrap, () => messageMenuItems(this.store, this.target, m, () => this.startEdit(m), () => this.startReply(m)));
+    attachContextMenu(wrap, () => messageMenuItems(
+      this.store, this.target, m,
+      () => this.startEdit(m),
+      () => this.startReply(m),
+      () => this.openForward(m),
+    ));
     this.loadAttachmentsFor(m.id, wrap);
     if (m.buttons && m.buttons.length > 0 && !m.outgoing) {
       const btns = h('div', { class: 'msg-buttons' });
@@ -776,5 +814,9 @@ export class ChatView extends View {
 
   private openMedia(): void {
     this.app.openModal((close) => new MediaModal(this.store, this.target, close).el);
+  }
+
+  private openForward(m: Message): void {
+    this.app.openModal((close) => new ForwardModal(this.store, m.id, close).el);
   }
 }

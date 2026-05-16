@@ -49,6 +49,7 @@ pub struct Context {
     pub contact_id: i64,
     pub origin_msg_id: Option<u64>,
     pub target: BotTarget,
+    pub pending_sound: Option<String>,
 }
 
 impl Context {
@@ -58,12 +59,19 @@ impl Context {
         match &self.target { BotTarget::Group(g) => Some(g), _ => None }
     }
 
+    pub fn with_sound(&self, name: impl Into<String>) -> Self {
+        let mut c = self.clone();
+        c.pending_sound = Some(name.into());
+        c
+    }
+
     pub async fn reply(&self, text: impl Into<String>) -> anyhow::Result<i64> {
+        let snd = self.pending_sound.clone();
         match &self.target {
             BotTarget::Contact(cid) =>
-                Ok(self.session.send_message(*cid, text.into(), vec![], None, None).await?),
+                Ok(self.session.send_message(*cid, text.into(), vec![], None, None, snd).await?),
             BotTarget::Group(gid) =>
-                Ok(self.session.send_to_group(gid, text.into(), vec![], None).await?),
+                Ok(self.session.send_to_group(gid, text.into(), vec![], None, snd).await?),
         }
     }
 
@@ -73,11 +81,12 @@ impl Context {
         buttons: Vec<Vec<(String, String)>>,
     ) -> anyhow::Result<i64> {
         let wire = to_wire_buttons(buttons);
+        let snd = self.pending_sound.clone();
         match &self.target {
             BotTarget::Contact(cid) =>
-                Ok(self.session.send_message(*cid, text.into(), vec![], None, Some(wire)).await?),
+                Ok(self.session.send_message(*cid, text.into(), vec![], None, Some(wire), snd).await?),
             BotTarget::Group(gid) =>
-                Ok(self.session.send_to_group(gid, text.into(), vec![], Some(wire)).await?),
+                Ok(self.session.send_to_group(gid, text.into(), vec![], Some(wire), snd).await?),
         }
     }
 
@@ -119,11 +128,12 @@ impl Context {
         buttons: Option<Vec<Vec<(String, String)>>>,
     ) -> anyhow::Result<i64> {
         let wire = buttons.map(to_wire_buttons);
+        let snd = self.pending_sound.clone();
         match &self.target {
             BotTarget::Contact(cid) =>
-                Ok(self.session.send_message(*cid, text.into(), files, None, wire).await?),
+                Ok(self.session.send_message(*cid, text.into(), files, None, wire, snd).await?),
             BotTarget::Group(gid) =>
-                Ok(self.session.send_to_group(gid, text.into(), files, wire).await?),
+                Ok(self.session.send_to_group(gid, text.into(), files, wire, snd).await?),
         }
     }
 
@@ -285,6 +295,7 @@ impl Bot {
                     contact_id,
                     origin_msg_id: if payload.origin_msg_id > 0 { Some(payload.origin_msg_id) } else { None },
                     target: target.clone(),
+                    pending_sound: None,
                 };
 
                 let sender_sign_pk = match session.db.get_contact(contact_id) {

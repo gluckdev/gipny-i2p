@@ -1,4 +1,6 @@
 mod core;
+mod notify;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,7 +69,17 @@ pub fn run() {
         vault: Mutex::new(None),
         core: Mutex::new(None),
     };
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        use tauri::Manager;
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }));
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(ctx)
@@ -79,8 +91,9 @@ pub fn run() {
             get_display_name, set_display_name,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
             set_contact_bot, reset_contact_session,
-            list_messages, unread_count, mark_read, delete_message,
+            list_messages, message_position, unread_count, mark_read, delete_message,
             send_message, send_message_paths, send_edit, send_edit_group,
+            forward_message,
             list_attachments, load_attachment, save_attachment, save_paste_temp,
             list_media_contact, list_media_group, search_messages,
             get_proxy_config, set_proxy_config,
@@ -92,12 +105,16 @@ pub fn run() {
             delete_group, mark_group_read, group_unread_count,
             pin_contact_message, unpin_contact_message, list_pinned_contact,
             pin_group_message, unpin_group_message, list_pinned_group,
+            pin_chat, unpin_chat,
             check_update, install_update, dismiss_update, current_version,
             list_apk_artifacts, download_apk,
             read_debug_log,
             export_identity, import_identity_to_profile,
             send_typing,
             play_notify_sound,
+            notify_os,
+            notify_probe,
+            update_tray_badge,
         ]);
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -170,6 +187,7 @@ struct VaultStatus { exists: bool, unlocked: bool }
 struct ContactDto {
     id: i64, sign_pk: String, dh_pk: String, onion: String, name: String,
     trust: u8, created_at: i64, last_seen: Option<i64>, is_bot: bool,
+    pinned_at: Option<i64>, last_message_at: Option<i64>,
 }
 
 impl From<Contact> for ContactDto {
@@ -181,6 +199,7 @@ impl From<Contact> for ContactDto {
                 TrustLevel::Unverified => 0, TrustLevel::Verified => 1, TrustLevel::Blocked => 2,
             },
             created_at: c.created_at, last_seen: c.last_seen, is_bot: c.is_bot,
+            pinned_at: c.pinned_at, last_message_at: c.last_message_at,
         }
     }
 }
@@ -237,11 +256,17 @@ impl From<Message> for MessageDto {
 }
 
 #[derive(Serialize)]
-struct GroupDto { id: String, name: String, created_at: i64 }
+struct GroupDto {
+    id: String, name: String, created_at: i64,
+    pinned_at: Option<i64>, last_message_at: Option<i64>,
+}
 
 impl From<Group> for GroupDto {
     fn from(g: Group) -> Self {
-        Self { id: hex(&g.id), name: g.name, created_at: g.created_at }
+        Self {
+            id: hex(&g.id), name: g.name, created_at: g.created_at,
+            pinned_at: g.pinned_at, last_message_at: g.last_message_at,
+        }
     }
 }
 
@@ -408,8 +433,13 @@ async fn vault_unlock(
     ctx: State<'_, AppCtx>, app: AppHandle,
 ) -> Result<(), String> {
     let dir = profile_dir(&ctx, &profile)?;
-    if ctx.core.lock().await.is_some() {
-        return Err("another profile active, lock first".into());
+    let prev = ctx.core.lock().await.take();
+    if let Some(c) = prev {
+        c.shutdown();
+        drop(c);
+        ctx.vault.lock().await.take();
+        ctx.profile.lock().await.take();
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     }
     let vault = Arc::new(Vault::open(&dir).map_err(err)?);
     boot(&ctx, app, vault, &pass, &profile, &dir).await
@@ -580,6 +610,23 @@ async fn list_messages(
 }
 
 #[tauri::command]
+async fn message_position(
+    contact_id: Option<i64>, group_id: Option<String>, message_id: i64,
+    ctx: State<'_, AppCtx>,
+) -> Result<Option<i64>, String> {
+    let core = core_of(&ctx).await?;
+    let db = core.db();
+    if let Some(cid) = contact_id {
+        db.message_position_dm(cid, message_id).map_err(err)
+    } else if let Some(gid_hex) = group_id {
+        let gid = parse_group_id(&gid_hex)?;
+        db.message_position_group(&gid, message_id).map_err(err)
+    } else {
+        Err("target required".into())
+    }
+}
+
+#[tauri::command]
 async fn unread_count(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<i64, String> {
     core_of(&ctx).await?.db().unread_count(contact_id).map_err(err)
 }
@@ -592,6 +639,32 @@ async fn mark_read(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<(), String
 #[tauri::command]
 async fn delete_message(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
     core_of(&ctx).await?.db().delete_message(id).map_err(err)
+}
+
+#[tauri::command]
+async fn forward_message(
+    source_message_id: i64,
+    contact_id: Option<i64>,
+    group_id: Option<String>,
+    ctx: State<'_, AppCtx>,
+) -> Result<i64, String> {
+    let core = core_of(&ctx).await?;
+    let src = core.db().get_message(source_message_id).map_err(err)?
+        .ok_or_else(|| "source not found".to_string())?;
+    let attachments = core.db().list_attachments(source_message_id).map_err(err)?;
+    let mut pending: Vec<PendingAttachment> = Vec::with_capacity(attachments.len());
+    for a in &attachments {
+        let data = core.read_attachment(a).map_err(err)?;
+        pending.push(PendingAttachment { name: a.name.clone(), data });
+    }
+    if let Some(cid) = contact_id {
+        core.send_message(cid, src.body, pending, None, None).await.map_err(err)
+    } else if let Some(gid_hex) = group_id {
+        let gid = parse_group_id(&gid_hex)?;
+        core.send_to_group(&gid, src.body, pending, None, None).await.map_err(err)
+    } else {
+        Err("target required".into())
+    }
 }
 
 #[tauri::command]
@@ -996,6 +1069,37 @@ async fn unpin_group_message(group_id: String, message_id: i64, ctx: State<'_, A
 }
 
 #[tauri::command]
+async fn pin_chat(contact_id: Option<i64>, group_id: Option<String>, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let core = core_of(&ctx).await?;
+    let db = core.db();
+    let ts = now_ms_helper();
+    if let Some(cid) = contact_id {
+        db.pin_contact(cid, ts).map_err(err)?;
+    } else if let Some(gid_hex) = group_id {
+        let gid = parse_group_id(&gid_hex)?;
+        db.pin_group(&gid, ts).map_err(err)?;
+    } else {
+        return Err("target required".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn unpin_chat(contact_id: Option<i64>, group_id: Option<String>, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let core = core_of(&ctx).await?;
+    let db = core.db();
+    if let Some(cid) = contact_id {
+        db.unpin_contact(cid).map_err(err)?;
+    } else if let Some(gid_hex) = group_id {
+        let gid = parse_group_id(&gid_hex)?;
+        db.unpin_group(&gid).map_err(err)?;
+    } else {
+        return Err("target required".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<Vec<MessageDto>, String> {
     let gid = parse_group_id(&group_id)?;
     let core = core_of(&ctx).await?;
@@ -1059,9 +1163,6 @@ fn read_debug_log(ctx: State<'_, AppCtx>) -> Result<String, String> {
     Ok(lines[take..].join("\n"))
 }
 
-#[cfg(target_os = "linux")]
-const NOTIFY_WAV: &[u8] = include_bytes!("../../ui/public/notify.wav");
-
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -1097,16 +1198,23 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn play_notify_sound() {
-    #[cfg(target_os = "linux")]
-    std::thread::spawn(|| {
-        let Ok((_stream, handle)) = rodio::OutputStream::try_default() else { return };
-        let Ok(sink) = rodio::Sink::try_new(&handle) else { return };
-        let Ok(decoder) = rodio::Decoder::new(std::io::Cursor::new(NOTIFY_WAV)) else { return };
-        sink.set_volume(0.4);
-        sink.append(decoder);
-        sink.sleep_until_end();
-    });
+fn play_notify_sound(name: Option<String>) -> Result<(), String> {
+    notify::play_sound(name)
+}
+
+#[tauri::command]
+fn notify_os(title: String, body: String) -> Result<(), String> {
+    notify::notify_os(&title, &body)
+}
+
+#[tauri::command]
+fn notify_probe() -> String {
+    notify::probe_report()
+}
+
+#[tauri::command]
+fn update_tray_badge(app: AppHandle, count: u32) -> Result<(), String> {
+    tray::apply(&app, count)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

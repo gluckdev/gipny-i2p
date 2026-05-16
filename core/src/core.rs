@@ -70,6 +70,7 @@ pub enum CoreEvent {
         message_id: i64,
         body: String,
         sent_at: i64,
+        notify_sound: Option<String>,
     },
     MessageEdited {
         message_id: i64,
@@ -350,6 +351,7 @@ impl Core {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -391,6 +393,7 @@ impl Core {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -428,6 +431,7 @@ impl Core {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -481,6 +485,7 @@ impl Core {
                 sender_name: None,
                 reply_to: None,
             typing: None,
+            notify_sound: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -525,6 +530,7 @@ impl Core {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -592,6 +598,7 @@ impl Core {
                 sender_name: None,
                 reply_to: None,
             typing: None,
+            notify_sound: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1307,6 +1314,7 @@ impl Core {
             sender_sign_pk: Some(to_hex(&contact.identity_sign)),
             message_id: mid,
             body: body_for_event, sent_at: payload.sent_at,
+            notify_sound: payload.notify_sound.clone(),
         });
         let _ = self.send_ack(&contact, &payload).await;
         Ok(())
@@ -1349,6 +1357,7 @@ impl Core {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1745,7 +1754,7 @@ fn make_typing_payload(group: Option<WireGroupRef>, typing: bool) -> WirePayload
         origin_msg_id: 0, body: String::new(), attachments: vec![], sent_at: now_ms(),
         ttl_ms: None, group, buttons: None, callback_data: None,
         edit_of: None, pin: None, ack_for: None, sender_name: None,
-        reply_to: None, typing: Some(typing),
+        reply_to: None, typing: Some(typing), notify_sound: None,
     }
 }
 

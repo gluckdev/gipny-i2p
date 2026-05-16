@@ -12,7 +12,7 @@ use crate::security::MasterKey;
 
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
-const MIGRATE_TABLES: &[&str] = &["messages", "contacts"];
+const MIGRATE_TABLES: &[&str] = &["messages", "contacts", "groups"];
 
 trait CollectRows<T> {
     fn collect_rows(self) -> Result<Vec<T>>;
@@ -67,6 +67,8 @@ pub struct Contact {
     pub created_at: i64,
     pub last_seen: Option<i64>,
     pub is_bot: bool,
+    pub pinned_at: Option<i64>,
+    pub last_message_at: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +121,8 @@ pub struct Group {
     pub id: Vec<u8>,
     pub name: String,
     pub created_at: i64,
+    pub pinned_at: Option<i64>,
+    pub last_message_at: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,7 +209,8 @@ CREATE TABLE settings (
 );
 "#;
 
-macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0) FROM contacts" }; }
+macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at FROM contacts" }; }
+macro_rules! select_group { () => { "SELECT id, name, created_at, pinned_at, last_message_at FROM groups" }; }
 macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to" }; }
 macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to" }; }
 
@@ -447,6 +452,44 @@ impl Db {
             PRAGMA user_version = 9;
         ")?;
         Self::ensure_column(conn, "contacts", "is_bot", "INTEGER NOT NULL DEFAULT 0")?;
+        let added_contact_lma = Self::ensure_column(conn, "contacts", "last_message_at", "INTEGER")?;
+        Self::ensure_column(conn, "contacts", "pinned_at", "INTEGER")?;
+        let added_group_lma = Self::ensure_column(conn, "groups", "last_message_at", "INTEGER")?;
+        Self::ensure_column(conn, "groups", "pinned_at", "INTEGER")?;
+        if added_contact_lma {
+            conn.execute_batch("
+                UPDATE contacts SET last_message_at = (
+                    SELECT MAX(sent_at) FROM messages m WHERE m.contact_id = contacts.id
+                ) WHERE last_message_at IS NULL;
+            ")?;
+        }
+        if added_group_lma {
+            conn.execute_batch("
+                UPDATE groups SET last_message_at = (
+                    SELECT MAX(sent_at) FROM messages m WHERE m.group_id = groups.id
+                ) WHERE last_message_at IS NULL;
+            ")?;
+        }
+        conn.execute_batch("
+            CREATE TRIGGER IF NOT EXISTS tr_messages_bump_contact_last
+                AFTER INSERT ON messages WHEN NEW.contact_id IS NOT NULL
+                BEGIN
+                    UPDATE contacts SET last_message_at = NEW.sent_at
+                    WHERE id = NEW.contact_id
+                      AND (last_message_at IS NULL OR last_message_at < NEW.sent_at);
+                END;
+            CREATE TRIGGER IF NOT EXISTS tr_messages_bump_group_last
+                AFTER INSERT ON messages WHEN NEW.group_id IS NOT NULL
+                BEGIN
+                    UPDATE groups SET last_message_at = NEW.sent_at
+                    WHERE id = NEW.group_id
+                      AND (last_message_at IS NULL OR last_message_at < NEW.sent_at);
+                END;
+            CREATE INDEX IF NOT EXISTS idx_contacts_sort
+                ON contacts(pinned_at, last_message_at);
+            CREATE INDEX IF NOT EXISTS idx_groups_sort
+                ON groups(pinned_at, last_message_at);
+        ")?;
         Ok(())
     }
 
@@ -493,8 +536,35 @@ impl Db {
     }
 
     pub fn list_contacts(&self) -> Result<Vec<Contact>> {
-        self.with_conn(|c| c.prepare_cached(concat!(select_contact!(), " ORDER BY display_name"))?
+        self.with_conn(|c| c.prepare_cached(concat!(
+            select_contact!(),
+            " ORDER BY pinned_at IS NULL, pinned_at DESC, last_message_at IS NULL, last_message_at DESC, display_name"
+        ))?
             .query_map([], Self::map_contact)?.collect_rows())
+    }
+
+    pub fn pin_contact(&self, id: i64, ts: i64) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "UPDATE contacts SET pinned_at = ?1 WHERE id = ?2",
+            params![ts, id])?; Ok(()) })
+    }
+
+    pub fn unpin_contact(&self, id: i64) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "UPDATE contacts SET pinned_at = NULL WHERE id = ?1",
+            params![id])?; Ok(()) })
+    }
+
+    pub fn pin_group(&self, id: &[u8], ts: i64) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "UPDATE groups SET pinned_at = ?1 WHERE id = ?2",
+            params![ts, id])?; Ok(()) })
+    }
+
+    pub fn unpin_group(&self, id: &[u8]) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "UPDATE groups SET pinned_at = NULL WHERE id = ?1",
+            params![id])?; Ok(()) })
     }
 
     pub fn update_contact(&self, id: i64, name: &str, trust: TrustLevel) -> Result<()> {
@@ -528,6 +598,8 @@ impl Db {
             created_at: r.get(6)?,
             last_seen: r.get(7)?,
             is_bot: r.get::<_, i64>(8)? != 0,
+            pinned_at: r.get(9)?,
+            last_message_at: r.get(10)?,
         })
     }
 
@@ -726,6 +798,32 @@ impl Db {
             None => c.prepare_cached(concat!("SELECT ", message_cols!(),
                 " FROM messages WHERE group_id = ?1 ORDER BY id DESC LIMIT ?2"))?
                 .query_map(params![group_id, limit], Self::map_message)?.collect_rows(),
+        })
+    }
+
+    pub fn message_position_dm(&self, contact_id: i64, message_id: i64) -> Result<Option<i64>> {
+        self.with_conn(|c| {
+            let exists: bool = c.prepare_cached(
+                "SELECT 1 FROM messages WHERE id = ?1 AND contact_id = ?2 AND group_id IS NULL")?
+                .query_row(params![message_id, contact_id], |_| Ok(())).optional()?.is_some();
+            if !exists { return Ok(None); }
+            let n: i64 = c.prepare_cached(
+                "SELECT COUNT(*) FROM messages WHERE contact_id = ?1 AND group_id IS NULL AND id > ?2")?
+                .query_row(params![contact_id, message_id], |r| r.get(0))?;
+            Ok(Some(n))
+        })
+    }
+
+    pub fn message_position_group(&self, group_id: &[u8], message_id: i64) -> Result<Option<i64>> {
+        self.with_conn(|c| {
+            let exists: bool = c.prepare_cached(
+                "SELECT 1 FROM messages WHERE id = ?1 AND group_id = ?2")?
+                .query_row(params![message_id, group_id], |_| Ok(())).optional()?.is_some();
+            if !exists { return Ok(None); }
+            let n: i64 = c.prepare_cached(
+                "SELECT COUNT(*) FROM messages WHERE group_id = ?1 AND id > ?2")?
+                .query_row(params![group_id, message_id], |r| r.get(0))?;
+            Ok(Some(n))
         })
     }
 
@@ -1117,12 +1215,15 @@ impl Db {
     }
 
     pub fn get_group(&self, id: &[u8]) -> Result<Option<Group>> {
-        self.with_conn(|c| c.prepare_cached("SELECT id, name, created_at FROM groups WHERE id = ?1")?
+        self.with_conn(|c| c.prepare_cached(concat!(select_group!(), " WHERE id = ?1"))?
             .query_row(params![id], map_group).optional().map_err(Into::into))
     }
 
     pub fn list_groups(&self) -> Result<Vec<Group>> {
-        self.with_conn(|c| c.prepare_cached("SELECT id, name, created_at FROM groups ORDER BY name")?
+        self.with_conn(|c| c.prepare_cached(concat!(
+            select_group!(),
+            " ORDER BY pinned_at IS NULL, pinned_at DESC, last_message_at IS NULL, last_message_at DESC, name"
+        ))?
             .query_map([], map_group)?.collect_rows())
     }
 
@@ -1342,7 +1443,10 @@ fn check_body(body: &str) -> Result<()> {
 }
 
 fn map_group(r: &Row<'_>) -> rusqlite::Result<Group> {
-    Ok(Group { id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)? })
+    Ok(Group {
+        id: r.get(0)?, name: r.get(1)?, created_at: r.get(2)?,
+        pinned_at: r.get(3)?, last_message_at: r.get(4)?,
+    })
 }
 
 fn map_group_member(r: &Row<'_>) -> rusqlite::Result<GroupMember> {

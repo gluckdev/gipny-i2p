@@ -82,12 +82,14 @@ export function messageMenuItems(
   m: Message,
   onEdit: () => void,
   onReply: () => void,
+  onForward: () => void,
 ): MenuItem[] {
   const pinnedList = store.pinned.get().get(targetKey(target)) ?? [];
   const isPinned = pinnedList.some((p) => p.id === m.id);
   const items: MenuItem[] = [];
 
   items.push({ label: '[ REPLY ]', onClick: onReply });
+  items.push({ label: '[ FORWARD ]', onClick: onForward });
 
   items.push({
     label: isPinned ? '[ UNPIN ]' : '[ PIN ]',

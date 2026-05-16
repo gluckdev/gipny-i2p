@@ -9,6 +9,16 @@ const app = new App(store);
 root.appendChild(app.el);
 store.bootstrap();
 
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'F5' || (e.ctrlKey && (e.key === 'r' || e.key === 'R'))) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (store.view.get() === 'main' || store.view.get() === 'auth-booting') {
+      store.lock().catch(() => {});
+    }
+  }
+}, true);
+
 const vv = window.visualViewport;
 if (vv) {
   const update = (): void => {

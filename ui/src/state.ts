@@ -85,31 +85,71 @@ export class Store {
   updateReadyPath = new Signal<string | null>(null);
   updateError = new Signal<string | null>(null);
   scrollToMessage = new Signal<{ target: ChatTarget; messageId: number; nonce: number } | null>(null);
+  sidebarCollapsed = new Signal<boolean>(typeof localStorage !== 'undefined' && localStorage.getItem('gipny:sidebar-collapsed') === '1');
+  onlineTick = new Signal<number>(0);
+
+  toggleSidebar(): void {
+    const next = !this.sidebarCollapsed.get();
+    this.sidebarCollapsed.set(next);
+    try { localStorage.setItem('gipny:sidebar-collapsed', next ? '1' : '0'); } catch {}
+  }
+
+  private lastTrayBadge = -1;
+  private pushTrayBadge(): void {
+    let count = 0;
+    for (const v of this.unread.get().values()) if (v > 0) count += 1;
+    if (count === this.lastTrayBadge) return;
+    this.lastTrayBadge = count;
+    Api.updateTrayBadge(count).catch(() => {});
+  }
 
   private unsubEvents: (() => void) | null = null;
+  private unsubTrayBadge: (() => void) | null = null;
   private notifyGranted: boolean = false;
-  private notifyAudio: HTMLAudioElement | null = null;
+  private readonly linuxDesktop: boolean = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
   private scrollNonce: number = 0;
   private watchdogTimer: number | null = null;
+  private lastSeenMs: Map<number, number> = new Map();
+  private onlineTickTimer: number | null = null;
+  private static readonly ONLINE_WINDOW_MS = 60_000;
 
-  private playNotify(): void {
-    const ua = navigator.userAgent;
-    if (/Linux/.test(ua) && !/Android/.test(ua)) {
-      Api.playNotifySound().catch((e) => console.error('[notify-sound]', e));
+  private soundCache: Map<string, HTMLAudioElement> = new Map();
+
+  private playNotify(name?: string | null): void {
+    if (this.linuxDesktop) {
+      Api.playNotifySound(name ?? null).catch((e) => console.error('[notify-sound]', e));
       return;
     }
+    const url = name ? `/sounds/${name}.wav` : '/notify.wav';
     try {
-      if (!this.notifyAudio) {
-        this.notifyAudio = new Audio('/notify.wav');
-        this.notifyAudio.volume = 0.4;
-        this.notifyAudio.preload = 'auto';
+      let audio = this.soundCache.get(url);
+      if (!audio) {
+        audio = new Audio(url);
+        audio.volume = 0.4;
+        audio.preload = 'auto';
+        this.soundCache.set(url, audio);
       }
-      this.notifyAudio.currentTime = 0;
-      this.notifyAudio.play().catch((e) => console.error('[notify-sound]', e));
+      audio.currentTime = 0;
+      audio.play().catch((e) => {
+        console.error('[notify-sound]', name, e);
+        if (name) {
+          const fb = new Audio('/notify.wav');
+          fb.volume = 0.4;
+          fb.play().catch(() => {});
+        }
+      });
     } catch (e) { console.error('[notify-sound]', e); }
   }
 
   private async ensureNotifyPermission(): Promise<void> {
+    if (this.linuxDesktop) {
+      try {
+        const report = await Api.notifyProbe();
+        console.log('[notify-probe]', report);
+      } catch (e) { console.error('[notify-probe]', e); }
+      this.notifyGranted = false;
+      return;
+    }
     try {
       this.notifyGranted = await isPermissionGranted();
       if (!this.notifyGranted) {
@@ -134,6 +174,17 @@ export class Store {
   }
 
   private nativeNotify(title: string, body: string): void {
+    if (this.linuxDesktop) {
+      Api.notifyOs(title, body).catch((e) => {
+        console.error('[notify-os]', e);
+        this.pluginNotify(title, body);
+      });
+      return;
+    }
+    this.pluginNotify(title, body);
+  }
+
+  private pluginNotify(title: string, body: string): void {
     if (!this.notifyGranted) return;
     try {
       sendNotification({ title, body, channelId: 'gipny_messages' });
@@ -178,6 +229,8 @@ export class Store {
     this.displayName.set(displayName);
     await this.refreshAll();
     this.unsubEvents = await Api.onEvent((e) => this.handleEvent(e));
+    this.unsubTrayBadge?.();
+    this.unsubTrayBadge = this.unread.subscribe(() => this.pushTrayBadge(), true);
     await this.ensureNotifyPermission();
     this.installVisibilityHook();
     this.startWatchdog();
@@ -200,6 +253,8 @@ export class Store {
       this.loadMessages(t).catch(() => {});
       this.loadPinned(t).catch(() => {});
     }, 30_000);
+    if (this.onlineTickTimer != null) window.clearInterval(this.onlineTickTimer);
+    this.onlineTickTimer = window.setInterval(() => this.recomputeOnline(), 15_000);
   }
 
   private stopWatchdog(): void {
@@ -207,6 +262,29 @@ export class Store {
       window.clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
     }
+    if (this.onlineTickTimer != null) {
+      window.clearInterval(this.onlineTickTimer);
+      this.onlineTickTimer = null;
+    }
+  }
+
+  private markPeerActive(contactId: number, ts: number): void {
+    const cur = this.lastSeenMs.get(contactId) ?? 0;
+    if (ts > cur) this.lastSeenMs.set(contactId, ts);
+    if (!this.peerOnline.get().has(contactId)) {
+      this.peerOnline.update((s) => { const n = new Set(s); n.add(contactId); return n; });
+    }
+  }
+
+  private recomputeOnline(): void {
+    const cutoff = Date.now() - Store.ONLINE_WINDOW_MS;
+    const next = new Set<number>();
+    for (const [id, ts] of this.lastSeenMs) if (ts > cutoff) next.add(id);
+    const cur = this.peerOnline.get();
+    if (next.size !== cur.size || [...next].some((x) => !cur.has(x))) {
+      this.peerOnline.set(next);
+    }
+    this.onlineTick.set(Date.now());
   }
 
   async updateDisplayName(name: string): Promise<void> {
@@ -218,6 +296,10 @@ export class Store {
     this.stopWatchdog();
     this.unsubEvents?.();
     this.unsubEvents = null;
+    this.unsubTrayBadge?.();
+    this.unsubTrayBadge = null;
+    Api.updateTrayBadge(0).catch(() => {});
+    this.lastTrayBadge = -1;
     await Api.vaultLock();
     this.contacts.set([]);
     this.groups.set([]);
@@ -226,6 +308,7 @@ export class Store {
     this.groupMembers.set(new Map());
     this.selectedChat.set(null);
     this.peerOnline.set(new Set());
+    this.lastSeenMs.clear();
     this.unread.set(new Map());
     this.identity.set(null);
     this.currentProfile.set(null);
@@ -251,6 +334,10 @@ export class Store {
     this.contacts.set(contacts);
     this.groups.set(groups);
     this.muted.set(new Set(mutedList));
+    for (const c of contacts) {
+      if (c.last_seen != null) this.lastSeenMs.set(c.id, c.last_seen);
+    }
+    this.recomputeOnline();
     const unread = new Map<string, number>();
     await Promise.all([
       ...contacts.map(async (c) => unread.set(targetKey({ kind: 'contact', id: c.id }), await Api.unreadCount(c.id))),
@@ -267,6 +354,70 @@ export class Store {
       if (muted) n.add(key); else n.delete(key);
       return n;
     });
+  }
+
+  async pinChat(target: ChatTarget): Promise<void> {
+    const ts = Date.now();
+    if (target.kind === 'contact') {
+      await Api.pinChat(target.id, null);
+      this.contacts.update((list) => Store.sortContacts(list.map((c) => c.id === target.id ? { ...c, pinned_at: ts } : c)));
+    } else {
+      await Api.pinChat(null, target.id);
+      this.groups.update((list) => Store.sortGroups(list.map((g) => g.id === target.id ? { ...g, pinned_at: ts } : g)));
+    }
+  }
+
+  async unpinChat(target: ChatTarget): Promise<void> {
+    if (target.kind === 'contact') {
+      await Api.unpinChat(target.id, null);
+      this.contacts.update((list) => Store.sortContacts(list.map((c) => c.id === target.id ? { ...c, pinned_at: null } : c)));
+    } else {
+      await Api.unpinChat(null, target.id);
+      this.groups.update((list) => Store.sortGroups(list.map((g) => g.id === target.id ? { ...g, pinned_at: null } : g)));
+    }
+  }
+
+  private bumpChatOrder(target: ChatTarget, ts: number): void {
+    if (target.kind === 'contact') {
+      this.contacts.update((list) => {
+        const idx = list.findIndex((c) => c.id === target.id);
+        if (idx < 0) return list;
+        const cur = list[idx]!.last_message_at ?? 0;
+        if (ts <= cur) return list;
+        const next = list.slice();
+        next[idx] = { ...next[idx]!, last_message_at: ts };
+        return Store.sortContacts(next);
+      });
+    } else {
+      this.groups.update((list) => {
+        const idx = list.findIndex((g) => g.id === target.id);
+        if (idx < 0) return list;
+        const cur = list[idx]!.last_message_at ?? 0;
+        if (ts <= cur) return list;
+        const next = list.slice();
+        next[idx] = { ...next[idx]!, last_message_at: ts };
+        return Store.sortGroups(next);
+      });
+    }
+  }
+
+  private static cmpChat<T extends { pinned_at: number | null; last_message_at: number | null; name: string }>(a: T, b: T): number {
+    const ap = a.pinned_at != null;
+    const bp = b.pinned_at != null;
+    if (ap !== bp) return ap ? -1 : 1;
+    if (ap && bp && a.pinned_at !== b.pinned_at) return (b.pinned_at as number) - (a.pinned_at as number);
+    const al = a.last_message_at ?? 0;
+    const bl = b.last_message_at ?? 0;
+    if (al !== bl) return bl - al;
+    return a.name.localeCompare(b.name);
+  }
+
+  static sortContacts(list: Contact[]): Contact[] {
+    return list.slice().sort(Store.cmpChat);
+  }
+
+  static sortGroups(list: Group[]): Group[] {
+    return list.slice().sort(Store.cmpChat);
   }
 
   async refreshContacts(): Promise<void> { await this.refreshAll(); }
@@ -329,16 +480,32 @@ export class Store {
     return true;
   }
 
-  async loadUntilMessage(target: ChatTarget, messageId: number, maxBatches = 200): Promise<boolean> {
+  async loadUntilMessage(target: ChatTarget, messageId: number): Promise<boolean> {
     const key = targetKey(target);
-    for (let i = 0; i < maxBatches; i++) {
-      const list = this.messages.get().get(key) ?? [];
-      if (list.some((m) => m.id === messageId)) return true;
-      const loaded = await this.loadMoreMessages(target);
-      if (!loaded) {
-        return (this.messages.get().get(key) ?? []).some((m) => m.id === messageId);
-      }
-    }
+    const list = this.messages.get().get(key) ?? [];
+    if (list.some((m) => m.id === messageId)) return true;
+
+    const contactId = target.kind === 'contact' ? target.id : null;
+    const groupId = target.kind === 'group' ? target.id : null;
+    const pos = await Api.messagePosition(contactId, groupId, messageId);
+    if (pos == null) return false;
+
+    const limit = Math.min(pos + 50, 20_000);
+    const slice = target.kind === 'contact'
+      ? await Api.listMessages(target.id, limit)
+      : await Api.listGroupMessages(target.id, limit);
+    slice.reverse();
+    if (slice.length === 0) return false;
+    this.messages.update((m) => {
+      const n = new Map(m);
+      const existing = n.get(key) ?? [];
+      const sliceMin = slice[0]?.id ?? Number.POSITIVE_INFINITY;
+      const sliceMax = slice[slice.length - 1]?.id ?? Number.NEGATIVE_INFINITY;
+      const olderLocal = existing.filter((msg) => msg.id < sliceMin);
+      const newerLocal = existing.filter((msg) => msg.id > sliceMax);
+      n.set(key, [...olderLocal, ...slice, ...newerLocal]);
+      return n;
+    });
     return (this.messages.get().get(key) ?? []).some((m) => m.id === messageId);
   }
 
@@ -471,6 +638,13 @@ export class Store {
         : m.contact_id != null ? { kind: 'contact', id: m.contact_id } : null;
       if (!target) return;
       const key = targetKey(target);
+      this.bumpChatOrder(target, m.sent_at);
+      if (target.kind === 'contact') {
+        this.markPeerActive(target.id, Date.now());
+      } else if (m.sender_sign_pk) {
+        const sc = this.contacts.get().find((c) => c.sign_pk === m.sender_sign_pk);
+        if (sc) this.markPeerActive(sc.id, Date.now());
+      }
       this.loadMessages(target);
       const selected = this.selectedChat.get();
       const isActiveChat = sameTarget(selected, target);
@@ -500,10 +674,11 @@ export class Store {
         const preview = m.body.length > 60 ? m.body.slice(0, 60) + '…' : m.body;
         const prefix = target.kind === 'group' ? `[${label}] ${senderName}` : label;
         this.nativeNotify(prefix, preview);
-        this.playNotify();
+        this.playNotify(m.notify_sound ?? null);
       }
     } else if ('MessageSent' in e) {
       const id = e.MessageSent.message_id;
+      const bumps: Array<{ target: ChatTarget; ts: number }> = [];
       this.messages.update((m) => {
         const n = new Map(m);
         for (const [k, list] of n) {
@@ -512,12 +687,19 @@ export class Store {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, sent: true };
             n.set(k, copy);
+            const msg = copy[idx]!;
+            const t: ChatTarget | null = msg.group_id
+              ? { kind: 'group', id: msg.group_id }
+              : msg.contact_id != null ? { kind: 'contact', id: msg.contact_id } : null;
+            if (t) bumps.push({ target: t, ts: msg.sent_at });
           }
         }
         return n;
       });
+      for (const b of bumps) this.bumpChatOrder(b.target, b.ts);
     } else if ('MessageDelivered' in e) {
       const id = e.MessageDelivered.message_id;
+      const activeContacts: number[] = [];
       this.messages.update((m) => {
         const n = new Map(m);
         for (const [k, list] of n) {
@@ -526,16 +708,27 @@ export class Store {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, sent: true, delivered: true };
             n.set(k, copy);
+            const cid = copy[idx]!.contact_id;
+            if (cid != null) activeContacts.push(cid);
           }
         }
         return n;
       });
+      for (const cid of activeContacts) this.markPeerActive(cid, Date.now());
     } else if ('Typing' in e) {
       const { contact_id, group_id, sender_sign_pk, typing } = e.Typing;
       const target: ChatTarget | null = group_id != null
         ? { kind: 'group', id: group_id }
         : contact_id != null ? { kind: 'contact', id: contact_id } : null;
       if (target) {
+        if (typing) {
+          if (target.kind === 'contact') {
+            this.markPeerActive(target.id, Date.now());
+          } else if (sender_sign_pk) {
+            const sc = this.contacts.get().find((c) => c.sign_pk === sender_sign_pk);
+            if (sc) this.markPeerActive(sc.id, Date.now());
+          }
+        }
         const key = targetKey(target);
         if (typing) {
           this.typing.update((m) => {

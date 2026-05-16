@@ -6,8 +6,38 @@ use image::{ImageFormat, Rgba, RgbaImage};
 
 fn main() {
     generate_icons();
+    generate_sounds_table();
     ensure_ui_built();
     tauri_build::build();
+}
+
+fn generate_sounds_table() {
+    let dir = Path::new("../ui/public/sounds");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let out_path = Path::new(&out_dir).join("sounds.rs");
+    println!("cargo:rerun-if-changed=../ui/public/sounds");
+
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("wav") { continue; }
+            let stem = match p.file_stem().and_then(|s| s.to_str()) { Some(s) => s, None => continue };
+            if stem.is_empty() || stem.len() > 32 { continue; }
+            if !stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { continue; }
+            println!("cargo:rerun-if-changed=../ui/public/sounds/{}.wav", stem);
+            entries.push((stem.to_string(), p.canonicalize().unwrap_or(p)));
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut src = String::from("pub const EMBEDDED_SOUNDS: &[(&str, &[u8])] = &[\n");
+    for (name, path) in &entries {
+        let abs = path.display().to_string().replace('\\', "/");
+        src.push_str(&format!("    (\"{}\", include_bytes!(\"{}\")),\n", name, abs));
+    }
+    src.push_str("];\n");
+    std::fs::write(&out_path, src).expect("write sounds.rs");
 }
 
 fn generate_icons() {

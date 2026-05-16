@@ -75,6 +75,8 @@ pub struct WirePayload {
     pub reply_to: Option<WireReply>,
     #[serde(default)]
     pub typing: Option<bool>,
+    #[serde(default)]
+    pub notify_sound: Option<String>,
 }
 
 impl WirePayload {
@@ -83,7 +85,7 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None,
+            typing: None, notify_sound: None,
         }
     }
 }
@@ -197,6 +199,49 @@ struct WireV5 {
     reply_to: Option<WireReply>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct WireV6 {
+    origin_msg_id: u64,
+    body: String,
+    attachments: Vec<WireAttachment>,
+    sent_at: i64,
+    ttl_ms: Option<i64>,
+    group: Option<WireGroupRef>,
+    buttons: Option<Vec<Vec<WireButton>>>,
+    callback_data: Option<String>,
+    edit_of: Option<u64>,
+    pin: Option<WirePin>,
+    ack_for: Option<u64>,
+    sender_name: Option<String>,
+    reply_to: Option<WireReply>,
+    typing: Option<bool>,
+}
+
+impl From<&WirePayload> for WireV6 {
+    fn from(p: &WirePayload) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id, body: p.body.clone(), attachments: p.attachments.clone(),
+            sent_at: p.sent_at, ttl_ms: p.ttl_ms, group: p.group.clone(),
+            buttons: p.buttons.clone(), callback_data: p.callback_data.clone(),
+            edit_of: p.edit_of, pin: p.pin.clone(), ack_for: p.ack_for,
+            sender_name: p.sender_name.clone(), reply_to: p.reply_to.clone(),
+            typing: p.typing,
+        }
+    }
+}
+
+impl From<WireV6> for WirePayload {
+    fn from(v: WireV6) -> Self {
+        Self {
+            origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
+            sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
+            buttons: v.buttons, callback_data: v.callback_data,
+            edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
+            reply_to: v.reply_to, typing: v.typing, notify_sound: None,
+        }
+    }
+}
+
 impl From<&WirePayload> for WireV5 {
     fn from(p: &WirePayload) -> Self {
         Self {
@@ -260,7 +305,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None,
         }
     }
 }
@@ -272,7 +317,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None,
+            reply_to: None, typing: None, notify_sound: None,
         }
     }
 }
@@ -284,7 +329,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None,
         }
     }
 }
@@ -296,7 +341,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None,
         }
     }
 }
@@ -307,7 +352,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None,
         }
     }
 }
@@ -318,13 +363,14 @@ impl From<WireV0> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
-    if p.typing.is_some()                          { bincode::serialize(p) }
+    if p.notify_sound.is_some()                    { bincode::serialize(p) }
+    else if p.typing.is_some()                     { bincode::serialize(&WireV6::from(p)) }
     else if p.reply_to.is_some()                   { bincode::serialize(&WireV5::from(p)) }
     else if p.sender_name.is_some()                { bincode::serialize(&WireV4::from(p)) }
     else if p.ack_for.is_some()                    { bincode::serialize(&WireV3::from(p)) }
@@ -334,6 +380,7 @@ pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::
 
 pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Ok(v) = bincode::deserialize::<WirePayload>(pt) { return Ok(v); }
+    if let Ok(v) = bincode::deserialize::<WireV6>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV5>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV4>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV3>(pt)      { return Ok(v.into()); }
@@ -491,6 +538,7 @@ impl SessionManager {
         attachments: Vec<(String, Vec<u8>)>,
         ttl: Option<Duration>,
         buttons: Option<Vec<Vec<WireButton>>>,
+        notify_sound: Option<String>,
     ) -> Result<i64> {
         let sent_at = now_ms();
         let expires_at = ttl.map(|d| sent_at + d.as_millis() as i64);
@@ -508,6 +556,9 @@ impl SessionManager {
             if let Ok(bytes) = bincode::serialize(b) {
                 self.db.set_setting(&format!("buttons_{}", msg_id), &bytes)?;
             }
+        }
+        if let Some(s) = &notify_sound {
+            self.db.set_setting(&format!("sound_{}", msg_id), s.as_bytes())?;
         }
         self.send_kick.notify_one();
         Ok(msg_id)
@@ -529,6 +580,7 @@ impl SessionManager {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -561,6 +613,7 @@ impl SessionManager {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -577,6 +630,7 @@ impl SessionManager {
         body: String,
         attachments: Vec<(String, Vec<u8>)>,
         buttons: Option<Vec<Vec<WireButton>>>,
+        notify_sound: Option<String>,
     ) -> Result<i64> {
         let sent_at = now_ms();
         let mut stored = Vec::with_capacity(attachments.len());
@@ -594,6 +648,9 @@ impl SessionManager {
             if let Ok(bytes) = bincode::serialize(b) {
                 self.db.set_setting(&format!("buttons_{}", msg_id), &bytes)?;
             }
+        }
+        if let Some(s) = &notify_sound {
+            self.db.set_setting(&format!("sound_{}", msg_id), s.as_bytes())?;
         }
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
             .map(|(name, data)| WireAttachment { name, data }).collect();
@@ -616,6 +673,7 @@ impl SessionManager {
             );
             payload.group = Some(gref.clone());
             payload.buttons = buttons.clone();
+            payload.notify_sound = notify_sound.clone();
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
         Ok(msg_id)
@@ -666,6 +724,7 @@ impl SessionManager {
                 sender_name: None,
                 reply_to: None,
             typing: None,
+            notify_sound: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -704,6 +763,7 @@ impl SessionManager {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1188,6 +1248,7 @@ impl SessionManager {
             sender_name: None,
             reply_to: None,
             typing: None,
+            notify_sound: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1378,9 +1439,13 @@ impl SessionManager {
         let buttons: Option<Vec<Vec<WireButton>>> = self.db.get_setting(&format!("buttons_{}", msg.id))
             .ok().flatten()
             .and_then(|b| bincode::deserialize::<Vec<Vec<WireButton>>>(&b).ok());
+        let sound: Option<String> = self.db.get_setting(&format!("sound_{}", msg.id))
+            .ok().flatten()
+            .and_then(|b| String::from_utf8(b).ok());
         let ttl_ms = msg.expires_at.map(|e| e - msg.sent_at);
         let mut p = WirePayload::simple(msg.id as u64, msg.body.clone(), wire_atts, msg.sent_at, ttl_ms);
         p.buttons = buttons;
+        p.notify_sound = sound;
         Ok(p)
     }
 
