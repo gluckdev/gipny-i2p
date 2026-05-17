@@ -114,31 +114,65 @@ export class Store {
   private static readonly ONLINE_WINDOW_MS = 60_000;
 
   private soundCache: Map<string, HTMLAudioElement> = new Map();
+  private audioCtx: AudioContext | null = null;
+  private audioBufferCache: Map<string, AudioBuffer> = new Map();
+  private audioPathOk: boolean | null = null;
+
+  private async playViaAudioContext(url: string): Promise<boolean> {
+    try {
+      if (!this.audioCtx) {
+        const Ctor = (window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+        if (!Ctor) return false;
+        this.audioCtx = new Ctor();
+      }
+      const ctx = this.audioCtx;
+      let buf = this.audioBufferCache.get(url) ?? null;
+      if (!buf) {
+        const r = await fetch(url);
+        if (!r.ok) return false;
+        const data = await r.arrayBuffer();
+        buf = await ctx.decodeAudioData(data);
+        this.audioBufferCache.set(url, buf);
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.4;
+      src.connect(gain).connect(ctx.destination);
+      if (ctx.state === 'suspended') await ctx.resume();
+      src.start();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private playViaHtmlAudio(url: string): void {
+    let audio = this.soundCache.get(url);
+    if (!audio) {
+      audio = new Audio(url);
+      audio.volume = 0.4;
+      audio.preload = 'auto';
+      this.soundCache.set(url, audio);
+    }
+    audio.currentTime = 0;
+    audio.play().catch((e) => console.error('[notify-sound]', url, e));
+  }
 
   private playNotify(name?: string | null): void {
-    if (this.linuxDesktop) {
-      Api.playNotifySound(name ?? null).catch((e) => console.error('[notify-sound]', e));
-      return;
-    }
     const url = name ? `/sounds/${name}.wav` : '/notify.wav';
-    try {
-      let audio = this.soundCache.get(url);
-      if (!audio) {
-        audio = new Audio(url);
-        audio.volume = 0.4;
-        audio.preload = 'auto';
-        this.soundCache.set(url, audio);
+    void this.playViaAudioContext(url).then((ok) => {
+      if (ok) { this.audioPathOk = true; return; }
+      if (this.linuxDesktop) {
+        Api.playNotifySound(name ?? null).then(() => { this.audioPathOk = true; })
+          .catch((e) => {
+            console.error('[notify-sound] rust path failed', e);
+            this.playViaHtmlAudio(url);
+          });
+        return;
       }
-      audio.currentTime = 0;
-      audio.play().catch((e) => {
-        console.error('[notify-sound]', name, e);
-        if (name) {
-          const fb = new Audio('/notify.wav');
-          fb.volume = 0.4;
-          fb.play().catch(() => {});
-        }
-      });
-    } catch (e) { console.error('[notify-sound]', e); }
+      this.playViaHtmlAudio(url);
+    });
   }
 
   private async ensureNotifyPermission(): Promise<void> {
@@ -177,18 +211,24 @@ export class Store {
     if (this.linuxDesktop) {
       Api.notifyOs(title, body).catch((e) => {
         console.error('[notify-os]', e);
-        this.pluginNotify(title, body);
+        if (!this.pluginNotify(title, body)) this.inAppToastNotify(title, body);
       });
       return;
     }
-    this.pluginNotify(title, body);
+    if (!this.pluginNotify(title, body)) this.inAppToastNotify(title, body);
   }
 
-  private pluginNotify(title: string, body: string): void {
-    if (!this.notifyGranted) return;
+  private pluginNotify(title: string, body: string): boolean {
+    if (!this.notifyGranted) return false;
     try {
       sendNotification({ title, body, channelId: 'gipny_messages' });
-    } catch (e) { console.error('[notify] err', e); }
+      return true;
+    } catch (e) { console.error('[notify] err', e); return false; }
+  }
+
+  private inAppToastNotify(title: string, body: string): void {
+    const preview = body.length > 80 ? body.slice(0, 80) + '…' : body;
+    this.toast.set({ text: `${title}: ${preview}`, err: false });
   }
 
   async bootstrap(): Promise<void> {

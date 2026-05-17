@@ -151,8 +151,9 @@ export class AuthUnlock extends View {
     if (!pass) { this.err.textContent = 'passphrase required'; return; }
     this.err.textContent = '';
     try {
-      await Api.vaultUnlock(profile, pass);
+      const warning = await Api.vaultUnlock(profile, pass);
       await this.store.onUnlocked(profile);
+      if (warning) this.store.showToast(warning, true);
     } catch (e) {
       const msg = String(e);
       if (msg.includes('wiped')) this.err.textContent = 'vault wiped';

@@ -431,7 +431,7 @@ async fn vault_create(
 async fn vault_unlock(
     profile: String, pass: String,
     ctx: State<'_, AppCtx>, app: AppHandle,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let dir = profile_dir(&ctx, &profile)?;
     let prev = ctx.core.lock().await.take();
     if let Some(c) = prev {
@@ -448,7 +448,7 @@ async fn vault_unlock(
 async fn boot(
     ctx: &State<'_, AppCtx>, app: AppHandle, vault: Arc<Vault>,
     pass: &str, profile: &str, dir: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     let outcome = vault.unlock(pass).map_err(err)?;
     let mk = match outcome {
         UnlockOutcome::Primary(k) => k,
@@ -457,7 +457,8 @@ async fn boot(
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join("data.db"), &mk).map_err(err)?);
     let proxy_cfg = read_proxy_config(&db);
-    let node = Arc::new(TorNode::start(dir, proxy_cfg).await.map_err(err)?);
+    let (node, warning) = start_tor_with_proxy_fallback(dir, proxy_cfg).await?;
+    let node = Arc::new(node);
     let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
     let app2 = app.clone();
     tokio::spawn(async move {
@@ -468,7 +469,35 @@ async fn boot(
     *ctx.profile.lock().await = Some(profile.to_string());
     *ctx.vault.lock().await = Some(vault);
     *ctx.core.lock().await = Some(core);
-    Ok(())
+    Ok(warning)
+}
+
+async fn start_tor_with_proxy_fallback(
+    dir: &std::path::Path,
+    proxy_cfg: Option<gipny_libcore::net::ProxyConfig>,
+) -> Result<(TorNode, Option<String>), String> {
+    let proxy_active = proxy_cfg.as_ref()
+        .map(|p| p.enabled() && p.kind == gipny_libcore::net::ProxyKind::Socks5)
+        .unwrap_or(false);
+    if !proxy_active {
+        return TorNode::start(dir, proxy_cfg).await.map(|n| (n, None)).map_err(err);
+    }
+    let proxy = proxy_cfg.clone().unwrap();
+    let attempt = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        TorNode::start(dir, Some(proxy.clone())),
+    ).await;
+    match attempt {
+        Ok(Ok(n)) => Ok((n, None)),
+        Ok(Err(e)) => {
+            let node = TorNode::start(dir, None).await.map_err(err)?;
+            Ok((node, Some(format!("proxy {}:{} unreachable ({}); started without proxy", proxy.host, proxy.port, e))))
+        }
+        Err(_) => {
+            let node = TorNode::start(dir, None).await.map_err(err)?;
+            Ok((node, Some(format!("proxy {}:{} timed out after 60s; started without proxy", proxy.host, proxy.port))))
+        }
+    }
 }
 
 #[tauri::command]

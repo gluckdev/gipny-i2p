@@ -1,5 +1,6 @@
 import { Store } from './state';
 import { App } from './app';
+import { SearchModal } from './search';
 
 const root = document.getElementById('app');
 if (!root) throw new Error('no #app');
@@ -16,6 +17,26 @@ window.addEventListener('keydown', (e) => {
     if (store.view.get() === 'main' || store.view.get() === 'auth-booting') {
       store.lock().catch(() => {});
     }
+    return;
+  }
+  if (store.view.get() !== 'main') return;
+  if (app.isModalActive()) return;
+  if (e.key === 'Escape') {
+    if (store.selectedChat.get() != null) {
+      e.preventDefault();
+      store.selectedChat.set(null);
+    }
+    return;
+  }
+  if (e.ctrlKey && e.code === 'KeyF') {
+    e.preventDefault();
+    const target = store.selectedChat.get();
+    const scope = target
+      ? (target.kind === 'contact'
+          ? { contactId: target.id as number, groupId: null }
+          : { contactId: null, groupId: target.id as string })
+      : undefined;
+    app.openModal((close) => new SearchModal(store, close, scope).el);
   }
 }, true);
 

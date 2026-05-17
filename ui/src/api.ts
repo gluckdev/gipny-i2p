@@ -138,7 +138,7 @@ export class Api {
   static vaultCreate(profile: string, pass: string, displayName: string, duressPass: string | null, duressWipe: boolean, maxAttempts: number): Promise<void> {
     return invoke('vault_create', { profile, pass, displayName, duressPass, duressWipe, maxAttempts });
   }
-  static vaultUnlock(profile: string, pass: string): Promise<void> {
+  static vaultUnlock(profile: string, pass: string): Promise<string | null> {
     return invoke('vault_unlock', { profile, pass });
   }
   static vaultLock(): Promise<void> {
