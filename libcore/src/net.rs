@@ -280,14 +280,21 @@ impl TorNode {
 
         let nickname: HsNickname = HS_NICKNAME.parse::<HsNickname>()
             .map_err(|e| NetError::Tor(e.to_string()))?;
-        let hs_cfg = OnionServiceConfigBuilder::default()
-            .nickname(nickname)
+        let build_hs_cfg = || OnionServiceConfigBuilder::default()
+            .nickname(nickname.clone())
             .build()
-            .map_err(|e| NetError::Tor(e.to_string()))?;
+            .map_err(|e| NetError::Tor(e.to_string()));
         eprintln!("[tor] launching onion service...");
-        let (service, rend_stream) = client
-            .launch_onion_service(hs_cfg)
-            .map_err(|e| NetError::Tor(e.to_string()))?;
+        let (service, rend_stream) = match client.launch_onion_service(build_hs_cfg()?) {
+            Ok(x) => x,
+            Err(e) if is_corrupted_hs_state(&e.to_string()) => {
+                eprintln!("[tor] onion service persistent state corrupted, wiping and retrying");
+                wipe_hs_state(data_dir, HS_NICKNAME);
+                client.launch_onion_service(build_hs_cfg()?)
+                    .map_err(|e| NetError::Tor(e.to_string()))?
+            }
+            Err(e) => return Err(NetError::Tor(e.to_string())),
+        };
 
         eprintln!("[tor] waiting for onion address...");
         let deadline = std::time::Instant::now() + Duration::from_secs(180);
@@ -367,6 +374,24 @@ impl TorNode {
         let stream = self.client.connect_with_prefs(target.as_str(), &prefs).await
             .map_err(|e| NetError::Tor(e.to_string()))?;
         Ok(RelayStream { inner: Box::pin(stream) })
+    }
+}
+
+fn is_corrupted_hs_state(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("corrupted data in persistent state") || m.contains("unable to launch onion service")
+}
+
+fn wipe_hs_state(data_dir: &Path, nick: &str) {
+    let hss = data_dir.join("tor").join("state").join("hss").join(nick);
+    for name in ["ipts.json", "iptpub.json", "iptreplay"] {
+        let p = hss.join(name);
+        let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        match r {
+            Ok(()) => eprintln!("[tor] wiped {}", p.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("[tor] wipe {} failed: {}", p.display(), e),
+        }
     }
 }
 

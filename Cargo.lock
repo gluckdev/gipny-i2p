@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "gipny"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "arboard",
  "argon2",
