@@ -1,7 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use arti_client::config::onion_service::OnionServiceConfigBuilder;
 use arti_client::config::CfgPath;
@@ -12,7 +13,8 @@ use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tor_cell::relaycell::msg::Connected;
 use tor_hsservice::{HsNickname, RendRequest, RunningOnionService};
 use tor_rtcompat::{CompoundRuntime, NetStreamProvider, PreferredRuntime, RuntimeSubstExt};
@@ -36,6 +38,9 @@ const HS_PORT: u16 = 443;
 const MAX_FRAME: u32 = 16 * 1024 * 1024;
 const HS_NICKNAME: &str = "gipny";
 const INBOX_CAPACITY: usize = 64;
+const RECREATE_AFTER_FAILURES: u32 = 5;
+const RECREATE_COOLDOWN: Duration = Duration::from_secs(300);
+const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
@@ -220,12 +225,23 @@ type ProxiedRuntime = CompoundRuntime<
 
 type Runtime = ProxiedRuntime;
 
-pub struct TorNode {
+struct TorInner {
     client: TorClient<Runtime>,
     _service: Arc<RunningOnionService>,
+}
+
+pub struct TorNode {
+    inner: RwLock<TorInner>,
     onion: String,
+    data_dir: PathBuf,
+    proxy: RwLock<Option<ProxyConfig>>,
+    inbound_tx: mpsc::Sender<Connection>,
     inbound: Arc<Mutex<mpsc::Receiver<Connection>>>,
-    accept_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    accept_task: Mutex<Option<JoinHandle<()>>>,
+    created_at: Instant,
+    relay_fail_count: AtomicU32,
+    last_recreate_at: Mutex<Option<Instant>>,
+    recreate_lock: Mutex<()>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -252,73 +268,28 @@ impl ProxyConfig {
 
 impl TorNode {
     pub async fn start(data_dir: &Path, proxy: Option<ProxyConfig>) -> Result<Self> {
-        let active_proxy = proxy.as_ref().filter(|p| p.enabled() && p.kind == ProxyKind::Socks5).cloned();
-        if let Some(p) = active_proxy.as_ref() {
-            eprintln!("[tor] outer SOCKS5 proxy: {}:{} (auth={})", p.host, p.port, p.user.is_some());
-        } else if let Some(p) = proxy.as_ref().filter(|p| p.enabled()) {
-            eprintln!("[tor] proxy {:?} configured but only SOCKS5 is wired right now; ignoring", p.kind);
-        }
-        let mut cfg = TorClientConfig::builder();
-        cfg.storage().cache_dir(CfgPath::new_literal(data_dir.join("tor/cache")));
-        cfg.storage().state_dir(CfgPath::new_literal(data_dir.join("tor/state")));
-        cfg.storage().permissions().dangerously_trust_everyone();
-        let cfg = cfg.build().map_err(|e| NetError::Tor(e.to_string()))?;
-        eprintln!("[tor] bootstrapping (first run may take 60-120s)...");
-        let base = PreferredRuntime::current()
-            .or_else(|_| PreferredRuntime::create())
-            .map_err(|e| NetError::Tor(format!("runtime: {}", e)))?;
-        let proxy_tcp = Socks5Tcp {
-            inner: base.clone(),
-            cfg: Arc::new(active_proxy.unwrap_or_default()),
-        };
-        let runtime: Runtime = base.with_tcp_provider(proxy_tcp);
-        let client: TorClient<Runtime> = TorClient::with_runtime(runtime)
-            .config(cfg)
-            .create_bootstrapped().await
-            .map_err(|e| NetError::Tor(e.to_string()))?;
-        eprintln!("[tor] bootstrapped");
-
-        let nickname: HsNickname = HS_NICKNAME.parse::<HsNickname>()
-            .map_err(|e| NetError::Tor(e.to_string()))?;
-        let build_hs_cfg = || OnionServiceConfigBuilder::default()
-            .nickname(nickname.clone())
-            .build()
-            .map_err(|e| NetError::Tor(e.to_string()));
-        eprintln!("[tor] launching onion service...");
-        let (service, rend_stream) = match client.launch_onion_service(build_hs_cfg()?) {
-            Ok(x) => x,
-            Err(e) if is_corrupted_hs_state(&e.to_string()) => {
-                eprintln!("[tor] onion service persistent state corrupted, wiping and retrying");
-                wipe_hs_state(data_dir, HS_NICKNAME);
-                client.launch_onion_service(build_hs_cfg()?)
-                    .map_err(|e| NetError::Tor(e.to_string()))?
-            }
-            Err(e) => return Err(NetError::Tor(e.to_string())),
-        };
-
-        eprintln!("[tor] waiting for onion address...");
-        let deadline = std::time::Instant::now() + Duration::from_secs(180);
-        let onion = loop {
-            if let Some(n) = service.onion_name() {
-                break n.to_string();
-            }
-            if std::time::Instant::now() > deadline {
-                return Err(NetError::Tor("onion name timeout (3min)".into()));
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        };
-        eprintln!("[tor] onion = {}", onion);
-
         let (tx, rx) = mpsc::channel::<Connection>(INBOX_CAPACITY);
-        let rend_stream: Pin<Box<dyn Stream<Item = RendRequest> + Send>> = Box::pin(rend_stream);
-        let accept_task = tokio::spawn(accept_loop(rend_stream, tx, HS_PORT));
-
+        let (inner, onion, accept_task) = match bootstrap_tor(data_dir, proxy.clone(), &tx).await {
+            Ok(x) => x,
+            Err(e) if looks_like_state_corruption(&e.to_string()) => {
+                eprintln!("[tor] startup failure looks like state corruption ({}), broad-wiping runtime state and retrying once", e);
+                wipe_tor_runtime_state(data_dir);
+                bootstrap_tor(data_dir, proxy.clone(), &tx).await?
+            }
+            Err(e) => return Err(e),
+        };
         Ok(Self {
-            client,
-            _service: service,
+            inner: RwLock::new(inner),
             onion,
+            data_dir: data_dir.to_path_buf(),
+            proxy: RwLock::new(proxy),
+            inbound_tx: tx,
             inbound: Arc::new(Mutex::new(rx)),
             accept_task: Mutex::new(Some(accept_task)),
+            created_at: Instant::now(),
+            relay_fail_count: AtomicU32::new(0),
+            last_recreate_at: Mutex::new(None),
+            recreate_lock: Mutex::new(()),
         })
     }
 
@@ -340,7 +311,8 @@ impl TorNode {
         let target = format!("{}:{}", host, HS_PORT);
         let mut prefs = StreamPrefs::new();
         prefs.connect_to_onion_services(arti_client::config::BoolOrAuto::Explicit(true));
-        let stream = self.client.connect_with_prefs(target.as_str(), &prefs).await
+        let client = self.inner.read().await.client.clone();
+        let stream = client.connect_with_prefs(target.as_str(), &prefs).await
             .map_err(|e| NetError::Tor(e.to_string()))?;
         Ok(Connection {
             stream: Box::pin(stream),
@@ -371,15 +343,174 @@ impl TorNode {
         let target = format!("{}:{}", host, port);
         let mut prefs = StreamPrefs::new();
         prefs.connect_to_onion_services(arti_client::config::BoolOrAuto::Explicit(true));
-        let stream = self.client.connect_with_prefs(target.as_str(), &prefs).await
-            .map_err(|e| NetError::Tor(e.to_string()))?;
-        Ok(RelayStream { inner: Box::pin(stream) })
+        let client = self.inner.read().await.client.clone();
+        match client.connect_with_prefs(target.as_str(), &prefs).await {
+            Ok(stream) => {
+                self.relay_fail_count.store(0, Ordering::Relaxed);
+                Ok(RelayStream { inner: Box::pin(stream) })
+            }
+            Err(e) => {
+                let n = self.relay_fail_count.fetch_add(1, Ordering::Relaxed) + 1;
+                self.maybe_recreate(n).await;
+                Err(NetError::Tor(e.to_string()))
+            }
+        }
+    }
+
+    async fn maybe_recreate(&self, fail_count: u32) {
+        if fail_count < RECREATE_AFTER_FAILURES { return; }
+        if self.created_at.elapsed() < RECREATE_MIN_AGE { return; }
+        let Ok(_g) = self.recreate_lock.try_lock() else { return; };
+        {
+            let last = self.last_recreate_at.lock().await;
+            if let Some(t) = *last {
+                if t.elapsed() < RECREATE_COOLDOWN { return; }
+            }
+        }
+        eprintln!("[tor] {} consecutive relay failures past {}s mark, recreating TorClient", fail_count, RECREATE_MIN_AGE.as_secs());
+        *self.last_recreate_at.lock().await = Some(Instant::now());
+        match self.recreate().await {
+            Ok(()) => {
+                self.relay_fail_count.store(0, Ordering::Relaxed);
+                eprintln!("[tor] recreate succeeded; relay loop will resume on next attempt");
+            }
+            Err(e) => eprintln!("[tor] recreate failed: {:?}", e),
+        }
+    }
+
+    pub async fn recreate(&self) -> Result<()> {
+        eprintln!("[tor] wiping runtime state (cache + state/*, keystore preserved)");
+        wipe_tor_runtime_state(&self.data_dir);
+        let proxy = self.proxy.read().await.clone();
+        let (new_inner, new_onion, new_task) = bootstrap_tor(&self.data_dir, proxy, &self.inbound_tx).await?;
+        if new_onion != self.onion {
+            return Err(NetError::Tor(format!(
+                "onion mismatch after recreate: was {}, now {} — keystore likely wiped",
+                self.onion, new_onion
+            )));
+        }
+        if let Some(old) = self.accept_task.lock().await.take() {
+            old.abort();
+            let _ = old.await;
+        }
+        *self.accept_task.lock().await = Some(new_task);
+        *self.inner.write().await = new_inner;
+        Ok(())
+    }
+}
+
+async fn bootstrap_tor(
+    data_dir: &Path,
+    proxy: Option<ProxyConfig>,
+    inbound_tx: &mpsc::Sender<Connection>,
+) -> Result<(TorInner, String, JoinHandle<()>)> {
+    let active_proxy = proxy.as_ref().filter(|p| p.enabled() && p.kind == ProxyKind::Socks5).cloned();
+    if let Some(p) = active_proxy.as_ref() {
+        eprintln!("[tor] outer SOCKS5 proxy: {}:{} (auth={})", p.host, p.port, p.user.is_some());
+    } else if let Some(p) = proxy.as_ref().filter(|p| p.enabled()) {
+        eprintln!("[tor] proxy {:?} configured but only SOCKS5 is wired right now; ignoring", p.kind);
+    }
+    let mut cfg = TorClientConfig::builder();
+    cfg.storage().cache_dir(CfgPath::new_literal(data_dir.join("tor/cache")));
+    cfg.storage().state_dir(CfgPath::new_literal(data_dir.join("tor/state")));
+    cfg.storage().permissions().dangerously_trust_everyone();
+    let cfg = cfg.build().map_err(|e| NetError::Tor(e.to_string()))?;
+    eprintln!("[tor] bootstrapping (first run may take 60-120s)...");
+    let base = PreferredRuntime::current()
+        .or_else(|_| PreferredRuntime::create())
+        .map_err(|e| NetError::Tor(format!("runtime: {}", e)))?;
+    let proxy_tcp = Socks5Tcp {
+        inner: base.clone(),
+        cfg: Arc::new(active_proxy.unwrap_or_default()),
+    };
+    let runtime: Runtime = base.with_tcp_provider(proxy_tcp);
+    let client: TorClient<Runtime> = TorClient::with_runtime(runtime)
+        .config(cfg)
+        .create_bootstrapped().await
+        .map_err(|e| NetError::Tor(error_chain_string(&e)))?;
+    eprintln!("[tor] bootstrapped");
+
+    let nickname: HsNickname = HS_NICKNAME.parse::<HsNickname>()
+        .map_err(|e| NetError::Tor(e.to_string()))?;
+    let build_hs_cfg = || OnionServiceConfigBuilder::default()
+        .nickname(nickname.clone())
+        .build()
+        .map_err(|e| NetError::Tor(e.to_string()));
+    eprintln!("[tor] launching onion service...");
+    let (service, rend_stream) = match client.launch_onion_service(build_hs_cfg()?) {
+        Ok(x) => x,
+        Err(e) if is_corrupted_hs_state(&error_chain_string(&e)) => {
+            eprintln!("[tor] onion service persistent state corrupted, narrow-wiping hss/<nick> and retrying");
+            wipe_hs_state(data_dir, HS_NICKNAME);
+            client.launch_onion_service(build_hs_cfg()?)
+                .map_err(|e| NetError::Tor(error_chain_string(&e)))?
+        }
+        Err(e) => return Err(NetError::Tor(error_chain_string(&e))),
+    };
+
+    eprintln!("[tor] waiting for onion address...");
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let onion = loop {
+        if let Some(n) = service.onion_name() {
+            break n.to_string();
+        }
+        if Instant::now() > deadline {
+            return Err(NetError::Tor("onion name timeout (3min)".into()));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    eprintln!("[tor] onion = {}", onion);
+
+    let rend_stream: Pin<Box<dyn Stream<Item = RendRequest> + Send>> = Box::pin(rend_stream);
+    let accept_task = tokio::spawn(accept_loop(rend_stream, inbound_tx.clone(), HS_PORT));
+
+    Ok((TorInner { client, _service: service }, onion, accept_task))
+}
+
+fn wipe_tor_runtime_state(data_dir: &Path) {
+    let tor = data_dir.join("tor");
+    let cache = tor.join("cache");
+    match std::fs::remove_dir_all(&cache) {
+        Ok(()) => eprintln!("[tor] wiped {}", cache.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("[tor] wipe {} failed: {}", cache.display(), e),
+    }
+    let state = tor.join("state");
+    let Ok(entries) = std::fs::read_dir(&state) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name() == std::ffi::OsStr::new("keystore") { continue; }
+        let p = entry.path();
+        let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        match r {
+            Ok(()) => eprintln!("[tor] wiped {}", p.display()),
+            Err(e) => eprintln!("[tor] wipe {} failed: {}", p.display(), e),
+        }
     }
 }
 
 fn is_corrupted_hs_state(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
     m.contains("corrupted data in persistent state") || m.contains("unable to launch onion service")
+}
+
+fn looks_like_state_corruption(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("corrupted data in persistent state")
+        || m.contains("corrupted persistent state")
+        || m.contains("unable to launch onion service")
+        || m.contains("unable to read")
+        || (m.contains("persistent state") && m.contains("corrupt"))
+}
+
+fn error_chain_string<E: std::error::Error + ?Sized>(e: &E) -> String {
+    let mut s = e.to_string();
+    let mut src = e.source();
+    while let Some(inner) = src {
+        s.push_str(": ");
+        s.push_str(&inner.to_string());
+        src = inner.source();
+    }
+    s
 }
 
 fn wipe_hs_state(data_dir: &Path, nick: &str) {
