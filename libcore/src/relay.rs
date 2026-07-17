@@ -42,7 +42,10 @@ pub enum EnvelopeBlob {
 
 pub const RELAY_PORT: u16 = 443;
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
-pub const DEFAULT_RELAY: &str = "jl6oxc6h3dr2s6y6y3mmrrpmormyxk5hahrurwfswcep7rxt2hsk5wid.onion";
+// TODO(i2p): bake in the deployed relay's i2p destination (the base64 string the
+// relay server prints as "I2P DESTINATION" on first run). Empty until deployed —
+// users can meanwhile paste a relay destination in Settings (overrides this).
+pub const DEFAULT_RELAY: &str = "";
 
 pub type Result<T> = std::result::Result<T, RelayError>;
 

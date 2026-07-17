@@ -11,7 +11,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::{NetError, TorNode};
 
-pub const DEFAULT_UPDATE_ONION: &str = "zcchjuutlm3ukwgx2yc43k43muq2fw5sxwr2bfpznhrazkztetqzy4ad.onion";
+// TODO(i2p): bake in the deployed update server's i2p destination. Empty until
+// deployed; auto-update is inert while empty.
+pub const DEFAULT_UPDATE_ONION: &str = "";
 
 const UPDATE_PORT: u16 = 80;
 const MAX_MANIFEST_BYTES: usize = 256 * 1024;

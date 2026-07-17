@@ -24,13 +24,8 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 argon2 = { workspace = true }
 rusqlite = { workspace = true }
-arti-client = { workspace = true }
-tor-hsservice = { workspace = true }
-tor-rtcompat = { workspace = true }
-tor-cell = { workspace = true }
-futures = { workspace = true }
+yosemite = { workspace = true }
 libc = { workspace = true }
-async-trait = "0.1"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_Debug",
