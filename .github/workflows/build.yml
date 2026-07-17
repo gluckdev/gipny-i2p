@@ -11,6 +11,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: this workflow only reads the repo.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # Bundled i2p router (github.com/go-i2p/go-sam-bridge embedded router + SAM).
