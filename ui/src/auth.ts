@@ -34,7 +34,7 @@ export class AuthCreate extends View {
       h('div', { class: 'auth-card' },
         h('pre', { class: 'auth-logo' }, LOGO),
         h('div', { class: 'auth-title' }, ':: NEW PROFILE ::'),
-        h('div', { class: 'auth-sub' }, 'each profile has its own i2p address, keys, contacts'),
+        h('div', { class: 'auth-sub' }, 'у каждого профиля свой i2p-адрес, ключи, контакты'),
         h('div', { class: 'field' },
           h('label', null, 'profile name'), this.nameI,
           h('div', { class: 'hint' }, 'локально на этом устройстве (alphanumeric + dash/underscore)'),
@@ -96,7 +96,7 @@ export class AuthCreate extends View {
     if (pass !== conf) { this.err.textContent = 'passphrases do not match'; return; }
     if (duress && duress === pass) { this.err.textContent = 'duress must differ from primary'; return; }
 
-    this.err.textContent = 'generating keys, starting i2p router... (1-3 min first run)';
+    this.err.textContent = 'генерация ключей, запуск i2p-роутера... (1-3 мин при первом запуске)';
     try {
       await Api.vaultCreate(profile, pass, display, duress || null, wipe, max);
       await this.store.onUnlocked(profile);
@@ -174,14 +174,14 @@ export class AuthBooting extends View {
   private timerHandle: number | null = null;
   private logTimer: number | null = null;
   private logLines = [
-    '> starting i2p router...',
-    '> reseeding netdb...',
-    '> building inbound/outbound tunnels...',
-    '> generating destination...',
-    '> publishing leaseSet...',
-    '> i2p address reserved.',
-    '> dialing relay over i2p...',
-    '> authenticating ed25519 challenge...',
+    '> запуск i2p-роутера...',
+    '> обновление netdb (reseed)...',
+    '> строим входящие/исходящие туннели...',
+    '> генерация destination...',
+    '> публикация leaseSet...',
+    '> i2p-адрес зарезервирован.',
+    '> подключение к релею через i2p...',
+    '> аутентификация ed25519...',
   ];
   private logIdx = 0;
 
