@@ -142,7 +142,12 @@ jobs:
   #    working transport until that lands. Kept so the build path stays green.
   # ---------------------------------------------------------------------------
   android:
-    name: android (experimental)
+    name: android (parked — needs JNI router)
+    # PARKED until the go-i2p router is embedded in-process via JNI/gomobile.
+    # Until then an APK has no working i2p transport, and building one only adds
+    # NDK/gradle failure noise. Flip to `if: ${{ github.event_name == 'workflow_dispatch' }}`
+    # (or remove) once the JNI embedding lands.
+    if: false
     needs: router
     runs-on: ubuntu-22.04
     continue-on-error: true
