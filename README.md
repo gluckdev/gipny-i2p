@@ -1,23 +1,23 @@
 # gipny
 
-Tor-routed end-to-end encrypted desktop & mobile messenger. No phone, no email, no username. Identity is a pair of ed25519/x25519 keys plus an onion address — nothing else.
+i2p-routed end-to-end encrypted desktop & mobile messenger. No phone, no email, no username. Identity is a pair of ed25519/x25519 keys plus an i2p destination — nothing else.
 
-- **Transport:** Arti (Tor in Rust) over Tor v3 onion services. Optional outer SOCKS5 proxy so even your ISP doesn't see the Tor entry.
+> **Fork note:** this is the **i2p** fork of gipny. The transport was migrated from Tor (Arti) to i2p (go‑i2p via SAMv3). Crypto, vault, relay protocol and UI are unchanged. See **[MIGRATION-i2p.md](MIGRATION-i2p.md)** for the full change log and current status.
+
+- **Transport:** i2p via the bundled pure‑Go **go‑i2p** router (SAMv3), spoken from Rust with the `yosemite` crate. The router ships inside the app — nothing to install.
 - **Crypto:** X3DH initial handshake + Double Ratchet (same primitives as Signal), XChaCha20-Poly1305 AEAD, Ed25519 + X25519.
 - **Vault at rest:** SQLCipher (AES-256) with Argon2id KDF. Duress passphrase (wipe or decoy), attempt-limit auto-wipe, process hardening (no core dumps, mlock).
 - **Metadata minimization:** sealed sender (`from = [0u8; 32]` on the wire — relay never sees the sender), fixed-bucket payload padding (sizes don't leak text vs. attachment vs. media).
-- **Delivery:** single central blind relay over Tor — never P2P direct, but offline delivery works (relay holds encrypted blobs until peer is online).
+- **Delivery:** single central blind relay over i2p — never P2P direct, but offline delivery works (relay holds encrypted blobs until peer is online).
 - **Bot SDK:** first-class Rust crate for building bots that send text, files (multi-attachment), and inline buttons — all over the same encrypted channel.
 
-### Recommended setup: VPN + outer proxy + Tor
+### How the transport works
 
-gipny ships with Tor (Arti) built in — you don't have to install anything on your system, the client routes everything through Tor automatically. For maximum anonymity stack:
+gipny bundles a small `gipny-i2p-router` binary (a wrapper around go‑i2p's embedded SAM bridge). On launch the app spawns it, waits for the SAMv3 API on `127.0.0.1:7656`, and routes everything through i2p automatically — you don't install anything.
 
-1. **Tor** — already on. Out of the box.
-2. **Outer SOCKS5 proxy** (configured **in app**: Settings → Proxy). Wraps Tor traffic so your ISP doesn't see you're on Tor — they only see you reach one data-center. Any commercial SOCKS5 works.
-3. **VPN** (system-wide, **outside the app**) — set this up yourself before launching gipny. Adds one more layer between your real IP and the proxy/Tor.
+The chain is: `you → i2p tunnels → gipny relay → recipient destination`. First launch is slower than subsequent ones (i2p reseeds and builds tunnels). A system‑wide VPN before launching adds one more layer between your real IP and the i2p entry.
 
-The chain becomes: `you → VPN → SOCKS5 → Tor → gipny relay → recipient onion`. Each link only sees the next link in either direction. Drop any layer and you trade anonymity for simplicity — Tor alone is already strong; the rest is defense in depth against a global passive adversary.
+> The former outer‑SOCKS5‑proxy option was removed: with i2p your traffic to the local router is loopback and the router does its own peer routing.
 
 ---
 
