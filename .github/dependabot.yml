@@ -1,0 +1,45 @@
+# Dependabot — flags outdated dependencies across every ecosystem in the repo.
+version: 2
+updates:
+  # Rust: main workspace (client, libcore, bot-sdk).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      rust-deps:
+        patterns: ["*"]
+
+  # Rust: the relay server (separate workspace).
+  - package-ecosystem: cargo
+    directory: "/core/relay"
+    schedule:
+      interval: weekly
+    groups:
+      relay-deps:
+        patterns: ["*"]
+
+  # Go: the bundled i2p router wrapper.
+  - package-ecosystem: gomod
+    directory: "/i2p-router"
+    schedule:
+      interval: weekly
+    groups:
+      go-deps:
+        patterns: ["*"]
+
+  # Frontend.
+  - package-ecosystem: npm
+    directory: "/ui"
+    schedule:
+      interval: weekly
+    groups:
+      ui-deps:
+        patterns: ["*"]
+
+  # GitHub Actions used in the CI/release workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

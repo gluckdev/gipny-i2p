@@ -1,0 +1,23 @@
+[Unit]
+Description=gipny i2p router (go-i2p SAMv3 bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gipny
+Group=gipny
+WorkingDirectory=/var/lib/gipny-i2p-router
+ExecStart=/usr/local/bin/gipny-i2p-router --sam-listen 127.0.0.1:7656 --data /var/lib/gipny-i2p-router
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/gipny-i2p-router
+
+[Install]
+WantedBy=multi-user.target

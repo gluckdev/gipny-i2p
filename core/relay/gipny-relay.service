@@ -1,7 +1,9 @@
 [Unit]
-Description=gipny relay server
-After=network-online.target
+Description=gipny relay server (i2p)
+# Needs the go-i2p SAM router up first (SAMv3 on 127.0.0.1:7656).
+After=network-online.target gipny-i2p-router.service
 Wants=network-online.target
+Requires=gipny-i2p-router.service
 
 [Service]
 Type=simple
