@@ -1,41 +1,49 @@
-# gipny
+# gipny (i2p)
 
-i2p-routed end-to-end encrypted desktop & mobile messenger. No phone, no email, no username. Identity is a pair of ed25519/x25519 keys plus an i2p destination — nothing else.
+Анонимный мессенджер со сквозным шифрованием для десктопа и мобильных. Без телефона, без email, без логина. Личность — это пара ключей ed25519/x25519 плюс i2p‑адрес (destination), и больше ничего.
 
-> **Fork note:** this is the **i2p** fork of gipny. The transport was migrated from Tor (Arti) to i2p (go‑i2p via SAMv3). Crypto, vault, relay protocol and UI are unchanged. See **[MIGRATION-i2p.md](MIGRATION-i2p.md)** for the full change log and current status.
+> **Про форк:** это **i2p‑форк** gipny. Транспорт переведён с Tor (Arti) на **i2p** (через go‑i2p и SAMv3). Крипта, хранилище, протокол релея и UI не менялись. Полный список изменений и текущий статус — в **[MIGRATION-i2p.md](MIGRATION-i2p.md)**.
 
-- **Transport:** i2p via the bundled pure‑Go **go‑i2p** router (SAMv3), spoken from Rust with the `yosemite` crate. The router ships inside the app — nothing to install.
-- **Crypto:** X3DH initial handshake + Double Ratchet (same primitives as Signal), XChaCha20-Poly1305 AEAD, Ed25519 + X25519.
-- **Vault at rest:** SQLCipher (AES-256) with Argon2id KDF. Duress passphrase (wipe or decoy), attempt-limit auto-wipe, process hardening (no core dumps, mlock).
-- **Metadata minimization:** sealed sender (`from = [0u8; 32]` on the wire — relay never sees the sender), fixed-bucket payload padding (sizes don't leak text vs. attachment vs. media).
-- **Delivery:** single central blind relay over i2p — never P2P direct, but offline delivery works (relay holds encrypted blobs until peer is online).
-- **Bot SDK:** first-class Rust crate for building bots that send text, files (multi-attachment), and inline buttons — all over the same encrypted channel.
-
-### How the transport works
-
-gipny bundles a small `gipny-i2p-router` binary (a wrapper around go‑i2p's embedded SAM bridge). On launch the app spawns it, waits for the SAMv3 API on `127.0.0.1:7656`, and routes everything through i2p automatically — you don't install anything.
-
-The chain is: `you → i2p tunnels → gipny relay → recipient destination`. First launch is slower than subsequent ones (i2p reseeds and builds tunnels). A system‑wide VPN before launching adds one more layer between your real IP and the i2p entry.
-
-> The former outer‑SOCKS5‑proxy option was removed: with i2p your traffic to the local router is loopback and the router does its own peer routing.
+- **Транспорт:** i2p через встроенный чисто‑Go‑роутер **go‑i2p** (SAMv3), из Rust общаемся крейтом `yosemite`. Роутер поставляется внутри приложения — ставить отдельно ничего не нужно.
+- **Крипта:** первичный обмен X3DH + Double Ratchet (те же примитивы, что у Signal), AEAD XChaCha20‑Poly1305, Ed25519 + X25519.
+- **Хранилище на диске:** SQLCipher (AES‑256) с KDF Argon2id. Пароль под принуждением (duress: стереть или подсунуть decoy), авто‑стирание при переборе, харднинг процесса (без core dump, mlock).
+- **Минимизация метаданных:** sealed sender (`from = [0u8; 32]` в проводе — релей не видит отправителя), паддинг полезной нагрузки по фиксированным «корзинам» (размер не выдаёт текст/вложение/медиа).
+- **Доставка:** один центральный «слепой» релей поверх i2p — никогда не P2P напрямую, но офлайн‑доставка работает (релей держит зашифрованные блобы, пока адресат не в сети).
+- **Bot SDK:** полноценный Rust‑крейт для ботов: текст, файлы (мультивложения), inline‑кнопки — всё по тому же зашифрованному каналу.
 
 ---
 
-## Install prebuilt binaries
+## Как устроен транспорт
 
-If you just want to use gipny, grab a release artifact for your platform from the **[Releases page](../../releases)** — no toolchain or compilation required.
+Приложение содержит небольшой бинарь `gipny-i2p-router` — обёртку вокруг встроенного SAM‑моста go‑i2p. При запуске приложение поднимает его дочерним процессом, ждёт готовности SAMv3 на `127.0.0.1:7656` и дальше автоматически гоняет весь трафик через i2p. Устанавливать вручную ничего не надо.
+
+Цепочка: `ты → i2p‑туннели → релей gipny → destination получателя`. Первый запуск дольше последующих (i2p делает reseed и строит туннели, это 1–3 минуты). Системный VPN до запуска добавляет ещё один слой между твоим реальным IP и входом в i2p.
+
+> Прежняя опция внешнего SOCKS5‑прокси удалена: в i2p трафик до локального роутера идёт по loopback, а маршрутизацией между узлами занимается сам роутер.
+
+```
+приложение (Rust) ──SAMv3 127.0.0.1:7656──▶ gipny-i2p-router (Go)
+                                              ├─ встроенный роутер go-i2p
+                                              └─ SAMv3‑мост
+```
+
+---
+
+## Готовые сборки
+
+Если просто хочешь пользоваться — забери артефакт под свою платформу со страницы **[Releases](../../releases)**, компилировать ничего не нужно.
 
 ### Linux
 
 ```bash
-# AppImage (no install, just run)
+# AppImage (без установки, просто запуск)
 chmod +x gipny-*.AppImage
 ./gipny-*.AppImage
 
 # .deb (Debian / Ubuntu / Parrot / Mint / Kali)
 sudo apt install ./gipny_*_amd64.deb
 
-# .tar.gz (any glibc-based distro)
+# .tar.gz (любой glibc‑дистрибутив)
 tar -xzf gipny-*-linux-amd64.tar.gz
 cd gipny-*-linux-amd64/
 ./gipny
@@ -43,44 +51,62 @@ cd gipny-*-linux-amd64/
 
 ### Windows
 
-Two artifacts per release:
-- `gipny-*-windows-x64-setup.exe` — NSIS installer (recommended).
-- `gipny-*-windows-x64.zip` — portable zip, unpack and run `gipny.exe`.
+Два артефакта на релиз:
+- `gipny-*-windows-x64-setup.exe` — установщик NSIS (рекомендуется).
+- `gipny-*-windows-x64.zip` — портативный zip, распаковать и запустить `gipny.exe`.
 
-The installer puts gipny under `C:\Program Files\gipny\` and creates a Start menu shortcut. No admin rights needed for the portable zip.
+Установщик кладёт gipny в `C:\Program Files\gipny\` и создаёт ярлык в меню «Пуск». Для портативного zip права администратора не нужны.
 
-### Android
+### Android — временно на паузе
 
-`gipny-*-android-arm64.apk` (for typical phones) or `gipny-*-android-x86_64.apk` (for emulators / Chromebooks).
-
-Sideload via `adb install -r gipny-*-android-arm64.apk`, or copy the APK to the phone and open it from a file manager — Android will offer to install. APKs are unsigned debug builds; you'll need to allow "Install unknown apps" for the source you used.
-
-Once installed: open the app, create a profile, you're on Tor. First Tor bootstrap on cellular takes 30 s to 2 min; subsequent launches are faster.
+Android‑сборка **приостановлена**. Причина: на Android нельзя запустить роутер отдельным процессом (каталог данных монтируется `noexec`), поэтому go‑i2p нужно встраивать в процесс через JNI/gomobile — эта работа ещё не сделана. Пока JNI‑встраивание не готово, APK не имел бы рабочего транспорта, так что CI его не собирает. См. задачу про Android в [MIGRATION-i2p.md](MIGRATION-i2p.md).
 
 ---
 
-## Project layout
+## Структура проекта
 
 ```
-core/        Tauri 2 desktop & android client (Rust + TS UI)
-libcore/     shared crypto, session, transport, db
-bot-sdk/     bot framework
-ui/          TypeScript UI (vanilla, no framework)
-docker/      Linux + Windows cross-build scripts
-build.sh     one-shot release builder (lin + win + android)
+core/        Клиент на Tauri 2 (Rust + TS UI), десктоп и android
+libcore/     Общий код: крипта, сессии, транспорт, БД, роутер
+i2p-router/  Встроенный go‑i2p SAM‑роутер (Go), собирается в один бинарь
+bot-sdk/     Фреймворк для ботов
+ui/          UI на TypeScript (ванильный, без фреймворка)
+docker/      Скрипты кросс‑сборки под Linux + Windows
+build.sh     Локальный сборщик релизов (можно всё делать и в CI)
+.github/     GitHub Actions: build.yml (проверка) и release.yml (релиз)
 ```
 
-The `core/relay/` directory is the relay server crate. It's deliberately outside the workspace and only needed if you want to run your own relay. Most builders can ignore it.
+Каталог `core/relay/` — крейт релей‑сервера. Он специально вне основного workspace и нужен только если поднимаешь свой релей.
 
 ---
 
-## Building from source
+## Сборка из исходников
 
-Targets: **Linux** (AppImage / .deb / .tar.gz), **Windows** (NSIS installer / portable zip), **Android** (APK arm64 + x86\_64). macOS is not currently supported.
+Цели: **Linux** (AppImage / .deb / .tar.gz), **Windows** (установщик NSIS / портативный zip). Android — на паузе (см. выше). macOS пока не поддерживается.
 
-### Linux native dev build
+Нужны два тулчейна:
+- **Rust** (stable) — сам мессенджер. Ставится через [rustup](https://rustup.rs/).
+- **Go** (1.23+) — встроенный i2p‑роутер (`i2p-router/`).
 
-System dependencies (Debian/Ubuntu names; equivalents on other distros):
+### Встроенный i2p‑роутер (Go)
+
+```bash
+cd i2p-router
+CGO_ENABLED=0 go build -o gipny-i2p-router .   # чистый статический бинарь, кросс‑компилится под любую ОС
+# положи его туда, где приложение его найдёт: рядом с бинарём gipny,
+# в ресурсах Tauri, или укажи путь через переменную GIPNY_I2P_BIN
+```
+
+Проверка, что роутер жив:
+```bash
+./gipny-i2p-router --sam-listen 127.0.0.1:7656 --data ./router-data
+# в другом окне:
+printf 'HELLO VERSION MIN=3.0 MAX=3.3\n' | nc 127.0.0.1 7656   # → RESULT=OK
+```
+
+### Нативная dev‑сборка под Linux
+
+Системные зависимости (имена для Debian/Ubuntu; в других дистрибутивах — аналоги):
 
 ```bash
 sudo apt install -y build-essential pkg-config curl ca-certificates git \
@@ -93,52 +119,61 @@ sudo apt install -y build-essential pkg-config curl ca-certificates git \
     libasound2-dev nodejs npm
 ```
 
-Install Rust (stable) via [rustup](https://rustup.rs/).
-
-Then:
+Затем:
 
 ```bash
+cd i2p-router && CGO_ENABLED=0 go build -o gipny-i2p-router . && cd ..
 cd ui && npm install && npm run build && cd ..
-cd core && cargo run                       # dev run
+cd core && GIPNY_I2P_BIN=$PWD/../i2p-router/gipny-i2p-router cargo run   # dev‑запуск
 ```
 
-The Tauri window opens once the binary is built.
+Окно Tauri откроется, как только соберётся бинарь. Первый старт i2p — 1–3 минуты (reseed + туннели).
 
-### Reproducible Linux / Windows release artifacts via Docker
+### Все релизы — на GitHub Actions
 
-Requires Docker. Produces clean binaries that don't depend on the host glibc / WebKit2GTK version.
+Полный релиз собирается на раннерах GitHub, локальный Docker не нужен:
+- **`.github/workflows/build.yml`** — проверка компиляции: матрица go‑роутера (linux/windows/android, CGO off) + Rust‑workspace + typecheck UI.
+- **`.github/workflows/release.yml`** — полный релиз по тегу `v*`: собирает go‑роутер, кладёт его в ресурсы, собирает Linux (AppImage/deb) и Windows (NSIS) с зашитым роутером, публикует GitHub Release. Есть отдельная джоба **desktop xbox** (см. ниже).
 
-```bash
-./build.sh                    # all three: linux + windows + android (host SDK)
-./build.sh --linux-only       # AppImage + .deb + .tar.gz
-./build.sh --windows-only     # NSIS installer + portable zip
-./build.sh --android-only     # APKs (arm64 + x86_64) — uses host JDK17 + Android SDK/NDK
-./build.sh --no-android       # skip android (lin + win)
-./build.sh --wipe             # clean release-artifacts/ first
-```
+Локальный сборщик `./build.sh` (Docker) тоже остался — `--linux-only`, `--windows-only`, `--wipe` и т.д., вывод в `release-artifacts/`.
 
-Outputs land in `release-artifacts/`.
+### Windows — про кросс‑компиляцию
 
-### Android — what you need on the host
-
-The Android build runs natively against your local toolchain (not Docker, because the Tauri Android plugin pulls plugin sources from `~/.cargo/registry`).
-
-Required:
-- Android SDK (compile-SDK 36, min-SDK 24)
-- Android NDK
-- JDK 17 (newer JDK breaks Gradle 8.11 + AGP 8.11)
-
-Environment variables: `ANDROID_HOME`, `NDK_HOME`, `JAVA_HOME`. `build.sh` autodetects `JAVA_HOME` on Void and Debian; for other distros set it manually.
-
-The output APK is unsigned debug — sideload via `adb install -r` or from a file manager. The Play Store is not a target.
-
-### Windows — note on cross-compile
-
-The Windows build uses **mingw64** (`x86_64-pc-windows-gnu`), not MSVC, because `openssl-sys` fails under MSVC's perl-path discovery. Docker handles WebView2 SDK and NSIS plugin caching automatically.
+Windows‑сборка использует **mingw64** (`x86_64-pc-windows-gnu`), не MSVC (у `openssl-sys` проблемы с поиском perl под MSVC). Docker сам кэширует WebView2 SDK и плагин NSIS.
 
 ---
 
-## Bot SDK quickstart
+## Вариант оформления «Xbox»
+
+Помимо классического вида собирается **отдельное приложение** с оформлением в стиле Xbox — тот же бэкенд и те же функции, только внешний вид. Классика при этом не меняется и остаётся сборкой по умолчанию.
+
+- Тема — это чистый CSS‑слой поверх существующего UI (`ui/src/themes/xbox.css`), подключается только при сборке варианта (`VITE_THEME=xbox`) через плагин Vite. Переключателя внутри приложения нет.
+- У варианта свой app‑id и имя (`core/tauri.xbox.conf.json`), так что это отдельное приложение.
+- В CI его собирает джоба **desktop xbox** (Linux AppImage).
+
+Собрать локально:
+```bash
+cd ui && VITE_THEME=xbox npm run build && cd ..
+cd core && cargo tauri build --config tauri.xbox.conf.json --bundles appimage
+```
+
+---
+
+## Свой релей (нужно поднять до полноценной работы)
+
+По умолчанию `DEFAULT_RELAY` пустой — клиент стартует и получает свой i2p‑адрес, но слать некуда, пока не указан релей. Разверни свой:
+
+1. На сервере запусти go‑i2p‑роутер (юнит `core/relay/gipny-i2p-router.service`) — он поднимает SAMv3 на `127.0.0.1:7656`.
+2. Запусти `gipny-relay` (юнит `core/relay/gipny-relay.service`, `GIPNY_RELAY_DATA=/var/lib/gipny-relay`). При первом старте он печатает `I2P DESTINATION: <base64>`.
+3. Впиши это значение в `libcore/src/relay.rs::DEFAULT_RELAY` и пересобери. (Аналогично — сервер обновлений в `libcore/src/update.rs::DEFAULT_UPDATE_ONION`.)
+
+Оба systemd‑юнита уже в `core/relay/` (релей зависит от юнита роутера через `Requires=`/`After=`). Пока адрес релея не зашит (или не задан в настройках), клиент по дизайну молчит.
+
+> Замечание по go‑i2p: его SAM `DEST GENERATE` в текущей версии отдаёт destination с повторяющимся байтовым паттерном — до боевого запуска стоит проверить валидность живым i2p‑соединением. Это одна из причин не зашивать `DEFAULT_RELAY` «вслепую».
+
+---
+
+## Bot SDK — быстрый старт
 
 ```rust
 use gipny_bot::{Bot, BotTarget};
@@ -150,19 +185,11 @@ async fn main() -> anyhow::Result<()> {
         .display_name("stats-bot")
         .on_command("export", |ctx, _arg| async move {
             let today = generate_today_report().await?;
-            let yesterday = generate_yesterday_report().await?;
             ctx.send_attachments_with_buttons(
                 "stats ready",
-                vec![
-                    ("today.csv".into(),     today),
-                    ("yesterday.csv".into(), yesterday),
-                ],
+                vec![("today.csv".into(), today)],
                 vec![vec![("refresh".into(), "export".into())]],
             ).await?;
-            Ok(())
-        })
-        .on_callback(|ctx, data| async move {
-            // same context as commands — full send API available
             Ok(())
         })
         .build()?
@@ -170,52 +197,40 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Full reference: [bot-sdk/docs.md](bot-sdk/docs.md).
+Полный справочник: [bot-sdk/docs.md](bot-sdk/docs.md).
 
 ---
 
-## Security model in 60 seconds
+## Модель безопасности за 60 секунд
 
-| Layer            | What protects you                                                        | What still leaks                                                  |
-| ---------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| Identity         | ed25519 + x25519 — no phone, email, or username; can't be doxed by ID    | If you reveal your onion address publicly, that's on you          |
-| Network          | Tor v3 onion services + optional SOCKS5 outer proxy                      | Without outer proxy, ISP sees you're on Tor                       |
-| Server (relay)   | sealed sender — relay never sees who's sending; only `{recipient, blob}` | Single canonical relay = SPOF for delivery (not for crypto)       |
-| Content          | X3DH + Double Ratchet + XChaCha20-Poly1305 — full forward secrecy        | Compromise of device with unlocked vault reveals current session  |
-| At rest          | SQLCipher (AES-256) + Argon2id KDF + duress passphrase                   | Cold-boot RAM extraction is theoretical but possible              |
-| Metadata sizes   | Fixed-bucket padding (256 B → 16 MiB)                                    | Bucket choice still bins the size class                           |
+| Слой              | Что защищает                                                                 | Что всё ещё утекает                                                |
+| ----------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Личность          | ed25519 + x25519 — ни телефона, ни email, ни логина; по ID не деанонить     | Если сам публично раскроешь свой i2p‑адрес — это на тебе          |
+| Сеть              | i2p (входящие/исходящие туннели, чесночная маршрутизация)                    | i2p уязвим к статистическим атакам на уровне глобального наблюдателя |
+| Сервер (релей)    | sealed sender — релей не видит отправителя; только `{получатель, блоб}`      | Один канонический релей = единая точка отказа доставки (не крипты)  |
+| Контент           | X3DH + Double Ratchet + XChaCha20‑Poly1305 — полная forward secrecy         | Компрометация устройства с разблокированным хранилищем вскрывает текущую сессию |
+| На диске          | SQLCipher (AES‑256) + Argon2id + duress‑пароль; **i2p‑ключ тоже в хранилище**, не открытым файлом; в памяти ключ в `Zeroizing` | Извлечение RAM методом cold‑boot теоретически возможно            |
+| Размеры (метадата)| Паддинг по фиксированным корзинам (256 Б → 16 МиБ)                           | Выбор корзины всё же разбивает трафик на классы размеров           |
 
-### Honest caveats
+### Честные оговорки
 
-- Small user base means less peer review than Signal.
-- No independent crypto audit yet.
-- One canonical relay; multi-relay is on the roadmap.
-- No multi-device: one identity = one active client. Use export/import to migrate, then close the old client.
-- Tor itself has known timing-correlation attacks at the NSA / global-passive-adversary level. Outer SOCKS5 proxy narrows that surface, doesn't close it.
+- **go‑i2p — ранняя стадия** («probably not safe yet»); его streaming — прототип. Это именно тот слой, на котором держатся наши соединения → возможны стуоллы/переподключения. При нестабильности дизайн router‑agnostic: тот же SAMv3, можно подменить go‑i2p на i2pd без изменений клиента.
+- Маленькая аудитория → меньше стороннего ревью, чем у Signal.
+- Независимого крипто‑аудита пока нет.
+- Один канонический релей; мульти‑релей — в планах.
+- Нет мультиустройства: одна личность = один активный клиент. Для миграции — экспорт/импорт, затем закрыть старый клиент.
+- Первое i2p‑соединение медленнее, чем в Tor (reseed + построение туннелей).
 
-### Comparison snapshot
-
-|                                | gipny | Signal | Telegram | Element | Jabber | Tox |
-| ------------------------------ | :---: | :----: | :------: | :-----: | :----: | :-: |
-| E2E by default                 |   ✓   |   ✓    |    ✗     |    ±    |   ±    |  ✓  |
-| Forward secrecy                |   ✓   |   ✓    |    ±     |    ✓    |   ±    |  ✓  |
-| No phone number                |   ✓   |   ✗    |    ✗     |    ✓    |   ✓    |  ✓  |
-| Traffic through Tor by default |   ✓   |   ✗    |    ✗     |    ✗    |   ±    |  ✗  |
-| Sealed sender                  |   ✓   |   ✓    |    ✗     |    ✗    |   ✗    |  —  |
-| Size-padding metadata          |   ✓   |   ±    |    ✗     |    ✗    |   ✗    |  ✗  |
-| Offline delivery               |   ✓   |   ✓    |    ✓     |    ✓    |   ±    |  ✗  |
-| Duress / panic passphrase      |   ✓   |   ✗    |    ✗     |    ✗    |   ✗    |  ✗  |
-
-The in-app **Security & Anonymity** screen has the full breakdown with comparisons and how-to.
+Экран **«Безопасность и анонимность»** внутри приложения содержит полный разбор.
 
 ---
 
-## Profile / data layout
+## Где лежит профиль / данные
 
 ```
-Linux:    $XDG_DATA_HOME/gipny/profiles/<name>/      (default: ~/.local/share/gipny/...)
-Windows:  %APPDATA%/gipny/profiles/<name>/
-Android:  /data/user/0/app.gipny/gipny/profiles/<name>/
+Linux:    $XDG_DATA_HOME/gipny/profiles/<имя>/      (по умолчанию: ~/.local/share/gipny/...)
+Windows:  %APPDATA%/gipny/profiles/<имя>/
+Android:  /data/user/0/app.gipny/gipny/profiles/<имя>/
 ```
 
-Each profile holds the SQLCipher database, Arti onion state, and `attachments/` blobs. Wipe a profile by deleting its directory.
+В каждом профиле — база SQLCipher, состояние i2p‑роутера (`i2p/`), i2p‑идентичность (внутри зашифрованной БД, не открытым файлом) и блобы `attachments/`. Стереть профиль — удалить его каталог; duress/auto‑wipe затирает его рекурсивно с перезаписью.
