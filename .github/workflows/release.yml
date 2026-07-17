@@ -1,0 +1,147 @@
+name: release
+
+# Full release pipeline on GitHub Actions — no local docker/build.sh needed.
+# Builds the bundled pure-Go i2p router and every desktop artifact (Linux
+# AppImage/deb + Windows NSIS/zip). Android is built best-effort and flagged
+# experimental until the in-process router embedding (JNI/gomobile) lands.
+#
+# Trigger: push a tag `v*` (e.g. v0.3.0) or run manually.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Bundled i2p router (pure Go, CGO off -> cross-compiles anywhere).
+  # ---------------------------------------------------------------------------
+  router:
+    name: router (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64,  out: gipny-i2p-router }
+          - { goos: windows, goarch: amd64,  out: gipny-i2p-router.exe }
+          - { goos: android, goarch: arm64,  out: gipny-i2p-router-android-arm64 }
+          - { goos: android, goarch: amd64,  out: gipny-i2p-router-android-amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
+      - name: build
+        working-directory: i2p-router
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: router-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: i2p-router/${{ matrix.out }}
+
+  # ---------------------------------------------------------------------------
+  # 2. Desktop: Linux (AppImage + deb) and Windows (NSIS). Stages the matching
+  #    router binary into core/resources so Tauri bundles it (see tauri.conf).
+  # ---------------------------------------------------------------------------
+  desktop:
+    name: desktop (${{ matrix.os }})
+    needs: router
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, router: router-linux-amd64,   rbin: gipny-i2p-router,     bundles: 'appimage,deb' }
+          - { os: windows-latest, router: router-windows-amd64, rbin: gipny-i2p-router.exe, bundles: 'nsis' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - name: stage bundled router
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.router }}
+          path: core/resources
+      - name: mark router executable (Linux)
+        if: runner.os == 'Linux'
+        run: chmod +x core/resources/${{ matrix.rbin }}
+      - name: build frontend
+        run: cd ui && npm ci && npm run build
+      - name: tauri build
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: core
+          args: --bundles ${{ matrix.bundles }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gipny-${{ runner.os }}
+          path: |
+            core/target/release/bundle/**/*.AppImage
+            core/target/release/bundle/**/*.deb
+            core/target/release/bundle/**/*-setup.exe
+            core/target/release/bundle/**/*.msi
+
+  # ---------------------------------------------------------------------------
+  # 3. Android (EXPERIMENTAL). Builds the APK, but the i2p router is not yet
+  #    embedded in-process (JNI/gomobile pending) — this artifact will not have
+  #    working transport until that lands. Kept so the build path stays green.
+  # ---------------------------------------------------------------------------
+  android:
+    name: android (experimental)
+    needs: router
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - name: install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+      - name: build frontend
+        run: cd ui && npm ci && npm run build
+      - name: tauri android build
+        run: cd core && cargo tauri android build --apk --target aarch64 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gipny-android-experimental
+          path: core/gen/android/app/build/outputs/**/*.apk
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # 4. Collect desktop artifacts into a GitHub Release (on tags).
+  # ---------------------------------------------------------------------------
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: gipny-*, path: dist, merge-multiple: true }
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

@@ -1,0 +1,91 @@
+name: build
+
+# CI for the i2p fork. Builds the bundled go-i2p SAM router (pure Go, cross-
+# compiled) and the Rust workspace on GitHub-hosted runners. This does not run
+# the full Tauri bundler (installers) — see docker/ + build.sh for release
+# artifacts — but it proves everything compiles on stock runners.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Bundled i2p router (github.com/go-i2p/go-sam-bridge embedded router + SAM).
+  # Pure Go, CGO disabled -> trivially cross-compiles for every target.
+  # ---------------------------------------------------------------------------
+  router:
+    name: i2p-router (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64,  out: gipny-i2p-router-linux-amd64 }
+          - { goos: linux,   goarch: arm64,  out: gipny-i2p-router-linux-arm64 }
+          - { goos: windows, goarch: amd64,  out: gipny-i2p-router-windows-amd64.exe }
+          - { goos: android, goarch: arm64,  out: gipny-i2p-router-android-arm64 }
+          - { goos: android, goarch: amd64,  out: gipny-i2p-router-android-amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
+      - name: build
+        working-directory: i2p-router
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" .
+          ls -la "${{ matrix.out }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: i2p-router/${{ matrix.out }}
+
+  # ---------------------------------------------------------------------------
+  # Rust workspace: libcore + relay + the Tauri app (compile check).
+  # ---------------------------------------------------------------------------
+  rust:
+    name: rust workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: system deps (Tauri / gstreamer)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build libcore + relay
+        run: |
+          cargo build --release -p gipny-libcore
+          cargo build --release --manifest-path core/relay/Cargo.toml
+      - name: build app (frontend + tauri)
+        run: |
+          cd ui && npm ci && npm run build && cd ..
+          cargo build --release -p gipny
+
+  # ---------------------------------------------------------------------------
+  # Frontend type-check (classic UI).
+  # ---------------------------------------------------------------------------
+  ui:
+    name: ui typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: cd ui && npm ci && npm run build
