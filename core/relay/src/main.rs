@@ -2,28 +2,24 @@ mod proto;
 mod storage;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::pin::Pin;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arti_client::config::onion_service::OnionServiceConfigBuilder;
-use arti_client::config::CfgPath;
-use arti_client::{TorClient, TorClientConfig};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use futures::{Stream, StreamExt};
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
-use tor_cell::relaycell::msg::Connected;
-use tor_hsservice::{HsNickname, RendRequest};
-use tor_rtcompat::PreferredRuntime;
+use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
 use crate::proto::*;
 use crate::storage::Storage;
 
-type Runtime = PreferredRuntime;
 type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
+
+/// Default SAMv3 port. The relay is server-side infrastructure: run go-i2p (or
+/// i2pd) as a system service exposing SAMv3 here (see gipny-relay.service).
+const DEFAULT_SAM_PORT: u16 = 7656;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,36 +30,29 @@ async fn main() -> anyhow::Result<()> {
     let storage = Arc::new(Storage::open(&data_dir.join("relay.db"))?);
     let connections: Connections = Arc::new(RwLock::new(HashMap::new()));
 
-    let mut cfg = TorClientConfig::builder();
-    cfg.storage().cache_dir(CfgPath::new_literal(data_dir.join("tor/cache")));
-    cfg.storage().state_dir(CfgPath::new_literal(data_dir.join("tor/state")));
-    cfg.storage().permissions().dangerously_trust_everyone();
-    let cfg = cfg.build().map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let sam_port: u16 = std::env::var("GIPNY_SAM_PORT").ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_SAM_PORT);
 
-    eprintln!("[relay] bootstrapping tor (first run 60-120s)...");
-    let client: TorClient<Runtime> = TorClient::create_bootstrapped(cfg).await
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    eprintln!("[relay] bootstrapped");
+    eprintln!("[relay] connecting to SAMv3 bridge on 127.0.0.1:{sam_port}...");
+    let (dest_pub, privkey) = load_or_create_identity(&data_dir, sam_port).await?;
 
-    let nickname: HsNickname = HS_NICKNAME.parse::<HsNickname>()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let hs_cfg = OnionServiceConfigBuilder::default()
-        .nickname(nickname).build()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let (service, rend_stream) = client.launch_onion_service(hs_cfg)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-    eprintln!("[relay] waiting for onion address (can take 1-3min on first run)...");
-    let deadline = std::time::Instant::now() + Duration::from_secs(300);
-    let onion = loop {
-        if let Some(n) = service.onion_name() { break n.to_string(); }
-        if std::time::Instant::now() > deadline { anyhow::bail!("onion address timeout"); }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+    let opts = SessionOptions {
+        nickname: "gipny-relay".to_string(),
+        destination: DestinationKind::Persistent { private_key: privkey },
+        samv3_tcp_port: sam_port,
+        // Servers must publish their leaseSet so clients can reach them.
+        publish: true,
+        // Relay payloads are already E2E-encrypted/padded; SAM gzip is wasted work.
+        gzip: false,
+        ..Default::default()
     };
+    let mut session = Session::<style::Stream>::new(opts).await
+        .map_err(|e| anyhow::anyhow!("SAM session: {e}"))?;
 
     eprintln!("========================================================");
-    eprintln!("[relay] ONION ADDRESS: {}", onion);
-    eprintln!("[relay] put this in gipny client settings → relay");
+    eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
+    eprintln!("{dest_pub}");
     eprintln!("========================================================");
 
     let storage_gc = storage.clone();
@@ -79,25 +68,42 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let mut rend_stream: Pin<Box<dyn Stream<Item = RendRequest> + Send>> = Box::pin(rend_stream);
-    while let Some(rend) = rend_stream.next().await {
+    loop {
+        let stream = match session.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[relay] accept err: {e}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+        };
         let storage = storage.clone();
         let connections = connections.clone();
         tokio::spawn(async move {
-            let mut streams = match rend.accept().await { Ok(s) => s, Err(_) => return };
-            while let Some(sr) = streams.next().await {
-                let Ok(ds) = sr.accept(Connected::new_empty()).await else { continue };
-                let storage = storage.clone();
-                let connections = connections.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_client(ds, storage, connections).await {
-                        eprintln!("[relay] client disconnected: {}", e);
-                    }
-                });
+            if let Err(e) = handle_client(stream, storage, connections).await {
+                eprintln!("[relay] client disconnected: {}", e);
             }
         });
     }
-    Ok(())
+}
+
+/// Load the persistent i2p identity, generating it on first run.
+/// Returns `(public_destination, private_key)`.
+async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> anyhow::Result<(String, String)> {
+    let key_path = data_dir.join("dest.key");
+    let pub_path = data_dir.join("dest.pub");
+    if let (Ok(k), Ok(p)) = (std::fs::read_to_string(&key_path), std::fs::read_to_string(&pub_path)) {
+        let (k, p) = (k.trim().to_string(), p.trim().to_string());
+        if !k.is_empty() && !p.is_empty() {
+            return Ok((p, k));
+        }
+    }
+    eprintln!("[relay] generating persistent destination (first run)...");
+    let (dest, key) = RouterApi::new(sam_port).generate_destination().await
+        .map_err(|e| anyhow::anyhow!("generate destination: {e}"))?;
+    std::fs::write(&key_path, &key)?;
+    std::fs::write(&pub_path, &dest)?;
+    Ok((dest, key))
 }
 
 async fn handle_client<S>(
