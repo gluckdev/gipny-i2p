@@ -22,7 +22,7 @@ class GipnyService : Service() {
                 setSound(null, null)
                 enableVibration(false)
                 lockscreenVisibility = Notification.VISIBILITY_SECRET
-                description = "keeps tor + relay connection alive in background"
+                description = "keeps i2p + relay connection alive in background"
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
@@ -35,7 +35,7 @@ class GipnyService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("gipny")
-            .setContentText("connected via tor")
+            .setContentText("connected via i2p")
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)

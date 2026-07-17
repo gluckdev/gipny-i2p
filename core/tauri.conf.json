@@ -34,9 +34,10 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
+    "resources": ["resources/gipny-i2p-router*"],
     "copyright": "",
     "category": "SocialNetworking",
     "shortDescription": "Private messenger",
-    "longDescription": "Anonymous P2P messenger over Tor with E2E encryption."
+    "longDescription": "Anonymous messenger over i2p with E2E encryption."
   }
 }

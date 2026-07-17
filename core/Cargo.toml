@@ -39,11 +39,6 @@ rusqlite = { workspace = true }
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
 tokio = { workspace = true }
-futures = { workspace = true }
-arti-client = { workspace = true }
-tor-hsservice = { workspace = true }
-tor-rtcompat = { workspace = true }
-tor-cell = { workspace = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 arboard = { version = "3", default-features = false, features = ["image-data"] }

@@ -6,13 +6,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 use crate::core::{Core, PendingAttachment};
 use gipny_libcore::crypto::IdentityCard;
 use gipny_libcore::db::{Contact, Group, GroupMember, Message, TrustLevel};
-use gipny_libcore::net::TorNode;
+use gipny_libcore::net::I2pNode;
 use gipny_libcore::security::{DuressMode, UnlockOutcome, Vault};
 
 struct AppCtx {
@@ -96,7 +96,6 @@ pub fn run() {
             forward_message,
             list_attachments, load_attachment, save_attachment, save_paste_temp,
             list_media_contact, list_media_group, search_messages,
-            get_proxy_config, set_proxy_config,
             list_muted, set_muted,
             paste_clipboard_image,
             press_button, press_group_button,
@@ -311,55 +310,13 @@ struct SearchHitDto {
     group_name: Option<String>,
 }
 
-#[derive(Serialize, serde::Deserialize)]
-struct ProxyConfigDto {
-    kind: String,
-    host: String,
-    port: u16,
-    user: Option<String>,
-    pass: Option<String>,
-}
-
-impl From<gipny_libcore::net::ProxyConfig> for ProxyConfigDto {
-    fn from(p: gipny_libcore::net::ProxyConfig) -> Self {
-        Self {
-            kind: match p.kind {
-                gipny_libcore::net::ProxyKind::None => "none".into(),
-                gipny_libcore::net::ProxyKind::Socks5 => "socks5".into(),
-                gipny_libcore::net::ProxyKind::Https => "https".into(),
-            },
-            host: p.host, port: p.port, user: p.user, pass: p.pass,
-        }
-    }
-}
-
-impl From<ProxyConfigDto> for gipny_libcore::net::ProxyConfig {
-    fn from(d: ProxyConfigDto) -> Self {
-        Self {
-            kind: match d.kind.as_str() {
-                "socks5" => gipny_libcore::net::ProxyKind::Socks5,
-                "https" => gipny_libcore::net::ProxyKind::Https,
-                _ => gipny_libcore::net::ProxyKind::None,
-            },
-            host: d.host, port: d.port, user: d.user, pass: d.pass,
-        }
-    }
-}
-
 async fn core_of<'a>(ctx: &'a State<'_, AppCtx>) -> Result<Arc<Core>, String> {
     ctx.core.lock().await.clone().ok_or_else(|| "locked".to_string())
 }
 
 fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
 
-const SETTING_PROXY: &str = "proxy_config";
 const SETTING_MUTES: &str = "muted_targets";
-
-fn read_proxy_config(db: &gipny_libcore::db::Db) -> Option<gipny_libcore::net::ProxyConfig> {
-    let bytes = db.get_setting(SETTING_PROXY).ok().flatten()?;
-    serde_json::from_slice::<gipny_libcore::net::ProxyConfig>(&bytes).ok()
-        .filter(|c| c.enabled())
-}
 
 fn parse_group_id(s: &str) -> Result<Vec<u8>, String> {
     hex_decode(s).ok_or_else(|| "bad group id".to_string())
@@ -456,9 +413,21 @@ async fn boot(
         UnlockOutcome::Wiped => return Err("wiped".into()),
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join("data.db"), &mk).map_err(err)?);
-    let proxy_cfg = read_proxy_config(&db);
-    let (node, warning) = start_tor_with_proxy_fallback(dir, proxy_cfg).await?;
-    let node = Arc::new(node);
+    // Point the transport at the bundled go-i2p router shipped as a Tauri
+    // resource. On desktop it's spawned as a child; on Android the router is
+    // started in-process by the foreground service, so this is a no-op there.
+    #[cfg(not(target_os = "android"))]
+    if std::env::var_os("GIPNY_I2P_BIN").is_none() {
+        if let Ok(res) = app.path().resource_dir() {
+            let name = if cfg!(windows) { "gipny-i2p-router.exe" } else { "gipny-i2p-router" };
+            let cand = res.join(name);
+            if cand.exists() {
+                std::env::set_var("GIPNY_I2P_BIN", cand);
+            }
+        }
+    }
+    let node = Arc::new(I2pNode::start(dir).await.map_err(err)?);
+    let warning: Option<String> = None;
     let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
     let app2 = app.clone();
     tokio::spawn(async move {
@@ -470,34 +439,6 @@ async fn boot(
     *ctx.vault.lock().await = Some(vault);
     *ctx.core.lock().await = Some(core);
     Ok(warning)
-}
-
-async fn start_tor_with_proxy_fallback(
-    dir: &std::path::Path,
-    proxy_cfg: Option<gipny_libcore::net::ProxyConfig>,
-) -> Result<(TorNode, Option<String>), String> {
-    let proxy_active = proxy_cfg.as_ref()
-        .map(|p| p.enabled() && p.kind == gipny_libcore::net::ProxyKind::Socks5)
-        .unwrap_or(false);
-    if !proxy_active {
-        return TorNode::start(dir, proxy_cfg).await.map(|n| (n, None)).map_err(err);
-    }
-    let proxy = proxy_cfg.clone().unwrap();
-    let attempt = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        TorNode::start(dir, Some(proxy.clone())),
-    ).await;
-    match attempt {
-        Ok(Ok(n)) => Ok((n, None)),
-        Ok(Err(e)) => {
-            let node = TorNode::start(dir, None).await.map_err(err)?;
-            Ok((node, Some(format!("proxy {}:{} unreachable ({}); started without proxy", proxy.host, proxy.port, e))))
-        }
-        Err(_) => {
-            let node = TorNode::start(dir, None).await.map_err(err)?;
-            Ok((node, Some(format!("proxy {}:{} timed out after 60s; started without proxy", proxy.host, proxy.port))))
-        }
-    }
 }
 
 #[tauri::command]
@@ -839,25 +780,6 @@ async fn search_messages(
         group_name: dto.group_id.as_deref().and_then(|g| groups_by_hex.get(g).cloned()),
         message: dto,
     }).collect())
-}
-
-#[tauri::command]
-async fn get_proxy_config(ctx: State<'_, AppCtx>) -> Result<ProxyConfigDto, String> {
-    let core = core_of(&ctx).await?;
-    let bytes = core.db().get_setting(SETTING_PROXY).map_err(err)?;
-    let cfg = bytes
-        .and_then(|b| serde_json::from_slice::<gipny_libcore::net::ProxyConfig>(&b).ok())
-        .unwrap_or_default();
-    Ok(cfg.into())
-}
-
-#[tauri::command]
-async fn set_proxy_config(config: ProxyConfigDto, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    let core = core_of(&ctx).await?;
-    let cfg: gipny_libcore::net::ProxyConfig = config.into();
-    let bytes = serde_json::to_vec(&cfg).map_err(err)?;
-    core.db().set_setting(SETTING_PROXY, &bytes).map_err(err)?;
-    Ok(())
 }
 
 #[tauri::command]

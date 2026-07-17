@@ -863,6 +863,13 @@ impl Core {
             let mut backoff = RECONNECT_INITIAL_MS;
             loop {
                 let onion = this.relay_onion();
+                if onion.is_empty() {
+                    // No relay configured yet (i2p: DEFAULT_RELAY not baked in and
+                    // none set in Settings). Wait quietly instead of hammering.
+                    tokio::time::sleep(Duration::from_millis(backoff)).await;
+                    backoff = (backoff * 2).min(RECONNECT_MAX_MS);
+                    continue;
+                }
                 eprintln!("[relay-client] connecting to {}", &onion[..16.min(onion.len())]);
                 match relay::connect(&this.node, &onion, &this.identity).await {
                     Ok(client) => {
