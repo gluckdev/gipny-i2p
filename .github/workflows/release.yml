@@ -99,6 +99,44 @@ jobs:
             core/target/release/bundle/**/*.msi
 
   # ---------------------------------------------------------------------------
+  # 2b. Xbox appearance variant (separate app id/name). Same backend, only a
+  #     build-time theme (VITE_THEME=xbox) + a merged Tauri config. Linux AppImage.
+  # ---------------------------------------------------------------------------
+  desktop-xbox:
+    name: desktop xbox (linux)
+    needs: router
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libgtk-3-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libsoup-3.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - uses: actions/download-artifact@v4
+        with: { name: router-linux-amd64, path: core/resources }
+      - run: chmod +x core/resources/gipny-i2p-router
+      - name: build frontend (xbox theme)
+        env: { VITE_THEME: xbox }
+        run: cd ui && npm ci && npm run build
+      - name: tauri build (xbox config)
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: core
+          args: --config tauri.xbox.conf.json --bundles appimage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gipny-xbox-Linux
+          path: core/target/release/bundle/**/*.AppImage
+
+  # ---------------------------------------------------------------------------
   # 3. Android (EXPERIMENTAL). Builds the APK, but the i2p router is not yet
   #    embedded in-process (JNI/gomobile pending) — this artifact will not have
   #    working transport until that lands. Kept so the build path stays green.

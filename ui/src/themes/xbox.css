@@ -1,0 +1,202 @@
+/*
+ * gipny — Xbox appearance
+ * =======================
+ * A separate visual theme, loaded ONLY in the Xbox build variant (injected by
+ * the vite theme plugin after styles.css). It is a pure visual layer over the
+ * existing markup/classes — no behaviour, no new features. The classic theme is
+ * untouched.
+ *
+ * Look: modern Xbox dashboard — near-black neutral surfaces, signature Xbox
+ * green (#107C10) as the single accent, near-white text, soft rounded tiles,
+ * a quiet nexus glow instead of the CRT phosphor/scanlines.
+ */
+
+:root {
+  /* Neutral very-dark surfaces with a faint cool tint. */
+  --bg: #0a0d0b;
+  --surface: #121712;
+  --surface-2: #1a211a;
+  --surface-3: #232d23;
+  --border: #263026;
+  --border-bright: #3a8f3a;
+
+  /* Signature Xbox green as the one accent (bright enough to read on dark). */
+  --phosphor: #6ce86c;         /* accent / active */
+  --phosphor-dim: #46b846;
+  --phosphor-faint: #2c5f2c;
+  --phosphor-glow: rgba(16, 124, 16, 0.55);
+
+  /* Secondary accent → soft neutral (Xbox leans white, not amber). */
+  --amber: #d7e8d7;
+  --amber-dim: #9fb79f;
+  --amber-soft: rgba(108, 232, 108, 0.12);
+
+  --danger: #ff5a52;
+  --danger-soft: rgba(255, 90, 82, 0.12);
+  --success: #6ce86c;
+
+  /* Text: near-white with green reserved for accents. */
+  --text: #eaf3ea;
+  --text-dim: #a9bda9;
+  --text-faint: #6f826f;
+
+  /* Xbox uses a clean sans (Segoe-family). Keep the var name the app uses. */
+  --mono: "Segoe UI", "Segoe UI Variable", Inter, system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --xbox-radius: 12px;
+  --xbox-radius-sm: 8px;
+}
+
+/* Kill the CRT scanlines; replace the vignette with a quiet Xbox-green nexus glow. */
+body {
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+body::after { display: none !important; content: none !important; }
+body::before {
+  background:
+    radial-gradient(60% 55% at 50% 0%, rgba(16, 124, 16, 0.14), transparent 70%),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%) !important;
+}
+
+/* Typographic calm: drop the terminal glow/uppercase feel where it hurts. */
+* { text-shadow: none !important; }
+
+/* --- Surfaces & tiles ------------------------------------------------------ */
+.modal,
+.modal-wide,
+.auth-card,
+.card-block,
+.contact,
+.media-tile,
+.ctx-menu,
+.forward-row,
+.chat-input {
+  border-radius: var(--xbox-radius);
+}
+.modal, .modal-wide, .auth-card {
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+}
+.card-block {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* Contact/list tiles: hover lift + green edge, like dashboard tiles. */
+.contact {
+  border: 1px solid transparent;
+  transition: transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+}
+.contact:hover {
+  transform: translateY(-1px);
+  background: var(--surface-2);
+  border-color: var(--border-bright);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--phosphor-glow);
+}
+.contact.active, .contact[aria-selected="true"] {
+  background: var(--surface-3);
+  border-color: var(--phosphor-dim);
+}
+
+.media-tile {
+  border: 1px solid var(--border);
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.media-tile:hover {
+  transform: translateY(-2px) scale(1.01);
+  border-color: var(--phosphor-dim);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* --- Buttons --------------------------------------------------------------- */
+.btn, .btn-sm, .btn-block, .icon-btn {
+  border-radius: 999px;                 /* pill buttons, Xbox-style */
+  transition: transform .1s ease, background .12s ease, box-shadow .12s ease, color .12s ease;
+}
+.btn:not(.btn-ghost):not(.btn-danger) {
+  background: linear-gradient(180deg, #14a014, #0e7a0e);
+  color: #f2fff2;
+  border: 1px solid #1c8f1c;
+  box-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
+}
+.btn:not(.btn-ghost):not(.btn-danger):hover {
+  background: linear-gradient(180deg, #19c319, #12a012);
+  box-shadow: 0 6px 20px rgba(16, 124, 16, 0.5);
+  transform: translateY(-1px);
+}
+.btn:active { transform: translateY(0) scale(.99); }
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  border-radius: 999px;
+}
+.btn-ghost:hover { background: var(--surface-2); border-color: var(--phosphor-dim); }
+.btn-danger {
+  background: linear-gradient(180deg, #ff6a62, #e0433b);
+  color: #fff; border: 1px solid #e0433b; border-radius: 999px;
+}
+.btn-amber {                            /* was amber; make it a neutral outline */
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+}
+.icon-btn { border-radius: 50%; }
+.icon-btn:hover { background: var(--surface-3); color: var(--phosphor); }
+
+/* --- Inputs ---------------------------------------------------------------- */
+.input, .chat-input, .edit-inline-textarea {
+  border-radius: var(--xbox-radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.input:focus, .chat-input:focus, .edit-inline-textarea:focus {
+  outline: none;
+  border-color: var(--phosphor-dim);
+  box-shadow: 0 0 0 3px var(--amber-soft);
+}
+
+/* --- Messages -------------------------------------------------------------- */
+.msg { border-radius: 14px; }
+.msg.out .msg-body {
+  background: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
+  border: 1px solid rgba(58, 143, 58, 0.4);
+  border-radius: 14px 14px 4px 14px;
+}
+.msg.in .msg-body {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px 14px 14px 4px;
+}
+.msg-button {
+  border-radius: 999px;
+  border: 1px solid var(--border-bright);
+}
+.msg-button:hover { background: var(--phosphor); color: #06120a; }
+
+/* --- Chrome: header, sidebar footer, dividers ------------------------------ */
+.chat-header, .modal-header {
+  border-bottom: 1px solid var(--border);
+}
+.divider-text { color: var(--phosphor-dim); letter-spacing: .12em; text-transform: uppercase; font-size: 10px; }
+.sidebar-footer .onion { color: var(--text-dim); }
+
+/* --- Auth / landing: a subtle nexus ring behind the logo ------------------- */
+.auth { position: relative; }
+.auth-logo {
+  color: var(--phosphor);
+  filter: drop-shadow(0 0 18px var(--phosphor-glow));
+}
+.auth-title { letter-spacing: .04em; }
+
+/* Scrollbars to match. */
+* { scrollbar-color: var(--border-bright) transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--phosphor-dim); }
+
+/* Selection + links in the accent. */
+::selection { background: var(--phosphor); color: #06120a; }
+a { color: var(--phosphor); }

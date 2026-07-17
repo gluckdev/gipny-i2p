@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "gipny xbox",
+  "identifier": "app.gipny.xbox",
+  "bundle": {
+    "shortDescription": "Private messenger (Xbox theme)",
+    "longDescription": "Anonymous messenger over i2p with E2E encryption — Xbox appearance."
+  }
+}
