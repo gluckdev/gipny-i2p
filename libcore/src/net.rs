@@ -118,8 +118,10 @@ pub struct I2pNode {
     session: Arc<Mutex<Session<style::Stream>>>,
     /// Shareable public destination (opaque address; the old code's "onion").
     address: String,
-    /// Persistent private key blob, reused across session rebuilds.
-    privkey: String,
+    /// Persistent private key blob, reused across session rebuilds. Wrapped in
+    /// `Zeroizing` so our long-lived copy is scrubbed from memory on drop (the
+    /// process also mlocks to keep it out of swap).
+    privkey: zeroize::Zeroizing<String>,
     #[allow(dead_code)]
     data_dir: PathBuf,
     sam_port: u16,
@@ -135,14 +137,32 @@ pub struct I2pNode {
 }
 
 impl I2pNode {
-    pub async fn start(data_dir: &Path) -> Result<Self> {
+    /// Start the node.
+    ///
+    /// `identity` is the persistent `(private_key, public_destination)` loaded
+    /// from the caller's **encrypted** store (SQLCipher vault). Pass `None` on
+    /// first run: a fresh destination is generated and exposed via
+    /// [`identity_key`](Self::identity_key) / [`onion_address`](Self::onion_address)
+    /// so the caller can persist it *inside the vault*. The transport never
+    /// writes the identity key to disk in the clear.
+    pub async fn start(data_dir: &Path, identity: Option<(String, String)>) -> Result<Self> {
         #[cfg(target_os = "android")]
         let router = RouterHandle::attach(DEFAULT_SAM_PORT).await?;
         #[cfg(not(target_os = "android"))]
         let router = RouterHandle::start(data_dir, None).await?;
 
         let sam_port = router.sam_port();
-        let (privkey, address) = load_or_create_identity(data_dir, sam_port).await?;
+        let (privkey, address) = match identity {
+            Some((priv_key, public_dest)) => (priv_key, public_dest),
+            None => {
+                eprintln!("[i2p] generating persistent destination (first run)...");
+                RouterApi::new(sam_port)
+                    .generate_destination()
+                    .await
+                    .map(|(dest, key)| (key, dest)) // (public, private) -> (private, public)
+                    .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?
+            }
+        };
         eprintln!("[i2p] destination = {}", short_addr(&address));
 
         let session = build_session(sam_port, &privkey).await?;
@@ -154,7 +174,7 @@ impl I2pNode {
         Ok(Self {
             session,
             address,
-            privkey,
+            privkey: zeroize::Zeroizing::new(privkey),
             data_dir: data_dir.to_path_buf(),
             sam_port,
             inbound_tx: tx,
@@ -178,6 +198,10 @@ impl I2pNode {
 
     /// Our shareable i2p address (kept named `onion_address` for API parity).
     pub fn onion_address(&self) -> &str { &self.address }
+
+    /// The persistent private key blob for this identity. The caller must store
+    /// this **only inside the encrypted vault** (never in the clear on disk).
+    pub fn identity_key(&self) -> &str { self.privkey.as_str() }
 
     pub async fn accept(&self) -> Option<Connection> {
         self.inbound.lock().await.recv().await
@@ -263,7 +287,7 @@ impl I2pNode {
     /// router keeps running). This is the i2p analogue of the old Tor client
     /// recreate — a fresh set of tunnels without changing our address.
     pub async fn recreate(&self) -> Result<()> {
-        let new_session = build_session(self.sam_port, &self.privkey).await?;
+        let new_session = build_session(self.sam_port, self.privkey.as_str()).await?;
 
         if let Some(old) = self.accept_task.lock().await.take() {
             old.abort();
@@ -345,44 +369,6 @@ async fn spawn_inbound(
         }
     });
     Some(handle)
-}
-
-/// Load the persistent i2p identity, generating (and persisting) it on first run.
-///
-/// The SAM router hands back two base64 strings: the public destination (our
-/// shareable address) and the private key blob (dest + private + signing key)
-/// that recreates the same destination. We store both under `data_dir/i2p/`.
-async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> Result<(String, String)> {
-    let dir = data_dir.join("i2p");
-    std::fs::create_dir_all(&dir).map_err(|e| NetError::I2p(format!("i2p dir: {e}")))?;
-    let key_path = dir.join("dest.key");
-    let pub_path = dir.join("dest.pub");
-
-    if let (Ok(k), Ok(p)) = (std::fs::read_to_string(&key_path), std::fs::read_to_string(&pub_path)) {
-        let (k, p) = (k.trim().to_string(), p.trim().to_string());
-        if !k.is_empty() && !p.is_empty() {
-            return Ok((k, p));
-        }
-    }
-
-    eprintln!("[i2p] generating persistent destination (first run)...");
-    let (dest, key) = RouterApi::new(sam_port)
-        .generate_destination()
-        .await
-        .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?;
-    write_private(&key_path, &key)?;
-    std::fs::write(&pub_path, &dest).map_err(|e| NetError::I2p(format!("write dest.pub: {e}")))?;
-    Ok((key, dest))
-}
-
-fn write_private(path: &Path, data: &str) -> Result<()> {
-    std::fs::write(path, data).map_err(|e| NetError::I2p(format!("write {}: {e}", path.display())))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
 }
 
 /// Truncate a long i2p destination for logging.

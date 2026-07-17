@@ -55,14 +55,36 @@ fn register_aumid() {
 fn register_aumid() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Best-effort overwrite-and-remove of the app-global debug.log (if any). Called
+/// on a duress/attempt-limit wipe so no plaintext log survives outside the
+/// per-profile dir that `secure_wipe_dir` scrubs.
+fn scrub_debug_log(base_dir: &std::path::Path) {
+    let p = base_dir.join("debug.log");
+    if let Ok(meta) = std::fs::metadata(&p) {
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&p) {
+            use std::io::Write;
+            let mut f = f;
+            let _ = f.write_all(&vec![0u8; meta.len() as usize]);
+            let _ = f.flush();
+        }
+    }
+    let _ = std::fs::remove_file(&p);
+}
+
 pub fn run() {
     register_aumid();
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     gipny_libcore::security::harden_process();
     let base_dir = resolve_base_dir();
     std::fs::create_dir_all(&base_dir).ok();
+    // Persistent stderr capture writes a PLAINTEXT debug.log at the app-global
+    // base dir (outside the per-profile dir that duress-wipe scrubs). Off by
+    // default in release so no transport/app traces survive at rest; opt in with
+    // GIPNY_DEBUG_LOG=1 (or any debug build) when you actually need it.
     #[cfg(target_os = "android")]
-    install_log_capture(&base_dir);
+    if cfg!(debug_assertions) || std::env::var_os("GIPNY_DEBUG_LOG").is_some() {
+        install_log_capture(&base_dir);
+    }
     let ctx = AppCtx {
         base_dir,
         profile: Mutex::new(None),
@@ -410,7 +432,12 @@ async fn boot(
     let mk = match outcome {
         UnlockOutcome::Primary(k) => k,
         UnlockOutcome::Decoy(k) => k,
-        UnlockOutcome::Wiped => return Err("wiped".into()),
+        UnlockOutcome::Wiped => {
+            // Duress / attempt-limit wipe: also scrub the app-global debug.log,
+            // which lives outside the per-profile dir that was just wiped.
+            scrub_debug_log(&ctx.base_dir);
+            return Err("wiped".into());
+        }
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join("data.db"), &mk).map_err(err)?);
     // Point the transport at the bundled go-i2p router shipped as a Tauri
@@ -426,7 +453,24 @@ async fn boot(
             }
         }
     }
-    let node = Arc::new(I2pNode::start(dir).await.map_err(err)?);
+    // Load the i2p identity from the encrypted vault (never from a plaintext
+    // file) — it is only recoverable with the passphrase, like the rest of the
+    // profile. On first run the node generates one and we persist it here.
+    let saved_priv = db.get_setting("i2p_priv").ok().flatten();
+    let saved_pub = db.get_setting("i2p_pub").ok().flatten();
+    let identity = match (saved_priv, saved_pub) {
+        (Some(k), Some(p)) => Some((
+            String::from_utf8_lossy(&k).into_owned(),
+            String::from_utf8_lossy(&p).into_owned(),
+        )),
+        _ => None,
+    };
+    let had_identity = identity.is_some();
+    let node = Arc::new(I2pNode::start(dir, identity).await.map_err(err)?);
+    if !had_identity {
+        db.set_setting("i2p_priv", node.identity_key().as_bytes()).map_err(err)?;
+        db.set_setting("i2p_pub", node.onion_address().as_bytes()).map_err(err)?;
+    }
     let warning: Option<String> = None;
     let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
     let app2 = app.clone();
