@@ -9,6 +9,10 @@ ui/.vite/
 
 release-artifacts/
 release-staging/
+
+# Bundled i2p router binary staged into core/resources at build time (not committed).
+core/resources/gipny-i2p-router
+core/resources/gipny-i2p-router.exe
 *.AppImage
 *.deb
 *.tar.gz

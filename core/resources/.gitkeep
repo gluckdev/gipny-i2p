@@ -1,0 +1,4 @@
+# The bundled i2p router binary (gipny-i2p-router[.exe]) is staged here at build
+# time (CI builds it from ../../i2p-router; local dev: build it here yourself).
+# tauri.conf.json bundles it via the `resources/gipny-i2p-router*` glob.
+# The binary itself is gitignored — only this placeholder keeps the dir present.

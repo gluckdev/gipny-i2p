@@ -26,8 +26,6 @@ jobs:
           - { goos: linux,   goarch: amd64,  out: gipny-i2p-router-linux-amd64 }
           - { goos: linux,   goarch: arm64,  out: gipny-i2p-router-linux-arm64 }
           - { goos: windows, goarch: amd64,  out: gipny-i2p-router-windows-amd64.exe }
-          - { goos: android, goarch: arm64,  out: gipny-i2p-router-android-arm64 }
-          - { goos: android, goarch: amd64,  out: gipny-i2p-router-android-amd64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -66,6 +64,15 @@ jobs:
             libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
+      - name: stage bundled router (tauri.conf resources glob needs it)
+        run: |
+          mkdir -p core/resources
+          CGO_ENABLED=0 go build -C i2p-router -trimpath -ldflags "-s -w" \
+            -o "$GITHUB_WORKSPACE/core/resources/gipny-i2p-router" .
       - name: build libcore + relay
         run: |
           cargo build --release -p gipny-libcore

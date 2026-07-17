@@ -122,9 +122,12 @@ sudo apt install -y build-essential pkg-config curl ca-certificates git \
 Затем:
 
 ```bash
-cd i2p-router && CGO_ENABLED=0 go build -o gipny-i2p-router . && cd ..
+# роутер собираем прямо в core/resources — оттуда его берёт и tauri‑bundler,
+# и dev‑запуск (иначе tauri‑build ругнётся, что resources‑glob пуст)
+mkdir -p core/resources
+cd i2p-router && CGO_ENABLED=0 go build -o ../core/resources/gipny-i2p-router . && cd ..
 cd ui && npm install && npm run build && cd ..
-cd core && GIPNY_I2P_BIN=$PWD/../i2p-router/gipny-i2p-router cargo run   # dev‑запуск
+cd core && GIPNY_I2P_BIN=$PWD/resources/gipny-i2p-router cargo run   # dev‑запуск
 ```
 
 Окно Tauri откроется, как только соберётся бинарь. Первый старт i2p — 1–3 минуты (reseed + туннели).
