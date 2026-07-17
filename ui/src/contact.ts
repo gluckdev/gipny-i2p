@@ -94,7 +94,7 @@ export class AddContactModal {
       rows: '4',
     }) as HTMLTextAreaElement;
     const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
-    const onionI = h('input', { class: 'input', placeholder: 'abc...xyz.onion' });
+    const onionI = h('input', { class: 'input', placeholder: 'i2p destination (b64) or abc...xyz.b32.i2p' });
     const signI = h('input', { class: 'input', placeholder: 'sign_pk (64 hex)' });
     const dhI = h('input', { class: 'input', placeholder: 'dh_pk (64 hex)' });
     let cardName = '';
@@ -120,7 +120,7 @@ export class AddContactModal {
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           'имя контакта приходит из его карточки и потом обновляется автоматически из его сообщений. локально не задаётся — каждый сам себя называет.'),
         h('div', { class: 'divider-text' }, 'manual entry'),
-        h('div', { class: 'field' }, h('label', null, 'onion address'), onionI),
+        h('div', { class: 'field' }, h('label', null, 'i2p address'), onionI),
         h('div', { class: 'field' }, h('label', null, 'sign_pk'), signI),
         h('div', { class: 'field' }, h('label', null, 'dh_pk'), dhI),
         err,
@@ -134,7 +134,11 @@ export class AddContactModal {
             const sign = signI.value.trim().toLowerCase();
             const dh = dhI.value.trim().toLowerCase();
             const name = cardName || `${sign.slice(0, 16)}`;
-            if (!onion.endsWith('.onion')) { err.textContent = 'onion must end with .onion'; return; }
+            // i2p address: either a `.b32.i2p` hostname or a full base64 destination.
+            if (!onion.endsWith('.i2p') && onion.length < 300) {
+              err.textContent = 'expected a .b32.i2p address or a full i2p destination';
+              return;
+            }
             if (!/^[0-9a-f]{64}$/.test(sign)) { err.textContent = 'sign_pk must be 64 hex'; return; }
             if (!/^[0-9a-f]{64}$/.test(dh)) { err.textContent = 'dh_pk must be 64 hex'; return; }
             try {

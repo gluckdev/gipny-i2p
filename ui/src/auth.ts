@@ -34,7 +34,7 @@ export class AuthCreate extends View {
       h('div', { class: 'auth-card' },
         h('pre', { class: 'auth-logo' }, LOGO),
         h('div', { class: 'auth-title' }, ':: NEW PROFILE ::'),
-        h('div', { class: 'auth-sub' }, 'each profile has its own onion, keys, contacts'),
+        h('div', { class: 'auth-sub' }, 'each profile has its own i2p address, keys, contacts'),
         h('div', { class: 'field' },
           h('label', null, 'profile name'), this.nameI,
           h('div', { class: 'hint' }, 'локально на этом устройстве (alphanumeric + dash/underscore)'),
@@ -96,7 +96,7 @@ export class AuthCreate extends View {
     if (pass !== conf) { this.err.textContent = 'passphrases do not match'; return; }
     if (duress && duress === pass) { this.err.textContent = 'duress must differ from primary'; return; }
 
-    this.err.textContent = 'generating keys, bootstrapping tor... (30-60s)';
+    this.err.textContent = 'generating keys, starting i2p router... (1-3 min first run)';
     try {
       await Api.vaultCreate(profile, pass, display, duress || null, wipe, max);
       await this.store.onUnlocked(profile);
@@ -174,14 +174,13 @@ export class AuthBooting extends View {
   private timerHandle: number | null = null;
   private logTimer: number | null = null;
   private logLines = [
-    '> initializing arti tor client...',
-    '> fetching consensus directory...',
-    '> selecting guard relays...',
-    '> building circuits through 3 hops...',
-    '> establishing onion service descriptor...',
-    '> publishing to DHT...',
-    '> onion address reserved.',
-    '> dialing relay over tor...',
+    '> starting i2p router...',
+    '> reseeding netdb...',
+    '> building inbound/outbound tunnels...',
+    '> generating destination...',
+    '> publishing leaseSet...',
+    '> i2p address reserved.',
+    '> dialing relay over i2p...',
     '> authenticating ed25519 challenge...',
   ];
   private logIdx = 0;
@@ -189,7 +188,7 @@ export class AuthBooting extends View {
   constructor(store: Store) {
     super();
 
-    this.stageTor = this.makeStage('[ ] tor bootstrap', 'building circuits');
+    this.stageTor = this.makeStage('[ ] i2p router', 'building tunnels');
     this.stageRelay = this.makeStage('[ ] relay connect', 'authenticating');
 
     this.statusLine = h('div', {
@@ -294,7 +293,7 @@ export class AuthBooting extends View {
         setStage(this.stageTor, 'idle');
         setStage(this.stageRelay, 'idle');
         break;
-      case 'tor':
+      case 'i2p':
         setStage(this.stageTor, 'active');
         setStage(this.stageRelay, 'idle');
         break;

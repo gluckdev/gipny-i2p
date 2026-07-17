@@ -28,7 +28,7 @@ export class Signal<T> {
 
 export type ViewKind = 'profile-select' | 'auth-create' | 'auth-unlock' | 'auth-booting' | 'main';
 
-export type BootStage = 'unlocking' | 'tor' | 'relay' | 'done';
+export type BootStage = 'unlocking' | 'i2p' | 'relay' | 'done';
 
 export type ChatTarget =
   | { kind: 'contact'; id: number }
@@ -259,7 +259,7 @@ export class Store {
 
   async onUnlocked(profile: string): Promise<void> {
     this.currentProfile.set(profile);
-    this.bootStage.set('tor');
+    this.bootStage.set('i2p');
     this.relayConnected.set(false);
     this.view.set('auth-booting');
     const [card, onion, fingerprint, displayName] = await Promise.all([

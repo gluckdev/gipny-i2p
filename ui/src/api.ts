@@ -76,16 +76,6 @@ export interface SearchHit {
   group_name: string | null;
 }
 
-export type ProxyKind = 'none' | 'socks5' | 'https';
-
-export interface ProxyConfig {
-  kind: ProxyKind;
-  host: string;
-  port: number;
-  user: string | null;
-  pass: string | null;
-}
-
 export interface Bundle {
   sign_pk: string;
   dh_pk: string;
@@ -239,12 +229,6 @@ export class Api {
   }
   static searchMessages(query: string, contactId: number | null, groupId: string | null, limit = 100): Promise<SearchHit[]> {
     return invoke('search_messages', { query, contactId, groupId, limit });
-  }
-  static getProxyConfig(): Promise<ProxyConfig> {
-    return invoke('get_proxy_config');
-  }
-  static setProxyConfig(config: ProxyConfig): Promise<void> {
-    return invoke('set_proxy_config', { config });
   }
   static listMuted(): Promise<string[]> {
     return invoke('list_muted');

@@ -25,23 +25,6 @@ export class SettingsModal {
     Api.currentVersion().then((v) => { verSlot.textContent = `gipny v${v}`; }).catch(() => { verSlot.textContent = '?'; });
     const updErr = h('div', { class: 'err' });
 
-    const proxyKindSel = h('select', { class: 'input' },
-      h('option', { value: 'none' }, 'none (direct)'),
-      h('option', { value: 'socks5' }, 'socks5'),
-    ) as HTMLSelectElement;
-    const proxyHost = h('input', { class: 'input', placeholder: 'host (e.g. 127.0.0.1)' }) as HTMLInputElement;
-    const proxyPort = h('input', { class: 'input', type: 'number', placeholder: 'port', min: '1', max: '65535' }) as HTMLInputElement;
-    const proxyUser = h('input', { class: 'input', placeholder: 'username (optional)' }) as HTMLInputElement;
-    const proxyPass = h('input', { class: 'input', type: 'password', placeholder: 'password (optional)' }) as HTMLInputElement;
-    const proxyErr = h('div', { class: 'err' });
-    Api.getProxyConfig().then((cfg) => {
-      proxyKindSel.value = cfg.kind === 'socks5' ? 'socks5' : 'none';
-      proxyHost.value = cfg.host ?? '';
-      proxyPort.value = cfg.port ? String(cfg.port) : '';
-      proxyUser.value = cfg.user ?? '';
-      proxyPass.value = cfg.pass ?? '';
-    }).catch(() => {});
-
     const apkInfo = h('div', { class: 'hint', style: { marginBottom: '6px' } }, 'fetching APK info...');
     const apkButtons = h('div', { class: 'row' });
     const apkErr = h('div', { class: 'err' });
@@ -170,38 +153,6 @@ export class SettingsModal {
           },
         }, '[ UPDATE ]'),
 
-        h('div', { class: 'divider-text' }, 'outer proxy'),
-        h('div', { class: 'hint', style: { marginBottom: '8px' } },
-          'route tor entry through a SOCKS5 proxy. ISP no longer sees that you use tor. requires app restart to apply.'),
-        h('div', { class: 'field' }, h('label', null, 'type'), proxyKindSel),
-        h('div', { class: 'field' }, h('label', null, 'host'), proxyHost),
-        h('div', { class: 'field' }, h('label', null, 'port'), proxyPort),
-        h('div', { class: 'field' }, h('label', null, 'user'), proxyUser),
-        h('div', { class: 'field' }, h('label', null, 'pass'), proxyPass),
-        proxyErr,
-        h('button', {
-          class: 'btn btn-block',
-          onClick: async () => {
-            proxyErr.textContent = '';
-            const kind = proxyKindSel.value === 'socks5' ? 'socks5' : 'none';
-            const host = proxyHost.value.trim();
-            const port = parseInt(proxyPort.value || '0', 10) || 0;
-            if (kind !== 'none') {
-              if (!host) { proxyErr.textContent = 'host required'; return; }
-              if (port < 1 || port > 65535) { proxyErr.textContent = 'invalid port'; return; }
-            }
-            try {
-              await Api.setProxyConfig({
-                kind, host, port,
-                user: proxyUser.value.trim() || null,
-                pass: proxyPass.value || null,
-              });
-              store.showToast('proxy saved · restart app to apply');
-            } catch (e) {
-              proxyErr.textContent = String(e);
-            }
-          },
-        }, '[ SAVE PROXY ]'),
 
         h('div', { class: 'divider-text' }, 'backup'),
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
