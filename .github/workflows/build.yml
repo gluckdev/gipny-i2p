@@ -240,15 +240,17 @@ jobs:
             adb shell pidof app.gipny.i2p
 
             # GipnyService: wait up to 15 s for the foreground-service start log.
-            timeout 15 adb logcat -s GipnyService | grep -m1 "GipnyService started" || \
-              adb logcat -d | grep -q "GipnyService" || true
+            # This is a hard assertion — if it times out, the step fails (the job
+            # has continue-on-error: true, so it never blocks other jobs).
+            timeout 15 adb logcat -s GipnyService | grep -m1 "GipnyService started"
 
             # SAM bridge: wait up to 90 s (router bootstrap can take ~60 s).
+            # Best-effort only — mark non-fatal while the emulator path matures.
             timeout 90 adb logcat -s GipnyService | grep -m1 "SAM bridge ready" || true
 
             # Memory snapshot.
             MEMINFO=$(adb shell dumpsys meminfo app.gipny.i2p 2>/dev/null || echo "")
-            PSS_KB=$(echo "$MEMINFO" | grep -i "TOTAL PSS" | awk '{print $3}' || echo "n/a")
+            PSS_KB=$(echo "$MEMINFO" | awk '/TOTAL PSS/ {print $NF}' | head -1)
 
             {
               echo "### Android Emulator Smoke (x86_64, API 33)"
