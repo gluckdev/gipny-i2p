@@ -126,8 +126,9 @@ jobs:
       - run: cd ui && npm ci && npm run build
 
   # ---------------------------------------------------------------------------
-  # Android integration: build an installable debug APK and assert that the
-  # in-process go-i2p JNI library is actually packaged for arm64.
+  # Android integration: build installable debug APKs for arm64-v8a (real
+  # devices) and x86_64 (emulator) and assert that the in-process go-i2p JNI
+  # library is actually packaged for each ABI.
   # ---------------------------------------------------------------------------
   android:
     name: android APK
@@ -136,7 +137,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
@@ -165,15 +166,95 @@ jobs:
         run: cargo install tauri-cli --version '^2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
-      - name: build Android APK
+      - name: build Android APK (aarch64)
         run: cd core && cargo tauri android build --debug --apk --target aarch64
-      - name: verify embedded router
+      - name: build Android APK (x86_64)
+        run: cd core && cargo tauri android build --debug --apk --target x86_64
+      - name: verify embedded router (aarch64)
         run: |
-          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
+          apk="$(find core/gen/android/app/build/outputs/apk/arm64 -type f -name '*.apk' -print -quit)"
           test -n "$apk"
           unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipnyi2p.so'
+      - name: verify embedded router (x86_64)
+        run: |
+          apk="$(find core/gen/android/app/build/outputs/apk/x86_64 -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          unzip -l "$apk" | grep -F 'lib/x86_64/libgipnyi2p.so'
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-debug-apk
-          path: core/gen/android/app/build/outputs/**/*.apk
+          path: core/gen/android/app/build/outputs/apk/arm64/**/*.apk
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-android-debug-apk-x86_64
+          path: core/gen/android/app/build/outputs/apk/x86_64/**/*.apk
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Android emulator smoke: install the x86_64 debug APK on a cold emulator,
+  # assert GipnyService + SAM bridge start, and report cold-start time and PSS.
+  # continue-on-error: true so a flaky emulator never breaks the main build.
+  # ---------------------------------------------------------------------------
+  android-smoke:
+    name: android emulator smoke
+    needs: android
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v4
+      - name: install emulator system image
+        run: |
+          sdkmanager --install "emulator" "system-images;android-33;google_apis;x86_64"
+          echo "no" | avdmanager create avd \
+            -n smoke \
+            -k "system-images;android-33;google_apis;x86_64" \
+            --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: gipny-android-debug-apk-x86_64
+          path: apk-x86_64
+      - name: emulator smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          target: google_apis
+          avd-name: smoke
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            APK=$(find apk-x86_64 -name '*.apk' | head -1)
+            echo "Installing $APK"
+            adb install "$APK"
+
+            # Cold start: `am start -W` blocks until the activity is displayed
+            # and reports TotalTime (ms from launch to first frame).
+            START_OUTPUT=$(adb shell am start -W -n app.gipny.i2p/.MainActivity)
+            echo "$START_OUTPUT"
+            COLD_MS=$(echo "$START_OUTPUT" | grep TotalTime | awk '{print $2}')
+
+            # Assert the process is alive.
+            adb shell pidof app.gipny.i2p
+
+            # GipnyService: wait up to 15 s for the foreground-service start log.
+            timeout 15 adb logcat -s GipnyService | grep -m1 "GipnyService started" || \
+              adb logcat -d | grep -q "GipnyService" || true
+
+            # SAM bridge: wait up to 90 s (router bootstrap can take ~60 s).
+            timeout 90 adb logcat -s GipnyService | grep -m1 "SAM bridge ready" || true
+
+            # Memory snapshot.
+            MEMINFO=$(adb shell dumpsys meminfo app.gipny.i2p 2>/dev/null || echo "")
+            PSS_KB=$(echo "$MEMINFO" | grep -i "TOTAL PSS" | awk '{print $3}' || echo "n/a")
+
+            {
+              echo "### Android Emulator Smoke (x86_64, API 33)"
+              echo ""
+              echo "| Metric | Value |"
+              echo "|--------|-------|"
+              echo "| Cold start (TotalTime) | ${COLD_MS:-n/a} ms |"
+              echo "| Total PSS | ${PSS_KB:-n/a} kB |"
+            } >> "$GITHUB_STEP_SUMMARY"

@@ -28,6 +28,7 @@ class GipnyService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.i(TAG, "GipnyService started")
         val channelId = "gipny_runtime"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(channelId, "gipny runtime", NotificationManager.IMPORTANCE_MIN).apply {
@@ -93,6 +94,7 @@ class GipnyService : Service() {
                 return@execute
             }
             samStarted = true
+            android.util.Log.i(TAG, "SAM bridge ready on port $SAM_PORT")
             if (destroyed) stopEmbeddedRouter()
         }
     }
