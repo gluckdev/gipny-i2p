@@ -96,7 +96,7 @@ func StopSam() {
 	cancel = nil
 }
 
-// freeCString frees a *C.char previously returned by StartSam. Exposed so the
+// FreeCString frees a *C.char previously returned by StartSam. Exposed so the
 // JNI shim can release the error string after copying it into a jstring.
 //
 //export FreeCString
