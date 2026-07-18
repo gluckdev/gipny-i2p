@@ -73,8 +73,9 @@ jobs:
           GIPNY_RELAY_DATA=relay-state/relay nohup \
             ./core/relay/target/release/gipny-relay > relay.log 2>&1 &
           echo $! > relay.pid
+          # dest.pub is written by the relay before the SAM session opens.
           for i in $(seq 1 120); do
-            grep -q 'I2P DESTINATION' relay.log && break
+            [ -s relay-state/relay/dest.pub ] && break
             if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
               echo "relay died during startup"; tail -50 relay.log; exit 1
             fi
@@ -83,10 +84,17 @@ jobs:
           {
             echo '### relay-testnet destination (paste into Settings → relay address)'
             echo '```'
-            grep 'I2P DESTINATION' relay.log || echo 'destination not printed — see relay.log'
+            cat relay-state/relay/dest.pub 2>/dev/null || echo 'dest.pub missing — see logs'
+            echo ''
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          grep 'I2P DESTINATION' relay.log || true
+          cp relay-state/relay/dest.pub dest.pub 2>/dev/null || true
+      # v4+ artifacts are downloadable immediately, long before the job ends.
+      - name: publish destination artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: relay-destination
+          path: dest.pub
       - name: serve (~5.5h)
         run: |
           end=$((SECONDS + 19800))
