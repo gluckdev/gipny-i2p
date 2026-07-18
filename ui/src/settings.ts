@@ -94,6 +94,31 @@ export class SettingsModal {
         ),
         updErr,
 
+        h('div', { class: 'divider-text' }, 'relay'),
+        (() => {
+          const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) — leave empty to disable' }) as HTMLInputElement;
+          const relayErr = h('div', { class: 'err' });
+          Api.getRelayAddress().then((v) => { relayI.value = v; }).catch(() => {});
+          const saveBtn = h('button', {
+            class: 'btn btn-block',
+            onClick: () => busy(saveBtn as HTMLButtonElement, async () => {
+              relayErr.textContent = '';
+              try {
+                await Api.setRelayAddress(relayI.value.trim());
+                store.showToast('relay address saved — will reconnect shortly');
+              } catch (e) { relayErr.textContent = String(e); }
+            }),
+          }, '[ SAVE RELAY ADDRESS ]') as HTMLButtonElement;
+          return h('div', null,
+            h('div', { class: 'hint', style: { marginBottom: '6px' } },
+              'i2p destination of the relay server. Overrides the built-in default. '
+              + 'Takes effect on next reconnect.'),
+            h('div', { class: 'field' }, relayI),
+            relayErr,
+            saveBtn,
+          );
+        })(),
+
         h('div', { class: 'divider-text' }, 'mobile apk'),
         apkInfo,
         apkButtons,

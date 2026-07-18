@@ -25,8 +25,10 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions, StreamOptions};
 
+use sha2::{Digest, Sha256};
+
 use crate::crypto::{IdentityCard, PreKeyBundle, RatchetHeader, X3dhInitial};
-use crate::router::{RouterHandle, DEFAULT_SAM_PORT};
+use crate::router::RouterHandle;
 
 pub type Result<T> = std::result::Result<T, NetError>;
 
@@ -191,6 +193,24 @@ impl I2pNode {
     /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
     pub fn onion_address(&self) -> &str { &self.address }
 
+    /// Short `.b32.i2p` address derived from the destination.
+    ///
+    /// The b32 address is `base32(sha256(binary_destination)).b32.i2p`.
+    /// The destination string uses i2p's base64 variant (`-` and `~` instead of
+    /// `+` and `/`), so we normalise before decoding.
+    pub fn b32_address(&self) -> Option<String> {
+        // Normalise i2p base64 → standard base64.
+        let std_b64: String = self.address
+            .chars()
+            .map(|c| match c { '-' => '+', '~' => '/', c => c })
+            .collect();
+        // Strip the i2p base64 certificate prefix if present (destination format
+        // is variable-length; we hash the full binary blob regardless).
+        let bytes = base64_decode_padded(&std_b64)?;
+        let hash = Sha256::digest(&bytes);
+        Some(format!("{}.b32.i2p", base32_encode_nopad(&hash)))
+    }
+
     pub async fn accept(&self) -> Option<Connection> {
         self.inbound.lock().await.recv().await
     }
@@ -295,9 +315,11 @@ async fn build_session(sam_port: u16, privkey: &str) -> Result<Session<style::St
         nickname: format!("{NICKNAME}-{}-{}", std::process::id(), seq),
         destination: DestinationKind::Persistent { private_key: privkey.to_string() },
         samv3_tcp_port: sam_port,
-        // We publish a leaseSet so our destination is reachable (parity with the
-        // old always-reachable onion service).
-        publish: true,
+        // The client is outbound-only (all messaging is relay-mediated): no need
+        // to advertise a leaseSet or maintain inbound tunnels, which speeds up cold
+        // start. Inbound forwarding via STREAM FORWARD (GIPNY_I2P_ACCEPT) still
+        // works regardless of this flag.
+        publish: false,
         // Forwarded inbound streams carry pure data, no in-band peer destination.
         silent_forward: true,
         // Payloads are already E2E-encrypted and padded to fixed buckets; SAM-level
@@ -366,6 +388,52 @@ fn short_addr(addr: &str) -> String {
     } else {
         format!("{}…{} ({} chars)", &addr[..12], &addr[addr.len() - 6..], addr.len())
     }
+}
+
+/// Decode a standard base64 string, padding it to a multiple of 4 if necessary.
+fn base64_decode_padded(s: &str) -> Option<Vec<u8>> {
+    // Pad to nearest multiple of 4.
+    let pad = (4 - s.len() % 4) % 4;
+    let padded: String = format!("{}{}", s, "=".repeat(pad));
+    // Manual base64 decode using only std (no extra dep needed for this small helper).
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut table = [0xffu8; 256];
+    for (i, &b) in alphabet.iter().enumerate() { table[b as usize] = i as u8; }
+    let mut out = Vec::with_capacity(padded.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits = 0u32;
+    for ch in padded.bytes() {
+        if ch == b'=' { break; }
+        let v = table[ch as usize];
+        if v == 0xff { return None; }
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Base32 encode (RFC 4648 alphabet, lowercase, no padding).
+fn base32_encode_nopad(input: &[u8]) -> String {
+    const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut out = String::new();
+    let mut buf: u64 = 0;
+    let mut bits: u32 = 0;
+    for &byte in input {
+        buf = (buf << 8) | byte as u64;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHA[((buf >> bits) & 0x1f) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPHA[((buf << (5 - bits)) & 0x1f) as usize] as char);
+    }
+    out
 }
 
 /// Backwards-compatible alias: the transport is now i2p, but the rest of the

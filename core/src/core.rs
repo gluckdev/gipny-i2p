@@ -211,6 +211,13 @@ impl Core {
     pub fn my_fingerprint(&self) -> [u8; 32] { self.identity.fingerprint() }
     pub fn db(&self) -> &Arc<Db> { &self.db }
     pub fn my_onion(&self) -> &str { self.node.onion_address() }
+    pub fn my_b32(&self) -> String { self.node.b32_address().unwrap_or_default() }
+
+    pub fn get_relay_address(&self) -> String { self.relay_onion() }
+    pub fn set_relay_address(&self, addr: &str) -> Result<()> {
+        self.db.set_setting(SETTING_RELAY_ONION, addr.trim().as_bytes())?;
+        Ok(())
+    }
 
     pub fn display_name(&self) -> Result<String> {
         let v = self.db.get_setting("display_name")?;

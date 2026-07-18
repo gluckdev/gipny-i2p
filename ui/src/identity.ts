@@ -14,6 +14,8 @@ export class IdentityModal {
   el: HTMLElement;
   constructor(store: Store, close: () => void) {
     const id = store.identity.get();
+    const b32Slot = h('div', { class: 'card-block' }, '…');
+    Api.myB32().then((b: string) => { b32Slot.textContent = b || '(unavailable)'; }).catch(() => { b32Slot.textContent = '?'; });
     const bundleSlot = h('div', { class: 'card-block' }, 'loading bundle...');
     const nameI = h('input', {
       class: 'input', value: store.displayName.get(),
@@ -63,8 +65,10 @@ export class IdentityModal {
           ),
           h('div', { class: 'hint' }, 'embedded in shared card'),
         ),
-        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'onion'),
+        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'i2p address (full)'),
         h('div', { class: 'card-block' }, id?.onion ?? ''),
+        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'i2p address (b32)'),
+        b32Slot,
         h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'fingerprint'),
         h('div', { class: 'card-block fp' }, id ? fmtFp(id.fingerprint) : ''),
         h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'card (share this)'),
