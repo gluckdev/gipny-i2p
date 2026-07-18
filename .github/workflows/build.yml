@@ -1,9 +1,8 @@
 name: build
 
-# CI for the i2p fork. Builds the bundled go-i2p SAM router (pure Go, cross-
-# compiled) and the Rust workspace on GitHub-hosted runners. This does not run
-# the full Tauri bundler (installers) — see docker/ + build.sh for release
-# artifacts — but it proves everything compiles on stock runners.
+# Compile check for the i2p fork: builds the bundled go-i2p SAM router (pure Go)
+# and the Rust workspace on GitHub-hosted runners. Full release artifacts
+# (installers) are produced by release.yml on a tag. All builds are CI-only.
 
 on:
   push:
