@@ -2,8 +2,8 @@ name: release
 
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
 # Builds the bundled pure-Go i2p router and every desktop artifact (Linux
-# AppImage/deb + Windows NSIS/zip). Android is built best-effort and flagged
-# experimental until the in-process router embedding (JNI/gomobile) lands.
+# AppImage/deb + Windows NSIS/zip), plus Android (i2p router embedded
+# in-process via JNI; see i2p-router/android_export.go).
 #
 # Trigger: push a tag `v*` (e.g. v0.3.0) or run manually.
 
@@ -139,17 +139,14 @@ jobs:
           path: core/target/release/bundle/**/*.AppImage
 
   # ---------------------------------------------------------------------------
-  # 3. Android (EXPERIMENTAL). Builds the APK, but the i2p router is not yet
-  #    embedded in-process (JNI/gomobile pending) — this artifact will not have
-  #    working transport until that lands. Kept so the build path stays green.
+  # 3. Android. Builds the APK with the go-i2p router embedded in-process via
+  #    JNI: i2p-router/android_export.go + jni_shim_android.c are cross-compiled
+  #    (cgo, buildmode=c-shared) into a per-ABI libgipnyi2p.so by the
+  #    `buildGoRouterJniLibs` Gradle task (core/gen/android/app/build.gradle.kts),
+  #    loaded and started by GipnyService.kt on service start.
   # ---------------------------------------------------------------------------
   android:
-    name: android (parked — needs JNI router)
-    # PARKED until the go-i2p router is embedded in-process via JNI/gomobile.
-    # Until then an APK has no working i2p transport, and building one only adds
-    # NDK/gradle failure noise. Flip to `if: ${{ github.event_name == 'workflow_dispatch' }}`
-    # (or remove) once the JNI embedding lands.
-    if: false
+    name: android
     needs: router
     runs-on: ubuntu-22.04
     continue-on-error: true
@@ -158,9 +155,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v3
+      - name: install NDK
+        run: |
+          sdkmanager --install "ndk;27.3.13750724"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
       - name: install tauri-cli
@@ -168,10 +173,10 @@ jobs:
       - name: build frontend
         run: cd ui && npm ci && npm run build
       - name: tauri android build
-        run: cd core && cargo tauri android build --apk --target aarch64 || true
+        run: cd core && cargo tauri android build --apk --target aarch64
       - uses: actions/upload-artifact@v7
         with:
-          name: gipny-android-experimental
+          name: gipny-android
           path: core/gen/android/app/build/outputs/**/*.apk
           if-no-files-found: warn
 

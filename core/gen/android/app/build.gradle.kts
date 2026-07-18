@@ -57,6 +57,37 @@ rust {
     rootDirRel = "../../../"
 }
 
+// Builds the embedded go-i2p SAM router (see i2p-router/android_export.go) as
+// a per-ABI JNI .so, dropped into src/main/jniLibs so it's packaged alongside
+// the Rust/Tauri cdylib. Loaded + started from GipnyService.kt via JNI.
+// Skippable with -PskipGoRouter for environments without a Go/NDK toolchain
+// (e.g. plain `assembleDebug` iteration on non-router code).
+if (!project.hasProperty("skipGoRouter")) {
+    val goRouterAbis = listOf(
+        Triple("arm64", "arm64-v8a", "aarch64-linux-android"),
+        Triple("amd64", "x86_64", "x86_64-linux-android")
+    )
+    val goRouterUmbrella = tasks.register("buildGoRouterJniLibs") {
+        group = "router"
+        description = "Build the embedded i2p router JNI .so for all supported ABIs"
+    }
+    for ((goArch, abi, triple) in goRouterAbis) {
+        val abiCapitalized = abi.replace("-", "_").replaceFirstChar { it.uppercase() }
+        val abiTask = tasks.register("buildGoRouter$abiCapitalized", GoRouterTask::class.java) {
+            group = "router"
+            description = "Build the embedded i2p router JNI .so for $abi"
+            rootDirRel = "../../.."
+            this.goArch = goArch
+            this.abi = abi
+            ndkTriple = triple
+        }
+        goRouterUmbrella.configure { dependsOn(abiTask) }
+    }
+    tasks.matching { it.name.endsWith("JniLibFolders") }.configureEach {
+        dependsOn(goRouterUmbrella)
+    }
+}
+
 dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
