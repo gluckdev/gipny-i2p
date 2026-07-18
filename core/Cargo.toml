@@ -46,7 +46,7 @@ png = "0.18"
 tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rodio = { version = "0.22", default-features = false, features = ["wav"] }
+rodio = { version = "0.22", default-features = false, features = ["wav", "playback"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
