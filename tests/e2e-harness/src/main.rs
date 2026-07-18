@@ -220,7 +220,6 @@ async fn main() -> Result<()> {
 
     let a_connect_notify = Arc::new(Notify::new());
     let a_connect_at: Arc<Mutex<Option<Instant>>> = Default::default();
-
     let b_connect_notify = Arc::new(Notify::new());
     let b_connect_at: Arc<Mutex<Option<Instant>>> = Default::default();
 
@@ -253,8 +252,10 @@ async fn main() -> Result<()> {
                     }
                     SessionEvent::IncomingPayload { payload, .. } => {
                         eprintln!("[e2e] bot-a: received '{}'", payload.body);
-                        echoes.lock().await.push((payload.body, Instant::now()));
-                        echo_notify.notify_one();
+                        if payload.body.starts_with("echo:") {
+                            echoes.lock().await.push((payload.body, Instant::now()));
+                            echo_notify.notify_one();
+                        }
                     }
                     _ => {}
                 }
@@ -313,16 +314,38 @@ async fn main() -> Result<()> {
         let notify = a_connect_notify.clone();
         let at = a_connect_at.clone();
         async move {
-            notify.notified().await;
-            at.lock().await.expect("bot-a relay connection timestamp should be set before notify fires")
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            loop {
+                if let Some(ts) = *at.lock().await {
+                    return ts;
+                }
+                notified.as_mut().enable();
+                if let Some(ts) = *at.lock().await {
+                    return ts;
+                }
+                notified.as_mut().await;
+                notified.set(notify.notified());
+            }
         }
     };
     let b_connected_fut = {
         let notify = b_connect_notify.clone();
         let at = b_connect_at.clone();
         async move {
-            notify.notified().await;
-            at.lock().await.expect("bot-b relay connection timestamp should be set before notify fires")
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            loop {
+                if let Some(ts) = *at.lock().await {
+                    return ts;
+                }
+                notified.as_mut().enable();
+                if let Some(ts) = *at.lock().await {
+                    return ts;
+                }
+                notified.as_mut().await;
+                notified.set(notify.notified());
+            }
         }
     };
 
@@ -382,11 +405,18 @@ async fn main() -> Result<()> {
         let echoes_ref = a_echoes.clone();
         let echo_notify_ref = a_echo_notify.clone();
         tokio::time::timeout(remaining, async move {
+            let notified = echo_notify_ref.notified();
+            tokio::pin!(notified);
             loop {
                 if echoes_ref.lock().await.len() >= n_messages {
                     return;
                 }
-                echo_notify_ref.notified().await;
+                notified.as_mut().enable();
+                if echoes_ref.lock().await.len() >= n_messages {
+                    return;
+                }
+                notified.as_mut().await;
+                notified.set(echo_notify_ref.notified());
             }
         })
         .await
