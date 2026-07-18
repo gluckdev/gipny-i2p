@@ -396,7 +396,28 @@ async fn vault_create(
     if display.is_empty() { return Err("display name required".into()); }
     if display.chars().count() > 64 { return Err("display name too long (max 64)".into()); }
     let dir = profile_dir(&ctx, &profile)?;
-    if Vault::exists(&dir) { return Err("profile already exists".into()); }
+    if Vault::exists(&dir) {
+        // A previous first run may have been killed between Vault::create and
+        // the end of boot (on mobile the heavy KDF + i2p bootstrap made that
+        // window wide). If the same passphrase opens the vault and the profile
+        // never finished initializing (display name is only written at the very
+        // end), resume initialization instead of dead-ending.
+        let vault = Arc::new(Vault::open(&dir).map_err(err)?);
+        let mk = match vault.unlock(&pass) {
+            Ok(UnlockOutcome::Primary(k)) => k,
+            _ => return Err("profile already exists".into()),
+        };
+        {
+            let db = gipny_libcore::db::Db::open(&dir.join("data.db"), &mk).map_err(err)?;
+            if db.get_setting("display_name").map_err(err)?.is_some() {
+                return Err("profile already exists".into());
+            }
+        }
+        boot(&ctx, app, vault, &pass, &profile, &dir).await?;
+        let core = ctx.core.lock().await.clone().ok_or("boot failed")?;
+        core.db().set_setting("display_name", display.as_bytes()).map_err(err)?;
+        return Ok(());
+    }
     let mode = if duress_wipe { DuressMode::Wipe } else { DuressMode::Decoy };
     let vault = Arc::new(
         Vault::create(&dir, &pass, duress_pass.as_deref(), mode, max_attempts).map_err(err)?,
@@ -1355,7 +1376,12 @@ async fn import_identity_to_profile(
     let backup: BackupV2 = bincode::deserialize(&plain).map_err(|_| "backup format unknown / corrupted".to_string())?;
     if backup.version != 2 { return Err(format!("unsupported backup version: {}", backup.version)); }
     let dir = ctx.base_dir.join("profiles").join(&profile);
-    if dir.exists() { return Err("profile already exists".into()); }
+    if dir.exists() {
+        if Vault::exists(&dir) { return Err("profile already exists".into()); }
+        // Remnants of an interrupted restore (dir created, vault never
+        // written) — clear them and retry instead of dead-ending.
+        std::fs::remove_dir_all(&dir).map_err(err)?;
+    }
     std::fs::create_dir_all(&dir).map_err(err)?;
     let vault = gipny_libcore::security::Vault::create(&dir, &vault_pass, None, gipny_libcore::security::DuressMode::Wipe, 0).map_err(err)?;
     let mk = match vault.unlock(&vault_pass).map_err(err)? {

@@ -36,7 +36,17 @@ const THROTTLE_MS: u64 = 400;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct ArgonParams { pub m: u32, pub t: u32, pub p: u32 }
+
+// Desktop: 256 MiB / t=4 — comfortably above OWASP recommendations.
+// Mobile: 64 MiB / t=3 — still strong, but fits a phone: the 256 MiB spike on
+// top of a WebView made first-run/unlock take many seconds and put the process
+// in the OOM-killer's crosshairs (observed as a killed first run on Android).
+// The params live in the vault header, so existing vaults keep whatever cost
+// they were created with.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl Default for ArgonParams { fn default() -> Self { Self { m: 262144, t: 4, p: 1 } } }
+#[cfg(any(target_os = "android", target_os = "ios"))]
+impl Default for ArgonParams { fn default() -> Self { Self { m: 65536, t: 3, p: 1 } } }
 
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DuressMode { Wipe, Decoy }
@@ -95,11 +105,23 @@ impl Vault {
         duress_mode: DuressMode,
         max_attempts: u32,
     ) -> Result<Self> {
+        Self::create_with_params(dir, pass, duress_pass, duress_mode, max_attempts, ArgonParams::default())
+    }
+
+    /// Like [`Vault::create`] with explicit Argon2 cost parameters (tests and
+    /// benchmarks; production callers use the platform default).
+    pub fn create_with_params(
+        dir: &Path,
+        pass: &str,
+        duress_pass: Option<&str>,
+        duress_mode: DuressMode,
+        max_attempts: u32,
+        argon: ArgonParams,
+    ) -> Result<Self> {
         if pass.is_empty() { return Err(SecurityError::InvalidPassphrase); }
         fs::create_dir_all(dir)?;
         let path = Self::path_of(dir);
         let device = DeviceBind::ensure(dir)?;
-        let argon = ArgonParams::default();
         let (salt_primary, salt_duress) = (random32(), random32());
         let nonce_primary = random24();
 

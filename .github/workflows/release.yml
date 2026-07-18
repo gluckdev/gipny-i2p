@@ -120,6 +120,9 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop-xbox:
     name: desktop xbox (linux)
+    # Parked per product decision (2026-07-18): the Xbox appearance variant is
+    # postponed. Flip back to `needs: router` alone to re-enable.
+    if: ${{ false }}
     needs: router
     runs-on: ubuntu-22.04
     steps:

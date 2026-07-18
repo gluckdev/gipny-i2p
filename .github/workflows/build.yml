@@ -87,6 +87,30 @@ jobs:
           cargo build --release -p gipny
 
   # ---------------------------------------------------------------------------
+  # Rust tests: vault lifecycle, first-run recovery, KDF timing report.
+  # Timing lines ([timing] …) are lifted into the job summary so unlock speed
+  # is visible on every build.
+  # ---------------------------------------------------------------------------
+  tests:
+    name: rust tests (vault/kdf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: run libcore tests
+        run: cargo test --release -p gipny-libcore -- --nocapture 2>&1 | tee test-out.txt
+      - name: timing summary
+        if: always()
+        run: |
+          {
+            echo '### Vault / KDF timings'
+            echo '```'
+            grep -a "\[timing\]" test-out.txt || echo 'no timing lines captured'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
   # Frontend type-check (classic UI).
   # ---------------------------------------------------------------------------
   ui:

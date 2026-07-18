@@ -29,11 +29,37 @@ futures = "0.3"
 libc = "0.2"
 
 [profile.release]
-# "s" over 3: the app is network-bound (i2p tunnels dominate latency) and the
-# slow path that matters, Argon2id, is deliberately slow by parameter choice —
-# trading a little raw crypto throughput for a substantially smaller binary.
+# "s" over 3 for the app code: it is network-bound (i2p tunnels dominate
+# latency), so we trade raw throughput for a smaller binary. The crypto crates
+# below are pinned back to opt-level 3 — KDF/AEAD/curve math is the one place
+# compiler opts translate directly into user-visible unlock/handshake time.
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[profile.release.package.argon2]
+opt-level = 3
+[profile.release.package.blake2]
+opt-level = 3
+[profile.release.package.sha2]
+opt-level = 3
+[profile.release.package.digest]
+opt-level = 3
+[profile.release.package.hkdf]
+opt-level = 3
+[profile.release.package.hmac]
+opt-level = 3
+[profile.release.package.chacha20]
+opt-level = 3
+[profile.release.package.chacha20poly1305]
+opt-level = 3
+[profile.release.package.poly1305]
+opt-level = 3
+[profile.release.package.curve25519-dalek]
+opt-level = 3
+[profile.release.package.ed25519-dalek]
+opt-level = 3
+[profile.release.package.x25519-dalek]
+opt-level = 3
