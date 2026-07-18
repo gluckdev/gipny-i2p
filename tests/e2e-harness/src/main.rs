@@ -252,9 +252,13 @@ async fn main() -> Result<()> {
                         eprintln!("[e2e] bot-a: relay disconnected");
                     }
                     SessionEvent::IncomingPayload { payload, .. } => {
-                        eprintln!("[e2e] bot-a: received '{}'", payload.body);
-                        echoes.lock().await.push((payload.body, Instant::now()));
-                        echo_notify.notify_one();
+                        if payload.body.starts_with("echo:") {
+                            eprintln!("[e2e] bot-a: received echo '{}'", payload.body);
+                            echoes.lock().await.push((payload.body, Instant::now()));
+                            echo_notify.notify_one();
+                        } else {
+                            eprintln!("[e2e] bot-a: ignoring non-echo payload '{}'", payload.body);
+                        }
                     }
                     _ => {}
                 }
@@ -313,16 +317,26 @@ async fn main() -> Result<()> {
         let notify = a_connect_notify.clone();
         let at = a_connect_at.clone();
         async move {
-            notify.notified().await;
-            at.lock().await.expect("bot-a relay connection timestamp should be set before notify fires")
+            loop {
+                let notified = notify.notified();
+                if let Some(instant) = *at.lock().await {
+                    return instant;
+                }
+                notified.await;
+            }
         }
     };
     let b_connected_fut = {
         let notify = b_connect_notify.clone();
         let at = b_connect_at.clone();
         async move {
-            notify.notified().await;
-            at.lock().await.expect("bot-b relay connection timestamp should be set before notify fires")
+            loop {
+                let notified = notify.notified();
+                if let Some(instant) = *at.lock().await {
+                    return instant;
+                }
+                notified.await;
+            }
         }
     };
 
@@ -383,10 +397,11 @@ async fn main() -> Result<()> {
         let echo_notify_ref = a_echo_notify.clone();
         tokio::time::timeout(remaining, async move {
             loop {
+                let notified = echo_notify_ref.notified();
                 if echoes_ref.lock().await.len() >= n_messages {
                     return;
                 }
-                echo_notify_ref.notified().await;
+                notified.await;
             }
         })
         .await
