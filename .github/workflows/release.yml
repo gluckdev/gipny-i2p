@@ -87,7 +87,7 @@ jobs:
       - name: build frontend
         run: cd ui && npm ci && npm run build
       - name: tauri build
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         with:
           projectPath: core
           args: --bundles ${{ matrix.bundles }}
@@ -129,7 +129,7 @@ jobs:
         env: { VITE_THEME: xbox }
         run: cd ui && npm ci && npm run build
       - name: tauri build (xbox config)
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         with:
           projectPath: core
           args: --config tauri.xbox.conf.json --bundles appimage
