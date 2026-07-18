@@ -36,7 +36,9 @@ Run:
 cargo run
 ```
 
-On first start, the bot will bootstrap Tor (~1-2 min) and print its identity card:
+The bot spawns the bundled i2p router (`gipny-i2p-router`; resolved from
+`GIPNY_I2P_BIN`, next to the executable, or `PATH`). On first start the router
+reseeds and builds tunnels (~1-3 min), then the bot prints its identity card:
 ```
 [bot] Identity card (share with users):
   sign_pk: abc123...
@@ -51,9 +53,9 @@ Users add the bot as a contact in gipny client using these keys.
 
 ```rust
 Bot::builder()
-    .data_dir(path)          // required: where to store keys/db/tor state
+    .data_dir(path)          // required: where to store keys/db/i2p router state
     .display_name("name")    // optional: shown to users
-    .relay("abc...onion")    // optional: override default relay
+    .relay("base64dest...")  // optional: override default relay (i2p destination)
     .on_message(|ctx, msg| async { ... })
     .on_command("name", |ctx, args| async { ... })
     .on_callback(|ctx, data| async { ... })
@@ -248,7 +250,8 @@ Bot's identity is stored in `/var/lib/my-bot/bot.db`. Back this up — losing it
 ```
 data-dir/
 ├── bot.db           — SQLite: contacts, sessions, prekeys, messages
-├── tor/             — Tor cache+state
+├── i2p/             — i2p router state (the network address itself is
+│                      ephemeral: regenerated every session, never stored)
 └── attachments/     — encrypted attachment blobs
 ```
 

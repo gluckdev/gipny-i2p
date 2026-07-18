@@ -29,6 +29,8 @@ use sha2::{Digest, Sha256};
 
 use crate::crypto::{IdentityCard, PreKeyBundle, RatchetHeader, X3dhInitial};
 use crate::router::RouterHandle;
+#[cfg(target_os = "android")]
+use crate::router::DEFAULT_SAM_PORT;
 
 pub type Result<T> = std::result::Result<T, NetError>;
 

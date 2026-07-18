@@ -54,7 +54,6 @@ fn register_aumid() {
 #[cfg(not(target_os = "windows"))]
 fn register_aumid() {}
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Best-effort overwrite-and-remove of the app-global debug.log (if any). Called
 /// on a duress/attempt-limit wipe so no plaintext log survives outside the
 /// per-profile dir that `secure_wipe_dir` scrubs.
@@ -71,6 +70,7 @@ fn scrub_debug_log(base_dir: &std::path::Path) {
     let _ = std::fs::remove_file(&p);
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     register_aumid();
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
