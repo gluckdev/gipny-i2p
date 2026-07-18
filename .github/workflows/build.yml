@@ -118,7 +118,7 @@ jobs:
           cache-dependency-path: i2p-router/go.sum
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: '17' }
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
       - name: install NDK
         run: |
           sdkmanager --install "ndk;27.3.13750724"
