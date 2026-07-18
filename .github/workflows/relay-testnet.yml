@@ -44,7 +44,7 @@ jobs:
         with:
           workspaces: core/relay
       - name: restore relay state
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: relay-state
           key: relay-testnet-state-${{ github.run_id }}
@@ -111,7 +111,7 @@ jobs:
           tail -20 relay.log || true
       - name: save relay state
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: relay-state
           key: relay-testnet-state-${{ github.run_id }}
