@@ -453,24 +453,10 @@ async fn boot(
             }
         }
     }
-    // Load the i2p identity from the encrypted vault (never from a plaintext
-    // file) — it is only recoverable with the passphrase, like the rest of the
-    // profile. On first run the node generates one and we persist it here.
-    let saved_priv = db.get_setting("i2p_priv").ok().flatten();
-    let saved_pub = db.get_setting("i2p_pub").ok().flatten();
-    let identity = match (saved_priv, saved_pub) {
-        (Some(k), Some(p)) => Some((
-            String::from_utf8_lossy(&k).into_owned(),
-            String::from_utf8_lossy(&p).into_owned(),
-        )),
-        _ => None,
-    };
-    let had_identity = identity.is_some();
-    let node = Arc::new(I2pNode::start(dir, identity).await.map_err(err)?);
-    if !had_identity {
-        db.set_setting("i2p_priv", node.identity_key().as_bytes()).map_err(err)?;
-        db.set_setting("i2p_pub", node.onion_address().as_bytes()).map_err(err)?;
-    }
+    // Ephemeral per-session i2p address: the node regenerates its destination
+    // every launch (identity is the vault keypair, and the relay routes by that
+    // key, not by address — so nothing about the address needs persisting).
+    let node = Arc::new(I2pNode::start(dir).await.map_err(err)?);
     let warning: Option<String> = None;
     let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
     let app2 = app.clone();

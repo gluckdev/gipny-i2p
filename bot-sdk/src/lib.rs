@@ -226,23 +226,8 @@ impl Bot {
         std::fs::create_dir_all(&self.data_dir)?;
         let db_path = self.data_dir.join("bot.db");
         let db = Arc::new(open_bot_db(&self.data_dir, &db_path, self.vault_passphrase.as_deref())?);
-        // i2p identity lives in the (encrypted) bot DB, not a plaintext file.
-        let saved = match (
-            db.get_setting("i2p_priv").ok().flatten(),
-            db.get_setting("i2p_pub").ok().flatten(),
-        ) {
-            (Some(k), Some(p)) => Some((
-                String::from_utf8_lossy(&k).into_owned(),
-                String::from_utf8_lossy(&p).into_owned(),
-            )),
-            _ => None,
-        };
-        let had_identity = saved.is_some();
-        let node = Arc::new(TorNode::start(&self.data_dir, saved).await?);
-        if !had_identity {
-            db.set_setting("i2p_priv", node.identity_key().as_bytes())?;
-            db.set_setting("i2p_pub", node.onion_address().as_bytes())?;
-        }
+        // Ephemeral per-session i2p address (relay routes by key, not address).
+        let node = Arc::new(TorNode::start(&self.data_dir).await?);
         let (session, mut events) = SessionManager::start(self.data_dir.clone(), db, node).await?;
 
         if let Some(onion) = &self.relay_onion {

@@ -137,32 +137,24 @@ pub struct I2pNode {
 }
 
 impl I2pNode {
-    /// Start the node.
+    /// Start the node with a fresh, **ephemeral per-session** i2p destination.
     ///
-    /// `identity` is the persistent `(private_key, public_destination)` loaded
-    /// from the caller's **encrypted** store (SQLCipher vault). Pass `None` on
-    /// first run: a fresh destination is generated and exposed via
-    /// [`identity_key`](Self::identity_key) / [`onion_address`](Self::onion_address)
-    /// so the caller can persist it *inside the vault*. The transport never
-    /// writes the identity key to disk in the clear.
-    pub async fn start(data_dir: &Path, identity: Option<(String, String)>) -> Result<Self> {
+    /// The stable identity is the ed25519/x25519 keypair in the vault, and the
+    /// relay routes by that key — not by i2p address — so the network address is
+    /// deliberately regenerated every session for unlinkability. Nothing is
+    /// persisted to disk; the key stays within a session only (for `recreate`).
+    pub async fn start(data_dir: &Path) -> Result<Self> {
         #[cfg(target_os = "android")]
         let router = RouterHandle::attach(DEFAULT_SAM_PORT).await?;
         #[cfg(not(target_os = "android"))]
         let router = RouterHandle::start(data_dir, None).await?;
 
         let sam_port = router.sam_port();
-        let (privkey, address) = match identity {
-            Some((priv_key, public_dest)) => (priv_key, public_dest),
-            None => {
-                eprintln!("[i2p] generating persistent destination (first run)...");
-                RouterApi::new(sam_port)
-                    .generate_destination()
-                    .await
-                    .map(|(dest, key)| (key, dest)) // (public, private) -> (private, public)
-                    .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?
-            }
-        };
+        eprintln!("[i2p] generating ephemeral destination for this session...");
+        let (address, privkey) = RouterApi::new(sam_port)
+            .generate_destination()
+            .await
+            .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?;
         eprintln!("[i2p] destination = {}", short_addr(&address));
 
         let session = build_session(sam_port, &privkey).await?;
@@ -196,12 +188,8 @@ impl I2pNode {
         // The router child is torn down when `self._router` (this node) drops.
     }
 
-    /// Our shareable i2p address (kept named `onion_address` for API parity).
+    /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
     pub fn onion_address(&self) -> &str { &self.address }
-
-    /// The persistent private key blob for this identity. The caller must store
-    /// this **only inside the encrypted vault** (never in the clear on disk).
-    pub fn identity_key(&self) -> &str { self.privkey.as_str() }
 
     pub async fn accept(&self) -> Option<Connection> {
         self.inbound.lock().await.recv().await
