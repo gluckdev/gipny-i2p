@@ -42,7 +42,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: router-${{ matrix.goos }}-${{ matrix.goarch }}
           path: i2p-router/${{ matrix.out }}
@@ -91,7 +91,7 @@ jobs:
         with:
           projectPath: core
           args: --bundles ${{ matrix.bundles }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gipny-${{ runner.os }}
           path: |
@@ -133,7 +133,7 @@ jobs:
         with:
           projectPath: core
           args: --config tauri.xbox.conf.json --bundles appimage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gipny-xbox-Linux
           path: core/target/release/bundle/**/*.AppImage
@@ -169,7 +169,7 @@ jobs:
         run: cd ui && npm ci && npm run build
       - name: tauri android build
         run: cd core && cargo tauri android build --apk --target aarch64 || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-experimental
           path: core/gen/android/app/build/outputs/**/*.apk
