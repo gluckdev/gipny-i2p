@@ -24,6 +24,7 @@ core/resources/gipny-i2p-router.exe
 core/gen/android/.gradle/
 core/gen/android/build/
 core/gen/android/app/build/
+core/gen/android/app/src/main/jniLibs/
 core/gen/android/buildSrc/build/
 core/gen/android/buildSrc/.gradle/
 core/gen/android/.tauri/

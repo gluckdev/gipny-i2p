@@ -99,3 +99,43 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: cd ui && npm ci && npm run build
+
+  # ---------------------------------------------------------------------------
+  # Android integration: build an installable debug APK and assert that the
+  # in-process go-i2p JNI library is actually packaged for arm64.
+  # ---------------------------------------------------------------------------
+  android:
+    name: android APK
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - name: install NDK
+        run: |
+          sdkmanager --install "ndk;27.3.13750724"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: install tauri-cli
+        run: cargo install tauri-cli --version '^2' --locked
+      - name: build frontend
+        run: cd ui && npm ci && npm run build
+      - name: build Android APK
+        run: cd core && cargo tauri android build --debug --apk --target aarch64
+      - name: verify embedded router
+        run: |
+          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipnyi2p.so'
