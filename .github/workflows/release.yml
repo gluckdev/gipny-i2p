@@ -98,11 +98,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-${{ runner.os }}
+          # The app crate is a workspace member — cargo's target dir is at the
+          # repo root, not under core/.
+          if-no-files-found: error
           path: |
-            core/target/release/bundle/**/*.AppImage
-            core/target/release/bundle/**/*.deb
-            core/target/release/bundle/**/*-setup.exe
-            core/target/release/bundle/**/*.msi
+            target/release/bundle/**/*.AppImage
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*-setup.exe
+            target/release/bundle/**/*.msi
 
   # ---------------------------------------------------------------------------
   # 2b. Xbox appearance variant (separate app id/name). Same backend, only a
@@ -142,7 +145,8 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-xbox-Linux
-          path: core/target/release/bundle/**/*.AppImage
+          if-no-files-found: error
+          path: target/release/bundle/**/*.AppImage
 
   # ---------------------------------------------------------------------------
   # 3. Android. Builds the APK with the go-i2p router embedded in-process via
