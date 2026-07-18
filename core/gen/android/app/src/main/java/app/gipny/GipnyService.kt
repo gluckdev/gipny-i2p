@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import java.util.concurrent.Executors
 
 class GipnyService : Service() {
     // Embedded go-i2p SAM router (see i2p-router/android_export.go +
@@ -20,12 +21,13 @@ class GipnyService : Service() {
     private external fun nativeStartSam(dataDir: String, samListen: String): String?
     private external fun nativeStopSam()
 
+    private val routerExecutor = Executors.newSingleThreadExecutor()
     private var samStarted = false
+    @Volatile private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startEmbeddedRouter()
         val channelId = "gipny_runtime"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(channelId, "gipny runtime", NotificationManager.IMPORTANCE_MIN).apply {
@@ -56,11 +58,11 @@ class GipnyService : Service() {
             .setContentIntent(tap)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
-            startForeground(NOTIFICATION_ID, notification, type)
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        startEmbeddedRouter()
         return START_STICKY
     }
 
@@ -69,24 +71,30 @@ class GipnyService : Service() {
     }
 
     override fun onDestroy() {
-        stopEmbeddedRouter()
+        destroyed = true
+        routerExecutor.execute { stopEmbeddedRouter() }
+        routerExecutor.shutdown()
         super.onDestroy()
     }
 
     private fun startEmbeddedRouter() {
-        if (samStarted || !libLoaded) return
-        val routerDir = java.io.File(filesDir, "gipny/i2p").absolutePath
-        val err = try {
-            nativeStartSam(routerDir, "127.0.0.1:$SAM_PORT")
-        } catch (t: UnsatisfiedLinkError) {
-            android.util.Log.e(TAG, "libgipnyi2p not loaded", t)
-            return
+        if (!libLoaded || destroyed) return
+        routerExecutor.execute {
+            if (samStarted || destroyed) return@execute
+            val routerDir = java.io.File(filesDir, "gipny/i2p/router").absolutePath
+            val err = try {
+                nativeStartSam(routerDir, "127.0.0.1:$SAM_PORT")
+            } catch (t: UnsatisfiedLinkError) {
+                android.util.Log.e(TAG, "libgipnyi2p not loaded", t)
+                return@execute
+            }
+            if (err != null) {
+                android.util.Log.e(TAG, "failed to start embedded i2p router: $err")
+                return@execute
+            }
+            samStarted = true
+            if (destroyed) stopEmbeddedRouter()
         }
-        if (err != null) {
-            android.util.Log.e(TAG, "failed to start embedded i2p router: $err")
-            return
-        }
-        samStarted = true
     }
 
     private fun stopEmbeddedRouter() {

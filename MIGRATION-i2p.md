@@ -10,7 +10,8 @@ destination.
 > Status: transport core done and the bundled router is verified to build and
 > answer SAMv3 (`HELLO REPLY RESULT=OK VERSION=3.3`). A real i2p relay still has
 > to be deployed and its destination baked in (see “Deploy a relay”). Android
-> in‑process router embedding (JNI) is pending.
+> embeds the router in-process through JNI and remains experimental pending a
+> broader real-device test matrix.
 
 ---
 
@@ -82,7 +83,9 @@ go‑i2p proves unstable.
   copy Tor → i2p (`BootStage` `'tor'` → `'i2p'`). Address fields/labels are
   opaque and otherwise unchanged.
 - **`core/tauri.conf.json`** — bundles `resources/gipny-i2p-router*`.
-- **Android** `GipnyService.kt` — notification copy “tor” → “i2p”.
+- **Android** — Gradle cross-compiles the Go router as a per-ABI JNI library;
+  `GipnyService.kt` starts it off the main thread and keeps SAM alive in the
+  foreground service.
 
 ### Deliberately unchanged
 `crypto.rs`, `db.rs` (schema, incl. the `onion_address`/`onion` columns —
@@ -122,7 +125,7 @@ router on a free port and share one relay.
 
 ### CI / releases
 All builds run on GitHub Actions — `build.yml` (compile check) and `release.yml`
-(AppImage/deb + NSIS, router bundled). Android is built experimental‑only.
+(AppImage/deb + NSIS + Android arm64 APK, router bundled).
 
 ---
 
@@ -154,5 +157,5 @@ their i2p address but have no relay to reach — messaging is idle by design.
 - Client outbound‑only mode (`publish:false`, fewer inbound tunnels) — faster
   cold start, since the client never accepts (relay‑mediated). Behavior change,
   left off for parity.
-- Android: embed the go router via JNI/gomobile started from `GipnyService`.
+- Expand Android validation across physical devices and additional ABIs.
 - Large‑file throughput: bump outbound tunnel quantity during transfers.
