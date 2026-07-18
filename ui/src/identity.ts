@@ -15,7 +15,10 @@ export class IdentityModal {
   constructor(store: Store, close: () => void) {
     const id = store.identity.get();
     const b32Slot = h('div', { class: 'card-block' }, '…');
-    Api.myB32().then((b: string) => { b32Slot.textContent = b || '(unavailable)'; }).catch(() => { b32Slot.textContent = '?'; });
+    Api.myB32().then((b: string) => { b32Slot.textContent = b || '(unavailable)'; }).catch((e) => {
+      console.error('[identity] b32 address computation failed:', e);
+      b32Slot.textContent = '(unavailable)';
+    });
     const bundleSlot = h('div', { class: 'card-block' }, 'loading bundle...');
     const nameI = h('input', {
       class: 'input', value: store.displayName.get(),

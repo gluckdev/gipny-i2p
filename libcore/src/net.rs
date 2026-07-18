@@ -200,12 +200,7 @@ impl I2pNode {
     /// `+` and `/`), so we normalise before decoding.
     pub fn b32_address(&self) -> Option<String> {
         // Normalise i2p base64 → standard base64.
-        let std_b64: String = self.address
-            .chars()
-            .map(|c| match c { '-' => '+', '~' => '/', c => c })
-            .collect();
-        // Strip the i2p base64 certificate prefix if present (destination format
-        // is variable-length; we hash the full binary blob regardless).
+        let std_b64 = self.address.replace('-', "+").replace('~', "/");
         let bytes = base64_decode_padded(&std_b64)?;
         let hash = Sha256::digest(&bytes);
         Some(format!("{}.b32.i2p", base32_encode_nopad(&hash)))
@@ -390,9 +385,9 @@ fn short_addr(addr: &str) -> String {
     }
 }
 
-/// Decode a standard base64 string, padding it to a multiple of 4 if necessary.
+/// Decode a standard base64 string, padding it to the next multiple of 4 if necessary.
 fn base64_decode_padded(s: &str) -> Option<Vec<u8>> {
-    // Pad to nearest multiple of 4.
+    // (4 - len%4) % 4 gives the number of '=' needed to reach the next 4-byte boundary.
     let pad = (4 - s.len() % 4) % 4;
     let padded: String = format!("{}{}", s, "=".repeat(pad));
     // Manual base64 decode using only std (no extra dep needed for this small helper).

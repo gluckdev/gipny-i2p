@@ -96,7 +96,7 @@ export class SettingsModal {
 
         h('div', { class: 'divider-text' }, 'relay'),
         (() => {
-          const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) — leave empty to disable' }) as HTMLInputElement;
+          const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) — leave empty to disable', 'aria-label': 'relay i2p destination' }) as HTMLInputElement;
           const relayErr = h('div', { class: 'err' });
           Api.getRelayAddress().then((v) => { relayI.value = v; }).catch(() => {});
           const saveBtn = h('button', {
