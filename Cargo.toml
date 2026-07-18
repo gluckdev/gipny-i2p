@@ -4,6 +4,7 @@ members = [
     "core",
     "libcore",
     "bot-sdk",
+    "tests/e2e-harness",
 ]
 
 [workspace.dependencies]

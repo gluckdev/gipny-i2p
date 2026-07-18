@@ -1,0 +1,15 @@
+[package]
+name = "e2e-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "End-to-end test harness: two headless bot instances exchange messages through a local relay and report latency."
+
+[[bin]]
+name = "e2e-harness"
+path = "src/main.rs"
+
+[dependencies]
+gipny-libcore = { path = "../../libcore" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
