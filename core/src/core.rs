@@ -219,6 +219,32 @@ impl Core {
         Ok(())
     }
 
+    /// Delete a contact and purge all associated in-memory state.
+    ///
+    /// The DB row deletion cascades to sessions/messages/attachments via
+    /// `ON DELETE CASCADE`. This method additionally removes the five
+    /// in-memory maps that would otherwise hold stale entries forever
+    /// (sessions, tiebreaker_waits, session_created_at, incoming_since_send,
+    /// and the bundle_waiters entry keyed on the contact's signing key).
+    pub async fn delete_contact(&self, contact_id: i64) -> Result<()> {
+        // Capture identity_sign before the DB row is gone so we can purge
+        // the bundle_waiters map (keyed by sign_pk, not by contact id).
+        let sign_pk: Option<[u8; 32]> = self.db.get_contact(contact_id)?
+            .and_then(|c| c.identity_sign.as_slice().try_into().ok());
+
+        self.db.delete_contact(contact_id)?;
+
+        // Purge all in-memory state for this contact.
+        self.sessions.lock().await.remove(&contact_id);
+        self.session_created_at.lock().await.remove(&contact_id);
+        self.tiebreaker_waits.lock().await.remove(&contact_id);
+        self.incoming_since_send.lock().await.remove(&contact_id);
+        if let Some(pk) = sign_pk {
+            self.bundle_waiters.lock().await.remove(&pk);
+        }
+        Ok(())
+    }
+
     pub fn display_name(&self) -> Result<String> {
         let v = self.db.get_setting("display_name")?;
         Ok(v.and_then(|b| String::from_utf8(b).ok()).unwrap_or_default())

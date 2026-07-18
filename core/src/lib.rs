@@ -620,7 +620,7 @@ async fn update_contact(id: i64, name: String, trust: u8, ctx: State<'_, AppCtx>
 
 #[tauri::command]
 async fn delete_contact(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.db().delete_contact(id).map_err(err)
+    core_of(&ctx).await?.delete_contact(id).await.map_err(err)
 }
 
 #[tauri::command]
