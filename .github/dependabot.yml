@@ -19,6 +19,20 @@ updates:
     groups:
       relay-deps:
         patterns: ["*"]
+    # Breaking bumps for relay's current APIs; patch updates still flow.
+    # bincode 3.0.0 on crates.io is a compile_error!() stub — never take it.
+    # Drop this block once the relay migration issue lands.
+    ignore:
+      - dependency-name: bincode
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: rand
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: ed25519-dalek
+        update-types: ["version-update:semver-major"]
+      - dependency-name: thiserror
+        update-types: ["version-update:semver-major"]
+      - dependency-name: rusqlite
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # Go: the bundled i2p router wrapper.
   - package-ecosystem: gomod
