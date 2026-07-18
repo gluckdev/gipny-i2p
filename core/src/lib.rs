@@ -109,8 +109,9 @@ pub fn run() {
             list_profiles, delete_profile,
             vault_status, vault_create, vault_unlock, vault_lock,
             change_passphrase, set_duress, set_max_attempts,
-            my_card, my_onion, my_fingerprint, my_bundle,
+            my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
+            get_relay_address, set_relay_address,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
             set_contact_bot, reset_contact_session,
             list_messages, message_position, unread_count, mark_read, delete_message,
@@ -520,6 +521,21 @@ async fn my_card(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn my_onion(ctx: State<'_, AppCtx>) -> Result<String, String> {
     Ok(core_of(&ctx).await?.my_onion().to_string())
+}
+
+#[tauri::command]
+async fn my_b32(ctx: State<'_, AppCtx>) -> Result<String, String> {
+    Ok(core_of(&ctx).await?.my_b32())
+}
+
+#[tauri::command]
+async fn get_relay_address(ctx: State<'_, AppCtx>) -> Result<String, String> {
+    Ok(core_of(&ctx).await?.get_relay_address())
+}
+
+#[tauri::command]
+async fn set_relay_address(addr: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.set_relay_address(&addr).map_err(err)
 }
 
 #[tauri::command]

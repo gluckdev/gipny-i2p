@@ -149,6 +149,9 @@ export class Api {
   static myOnion(): Promise<string> {
     return invoke('my_onion');
   }
+  static myB32(): Promise<string> {
+    return invoke('my_b32');
+  }
   static myFingerprint(): Promise<string> {
     return invoke('my_fingerprint');
   }
@@ -160,6 +163,12 @@ export class Api {
   }
   static setDisplayName(name: string): Promise<void> {
     return invoke('set_display_name', { name });
+  }
+  static getRelayAddress(): Promise<string> {
+    return invoke('get_relay_address');
+  }
+  static setRelayAddress(addr: string): Promise<void> {
+    return invoke('set_relay_address', { addr });
   }
   static addContact(onion: string, signPk: string, dhPk: string, name: string): Promise<number> {
     return invoke('add_contact', { onion, signPk, dhPk, name });
