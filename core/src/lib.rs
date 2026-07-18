@@ -45,7 +45,7 @@ fn install_log_capture(base_dir: &std::path::Path) {
 fn register_aumid() {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    let id: Vec<u16> = OsStr::new("app.gipny").encode_wide().chain(std::iter::once(0)).collect();
+    let id: Vec<u16> = OsStr::new("app.gipny.i2p").encode_wide().chain(std::iter::once(0)).collect();
     unsafe {
         windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(id.as_ptr());
     }
@@ -161,14 +161,14 @@ fn resolve_base_dir() -> PathBuf {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
             .unwrap_or_else(|| PathBuf::from("."));
-        return base.join("gipny");
+        return base.join("gipny-i2p");
     }
     #[cfg(target_os = "windows")]
     {
         let base = std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        return base.join("gipny");
+        return base.join("gipny-i2p");
     }
     #[cfg(target_os = "android")]
     {
@@ -178,7 +178,7 @@ fn resolve_base_dir() -> PathBuf {
                 s.split('\0').next().map(|s| s.split(':').next().unwrap_or(s).to_string())
             })
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "app.gipny".to_string());
+            .unwrap_or_else(|| "app.gipny.i2p".to_string());
         return PathBuf::from(format!("/data/user/0/{}", pkg)).join("gipny");
     }
     #[cfg(target_os = "macos")]
@@ -186,10 +186,10 @@ fn resolve_base_dir() -> PathBuf {
         let base = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join("Library/Application Support"))
             .unwrap_or_else(|| PathBuf::from("."));
-        return base.join("gipny");
+        return base.join("gipny-i2p");
     }
     #[allow(unreachable_code)]
-    PathBuf::from(".").join("gipny")
+    PathBuf::from(".").join("gipny-i2p")
 }
 
 fn profile_dir(ctx: &AppCtx, profile: &str) -> Result<PathBuf, String> {
@@ -872,7 +872,7 @@ async fn save_attachment(attachment_id: i64, dest_path: String, ctx: State<'_, A
 
 #[tauri::command]
 async fn save_paste_temp(name: String, data: Vec<u8>) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("gipny-paste");
+    let dir = std::env::temp_dir().join("gipny-i2p-paste");
     std::fs::create_dir_all(&dir).map_err(err)?;
     let safe_name = name.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
@@ -911,7 +911,7 @@ async fn paste_clipboard_image() -> Result<Option<String>, String> {
         let mut writer = enc.write_header().map_err(|e| e.to_string())?;
         writer.write_image_data(&img.bytes).map_err(|e| e.to_string())?;
     }
-    let dir = std::env::temp_dir().join("gipny-paste");
+    let dir = std::env::temp_dir().join("gipny-i2p-paste");
     std::fs::create_dir_all(&dir).map_err(err)?;
     let prefix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1177,7 +1177,7 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     };
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().expect("no icon").clone())
-        .tooltip("gipny")
+        .tooltip("gipny (i2p)")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
