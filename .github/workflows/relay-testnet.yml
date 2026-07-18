@@ -1,0 +1,94 @@
+name: relay-testnet
+
+# TEMPORARY test relay hosted on a GitHub-hosted runner while no real server
+# exists. One run keeps the relay up for ~5.7h (the job hard limit is 6h); the
+# schedule launches the next run, and actions/cache carries the relay identity,
+# message queue and i2p router state across runs — so the relay's i2p
+# destination stays STABLE. Expect a few minutes of downtime around each
+# handover (plus tunnel rebuild).
+#
+# This is test infrastructure for the project's own end-to-end testing, not
+# production delivery. Caveats, deliberately accepted:
+#   - the cached relay identity is reachable from PR workflows (cache scoping),
+#     so this destination must never be treated as trusted long-term infra;
+#   - offline queue survives handovers via cache, but a crashed run may lose
+#     the tail since the last save.
+# Kill switch: disable the workflow in the Actions UI.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+
+# Never two relays with the same identity at once (LeaseSet conflict): a new
+# run queues until the previous one dies.
+concurrency:
+  group: relay-testnet
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/relay
+      - name: restore relay state
+        uses: actions/cache/restore@v4
+        with:
+          path: relay-state
+          key: relay-testnet-state-${{ github.run_id }}
+          restore-keys: relay-testnet-state-
+      - name: build router + relay
+        run: |
+          CGO_ENABLED=0 go build -C i2p-router -trimpath -ldflags "-s -w" \
+            -o "$GITHUB_WORKSPACE/gipny-i2p-router" .
+          cargo build --release --manifest-path core/relay/Cargo.toml
+      - name: run relay (~5.5h)
+        run: |
+          mkdir -p relay-state/router relay-state/relay
+          ./gipny-i2p-router --sam-listen 127.0.0.1:7656 --data relay-state/router \
+            > router.log 2>&1 &
+          ROUTER_PID=$!
+          # SAM up? (bash /dev/tcp probe — nc is not guaranteed on runners)
+          for i in $(seq 1 180); do
+            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/7656' 2>/dev/null; then break; fi
+            if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
+              echo "router died during startup"; tail -50 router.log; exit 1
+            fi
+            sleep 2
+          done
+          GIPNY_RELAY_DATA=relay-state/relay timeout 19800 \
+            ./core/relay/target/release/gipny-relay > relay.log 2>&1 &
+          RELAY_PID=$!
+          for i in $(seq 1 120); do
+            grep -q 'I2P DESTINATION' relay.log && break
+            sleep 2
+          done
+          {
+            echo '### relay-testnet destination (paste into Settings → relay address)'
+            echo '```'
+            grep 'I2P DESTINATION' relay.log || echo 'destination not printed — see relay.log'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep 'I2P DESTINATION' relay.log || true
+          # timeout(1) ends the relay ~5.5h in; the job then saves state below.
+          wait "$RELAY_PID" || true
+          kill "$ROUTER_PID" 2>/dev/null || true
+          tail -20 relay.log
+      - name: save relay state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: relay-state
+          key: relay-testnet-state-${{ github.run_id }}
