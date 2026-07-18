@@ -30,7 +30,10 @@ android {
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
         // Fork identity: must differ from the original gipny (Tor) app so both
-        // install side by side. Kotlin/JNI namespace stays app.gipny.
+        // install side by side. Kotlin/JNI namespace stays app.gipny, and
+        // tauri.android.conf.json keeps the tauri identifier app.gipny too —
+        // otherwise `tauri android build` expects this generated project under
+        // java/app/gipny/i2p. applicationId alone defines the installed identity.
         applicationId = "app.gipny.i2p"
         minSdk = 24
         targetSdk = 36
