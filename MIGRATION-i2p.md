@@ -196,11 +196,14 @@ their i2p address but have no relay to reach — messaging is idle by design.
 - ~~Client outbound‑only mode~~ — `publish: false` is now the default.
 - ~~Ephemeral per-session address~~ — replaced the persisted `dest.key`.
 - ~~Android JNI embedding~~ — router runs in-process; debug APK in CI.
+- ~~relay: migrate to current major deps and commit its lockfile~~ — bincode 2,
+  rand 0.10, ed25519-dalek 3, thiserror 2, rusqlite 0.40.
+- ~~x86_64 Android APK for emulator testing~~ — debug APK + emulator smoke
+  job in CI; the main workspace (`libcore`/`core`/`bot-sdk`) crypto/serde
+  stack migration is still open (issue #31).
 
 ## Follow‑ups / ideas
 - Deploy the canonical relay + update server and bake in their destinations
   (`DEFAULT_RELAY`, `DEFAULT_UPDATE_ONION`).
-- relay: migrate to current major deps and commit its lockfile (issue #18).
-- x86_64 Android APK for emulator testing (issue #19).
 - Expand Android validation across physical devices and additional ABIs.
 - Large‑file throughput: bump outbound tunnel quantity during transfers.
