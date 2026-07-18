@@ -54,25 +54,30 @@ jobs:
           CGO_ENABLED=0 go build -C i2p-router -trimpath -ldflags "-s -w" \
             -o "$GITHUB_WORKSPACE/gipny-i2p-router" .
           cargo build --release --manifest-path core/relay/Cargo.toml
-      - name: run relay (~5.5h)
+      # Split into start/serve/stop steps so the destination lands in the job
+      # summary minutes after start, not when the 5.5h serve step ends.
+      - name: start router + relay, print destination
         run: |
           mkdir -p relay-state/router relay-state/relay
-          ./gipny-i2p-router --sam-listen 127.0.0.1:7656 --data relay-state/router \
+          nohup ./gipny-i2p-router --sam-listen 127.0.0.1:7656 --data relay-state/router \
             > router.log 2>&1 &
-          ROUTER_PID=$!
+          echo $! > router.pid
           # SAM up? (bash /dev/tcp probe — nc is not guaranteed on runners)
           for i in $(seq 1 180); do
             if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/7656' 2>/dev/null; then break; fi
-            if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
+            if ! kill -0 "$(cat router.pid)" 2>/dev/null; then
               echo "router died during startup"; tail -50 router.log; exit 1
             fi
             sleep 2
           done
-          GIPNY_RELAY_DATA=relay-state/relay timeout 19800 \
+          GIPNY_RELAY_DATA=relay-state/relay nohup \
             ./core/relay/target/release/gipny-relay > relay.log 2>&1 &
-          RELAY_PID=$!
+          echo $! > relay.pid
           for i in $(seq 1 120); do
             grep -q 'I2P DESTINATION' relay.log && break
+            if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
+              echo "relay died during startup"; tail -50 relay.log; exit 1
+            fi
             sleep 2
           done
           {
@@ -82,10 +87,20 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           grep 'I2P DESTINATION' relay.log || true
-          # timeout(1) ends the relay ~5.5h in; the job then saves state below.
-          wait "$RELAY_PID" || true
-          kill "$ROUTER_PID" 2>/dev/null || true
-          tail -20 relay.log
+      - name: serve (~5.5h)
+        run: |
+          end=$((SECONDS + 19800))
+          while [ $SECONDS -lt $end ] && kill -0 "$(cat relay.pid)" 2>/dev/null; do
+            sleep 60
+          done
+          kill -0 "$(cat relay.pid)" 2>/dev/null || { echo "relay exited early"; tail -30 relay.log; }
+      - name: stop and flush
+        if: always()
+        run: |
+          kill "$(cat relay.pid)" 2>/dev/null || true
+          sleep 3
+          kill "$(cat router.pid)" 2>/dev/null || true
+          tail -20 relay.log || true
       - name: save relay state
         if: always()
         uses: actions/cache/save@v4
