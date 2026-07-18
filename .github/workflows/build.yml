@@ -166,29 +166,42 @@ jobs:
         run: cargo install tauri-cli --version '^2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
+      # tauri builds every requested target into the "universal" flavor output
+      # (outputs/apk/universal/debug/app-universal-debug.apk), so a second
+      # `--target` build overwrites the first APK. Build one ABI at a time,
+      # verify + stash the APK, and wipe outputs/ before the next build.
       - name: build Android APK (aarch64)
         run: cd core && cargo tauri android build --debug --apk --target aarch64
-      - name: build Android APK (x86_64)
-        run: cd core && cargo tauri android build --debug --apk --target x86_64
-      - name: verify embedded router (aarch64)
+      - name: verify + stash APK (aarch64)
         run: |
-          apk="$(find core/gen/android/app/build/outputs/apk/arm64 -type f -name '*.apk' -print -quit)"
+          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
           test -n "$apk"
           unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipnyi2p.so'
-      - name: verify embedded router (x86_64)
+          mkdir -p dist/arm64
+          find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/arm64/ \;
+          ls -la dist/arm64
+          test -n "$(find dist/arm64 -type f -name '*.apk' -print -quit)"
+          rm -rf core/gen/android/app/build/outputs
+      - name: build Android APK (x86_64)
+        run: cd core && cargo tauri android build --debug --apk --target x86_64
+      - name: verify + stash APK (x86_64)
         run: |
-          apk="$(find core/gen/android/app/build/outputs/apk/x86_64 -type f -name '*.apk' -print -quit)"
+          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
           test -n "$apk"
           unzip -l "$apk" | grep -F 'lib/x86_64/libgipnyi2p.so'
+          mkdir -p dist/x86_64
+          find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/x86_64/ \;
+          ls -la dist/x86_64
+          test -n "$(find dist/x86_64 -type f -name '*.apk' -print -quit)"
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-debug-apk
-          path: core/gen/android/app/build/outputs/apk/arm64/**/*.apk
+          path: dist/arm64/*.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-debug-apk-x86_64
-          path: core/gen/android/app/build/outputs/apk/x86_64/**/*.apk
+          path: dist/x86_64/*.apk
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -212,7 +225,7 @@ jobs:
             -n smoke \
             -k "system-images;android-33;google_apis;x86_64" \
             --force
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: gipny-android-debug-apk-x86_64
           path: apk-x86_64
