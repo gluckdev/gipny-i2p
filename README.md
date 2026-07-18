@@ -43,25 +43,20 @@
 
 ```bash
 # AppImage (без установки, просто запуск)
-chmod +x gipny-*.AppImage
-./gipny-*.AppImage
+chmod +x gipny-i2p_*.AppImage
+./gipny-i2p_*.AppImage
 
 # .deb (Debian / Ubuntu / Parrot / Mint / Kali)
-sudo apt install ./gipny_*_amd64.deb
-
-# .tar.gz (любой glibc‑дистрибутив)
-tar -xzf gipny-*-linux-amd64.tar.gz
-cd gipny-*-linux-amd64/
-./gipny
+sudo apt install ./gipny-i2p_*_amd64.deb
 ```
+
+Отдельным файлом лежит `gipny-i2p xbox` AppImage — вариант оформления Xbox (см. ниже).
 
 ### Windows
 
-Два артефакта на релиз:
-- `gipny-*-windows-x64-setup.exe` — установщик NSIS (рекомендуется).
-- `gipny-*-windows-x64.zip` — портативный zip, распаковать и запустить `gipny.exe`.
+- `gipny-i2p_*_x64-setup.exe` — установщик NSIS.
 
-Установщик кладёт gipny в `C:\Program Files\gipny\` и создаёт ярлык в меню «Пуск». Для портативного zip права администратора не нужны.
+Установщик кладёт приложение в свой каталог `gipny-i2p` и создаёт ярлык в меню «Пуск» — с оригинальным gipny не пересекается.
 
 ### Android — экспериментальная поддержка
 
@@ -195,7 +190,11 @@ cd core && cargo tauri build --config tauri.xbox.conf.json --bundles appimage
 
 ## Свой релей (нужно поднять до полноценной работы)
 
-По умолчанию `DEFAULT_RELAY` пустой — клиент стартует и получает свой i2p‑адрес, но слать некуда, пока не указан релей. Разверни свой:
+По умолчанию `DEFAULT_RELAY` пустой — клиент стартует и получает свой i2p‑адрес, но слать некуда, пока не указан релей.
+
+> **Временный тестовый релей** уже крутится в CI (workflow `relay-testnet`): забеги по ~5.5 ч с перезапуском каждые 6 ч, адрес стабильный (identity живёт в кэше Actions) и печатается в Summary каждого запуска (артефакт `relay-destination`). Вставь его в Настройки → адрес релея. Только для тестов: ключ этого релея по определению не доверенный, при переезде на настоящий сервер адрес будет заменён.
+
+Разверни свой:
 
 1. На сервере запусти go‑i2p‑роутер (юнит `core/relay/gipny-i2p-router.service`) — он поднимает SAMv3 на `127.0.0.1:7656`.
 2. Запусти `gipny-relay` (юнит `core/relay/gipny-relay.service`, `GIPNY_RELAY_DATA=/var/lib/gipny-relay`). При первом старте он печатает `I2P DESTINATION: <base64>`.
