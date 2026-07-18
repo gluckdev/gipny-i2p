@@ -29,7 +29,10 @@ futures = "0.3"
 libc = "0.2"
 
 [profile.release]
-opt-level = 3
+# "s" over 3: the app is network-bound (i2p tunnels dominate latency) and the
+# slow path that matters, Argon2id, is deliberately slow by parameter choice —
+# trading a little raw crypto throughput for a substantially smaller binary.
+opt-level = "s"
 lto = "fat"
 codegen-units = 1
 strip = true

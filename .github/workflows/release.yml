@@ -42,6 +42,13 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" .
+      # Shrink the bundled router ~60%. Linux only: UPX-packed Windows
+      # executables routinely trip antivirus false positives.
+      - name: compress router (UPX)
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y upx-ucl
+          upx --best --lzma "i2p-router/${{ matrix.out }}"
       - uses: actions/upload-artifact@v7
         with:
           name: router-${{ matrix.goos }}-${{ matrix.goarch }}

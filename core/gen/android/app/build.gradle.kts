@@ -64,6 +64,13 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
             isMinifyEnabled = true
+            isShrinkResources = true
+            // Store native libs compressed inside the APK (extract on install):
+            // the go-i2p .so dominates APK size and compresses ~2x. Costs some
+            // installed-size/extraction, shrinks the download substantially.
+            packaging {
+                jniLibs.useLegacyPackaging = true
+            }
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
