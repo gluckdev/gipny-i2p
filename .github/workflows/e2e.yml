@@ -11,11 +11,16 @@ name: e2e
 #   - dest.pub written by the relay before its SAM session opens
 #   - GIPNY_RELAY_DATA for relay state directory
 #   - GIPNY_I2P_BIN so both the relay and the harness find the router binary
+#
+# Runs nightly + on demand rather than on every push/PR: three real i2p
+# routers over ~15-30 min is too heavy to pay on every commit, and it's
+# currently red on a SAM interop bug (#42) that unit tests wouldn't catch
+# anyway. Re-add `pull_request` once #42 is fixed and the job is reliably
+# green.
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:

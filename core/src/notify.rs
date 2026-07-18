@@ -80,8 +80,8 @@ fn spawn_player(player: &str, wav: &std::path::Path) -> std::io::Result<()> {
 fn rodio_fallback(name: &str) {
     let bytes = sound_bytes(name);
     std::thread::spawn(move || {
-        let Ok((_stream, handle)) = rodio::OutputStream::try_default() else { return };
-        let Ok(sink) = rodio::Sink::try_new(&handle) else { return };
+        let Ok(stream) = rodio::DeviceSinkBuilder::open_default_sink() else { return };
+        let sink = rodio::Player::connect_new(stream.mixer());
         let Ok(decoder) = rodio::Decoder::new(std::io::Cursor::new(bytes)) else { return };
         sink.set_volume(0.4);
         sink.append(decoder);

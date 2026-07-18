@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rand::RngCore;
+use rand::Rng;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
 use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
@@ -114,7 +114,7 @@ async fn handle_client<S>(
 where S: AsyncRead + AsyncWrite + Unpin + Send
 {
     let mut challenge = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut challenge);
+    rand::rng().fill_bytes(&mut challenge);
     send_frame(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
     let auth: ClientToRelay = recv_frame(&mut stream).await?;
@@ -261,7 +261,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
 async fn send_frame<W, T>(w: &mut W, frame: &T) -> anyhow::Result<()>
 where W: AsyncWrite + Unpin, T: serde::Serialize
 {
-    let data = bincode::serialize(frame)?;
+    let data = bincode::serde::encode_to_vec(frame, bincode::config::legacy())?;
     if data.len() > MAX_FRAME as usize { anyhow::bail!("frame too large"); }
     w.write_all(&(data.len() as u32).to_be_bytes()).await?;
     w.write_all(&data).await?;
@@ -278,7 +278,8 @@ where R: AsyncRead + Unpin, T: serde::de::DeserializeOwned
     if len > MAX_FRAME { anyhow::bail!("frame too large"); }
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf).await?;
-    Ok(bincode::deserialize(&buf)?)
+    let (val, _) = bincode::serde::decode_from_slice(&buf, bincode::config::legacy())?;
+    Ok(val)
 }
 
 fn hex_short(b: &[u8]) -> String {
