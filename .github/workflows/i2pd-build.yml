@@ -28,12 +28,15 @@ permissions:
   contents: read
 
 env:
-  # The i2pd revision itself comes from the third_party/i2pd submodule pin; this
-  # only tells the Android build which i2pd tag to align its own nested copy to.
-  I2PD_VERSION: '2.60.0'
-  # moritz-wundke/Boost-for-Android master as of 2026-07-05. See the Android
-  # job for why this is overridden and why it is a commit rather than a branch.
-  BOOST_FOR_ANDROID_REV: '7943955c4d11a5bd61381a8b200c28619323eb0f'
+  # No version string here on purpose. Every job builds the head of the branch
+  # each submodule tracks (.gitmodules: i2pd -> openssl, i2pd-android -> master),
+  # resolved fresh at build time, and prints the revision it resolved to.
+  #
+  # The trade-off is stated once: this always builds the newest upstream code,
+  # so two runs of the same commit of *this* repo can produce different routers.
+  # The version check in each job is what keeps that honest — the binary is
+  # stamped with its own source revision and asserted against it, so a build is
+  # always identifiable even when it is not repeatable.
 
 jobs:
   # --------------------------------------------------------------------------
@@ -62,18 +65,43 @@ jobs:
         with:
           submodules: recursive
 
+      - name: update vendored sources to branch heads
+        run: |
+          git submodule update --remote --recursive
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          if [ -d third_party/i2pd-android ]; then
+            echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
+          fi
+
       - name: build
         working-directory: third_party/i2pd
         run: |
           # USE_UPNP is off: gipny only ever talks to a loopback SAM port, and
           # leaving UPnP out drops a dependency and a hole-punching side effect
           # nobody asked for.
-          make USE_STATIC=yes USE_UPNP=no -j"$(nproc)"
+          #
+          # USE_GIT_VERSION stamps `git describe` into the binary. The submodule
+          # tracks upstream's development branch, so "2.61.0" alone would not say
+          # which of its commits this is; the stamp makes the binary name its own
+          # source, and gives the check below something to compare against.
+          git fetch --tags --quiet origin || true
+          make USE_STATIC=yes USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify
         working-directory: third_party/i2pd
         run: |
-          ./i2pd --version
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd --version | head -1)"
+          echo "expected source revision: $EXPECTED"
+          echo "binary reports:           $ACTUAL"
+          # Assert the binary was built from the revision this repo pins, rather
+          # than trusting that whatever landed in the artifact is the right
+          # thing. A stale or mismatched router is otherwise invisible.
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — binary does not report the pinned revision"; exit 1 ;;
+          esac
+
           echo "--- size ---"
           ls -lh i2pd
           echo "--- dynamic dependencies (want: libc/libm/libstdc++ only) ---"
@@ -113,14 +141,31 @@ jobs:
         with:
           submodules: recursive
 
+      - name: update vendored sources to branch heads
+        run: |
+          git submodule update --remote --recursive
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          if [ -d third_party/i2pd-android ]; then
+            echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
+          fi
+
       - name: build
         working-directory: third_party/i2pd
-        run: make USE_UPNP=no -j"$(nproc)"
+        run: |
+          git fetch --tags --quiet origin || true
+          make USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify
         working-directory: third_party/i2pd
         run: |
-          ./i2pd.exe --version
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd.exe --version | head -1)"
+          echo "expected source revision: $EXPECTED"
+          echo "binary reports:           $ACTUAL"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — binary does not report the pinned revision"; exit 1 ;;
+          esac
           ls -lh i2pd.exe
           # Which mingw DLLs travel with it decides what the installer bundles.
           ldd ./i2pd.exe | grep -iv '/c/windows' || true
@@ -167,14 +212,24 @@ jobs:
         with:
           submodules: recursive
 
+      - name: update vendored sources to branch heads
+        run: |
+          git submodule update --remote --recursive
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          if [ -d third_party/i2pd-android ]; then
+            echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
+          fi
+
       - name: align the vendored sources
         working-directory: third_party/i2pd-android/binary/jni
         run: |
           # Build the i2pd revision this repo pins, not the one i2pd-android
-          # happens to point at.
-          git -C i2pd fetch --tags --depth 1 origin "$I2PD_VERSION"
-          git -C i2pd checkout "$I2PD_VERSION"
-          echo "[i2pd] i2pd at $(git -C i2pd describe --tags)"
+          # happens to point at. The revision is read from our own submodule so
+          # desktop and Android cannot end up on different code.
+          I2PD_REV="$(git -C "$GITHUB_WORKSPACE/third_party/i2pd" rev-parse HEAD)"
+          git -C i2pd fetch --tags --quiet origin
+          git -C i2pd checkout --quiet "$I2PD_REV"
+          echo "[i2pd] i2pd at $(git -C i2pd describe --tags) ($I2PD_REV)"
 
           # i2pd-android pins Boost-for-Android to a commit whose NDK whitelist
           # predates every NDK the runners ship — run 29695096389 was rejected
@@ -182,11 +237,10 @@ jobs:
           # revision accepts up to 28.2. Overriding it in our own build is
           # exactly why these are submodules of this repo.
           #
-          # Pinned to a commit, not to master: this is the one dependency we
-          # move ourselves, and tracking a branch would let the Android router
-          # change underneath us between two builds of the same tag.
-          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
-          git -C boost checkout "$BOOST_FOR_ANDROID_REV"
+          # Tracks master, like everything else here, and logs what it resolved
+          # to so a build can always be traced back to its sources.
+          git -C boost fetch --depth 1 origin master
+          git -C boost checkout FETCH_HEAD
           echo "[i2pd] Boost-for-Android at $(git -C boost log --oneline -1)"
 
       - name: resolve NDK

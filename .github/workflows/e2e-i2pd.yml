@@ -49,10 +49,17 @@ jobs:
     name: router (i2pd, linux/amd64)
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    outputs:
+      revision: ${{ steps.build.outputs.revision }}
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+
+      - name: update vendored sources to branch heads
+        run: |
+          git submodule update --remote --recursive
+          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
 
       - name: install build dependencies
         run: |
@@ -61,10 +68,23 @@ jobs:
             build-essential libboost-program-options-dev libssl-dev zlib1g-dev
 
       - name: build
+        id: build
         working-directory: third_party/i2pd
         run: |
-          make USE_STATIC=yes USE_UPNP=no -j"$(nproc)"
-          ./i2pd --version
+          git fetch --tags --quiet origin || true
+          make USE_STATIC=yes USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+
+          # Assert the binary reports the revision it was built from, rather
+          # than trusting whatever ends up in the artifact downstream.
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd --version | head -1)"
+          echo "built from: $EXPECTED"
+          echo "reports:    $ACTUAL"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED"; exit 1 ;;
+          esac
+          echo "revision=$EXPECTED" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -108,11 +128,26 @@ jobs:
           name: i2pd-linux-amd64
           path: router
 
-      - name: install router
+      - name: install router and check its version
         run: |
           chmod +x router/i2pd
           sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
-          i2pd --version
+
+          # The artifact is not taken on trust. The router job reports which
+          # revision it built, the binary is stamped with its own source, and
+          # this asserts they agree — so a stale or foreign artifact cannot
+          # quietly become the thing under test. Comparing against the job
+          # output rather than the branch also survives upstream pushing
+          # between the two jobs.
+          EXPECTED="${{ needs.router.outputs.revision }}"
+          ACTUAL="$(i2pd --version | head -1)"
+          echo "router job built: $EXPECTED"
+          echo "artifact reports: $ACTUAL"
+          test -n "$EXPECTED"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
+          esac
 
       - name: build relay
         run: |

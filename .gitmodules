@@ -1,6 +1,8 @@
 [submodule "third_party/i2pd"]
 	path = third_party/i2pd
 	url = https://github.com/PurpleI2P/i2pd.git
+	branch = openssl
 [submodule "third_party/i2pd-android"]
 	path = third_party/i2pd-android
 	url = https://github.com/PurpleI2P/i2pd-android.git
+	branch = master
