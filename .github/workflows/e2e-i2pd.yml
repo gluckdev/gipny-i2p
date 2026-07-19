@@ -58,7 +58,10 @@ jobs:
 
       - name: update vendored sources to branch heads
         run: |
-          git submodule update --remote --recursive
+          # Just i2pd, and as a checkout: --remote --recursive would drag every
+          # nested dependency to its own branch head too (see i2pd-build.yml).
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --init --recursive -- third_party/i2pd
           echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
 
       - name: install build dependencies

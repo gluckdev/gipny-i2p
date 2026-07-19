@@ -66,11 +66,19 @@ jobs:
 
       - name: update vendored sources to branch heads
         run: |
-          git submodule update --remote --recursive
+          # Only our own two submodules follow a branch. --remote --recursive
+          # would also drag every nested dependency to its own branch head —
+          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
+          # inside i2pd-android, in conflicts that are none of our business.
+          # --checkout keeps it a plain checkout rather than a rebase or merge.
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --remote --checkout -- third_party/i2pd-android
+
+          # Nested dependencies then come from whatever those heads pin.
+          git submodule update --init --recursive
+
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
-          if [ -d third_party/i2pd-android ]; then
-            echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
-          fi
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
       - name: build
         working-directory: third_party/i2pd
@@ -142,11 +150,19 @@ jobs:
 
       - name: update vendored sources to branch heads
         run: |
-          git submodule update --remote --recursive
+          # Only our own two submodules follow a branch. --remote --recursive
+          # would also drag every nested dependency to its own branch head —
+          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
+          # inside i2pd-android, in conflicts that are none of our business.
+          # --checkout keeps it a plain checkout rather than a rebase or merge.
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --remote --checkout -- third_party/i2pd-android
+
+          # Nested dependencies then come from whatever those heads pin.
+          git submodule update --init --recursive
+
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
-          if [ -d third_party/i2pd-android ]; then
-            echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
-          fi
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
       - name: build
         working-directory: third_party/i2pd
@@ -213,11 +229,19 @@ jobs:
 
       - name: update vendored sources to branch heads
         run: |
-          git submodule update --remote --recursive
+          # Only our own two submodules follow a branch. --remote --recursive
+          # would also drag every nested dependency to its own branch head —
+          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
+          # inside i2pd-android, in conflicts that are none of our business.
+          # --checkout keeps it a plain checkout rather than a rebase or merge.
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --remote --checkout -- third_party/i2pd-android
+
+          # Nested dependencies then come from whatever those heads pin.
+          git submodule update --init --recursive
+
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
-          if [ -d third_party/i2pd-android ]; then
-            echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
-          fi
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
       - name: align the vendored sources
         working-directory: third_party/i2pd-android/binary/jni
