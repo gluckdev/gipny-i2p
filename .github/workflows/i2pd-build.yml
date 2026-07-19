@@ -28,7 +28,12 @@ permissions:
   contents: read
 
 env:
+  # The i2pd revision itself comes from the third_party/i2pd submodule pin; this
+  # only tells the Android build which i2pd tag to align its own nested copy to.
   I2PD_VERSION: '2.60.0'
+  # moritz-wundke/Boost-for-Android master as of 2026-07-05. See the Android
+  # job for why this is overridden and why it is a commit rather than a branch.
+  BOOST_FOR_ANDROID_REV: '7943955c4d11a5bd61381a8b200c28619323eb0f'
 
 jobs:
   # --------------------------------------------------------------------------
@@ -173,11 +178,15 @@ jobs:
 
           # i2pd-android pins Boost-for-Android to a commit whose NDK whitelist
           # predates every NDK the runners ship — run 29695096389 was rejected
-          # with "Undefined or not supported Android NDK version: 27.3". Its
-          # master accepts up to 28.2, so move to master here. Overriding it in
-          # our own build is exactly why these are submodules of this repo.
-          git -C boost fetch --depth 1 origin master
-          git -C boost checkout FETCH_HEAD
+          # with "Undefined or not supported Android NDK version: 27.3". A later
+          # revision accepts up to 28.2. Overriding it in our own build is
+          # exactly why these are submodules of this repo.
+          #
+          # Pinned to a commit, not to master: this is the one dependency we
+          # move ourselves, and tracking a branch would let the Android router
+          # change underneath us between two builds of the same tag.
+          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
+          git -C boost checkout "$BOOST_FOR_ANDROID_REV"
           echo "[i2pd] Boost-for-Android at $(git -C boost log --oneline -1)"
 
       - name: resolve NDK
