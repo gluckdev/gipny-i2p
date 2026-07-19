@@ -40,7 +40,24 @@ destination.
   target to `127.0.0.1:7654` (its TCP address is fixed at construction and
   `SetProperty` cannot move it), so **exactly one router per host** is supported.
   Running several independent routers on one machine (e.g. an all‑in‑one e2e job
-  with relay + two bots) needs a shared‑router redesign — see issue #42.
+  with relay + two bots) therefore cannot work; the e2e harness puts the relay
+  and both bots on one shared router instead (`GIPNY_SAM_PORT`, see below).
+- **I2CP reconnect (the second half of #42).** Wiring the transport was necessary
+  but not sufficient. The router's I2CP server arms a 30 s read deadline *before*
+  the header read (`go-i2p lib/i2cp/protocol.go:175,400`), so it also bounds the
+  idle gap between messages, and it closes the connection when that expires —
+  reported upstream as [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54).
+  `go-i2cp` sends no keepalives, so the client we connect at startup is reliably
+  dead by the time the first SAM session is created (something always has to
+  start a session *after* the router boots). The `CreateSession` write then
+  fails, and go-sam-bridge closes the SAM control socket **without a
+  `SESSION STATUS`** — which reaches the Rust side as a bare EOF, reported by
+  `yosemite` as the singularly unhelpful `invalid message from router`.
+  `wiring.go` therefore reconnects and retries once when a session create fails.
+  Two traps worth knowing: `IsConnected()` cannot gate this (the client's read
+  loop never observes the close and keeps reporting the link as up while every
+  write fails), and the retry must be skipped when a session is already live —
+  on a shared router a reconnect would drop other clients' sessions with it.
 
 ```
 gipny (Rust) ──SAMv3 127.0.0.1:7656──▶ gipny-i2p-router (Go)
@@ -158,8 +175,13 @@ CGO_ENABLED=0 go build -o gipny-i2p-router .
 
 ### App
 The Rust app auto‑spawns the bundled router. Override its path with
-`GIPNY_I2P_BIN=/path/to/gipny-i2p-router`. Two local profiles each spawn their own
-router on a free port and share one relay.
+`GIPNY_I2P_BIN=/path/to/gipny-i2p-router`.
+
+To run several local profiles, point them at **one** router with
+`GIPNY_SAM_PORT=<port>` (`I2pNode::start` then attaches instead of spawning).
+Letting each profile spawn its own router does not work: only the first one to
+bind `127.0.0.1:7654` gets a working I2CP transport, and the rest come up with a
+SAM bridge that can never open a STREAM session.
 
 ### CI / releases
 All builds run on GitHub Actions:
@@ -169,6 +191,17 @@ All builds run on GitHub Actions:
   `gipny-android-debug-apk` artifact.
 - `release.yml` — on a `v*` tag: AppImage/deb + NSIS + signed Android arm64
   APK (router bundled on desktop, JNI-embedded on Android).
+- `e2e.yml` — relay + two headless bots over real i2p, nightly and on demand.
+  All three share one router (`GIPNY_SAM_PORT=7656`) because of the `:7654`
+  hardwire above. Still `continue-on-error`: reseed and tunnel building make it
+  genuinely flaky, and the job's green check means nothing on its own — read the
+  `PASS`/`FAIL` line in the step summary and `echoes received` in `[e2e-timing]`.
+  For the fast local loop there is a mock SAM server behind the `mocksam` build
+  tag (`go build -tags mocksam`, then `--mock`; see `i2p-router/mock_sam.go`).
+  It speaks just enough SAMv3 to pair two streams over loopback, with no router
+  and no tunnels — deliberately impossible to reach in a shipped binary, and
+  deliberately not wired into CI, where it would produce a green run that never
+  touched i2p.
 - `codeql.yml` — security scanning (rust / js-ts / actions).
 - `dependabot.yml` — weekly grouped updates for every ecosystem. Breaking bumps
   for `core/relay` are pinned until the migration issue lands (bincode ≥2 is
@@ -214,8 +247,23 @@ their i2p address but have no relay to reach — messaging is idle by design.
 - ~~x86_64 Android APK for emulator testing~~ — debug APK + emulator smoke
   job in CI; the main workspace (`libcore`/`core`/`bot-sdk`) crypto/serde
   stack migration is still open (issue #31).
+- ~~SAM STREAM sessions carry no data (#42)~~ — two defects, both in
+  `i2p-router/wiring.go`: the bridge was built without an I2CP client at all,
+  and the client it does get was dropped by the router's 30 s idle deadline
+  before any session could be created. Wired + reconnect-on-create; verified
+  end to end against a live router (`SESSION STATUS RESULT=OK`, stream manager
+  registered).
+- ~~e2e on three independent routers (#45)~~ — relay and both bots now attach
+  to one shared router via `GIPNY_SAM_PORT`.
 
 ## Follow‑ups / ideas
+- Drop the I2CP reconnect workaround once
+  [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54) (idle client
+  connections killed after 30 s) is fixed upstream.
+- Prove the e2e job actually delivers messages over real tunnels before taking
+  it off `continue-on-error`. Everything below the transport — tunnel build on a
+  runner's cold netdb, then streaming over it — has never once executed, so it
+  is unmeasured rather than known-good.
 - Deploy the canonical relay + update server and bake in their destinations
   (`DEFAULT_RELAY`, `DEFAULT_UPDATE_ONION`).
 - Expand Android validation across physical devices and additional ABIs.

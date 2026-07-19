@@ -14,13 +14,21 @@ name: e2e
 #
 # Runs nightly + on demand rather than on every push/PR.
 #
-# Note (#42): previously this job started THREE independent routers on one
-# runner (relay + one per bot). The bundled go-i2cp client hardcoded its I2CP
-# dial target to 127.0.0.1:7654, so only the first router got a working I2CP
-# transport. We have restructured the harness and workflow to use a SINGLE
-# shared router (both bots and relay connect to it via SAM port 7656).
-# Even with a shared router, network startup needs reseed and can be flaky;
-# it remains continue-on-error until proven stable. Re-add `pull_request` once green.
+# Note (#42, #45): this job used to start THREE independent routers on one
+# runner (relay + one per bot). go-i2cp hardcodes its I2CP dial target to
+# 127.0.0.1:7654, so only the first router ever got a working transport. Relay
+# and both bots now share ONE router (GIPNY_SAM_PORT=7656).
+#
+# The router itself also needs i2p-router/wiring.go's I2CP reconnect: the
+# router's I2CP server drops idle client connections after 30 s (go-i2p#54),
+# which is always shorter than the gap between router boot and the first
+# SESSION CREATE. Without it every session here fails.
+#
+# Still continue-on-error: reseed and tunnel building are genuinely flaky, and
+# the delivery path beyond the transport is unproven. A green check on this job
+# means nothing by itself — read the PASS/FAIL line the harness prints to the
+# step summary and the echo count in [e2e-timing]. Re-add `pull_request` only
+# once it delivers messages reliably.
 
 on:
   schedule:
