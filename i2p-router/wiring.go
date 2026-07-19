@@ -15,9 +15,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
+	"syscall"
 	"time"
 
 	"github.com/go-i2p/go-i2p/lib/config"
@@ -264,24 +268,44 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 		return handle, nil
 	}
 
-	// A create failure usually means the write went into a socket the router
-	// already closed. IsConnected cannot be used to tell: the read loop does not
-	// observe the close, so the client keeps reporting the link as up (verified
-	// against go-sam-bridge v0.1.59999 — no [wired-bridge] reconnect fired while
-	// every CreateSession write failed). So force a reconnect and retry once.
+	// Always log the failure: this is the only place the real reason is visible.
+	// go-sam-bridge answers a failed create by closing the SAM control socket
+	// without a SESSION STATUS, so the client just sees EOF.
+	log.Printf("[wired-bridge] session %s: create failed: %v", samSessionID, err)
+
+	// Retry only if the write died on the socket. IsConnected cannot be used to
+	// decide: the read loop does not observe the router's close, so the client
+	// keeps reporting the link as up while every write fails (verified against
+	// go-sam-bridge v0.1.59999). Match on the error instead.
 	//
-	// Guard on there being no live session: an established session means the
-	// link is carrying traffic and the failure is something else, and on a
-	// shared router a reconnect would drop other clients' sessions with it.
-	if a.client.GetFirstSession() != nil {
+	// A dead socket means every session on it is already dead, so reconnecting
+	// takes nothing from other clients sharing this router — unlike an earlier
+	// version of this guard, which skipped the retry whenever any session was
+	// registered and so silently swallowed failures on a shared router.
+	if !isConnectionDead(err) {
 		return nil, err
 	}
-	log.Printf("[wired-bridge] session %s: create failed (%v), reconnecting I2CP and retrying once", samSessionID, err)
+	log.Printf("[wired-bridge] session %s: I2CP socket is dead, reconnecting and retrying once", samSessionID)
 	_ = a.client.Close()
 	if rerr := a.client.Connect(ctx); rerr != nil {
 		return nil, fmt.Errorf("%w (reconnect also failed: %v)", err, rerr)
 	}
 	return a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+}
+
+// isConnectionDead reports whether err means the I2CP socket is gone, so that
+// reconnecting is the right response rather than surfacing the error.
+func isConnectionDead(err error) bool {
+	switch {
+	case errors.Is(err, syscall.EPIPE),
+		errors.Is(err, syscall.ECONNRESET),
+		errors.Is(err, net.ErrClosed),
+		errors.Is(err, io.EOF),
+		errors.Is(err, os.ErrDeadlineExceeded):
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // ensureConnected re-establishes the I2CP link if the router has dropped it.
@@ -295,10 +319,11 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 // without sending SESSION STATUS — which reaches the Rust side as the useless
 // `invalid message from router`.
 //
-// Reconnecting on demand rather than on a timer is deliberate. The idle window
-// is exactly the gap before any session exists; once one is live, I2CP carries
-// lease and message traffic and the deadline never fires. A periodic reconnect
-// would instead tear live sessions off their client every 30 s.
+// Reconnecting on demand rather than on a timer is deliberate: a periodic
+// reconnect would tear live sessions off their client every 30 s. Whether an
+// established session produces enough I2CP traffic to keep the deadline from
+// firing has not been measured — if it does not, a keepalive will be needed on
+// top of this, and the retry path below is what will show it.
 //
 // Note this only catches the case where the client noticed the drop. It often
 // does not — see the retry path in CreateSessionForSAM.
