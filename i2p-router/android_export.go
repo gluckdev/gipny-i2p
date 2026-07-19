@@ -17,13 +17,11 @@ import (
 	"path/filepath"
 	"sync"
 	"unsafe"
-
-	"github.com/go-i2p/go-sam-bridge/lib/embedding"
 )
 
 var (
 	mu     sync.Mutex
-	bridge *embedding.Bridge
+	bridge *wiredBridge
 	cancel context.CancelFunc
 )
 
@@ -59,17 +57,11 @@ func StartSam(dataDir *C.char, samListen *C.char) *C.char {
 		}
 	}
 
-	b, err := embedding.New(
-		embedding.WithListenAddr(listen),
-	)
-	if err != nil {
-		return C.CString("init bridge: " + err.Error())
-	}
-
 	ctx, cancelFn := context.WithCancel(context.Background())
-	if err := b.Start(ctx); err != nil {
+	b, err := startWiredBridge(ctx, listen, false)
+	if err != nil {
 		cancelFn()
-		return C.CString("start bridge: " + err.Error())
+		return C.CString(err.Error())
 	}
 
 	bridge = b

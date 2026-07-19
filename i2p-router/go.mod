@@ -2,7 +2,11 @@ module github.com/gipny/i2p-router
 
 go 1.26.3
 
-require github.com/go-i2p/go-sam-bridge v0.1.59999
+require (
+	github.com/go-i2p/go-i2p v0.1.59999
+	github.com/go-i2p/go-sam-bridge v0.1.59999
+	github.com/go-i2p/go-streaming v0.1.59999
+)
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
@@ -16,10 +20,8 @@ require (
 	github.com/go-i2p/elgamal v0.1.59999 // indirect
 	github.com/go-i2p/go-datagrams v0.1.59999 // indirect
 	github.com/go-i2p/go-i2cp v0.1.59999 // indirect
-	github.com/go-i2p/go-i2p v0.1.59999 // indirect
 	github.com/go-i2p/go-nat-listener v0.0.0-20260402222111-bfda0025cb1b // indirect
 	github.com/go-i2p/go-noise v0.1.59999 // indirect
-	github.com/go-i2p/go-streaming v0.1.59999 // indirect
 	github.com/go-i2p/go-unzip v0.0.0-20260417162122-21146ed7aca8 // indirect
 	github.com/go-i2p/logger v0.1.59999 // indirect
 	github.com/go-i2p/noise v1.1.1-0.20260327201800-8e41bb3d9f1e // indirect

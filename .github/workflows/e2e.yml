@@ -13,10 +13,16 @@ name: e2e
 #   - GIPNY_I2P_BIN so both the relay and the harness find the router binary
 #
 # Runs nightly + on demand rather than on every push/PR: three real i2p
-# routers over ~15-30 min is too heavy to pay on every commit, and it's
-# currently red on a SAM interop bug (#42) that unit tests wouldn't catch
-# anyway. Re-add `pull_request` once #42 is fixed and the job is reliably
-# green.
+# routers over ~15-30 min is too heavy to pay on every commit.
+#
+# Known limitation (#42): this job starts THREE independent routers on one
+# runner (relay + one per bot). The bundled go-i2cp client hardcodes its I2CP
+# dial target to 127.0.0.1:7654, so only the first router gets a working I2CP
+# transport; the bots' routers cannot. The deterministic "no I2CP transport"
+# bug is fixed (i2p-router now wires I2CP, see i2p-router/wiring.go), but a
+# green run needs the harness restructured onto a single shared router. Until
+# then this job stays `continue-on-error` and the harness prints an explicit
+# PASS/FAIL line to the step summary. Re-add `pull_request` once it is green.
 
 on:
   schedule:

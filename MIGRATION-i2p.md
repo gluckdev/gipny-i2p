@@ -29,10 +29,23 @@ destination.
   wrap it in a tiny binary (`i2p-router/`, `gipny-i2p-router`) — one self‑contained
   Go binary providing both router and SAM, so the app stays “zero install”.
 - The Rust side speaks SAMv3 with the **`yosemite`** crate (async/tokio).
+- **I2CP wiring (why the wrapper is not one line).** `embedding.New` starts the
+  router's I2CP *server* but never connects an I2CP *client*, so out of the box
+  SAM STREAM sessions have no transport: `SESSION CREATE` returns OK, yet every
+  `STREAM CONNECT`/`ACCEPT` fails (`no listener for session`, surfaced to the
+  caller as a generic `CANT_REACH_PEER`). The wrapper (`i2p-router/wiring.go`)
+  therefore starts the router, waits for its I2CP port, connects an `i2cp.Client`,
+  and builds the SAM bridge wired to it — mirroring go-sam-bridge's own
+  `cmd/sam-bridge`. Caveat: the underlying `go-i2cp` client hardcodes its dial
+  target to `127.0.0.1:7654` (its TCP address is fixed at construction and
+  `SetProperty` cannot move it), so **exactly one router per host** is supported.
+  Running several independent routers on one machine (e.g. an all‑in‑one e2e job
+  with relay + two bots) needs a shared‑router redesign — see issue #42.
 
 ```
 gipny (Rust) ──SAMv3 127.0.0.1:7656──▶ gipny-i2p-router (Go)
-                                         ├─ embedded go-i2p router
+                                         ├─ embedded go-i2p router (I2CP :7654)
+                                         ├─ i2cp.Client ⇄ router (wires STREAM transport)
                                          └─ SAMv3 bridge
 ```
 
