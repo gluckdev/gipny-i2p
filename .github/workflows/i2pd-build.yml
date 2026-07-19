@@ -241,6 +241,14 @@ jobs:
           # to so a build can always be traced back to its sources.
           git -C boost fetch --depth 1 origin master
           git -C boost checkout FETCH_HEAD
+
+          # The dependency scripts hardcode API 16 for the 32-bit ABIs, which
+          # NDK r26 and later dropped — run 29695534157's armeabi-v7a leg died
+          # on "armv7a-linux-androideabi16-clang: not found" while the 64-bit
+          # legs, which already ask for 21, built fine. 21 is the floor these
+          # NDKs support and is still below the android-24 the build targets.
+          sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh build_miniupnpc.sh
+          grep -n 'API=' build_boost.sh build_openssl.sh build_miniupnpc.sh | sort -u | head
           echo "[i2pd] Boost-for-Android at $(git -C boost log --oneline -1)"
 
       - name: resolve NDK
