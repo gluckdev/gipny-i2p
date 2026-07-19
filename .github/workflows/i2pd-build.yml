@@ -21,13 +21,13 @@ on:
   push:
     branches:
       - ci/i2pd-router-build
-  # Nightly, twice: upstream branch heads move under us, so the morning should
-  # show whether they still build, and a second run means one flaky runner does
-  # not leave the question unanswered. The e2e runs sit between them (03:17,
-  # 06:17) so each build has something that checks it actually delivers.
+  # Once a night. Upstream branch heads move under us, so the morning should
+  # show whether they still build; the e2e at 03:17 then checks the result
+  # actually delivers. A second nightly pair was tried and dropped — it doubled
+  # the minutes to answer a question one run already answers, and a flaky night
+  # is recoverable by hand.
   schedule:
     - cron: '17 1 * * *'
-    - cron: '17 5 * * *'
 
 permissions:
   contents: read
