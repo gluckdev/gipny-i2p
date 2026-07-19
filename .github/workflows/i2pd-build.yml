@@ -36,7 +36,14 @@ jobs:
   # --------------------------------------------------------------------------
   linux:
     name: linux x86_64 (static)
-    runs-on: ubuntu-latest
+    # Same image the release job builds the desktop bundles on. boost, openssl
+    # and zlib are linked statically, but glibc cannot be — so the binary still
+    # carries a minimum glibc, and building on a newer image than the release
+    # uses would produce a router the app itself cannot run on older distros.
+    # This is a real regression against today's Go router, which is built with
+    # CGO_ENABLED=0 and depends on nothing at all. If it bites, the answer is a
+    # musl build, not a newer runner.
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - name: install build dependencies
@@ -77,6 +84,55 @@ jobs:
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
+  # Windows: the release job ships an NSIS installer, so the router has to
+  # exist for it too. msys2's mingw packages supply boost and openssl, which is
+  # how upstream builds their own Windows releases.
+  # --------------------------------------------------------------------------
+  windows:
+    name: windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+
+      - name: checkout i2pd
+        uses: actions/checkout@v7
+        with:
+          repository: PurpleI2P/i2pd
+          ref: ${{ env.I2PD_VERSION }}
+          path: i2pd
+
+      - name: build
+        working-directory: i2pd
+        run: make USE_UPNP=no -j"$(nproc)"
+
+      - name: verify
+        working-directory: i2pd
+        run: |
+          ./i2pd.exe --version
+          ls -lh i2pd.exe
+          # Which mingw DLLs travel with it decides what the installer bundles.
+          ldd ./i2pd.exe | grep -iv '/c/windows' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-windows-x86_64
+          path: i2pd/i2pd.exe
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
   # Android: standalone executable per ABI, matching the ABIs the APK ships.
   #
   # i2pd itself carries no Android build; it lives in i2pd-android, whose
@@ -101,6 +157,12 @@ jobs:
             arch: arm64
           - abi: x86_64
             arch: x86_64
+          # 32-bit ARM is a measurement, not a commitment: the APK ships no
+          # 32-bit ABI today (no armv7 Rust target, no 32-bit go-i2p .so), so
+          # this leg only answers whether it builds and what it costs, for when
+          # 32-bit device support is decided on its own merits.
+          - abi: armeabi-v7a
+            arch: arm
     steps:
       - name: checkout i2pd-android
         uses: actions/checkout@v7
@@ -117,11 +179,21 @@ jobs:
           git log --oneline -1
 
       - name: resolve NDK
+        env:
+          # Pinned, not "whatever is newest". Boost-for-Android matches the NDK
+          # version against a fixed list and refuses anything outside it: run
+          # 29694856790 died on "Undefined or not supported Android NDK version:
+          # 29.0", which is what the runners now ship by default. Its list ends
+          # at 28.2, and 27.3 is also exactly the NDK build.yml uses for the APK,
+          # so the router and the app are built with the same toolchain.
+          NDK_VERSION: 27.3.13750724
         run: |
-          # Upstream pins NDK 21.4; the runners ship much newer ones. Use what is
-          # here and let the build say whether that matters — that is one of the
-          # two questions this spike exists to answer.
-          NDK_DIR="$(ls -d "$ANDROID_SDK_ROOT"/ndk/* | sort -V | tail -1)"
+          NDK_DIR="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [ ! -d "$NDK_DIR" ]; then
+            echo "[i2pd] NDK $NDK_VERSION not present, installing"
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          fi
+          test -d "$NDK_DIR"
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
           echo "[i2pd] using NDK $NDK_DIR"
