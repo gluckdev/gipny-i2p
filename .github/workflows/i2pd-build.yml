@@ -53,15 +53,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential libboost-program-options-dev libssl-dev zlib1g-dev
 
-      - name: checkout i2pd
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          repository: PurpleI2P/i2pd
-          ref: ${{ env.I2PD_VERSION }}
-          path: i2pd
+          submodules: recursive
 
       - name: build
-        working-directory: i2pd
+        working-directory: third_party/i2pd
         run: |
           # USE_UPNP is off: gipny only ever talks to a loopback SAM port, and
           # leaving UPnP out drops a dependency and a hole-punching side effect
@@ -69,7 +66,7 @@ jobs:
           make USE_STATIC=yes USE_UPNP=no -j"$(nproc)"
 
       - name: verify
-        working-directory: i2pd
+        working-directory: third_party/i2pd
         run: |
           ./i2pd --version
           echo "--- size ---"
@@ -80,7 +77,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: i2pd-linux-x86_64
-          path: i2pd/i2pd
+          path: third_party/i2pd/i2pd
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
@@ -107,19 +104,16 @@ jobs:
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-zlib
 
-      - name: checkout i2pd
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          repository: PurpleI2P/i2pd
-          ref: ${{ env.I2PD_VERSION }}
-          path: i2pd
+          submodules: recursive
 
       - name: build
-        working-directory: i2pd
+        working-directory: third_party/i2pd
         run: make USE_UPNP=no -j"$(nproc)"
 
       - name: verify
-        working-directory: i2pd
+        working-directory: third_party/i2pd
         run: |
           ./i2pd.exe --version
           ls -lh i2pd.exe
@@ -129,7 +123,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: i2pd-windows-x86_64
-          path: i2pd/i2pd.exe
+          path: third_party/i2pd/i2pd.exe
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
@@ -164,19 +158,27 @@ jobs:
           - abi: armeabi-v7a
             arch: arm
     steps:
-      - name: checkout i2pd-android
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          repository: PurpleI2P/i2pd-android
           submodules: recursive
-          path: i2pd-android
 
-      - name: pin i2pd submodule to ${{ env.I2PD_VERSION }}
-        working-directory: i2pd-android/binary/jni/i2pd
+      - name: align the vendored sources
+        working-directory: third_party/i2pd-android/binary/jni
         run: |
-          git fetch --tags --depth 1 origin "$I2PD_VERSION"
-          git checkout "$I2PD_VERSION"
-          git log --oneline -1
+          # Build the i2pd revision this repo pins, not the one i2pd-android
+          # happens to point at.
+          git -C i2pd fetch --tags --depth 1 origin "$I2PD_VERSION"
+          git -C i2pd checkout "$I2PD_VERSION"
+          echo "[i2pd] i2pd at $(git -C i2pd describe --tags)"
+
+          # i2pd-android pins Boost-for-Android to a commit whose NDK whitelist
+          # predates every NDK the runners ship — run 29695096389 was rejected
+          # with "Undefined or not supported Android NDK version: 27.3". Its
+          # master accepts up to 28.2, so move to master here. Overriding it in
+          # our own build is exactly why these are submodules of this repo.
+          git -C boost fetch --depth 1 origin master
+          git -C boost checkout FETCH_HEAD
+          echo "[i2pd] Boost-for-Android at $(git -C boost log --oneline -1)"
 
       - name: resolve NDK
         env:
@@ -200,7 +202,7 @@ jobs:
           cat "$NDK_DIR/source.properties" || true
 
       - name: build dependencies (boost, openssl, miniupnpc)
-        working-directory: i2pd-android/binary/jni
+        working-directory: third_party/i2pd-android/binary/jni
         run: |
           ./build_boost.sh ${{ matrix.arch }}
           ./build_openssl.sh ${{ matrix.arch }}
@@ -216,7 +218,7 @@ jobs:
           done
 
       - name: build i2pd
-        working-directory: i2pd-android/binary/jni
+        working-directory: third_party/i2pd-android/binary/jni
         run: |
           # APP_ABI in Application.mk is "all"; narrow it to the one ABI this
           # matrix leg is for. APP_PLATFORM there is android-16, which modern
@@ -228,7 +230,7 @@ jobs:
             APP_PLATFORM=android-24
 
       - name: verify and stage
-        working-directory: i2pd-android/binary
+        working-directory: third_party/i2pd-android/binary
         run: |
           BIN="libs/${{ matrix.abi }}/i2pd"
           test -f "$BIN"
@@ -245,5 +247,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: i2pd-android-${{ matrix.abi }}
-          path: i2pd-android/binary/staged/libi2pd.so
+          path: third_party/i2pd-android/binary/staged/libi2pd.so
           if-no-files-found: error
