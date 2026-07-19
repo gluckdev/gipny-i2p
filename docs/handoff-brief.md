@@ -37,11 +37,55 @@ seconds, STREAM CONNECT OK in 3.5 s, and a live HTTP 302 from the official
 project site inside I2P. That reproduces on a GitHub runner too, so it is not
 about one network.
 
-WHAT IS ALREADY BEING WORKED ON — do not duplicate:
-- #47 / PR #48: GitHub Copilot is adding a workflow that runs the existing e2e
-  job against i2pd instead of go-i2p, to prove whether our own stack delivers
-  when the router underneath is competent. Workflow-only, touches no app code.
-- #46 is the decision issue (keep patching go-i2p vs move to i2pd). Not a task.
+SETTLED SINCE: the stack is fine, the router was the whole problem.
+
+PR #48 (`.github/workflows/e2e-i2pd.yml`) is e2e.yml with only the router
+swapped. Run 29693889188 delivered **5 of 5 messages over live i2p in 49 s**,
+median RTT 5.8 s. The same harness has never delivered one message over go-i2p.
+Relay, bot-sdk, session layer, shared-router arrangement (#45) — all correct.
+
+So #46 is no longer "is go-i2p the problem" but "what does shipping i2pd cost".
+
+IN FLIGHT AT THE END OF 2026-07-19:
+
+- Branch `ci/i2pd-router-build`, workflow `.github/workflows/i2pd-build.yml`:
+  builds i2pd ourselves for linux x86_64 (static), windows x86_64 (msys2), and
+  Android arm64-v8a / x86_64 / armeabi-v7a. Run 29695096389 was still going.
+  Linux already built cleanly on the first attempt; the Android legs are slow
+  because boost and openssl are compiled from source per ABI.
+  Nothing is wired into the app — this only answers whether we can produce the
+  binaries.
+- PR #48 is ready for review, with a temporary push trigger already removed.
+- #49 (LeaseSet exposure) is still open and still unanswered.
+
+THINGS LEARNED THE HARD WAY IN THAT WORKFLOW, DO NOT REDISCOVER:
+
+- Boost-for-Android matches the NDK version against a fixed list that ends at
+  28.2 and refuses anything else; the runners now default to 29.0. Pinned to
+  27.3.13750724, which is also what build.yml uses for the APK.
+- i2pd-android's dependency scripts take arm64/x86_64/arm/x86, not ABI names,
+  and an unrecognised argument falls through their `*)` case, builds nothing,
+  and still exits 0.
+- Their Application.mk pins APP_PLATFORM to android-16 (dropped by modern NDKs)
+  and APP_ABI to "all"; both are overridden on the ndk-build command line.
+- Desktop must build on ubuntu-22.04, the image release.yml uses. boost/openssl
+  link statically but glibc cannot, so a newer image yields a router the bundles
+  cannot run beside on older distros. Note this is a genuine regression against
+  today's Go router, which is CGO_ENABLED=0 and depends on nothing; if it bites,
+  the answer is a musl build.
+- Android will not execute a binary from the app's data directory, so the router
+  has to travel in jniLibs as lib*.so to land in nativeLibraryDir.
+- The APK ships no 32-bit ABI today, so the armeabi-v7a leg is a measurement,
+  not a commitment.
+
+STILL OPEN, ROUGHLY IN ORDER:
+1. #49 — LeaseSet exposure. Security, cheap to settle, blocks nothing else.
+2. Finish reading the i2pd-build results; decide desktop bundling (glibc floor,
+   which mingw DLLs the Windows installer needs).
+3. Android integration: standalone binary in jniLibs versus libi2pd.so + JNI.
+   The app already loads a router .so in-process via GipnyService.kt, so the JNI
+   shape is closer to what exists; i2pd-android has a wrapper to borrow.
+4. #46 — take the decision once 2 and 3 have numbers.
 
 THE OPEN TASK — #49, and it is the one that actually matters right now:
 
