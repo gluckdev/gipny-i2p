@@ -1,17 +1,58 @@
+//go:build mocksam
+
+// Mock SAMv3 server for the local development loop only.
+//
+// It speaks just enough of SAMv3 to let the relay and two bots hand streams to
+// each other over loopback TCP, with no i2p router, no reseed, and no tunnels.
+// That makes the e2e harness runnable in seconds while iterating on the Rust
+// side (see run-e2e.sh, which passes --mock).
+//
+// It is behind the `mocksam` build tag on purpose:
+//
+//   - the shipped binary must never be able to serve fake destinations;
+//   - a CI job running against this mock would be green without exercising i2p
+//     at all, which is worse than a flaky job that tells the truth. Do not wire
+//     --mock into .github/workflows/e2e.yml.
+//
+// Build with: go build -tags mocksam -o gipny-i2p-router .
 package main
 
 import (
 	"bufio"
 	"crypto/rand"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
+
+var mockSAMFlag = flag.Bool("mock", false, "run a mock SAMv3 server instead of a real router (local testing only)")
+
+// mockSAMRequested reports whether --mock was passed. Always false in builds
+// without the mocksam tag (see mock_sam_stub.go).
+func mockSAMRequested() bool { return *mockSAMFlag }
+
+// runMockSAM serves the mock bridge on addr until SIGINT/SIGTERM.
+func runMockSAM(addr string) {
+	log.Printf("gipny-i2p-router: running in MOCK mode (pure-local SAMv3 mock server on %s) — NOT a real i2p transport", addr)
+	server := NewMockSAMServer(addr)
+	if err := server.Start(); err != nil {
+		log.Fatalf("gipny-i2p-router: start mock server: %v", err)
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	log.Printf("gipny-i2p-router: shutting down mock server")
+	server.Stop()
+}
 
 type mockSession struct {
 	ID          string

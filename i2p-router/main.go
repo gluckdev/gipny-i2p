@@ -31,20 +31,11 @@ func main() {
 	samListen := flag.String("sam-listen", "127.0.0.1:7656", "SAM v3 TCP listen address")
 	dataDir := flag.String("data", "", "router data directory (i2p netdb/state)")
 	debug := flag.Bool("debug", false, "enable debug logging")
-	mock := flag.Bool("mock", false, "run mock SAM bridge for local testing")
 	flag.Parse()
 
-	if *mock {
-		log.Printf("gipny-i2p-router: running in MOCK mode (pure-local SAMv3 mock server on %s)", *samListen)
-		server := NewMockSAMServer(*samListen)
-		if err := server.Start(); err != nil {
-			log.Fatalf("gipny-i2p-router: start mock server: %v", err)
-		}
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		log.Printf("gipny-i2p-router: shutting down mock server")
-		server.Stop()
+	// Only reachable in `-tags mocksam` builds; a no-op otherwise (mock_sam.go).
+	if mockSAMRequested() {
+		runMockSAM(*samListen)
 		return
 	}
 
