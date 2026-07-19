@@ -151,7 +151,15 @@ impl I2pNode {
         #[cfg(target_os = "android")]
         let router = RouterHandle::attach(DEFAULT_SAM_PORT).await?;
         #[cfg(not(target_os = "android"))]
-        let router = RouterHandle::start(data_dir, None).await?;
+        let router = if let Ok(port_str) = std::env::var("GIPNY_SAM_PORT") {
+            if let Ok(port) = port_str.parse::<u16>() {
+                RouterHandle::attach(port).await?
+            } else {
+                RouterHandle::start(data_dir, None).await?
+            }
+        } else {
+            RouterHandle::start(data_dir, None).await?
+        };
 
         let sam_port = router.sam_port();
         eprintln!("[i2p] generating ephemeral destination for this session...");

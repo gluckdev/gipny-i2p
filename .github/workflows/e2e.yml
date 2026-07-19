@@ -10,19 +10,17 @@ name: e2e
 #   - SAM /dev/tcp probe loop
 #   - dest.pub written by the relay before its SAM session opens
 #   - GIPNY_RELAY_DATA for relay state directory
-#   - GIPNY_I2P_BIN so both the relay and the harness find the router binary
+#   - GIPNY_SAM_PORT so both bots attach to the single shared router
 #
-# Runs nightly + on demand rather than on every push/PR: three real i2p
-# routers over ~15-30 min is too heavy to pay on every commit.
+# Runs nightly + on demand rather than on every push/PR.
 #
-# Known limitation (#42): this job starts THREE independent routers on one
-# runner (relay + one per bot). The bundled go-i2cp client hardcodes its I2CP
-# dial target to 127.0.0.1:7654, so only the first router gets a working I2CP
-# transport; the bots' routers cannot. The deterministic "no I2CP transport"
-# bug is fixed (i2p-router now wires I2CP, see i2p-router/wiring.go), but a
-# green run needs the harness restructured onto a single shared router. Until
-# then this job stays `continue-on-error` and the harness prints an explicit
-# PASS/FAIL line to the step summary. Re-add `pull_request` once it is green.
+# Note (#42): previously this job started THREE independent routers on one
+# runner (relay + one per bot). The bundled go-i2cp client hardcoded its I2CP
+# dial target to 127.0.0.1:7654, so only the first router got a working I2CP
+# transport. We have restructured the harness and workflow to use a SINGLE
+# shared router (both bots and relay connect to it via SAM port 7656).
+# Even with a shared router, network startup needs reseed and can be flaky;
+# it remains continue-on-error until proven stable. Re-add `pull_request` once green.
 
 on:
   schedule:
@@ -142,8 +140,8 @@ jobs:
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '600'
           E2E_WORK_DIR: e2e-state
-          # Let libcore find the router binary for the two bot instances.
-          GIPNY_I2P_BIN: ${{ github.workspace }}/gipny-i2p-router
+          # Point the bots to the single shared router on SAM port 7656
+          GIPNY_SAM_PORT: '7656'
         run: |
           # /usr/bin/time -v for peak RSS; fall back gracefully if unavailable.
           if command -v /usr/bin/time >/dev/null 2>&1; then

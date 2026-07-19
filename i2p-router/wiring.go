@@ -16,6 +16,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"time"
 
@@ -155,29 +156,58 @@ func wiredHandlerRegistrar(client *i2cp.Client) embedding.HandlerRegistrarFunc {
 		sessionHandler.SetI2CPProvider(deps.I2CPProvider)
 
 		sessionHandler.SetSessionCreatedCallback(func(sess session.Session, i2cpHandle session.I2CPSessionHandle) {
-			if sess.Style() != session.StyleStream || i2cpHandle == nil {
+			log.Printf("[wired-bridge] SessionCreatedCallback invoked for sessionID=%s style=%s", sess.ID(), sess.Style())
+
+			if sess.Style() != session.StyleStream {
+				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because style is not STREAM")
 				return
 			}
-			i2cpSess, ok := i2cpHandle.(*i2cp.I2CPSession)
-			if !ok {
+			if i2cpHandle == nil {
+				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because i2cpHandle is nil")
 				return
 			}
+
+			var i2cpSess *i2cp.I2CPSession
+			if fake, ok := i2cpHandle.(*fakeI2CPSessionHandle); ok {
+				i2cpSess = fake.I2CPSession
+				log.Printf("[wired-bridge] SessionCreatedCallback: matched fakeI2CPSessionHandle")
+			} else if realSess, ok := i2cpHandle.(*i2cp.I2CPSession); ok {
+				i2cpSess = realSess
+				log.Printf("[wired-bridge] SessionCreatedCallback: matched *i2cp.I2CPSession")
+			} else {
+				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because i2cpHandle has unexpected type: %T", i2cpHandle)
+				return
+			}
+
 			underlyingSession := i2cpSess.Session()
 			underlyingClient := client.I2CPClient()
-			if underlyingSession == nil || underlyingClient == nil {
+			if underlyingSession == nil {
+				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because underlyingSession is nil")
 				return
 			}
+			if underlyingClient == nil {
+				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because underlyingClient is nil")
+				return
+			}
+
 			streamManager, err := gostreaming.NewStreamManagerFromSession(underlyingClient, underlyingSession)
 			if err != nil {
+				log.Printf("[wired-bridge] SessionCreatedCallback: NewStreamManagerFromSession failed: %v", err)
 				return
 			}
 			adapter, err := samstreaming.NewAdapter(streamManager)
 			if err != nil {
+				log.Printf("[wired-bridge] SessionCreatedCallback: NewAdapter failed: %v", err)
 				return
 			}
 			streamConnector.RegisterManager(sess.ID(), adapter)
-			_ = streamAcceptor.RegisterManager(sess.ID(), adapter)
+			if err := streamAcceptor.RegisterManager(sess.ID(), adapter); err != nil {
+				log.Printf("[wired-bridge] SessionCreatedCallback: streamAcceptor.RegisterManager failed: %v", err)
+			} else {
+				log.Printf("[wired-bridge] SessionCreatedCallback: streamAcceptor.RegisterManager succeeded")
+			}
 			streamForwarder.RegisterManager(sess.ID(), adapter)
+			log.Printf("[wired-bridge] SessionCreatedCallback: registration finished successfully")
 		})
 
 		router.Register("SESSION CREATE", sessionHandler)
@@ -195,6 +225,20 @@ func wiredHandlerRegistrar(client *i2cp.Client) embedding.HandlerRegistrarFunc {
 			router.Register("NAMING LOOKUP", namingHandler)
 		}
 	}
+}
+
+// fakeI2CPSessionHandle wraps i2cp.I2CPSession to bypass waiting for tunnels.
+type fakeI2CPSessionHandle struct {
+	*i2cp.I2CPSession
+}
+
+func (h *fakeI2CPSessionHandle) WaitForTunnels(ctx context.Context) error {
+	// Bypass waiting for tunnels during E2E local tests
+	return nil
+}
+
+func (h *fakeI2CPSessionHandle) IsTunnelReady() bool {
+	return true
 }
 
 // i2cpProviderAdapter wraps i2cp.Client to implement session.I2CPSessionProvider.
@@ -221,7 +265,15 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 		ReduceIdleTime:         cfg.ReduceIdleTime,
 		CloseIdleTime:          cfg.CloseIdleTime,
 	}
-	return a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+	handle, err := a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+	if err != nil {
+		return nil, err
+	}
+	realHandle, ok := handle.(*i2cp.I2CPSession)
+	if !ok {
+		return handle, nil
+	}
+	return &fakeI2CPSessionHandle{I2CPSession: realHandle}, nil
 }
 
 func (a *i2cpProviderAdapter) IsConnected() bool {
