@@ -33,6 +33,7 @@ name: e2e-i2pd
 on:
   schedule:
     - cron: '17 3 * * *'
+    - cron: '17 6 * * *'
   workflow_dispatch:
   # Any change to the vendored router — dependabot's weekly submodule bump, or
   # ours — has to prove it still delivers before it can be merged. Compiling is

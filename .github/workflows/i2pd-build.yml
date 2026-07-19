@@ -18,11 +18,16 @@ name: i2pd-build
 
 on:
   workflow_dispatch:
-  # TEMPORARY, remove before merging: workflow_dispatch only resolves for
-  # workflows already on the default branch.
   push:
     branches:
       - ci/i2pd-router-build
+  # Nightly, twice: upstream branch heads move under us, so the morning should
+  # show whether they still build, and a second run means one flaky runner does
+  # not leave the question unanswered. The e2e runs sit between them (03:17,
+  # 06:17) so each build has something that checks it actually delivers.
+  schedule:
+    - cron: '17 1 * * *'
+    - cron: '17 5 * * *'
 
 permissions:
   contents: read
