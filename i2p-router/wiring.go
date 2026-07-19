@@ -15,13 +15,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"os"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/go-i2p/go-i2p/lib/config"
@@ -35,13 +32,14 @@ import (
 	gostreaming "github.com/go-i2p/go-streaming"
 )
 
-// wiredBridge bundles the embedded go-i2p router, the I2CP client that binds
-// the SAM handlers to it, and the SAM bridge. All three are torn down together
-// (in reverse order of startup) by Stop.
+// wiredBridge bundles the embedded go-i2p router, the I2CP clients that bind
+// the SAM handlers to it, and the SAM bridge. All are torn down together (in
+// reverse order of startup) by Stop.
 type wiredBridge struct {
-	router *embedded.StandardEmbeddedRouter
-	client *i2cp.Client
-	bridge *embedding.Bridge
+	router   *embedded.StandardEmbeddedRouter
+	control  *i2cp.Client
+	provider *i2cpProviderAdapter
+	bridge   *embedding.Bridge
 }
 
 // i2cpAddr is the loopback I2CP endpoint the embedded router listens on and the
@@ -81,48 +79,62 @@ func startWiredBridge(ctx context.Context, samListen string, debug bool) (*wired
 	}
 	time.Sleep(2 * time.Second)
 
-	// 3. Connect the I2CP client to the embedded router.
-	client := i2cp.NewClient(&i2cp.ClientConfig{
-		RouterAddr:     i2cpAddr,
-		ConnectTimeout: 60 * time.Second,
-		SessionTimeout: 120 * time.Second,
-	})
-	if err := client.Connect(ctx); err != nil {
+	// 3. Connect the control client. It serves NAMING LOOKUP and liveness only —
+	//    sessions get their own clients, see i2cpProviderAdapter.
+	control := i2cp.NewClient(newI2CPClientConfig())
+	if err := control.Connect(ctx); err != nil {
 		_ = router.Stop()
 		return nil, fmt.Errorf("connect i2cp client: %w", err)
 	}
+	provider := newI2CPProviderAdapter(control)
 
-	// 4. Build the SAM bridge wired to that client. Because the I2CP port is
+	// 4. Build the SAM bridge wired to those clients. Because the I2CP port is
 	//    already bound by our router, embedding.New() will not start a second
 	//    one — it takes the "external router" path and wires StreamManagers.
 	b, err := embedding.New(
 		embedding.WithListenAddr(samListen),
 		embedding.WithI2CPAddr(i2cpAddr),
-		embedding.WithI2CPProvider(newI2CPProviderAdapter(client)),
-		embedding.WithHandlerRegistrar(wiredHandlerRegistrar(client, debug)),
+		embedding.WithI2CPProvider(provider),
+		embedding.WithHandlerRegistrar(wiredHandlerRegistrar(control, provider, debug)),
 		embedding.WithDebug(debug),
 	)
 	if err != nil {
-		_ = client.Close()
+		provider.CloseAll()
+		_ = control.Close()
 		_ = router.Stop()
 		return nil, fmt.Errorf("init bridge: %w", err)
 	}
 	if err := b.Start(ctx); err != nil {
-		_ = client.Close()
+		provider.CloseAll()
+		_ = control.Close()
 		_ = router.Stop()
 		return nil, fmt.Errorf("start bridge: %w", err)
 	}
 
-	return &wiredBridge{router: router, client: client, bridge: b}, nil
+	return &wiredBridge{router: router, control: control, provider: provider, bridge: b}, nil
 }
 
-// Stop tears down the bridge, I2CP client, and router in reverse order.
+// newI2CPClientConfig returns the config every I2CP client here is built with.
+// RouterAddr is informational: go-i2cp fixes its dial target at construction and
+// only ever reaches 127.0.0.1:7654 (see i2cpAddr).
+func newI2CPClientConfig() *i2cp.ClientConfig {
+	return &i2cp.ClientConfig{
+		RouterAddr:     i2cpAddr,
+		ConnectTimeout: 60 * time.Second,
+		SessionTimeout: 120 * time.Second,
+	}
+}
+
+// Stop tears down the bridge, I2CP clients, and router in reverse order.
 func (w *wiredBridge) Stop(ctx context.Context) {
 	if w.bridge != nil {
 		_ = w.bridge.Stop(ctx)
 	}
-	if w.client != nil {
-		_ = w.client.Close()
+	if w.provider != nil {
+		w.provider.CloseAll()
+	}
+	if w.control != nil {
+		_ = w.control.Close()
 	}
 	if w.router != nil {
 		_ = w.router.Stop()
@@ -146,7 +158,7 @@ func waitForTCP(addr string, timeout time.Duration) error {
 // wiredHandlerRegistrar registers the default SAM handlers plus STREAM handlers
 // that are backed by a StreamManager per session, built from the connected
 // I2CP client. Mirrors go-sam-bridge/cmd/sam-bridge/main.go.
-func wiredHandlerRegistrar(client *i2cp.Client, debug bool) embedding.HandlerRegistrarFunc {
+func wiredHandlerRegistrar(control *i2cp.Client, provider *i2cpProviderAdapter, debug bool) embedding.HandlerRegistrarFunc {
 	// Per-session trace of the registration path. Only useful when diagnosing a
 	// dead STREAM transport, and it fires for every session, so it is gated on
 	// --debug; the failure branches below log unconditionally.
@@ -186,8 +198,17 @@ func wiredHandlerRegistrar(client *i2cp.Client, debug bool) embedding.HandlerReg
 				return
 			}
 
+			// The StreamManager must be built on the client that owns this
+			// session, not on some shared one: each SAM session has its own I2CP
+			// client (see i2cpProviderAdapter).
+			sessionClient := provider.clientFor(sess.ID())
+			if sessionClient == nil {
+				log.Printf("[wired-bridge] session %s: no I2CP client registered, STREAM will not work", sess.ID())
+				return
+			}
+
 			underlyingSession := i2cpSess.Session()
-			underlyingClient := client.I2CPClient()
+			underlyingClient := sessionClient.I2CPClient()
 			if underlyingSession == nil || underlyingClient == nil {
 				log.Printf("[wired-bridge] session %s: I2CP session/client missing, STREAM will not work", sess.ID())
 				return
@@ -220,7 +241,7 @@ func wiredHandlerRegistrar(client *i2cp.Client, debug bool) embedding.HandlerReg
 		router.Register("STREAM ACCEPT", streamHandler)
 		router.Register("STREAM FORWARD", streamHandler)
 
-		if destResolver, err := i2cp.NewClientDestinationResolverAdapter(client, 30*time.Second); err == nil {
+		if destResolver, err := i2cp.NewClientDestinationResolverAdapter(control, 30*time.Second); err == nil {
 			namingHandler := handler.NewNamingHandler(deps.DestManager)
 			namingHandler.SetDestinationResolver(destResolver)
 			router.Register("NAMING LOOKUP", namingHandler)
@@ -228,14 +249,58 @@ func wiredHandlerRegistrar(client *i2cp.Client, debug bool) embedding.HandlerReg
 	}
 }
 
-// i2cpProviderAdapter wraps i2cp.Client to implement session.I2CPSessionProvider.
-// Mirrors go-sam-bridge/cmd/sam-bridge/main.go.
+// i2cpProviderAdapter implements session.I2CPSessionProvider by giving every SAM
+// session its own I2CP client.
+//
+// go-sam-bridge's reference wiring shares one client across all sessions. That
+// does not work against this router: go-i2cp only ever processes the
+// SessionStatus of the *first* session created on a connection. Run
+// 29687964736 caught it exactly — the router wrote SessionStatus for both
+// sessions to the same socket,
+//
+//	13:04:57 sending_response type=SessionStatus sessionID=3082  → message_written_successfully
+//	13:04:59 sending_response type=SessionStatus sessionID=57860 → message_written_successfully
+//
+// and the client logged the read of the first one only. Without that status the
+// second session's tunnelReady is never signalled, WaitForTunnels blocks, and
+// the bridge's 60 s command deadline closes the SAM socket before any reply —
+// the client sees EOF. So a shared client means exactly one working SAM session
+// per router, which is precisely what the shared-router e2e (#45) needs more of.
+//
+// One client per session sidesteps it. All of them dial the same 127.0.0.1:7654
+// (go-i2cp allows nothing else), so this stays within the one-router-per-host
+// constraint.
 type i2cpProviderAdapter struct {
-	client *i2cp.Client
+	control *i2cp.Client
+
+	mu       sync.Mutex
+	sessions map[string]*i2cp.Client
 }
 
-func newI2CPProviderAdapter(client *i2cp.Client) *i2cpProviderAdapter {
-	return &i2cpProviderAdapter{client: client}
+func newI2CPProviderAdapter(control *i2cp.Client) *i2cpProviderAdapter {
+	return &i2cpProviderAdapter{
+		control:  control,
+		sessions: make(map[string]*i2cp.Client),
+	}
+}
+
+// clientFor returns the I2CP client owning samSessionID, or nil if there is none.
+func (a *i2cpProviderAdapter) clientFor(samSessionID string) *i2cp.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessions[samSessionID]
+}
+
+// CloseAll closes every per-session client. Called on shutdown.
+func (a *i2cpProviderAdapter) CloseAll() {
+	a.mu.Lock()
+	clients := a.sessions
+	a.sessions = make(map[string]*i2cp.Client)
+	a.mu.Unlock()
+
+	for _, c := range clients {
+		_ = c.Close()
+	}
 }
 
 func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessionID string, cfg *session.SessionConfig) (session.I2CPSessionHandle, error) {
@@ -252,8 +317,14 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 		ReduceIdleTime:         cfg.ReduceIdleTime,
 		CloseIdleTime:          cfg.CloseIdleTime,
 	}
-	if err := a.ensureConnected(ctx); err != nil {
-		return nil, err
+	// A fresh client per session. Connecting here also means the socket is
+	// milliseconds old when CreateSession writes to it, so the router's 30 s idle
+	// deadline (go-i2p#54) cannot have killed it in between — which is what the
+	// previous single-client wiring kept tripping over.
+	client := i2cp.NewClient(newI2CPClientConfig())
+	if err := client.Connect(ctx); err != nil {
+		log.Printf("[wired-bridge] session %s: connect i2cp client: %v", samSessionID, err)
+		return nil, fmt.Errorf("connect i2cp client for session %s: %w", samSessionID, err)
 	}
 
 	// Return the handle as-is. Do not wrap it: handler/session.go blocks on
@@ -263,83 +334,36 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 	// CANT_REACH_PEER failure #42 fixed, only nondeterministically. It also
 	// breaks embedding/handlers.go, which type-asserts the handle to
 	// *i2cp.I2CPSession for the datagram/raw paths.
-	handle, err := a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
-	if err == nil {
-		return handle, nil
-	}
-
-	// Always log the failure: this is the only place the real reason is visible.
-	// go-sam-bridge answers a failed create by closing the SAM control socket
-	// without a SESSION STATUS, so the client just sees EOF.
-	log.Printf("[wired-bridge] session %s: create failed: %v", samSessionID, err)
-
-	// Retry only if the write died on the socket. IsConnected cannot be used to
-	// decide: the read loop does not observe the router's close, so the client
-	// keeps reporting the link as up while every write fails (verified against
-	// go-sam-bridge v0.1.59999). Match on the error instead.
-	//
-	// A dead socket means every session on it is already dead, so reconnecting
-	// takes nothing from other clients sharing this router — unlike an earlier
-	// version of this guard, which skipped the retry whenever any session was
-	// registered and so silently swallowed failures on a shared router.
-	if !isConnectionDead(err) {
+	handle, err := client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+	if err != nil {
+		// Always log it: go-sam-bridge answers a failed create by closing the SAM
+		// control socket without a SESSION STATUS, so this is the only place the
+		// reason is ever visible — the client just sees EOF.
+		log.Printf("[wired-bridge] session %s: create failed: %v", samSessionID, err)
+		_ = client.Close()
 		return nil, err
 	}
-	log.Printf("[wired-bridge] session %s: I2CP socket is dead, reconnecting and retrying once", samSessionID)
-	_ = a.client.Close()
-	if rerr := a.client.Connect(ctx); rerr != nil {
-		return nil, fmt.Errorf("%w (reconnect also failed: %v)", err, rerr)
+
+	a.mu.Lock()
+	if old := a.sessions[samSessionID]; old != nil {
+		_ = old.Close()
 	}
-	return a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+	a.sessions[samSessionID] = client
+	a.mu.Unlock()
+
+	return handle, nil
 }
 
-// isConnectionDead reports whether err means the I2CP socket is gone, so that
-// reconnecting is the right response rather than surfacing the error.
-func isConnectionDead(err error) bool {
-	switch {
-	case errors.Is(err, syscall.EPIPE),
-		errors.Is(err, syscall.ECONNRESET),
-		errors.Is(err, net.ErrClosed),
-		errors.Is(err, io.EOF),
-		errors.Is(err, os.ErrDeadlineExceeded):
-		return true
-	}
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
-}
-
-// ensureConnected re-establishes the I2CP link if the router has dropped it.
+// IsConnected reports on the control client. Session clients are created on
+// demand and are not part of this answer.
 //
-// The embedded router's I2CP server arms a 30 s read deadline before every
-// message read (go-i2p lib/i2cp/protocol.go:175,400) and treats the timeout as
-// a fatal read error, closing the client connection. Nothing in go-i2cp sends
-// keepalives. So the client this wiring opens once at startup is reliably dead
-// by the time the first SAM session arrives: the CreateSession write fails, the
-// SAM handler returns an error, and bridge/server.go closes the client socket
-// without sending SESSION STATUS — which reaches the Rust side as the useless
-// `invalid message from router`.
-//
-// Reconnecting on demand rather than on a timer is deliberate: a periodic
-// reconnect would tear live sessions off their client every 30 s. Whether an
-// established session produces enough I2CP traffic to keep the deadline from
-// firing has not been measured — if it does not, a keepalive will be needed on
-// top of this, and the retry path below is what will show it.
-//
-// Note this only catches the case where the client noticed the drop. It often
-// does not — see the retry path in CreateSessionForSAM.
-func (a *i2cpProviderAdapter) ensureConnected(ctx context.Context) error {
-	if a.client.IsConnected() {
-		return nil
-	}
-	log.Printf("[wired-bridge] I2CP link is down, reconnecting before session create")
-	if err := a.client.Connect(ctx); err != nil {
-		return fmt.Errorf("reconnect i2cp client: %w", err)
-	}
-	return nil
-}
-
+// Note the router closes any I2CP connection idle for 30 s (go-i2p#54) and
+// go-i2cp neither keeps it alive nor notices the close, so this can report a
+// link that is long dead. Sessions no longer depend on it: each one connects
+// its own client immediately before use, which is why the reconnect-and-retry
+// dance the single-client wiring needed is gone.
 func (a *i2cpProviderAdapter) IsConnected() bool {
-	return a.client.IsConnected()
+	return a.control.IsConnected()
 }
 
 var _ session.I2CPSessionProvider = (*i2cpProviderAdapter)(nil)
