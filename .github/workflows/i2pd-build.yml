@@ -21,13 +21,13 @@ on:
   push:
     branches:
       - ci/i2pd-router-build
-  # Once a night. Upstream branch heads move under us, so the morning should
-  # show whether they still build; the e2e at 03:17 then checks the result
-  # actually delivers. A second nightly pair was tried and dropped — it doubled
-  # the minutes to answer a question one run already answers, and a flaky night
-  # is recoverable by hand.
+  # Weekly, not nightly. e2e-i2pd already builds the Linux router every night
+  # as part of proving it delivers, so a nightly run here would build the same
+  # binary twice for the same answer. What this job adds is the platforms that
+  # test cannot cover — musl, Windows, the three Android ABIs — and "does
+  # upstream still compile everywhere" does not change fast enough to ask daily.
   schedule:
-    - cron: '17 1 * * *'
+    - cron: '17 1 * * 1'
 
 permissions:
   contents: read
