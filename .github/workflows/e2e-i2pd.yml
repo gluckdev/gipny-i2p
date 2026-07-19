@@ -71,30 +71,49 @@ jobs:
       - name: download i2pd router
         run: |
           I2PD_VERSION=2.60.0
-          I2PD_DEB="i2pd_${I2PD_VERSION}-1_amd64.deb"
-          I2PD_URL="https://github.com/PurpleI2P/i2pd/releases/download/${I2PD_VERSION}/${I2PD_DEB}"
           I2PD_ROOT="$GITHUB_WORKSPACE/i2pd-root"
+          I2PD_BASE="https://github.com/PurpleI2P/i2pd/releases/download/${I2PD_VERSION}"
 
-          curl -fsSL "$I2PD_URL" -o "$I2PD_DEB"
+          # Prefer the build for this runner's Ubuntu release: its boost
+          # dependency then matches what apt here can actually supply. Fall back
+          # to the generic Debian build.
+          . /etc/os-release
+          I2PD_DEB="i2pd_${I2PD_VERSION}-1${UBUNTU_CODENAME}1_amd64.deb"
+          if ! curl -fsSL "${I2PD_BASE}/${I2PD_DEB}" -o "$I2PD_DEB"; then
+            echo "[e2e-setup] no build for ${UBUNTU_CODENAME}, using the generic one"
+            I2PD_DEB="i2pd_${I2PD_VERSION}-1_amd64.deb"
+            curl -fsSL "${I2PD_BASE}/${I2PD_DEB}" -o "$I2PD_DEB"
+          fi
+          echo "[e2e-setup] using $I2PD_DEB"
+
           dpkg-deb -x "$I2PD_DEB" "$I2PD_ROOT"
-          test -x "$I2PD_ROOT/usr/sbin/i2pd"
+          # The binary ships in usr/bin, not usr/sbin.
+          test -x "$I2PD_ROOT/usr/bin/i2pd"
 
-          sudo apt-get update
-          BOOST_DEB=""
-          for pkg in libboost-program-options1.83.0 libboost-program-options1.81.0 libboost-program-options1.74.0; do
-            if apt-get download "$pkg" 2>/dev/null; then
-              candidate="$(ls -1 "${pkg}"_*.deb 2>/dev/null | head -n1 || true)"
-              if [ -n "$candidate" ]; then
-                BOOST_DEB="$candidate"
-                break
-              fi
-            fi
-          done
-          if [ -z "$BOOST_DEB" ]; then
-            echo "failed to download libboost-program-options runtime package"
+          # Take the boost requirement from the package rather than guessing a
+          # list of versions: i2pd 2.60.0 wants libboost-program-options1.90.0,
+          # and any hardcoded list goes stale on the next release or runner image.
+          BOOST_PKG="$(dpkg-deb -f "$I2PD_DEB" Depends | tr ',' '\n' \
+            | grep -o 'libboost-program-options[0-9.]*' | head -n1)"
+          if [ -z "$BOOST_PKG" ]; then
+            echo "could not read the libboost requirement from $I2PD_DEB"
+            dpkg-deb -f "$I2PD_DEB" Depends
             exit 1
           fi
-          dpkg-deb -x "$BOOST_DEB" "$I2PD_ROOT"
+          echo "[e2e-setup] i2pd requires $BOOST_PKG"
+
+          sudo apt-get update
+          if ! apt-get download "$BOOST_PKG"; then
+            echo "$BOOST_PKG is not available from this runner's apt sources."
+            echo "Either pick an i2pd build matching ${UBUNTU_CODENAME}, or pin an"
+            echo "i2pd version whose boost dependency apt here can satisfy."
+            exit 1
+          fi
+          dpkg-deb -x "${BOOST_PKG}"_*.deb "$I2PD_ROOT"
+
+          # Fail here, not 200 lines later, if the binary still cannot start.
+          LD_LIBRARY_PATH="$I2PD_ROOT/usr/lib/x86_64-linux-gnu" \
+            "$I2PD_ROOT/usr/bin/i2pd" --version
 
       - name: build relay
         run: |
@@ -111,7 +130,7 @@ jobs:
         run: |
           mkdir -p e2e-state/relay-router e2e-state/relay e2e-state/bot-a e2e-state/bot-b e2e-logs
           I2PD_ROOT="$GITHUB_WORKSPACE/i2pd-root"
-          I2PD_BIN="$I2PD_ROOT/usr/sbin/i2pd"
+          I2PD_BIN="$I2PD_ROOT/usr/bin/i2pd"
           I2PD_LIB_DIR="$I2PD_ROOT/usr/lib/x86_64-linux-gnu"
           I2PD_DATA_DIR="$GITHUB_WORKSPACE/e2e-state/relay-router"
           I2PD_LOG_FILE="$GITHUB_WORKSPACE/e2e-logs/relay-router.log"
@@ -147,8 +166,10 @@ jobs:
           outbound=0
           inbound=0
           for i in $(seq 1 180); do
-            outbound="$(tail -n 400 e2e-logs/relay-router.log | grep -c 'Tunnel: Outbound tunnel .* has been created' || true)"
-            inbound="$(tail -n 400 e2e-logs/relay-router.log | grep -c 'Tunnel: Inbound tunnel .* has been created' || true)"
+            # Count over the whole log: i2pd is chatty at info level, and a
+            # tail window can scroll past the tunnel lines and undercount.
+            outbound="$(grep -c 'Tunnel: Outbound tunnel .* has been created' e2e-logs/relay-router.log || true)"
+            inbound="$(grep -c 'Tunnel: Inbound tunnel .* has been created' e2e-logs/relay-router.log || true)"
             if [ "$outbound" -ge 2 ] && [ "$inbound" -ge 2 ]; then
               echo "[e2e-setup] i2pd tunnels ready after ${i}×2 s (outbound=$outbound inbound=$inbound)"
               break
