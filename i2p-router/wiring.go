@@ -167,14 +167,8 @@ func wiredHandlerRegistrar(client *i2cp.Client) embedding.HandlerRegistrarFunc {
 				return
 			}
 
-			var i2cpSess *i2cp.I2CPSession
-			if fake, ok := i2cpHandle.(*fakeI2CPSessionHandle); ok {
-				i2cpSess = fake.I2CPSession
-				log.Printf("[wired-bridge] SessionCreatedCallback: matched fakeI2CPSessionHandle")
-			} else if realSess, ok := i2cpHandle.(*i2cp.I2CPSession); ok {
-				i2cpSess = realSess
-				log.Printf("[wired-bridge] SessionCreatedCallback: matched *i2cp.I2CPSession")
-			} else {
+			i2cpSess, ok := i2cpHandle.(*i2cp.I2CPSession)
+			if !ok {
 				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because i2cpHandle has unexpected type: %T", i2cpHandle)
 				return
 			}
@@ -227,20 +221,6 @@ func wiredHandlerRegistrar(client *i2cp.Client) embedding.HandlerRegistrarFunc {
 	}
 }
 
-// fakeI2CPSessionHandle wraps i2cp.I2CPSession to bypass waiting for tunnels.
-type fakeI2CPSessionHandle struct {
-	*i2cp.I2CPSession
-}
-
-func (h *fakeI2CPSessionHandle) WaitForTunnels(ctx context.Context) error {
-	// Bypass waiting for tunnels during E2E local tests
-	return nil
-}
-
-func (h *fakeI2CPSessionHandle) IsTunnelReady() bool {
-	return true
-}
-
 // i2cpProviderAdapter wraps i2cp.Client to implement session.I2CPSessionProvider.
 // Mirrors go-sam-bridge/cmd/sam-bridge/main.go.
 type i2cpProviderAdapter struct {
@@ -265,15 +245,14 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 		ReduceIdleTime:         cfg.ReduceIdleTime,
 		CloseIdleTime:          cfg.CloseIdleTime,
 	}
-	handle, err := a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
-	if err != nil {
-		return nil, err
-	}
-	realHandle, ok := handle.(*i2cp.I2CPSession)
-	if !ok {
-		return handle, nil
-	}
-	return &fakeI2CPSessionHandle{I2CPSession: realHandle}, nil
+	// Return the handle as-is. Do not wrap it: handler/session.go blocks on
+	// handle.WaitForTunnels before answering SESSION STATUS, which is what keeps
+	// a STREAM CONNECT from firing into a session whose tunnels are not built
+	// yet. A wrapper that stubs WaitForTunnels/IsTunnelReady reintroduces the
+	// CANT_REACH_PEER failure #42 fixed, only nondeterministically. It also
+	// breaks embedding/handlers.go, which type-asserts the handle to
+	// *i2cp.I2CPSession for the datagram/raw paths.
+	return a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
 }
 
 func (a *i2cpProviderAdapter) IsConnected() bool {
