@@ -64,11 +64,29 @@ impl RouterHandle {
             "[i2p] launching router {} (SAM 127.0.0.1:{sam_port}); first run may take 1-3 min...",
             bin.display()
         );
-        let child = Command::new(&bin)
-            .arg("--sam-listen")
-            .arg(format!("127.0.0.1:{sam_port}"))
-            .arg("--data")
-            .arg(&router_dir)
+        let mut cmd = Command::new(&bin);
+        if is_i2pd(&bin) {
+            // i2pd takes its own flags, and the two routers share nothing here
+            // but the SAM port. Everything but SAM is switched off: gipny talks
+            // SAMv3 over loopback and has no use for the HTTP console, the
+            // proxies, or UPnP punching holes on the user's behalf.
+            cmd.arg(format!("--datadir={}", router_dir.display()))
+                .arg("--sam.enabled=true")
+                .arg("--sam.address=127.0.0.1")
+                .arg(format!("--sam.port={sam_port}"))
+                .arg("--http.enabled=false")
+                .arg("--httpproxy.enabled=false")
+                .arg("--socksproxy.enabled=false")
+                .arg("--upnp.enabled=false")
+                .arg("--log=file")
+                .arg(format!("--logfile={}", router_dir.join("i2pd.log").display()));
+        } else {
+            cmd.arg("--sam-listen")
+                .arg(format!("127.0.0.1:{sam_port}"))
+                .arg("--data")
+                .arg(&router_dir);
+        }
+        let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -167,17 +185,42 @@ fn resolve_router_bin() -> Result<PathBuf> {
             return Ok(PathBuf::from(p));
         }
     }
-    let name = if cfg!(windows) { "gipny-i2p-router.exe" } else { "gipny-i2p-router" };
+    // i2pd first: it is what the bundles are moving to, and it is kept under its
+    // own name rather than renamed to the old one, so `is_i2pd` can tell which
+    // router it is spawning and pass the right flags. The go-i2p wrapper stays
+    // in the list while both are around.
+    let names: [&str; 2] = if cfg!(windows) {
+        ["i2pd.exe", "gipny-i2p-router.exe"]
+    } else {
+        ["i2pd", "gipny-i2p-router"]
+    };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for sub in ["", "resources", "../lib", "../Resources"] {
-                let cand = if sub.is_empty() { dir.join(name) } else { dir.join(sub).join(name) };
-                if cand.exists() {
-                    return Ok(cand);
+            for name in names {
+                for sub in ["", "resources", "../lib", "../Resources"] {
+                    let cand =
+                        if sub.is_empty() { dir.join(name) } else { dir.join(sub).join(name) };
+                    if cand.exists() {
+                        return Ok(cand);
+                    }
                 }
             }
         }
     }
     // Fall back to PATH resolution by bare name.
-    Ok(PathBuf::from(name))
+    Ok(PathBuf::from(names[0]))
+}
+
+/// Whether `bin` is i2pd rather than our Go wrapper.
+///
+/// The two take completely different flags, and the bundled router is moving
+/// from one to the other (see docs/i2p-transport-evaluation.md): go-i2p never
+/// finishes building client tunnels, so it delivers nothing, while i2pd carries
+/// messages over live i2p. Detecting by name keeps both runnable during the
+/// switch — including `GIPNY_I2P_BIN=/usr/bin/i2pd` against a system install.
+fn is_i2pd(bin: &Path) -> bool {
+    bin.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_ascii_lowercase().contains("i2pd"))
+        .unwrap_or(false)
 }

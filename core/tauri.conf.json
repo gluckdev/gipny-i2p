@@ -34,7 +34,7 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "resources": ["resources/gipny-i2p-router*"],
+    "resources": ["resources/i2pd*", "resources/gipny-i2p-router*"],
     "copyright": "",
     "category": "SocialNetworking",
     "shortDescription": "Private messenger",
