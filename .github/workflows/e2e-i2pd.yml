@@ -39,8 +39,42 @@ permissions:
   contents: read
 
 jobs:
+  # ------------------------------------------------------------------
+  # Build the router we actually ship, from third_party/i2pd, rather than
+  # downloading upstream's release. Same shape as release.yml's router job.
+  # Testing a binary we did not build would leave the thing under test and
+  # the thing we bundle free to drift apart.
+  # ------------------------------------------------------------------
+  router:
+    name: router (i2pd, linux/amd64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libboost-program-options-dev libssl-dev zlib1g-dev
+
+      - name: build
+        working-directory: third_party/i2pd
+        run: |
+          make USE_STATIC=yes USE_UPNP=no -j"$(nproc)"
+          ./i2pd --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-linux-amd64
+          path: third_party/i2pd/i2pd
+          if-no-files-found: error
+
   e2e:
     name: e2e (relay + two bots)
+    needs: router
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -68,32 +102,16 @@ jobs:
       # ------------------------------------------------------------------
       # Build all three binaries
       # ------------------------------------------------------------------
-      - name: download i2pd router
+      - name: fetch the router built above
+        uses: actions/download-artifact@v4
+        with:
+          name: i2pd-linux-amd64
+          path: router
+
+      - name: install router
         run: |
-          I2PD_VERSION=2.60.0
-          I2PD_BASE="https://github.com/PurpleI2P/i2pd/releases/download/${I2PD_VERSION}"
-
-          # Prefer the build for this runner's Ubuntu release: its boost
-          # dependency then matches what apt here can actually supply. Fall back
-          # to the generic Debian build.
-          . /etc/os-release
-          I2PD_DEB="i2pd_${I2PD_VERSION}-1${UBUNTU_CODENAME}1_amd64.deb"
-          if ! curl -fsSL "${I2PD_BASE}/${I2PD_DEB}" -o "$I2PD_DEB"; then
-            echo "[e2e-setup] no build for ${UBUNTU_CODENAME}, using the generic one"
-            I2PD_DEB="i2pd_${I2PD_VERSION}-1_amd64.deb"
-            curl -fsSL "${I2PD_BASE}/${I2PD_DEB}" -o "$I2PD_DEB"
-          fi
-          echo "[e2e-setup] using $I2PD_DEB"
-
-          # Install it properly and let apt resolve the dependencies. Unpacking
-          # the .deb by hand and fetching libraries one at a time does not
-          # converge: after libboost-program-options came libminiupnpc, and the
-          # list is whatever this build happens to link against.
-          sudo apt-get update
-          sudo apt-get install -y "./$I2PD_DEB"
-
-          # Fail here, not 200 lines later, if it still cannot start.
-          command -v i2pd
+          chmod +x router/i2pd
+          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
           i2pd --version
 
       - name: build relay
