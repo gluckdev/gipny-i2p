@@ -129,7 +129,7 @@ jobs:
           echo "--- dynamic dependencies (want: libc/libm/libstdc++ only) ---"
           ldd ./i2pd || echo "(not a dynamic executable)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: i2pd-linux-x86_64
           path: third_party/i2pd/i2pd
@@ -204,7 +204,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: i2pd-linux-x86_64-musl
           path: third_party/i2pd/i2pd
@@ -283,7 +283,7 @@ jobs:
           # Which mingw DLLs travel with it decides what the installer bundles.
           ldd ./i2pd.exe | grep -iv '/c/windows' || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: i2pd-windows-x86_64
           path: third_party/i2pd/i2pd.exe
@@ -442,7 +442,7 @@ jobs:
           mkdir -p staged
           cp "$BIN" "staged/libi2pd.so"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: i2pd-android-${{ matrix.abi }}
           path: third_party/i2pd-android/binary/staged/libi2pd.so
