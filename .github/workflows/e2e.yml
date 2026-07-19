@@ -82,6 +82,7 @@ jobs:
           nohup ./gipny-i2p-router \
             --sam-listen 127.0.0.1:7656 \
             --data e2e-state/relay-router \
+            --debug \
             > e2e-logs/relay-router.log 2>&1 &
           echo $! > relay-router.pid
           echo "[e2e-setup] relay router pid=$(cat relay-router.pid)"
@@ -100,6 +101,17 @@ jobs:
             fi
             sleep 2
           done
+
+          # The SAM port binds long before the router has any peers, and
+          # SESSION CREATE then blocks on a 60 s tunnel-build timeout it cannot
+          # meet with an empty netdb (run 29685601054). Give the router time to
+          # reseed and dump what it did, so "tunnel build failed" can be told
+          # apart from "this router never found a single peer".
+          echo "[e2e-setup] letting the router reseed for 180 s..."
+          sleep 180
+          echo "[e2e-setup] ---- router log after reseed window ----"
+          tail -120 e2e-logs/relay-router.log
+          echo "[e2e-setup] ---- end router log ----"
 
       # ------------------------------------------------------------------
       # Start the relay; wait for dest.pub
@@ -125,6 +137,16 @@ jobs:
           done
           if [ ! -s e2e-state/relay/dest.pub ]; then
             echo "dest.pub never appeared"; tail -50 e2e-logs/relay.log; exit 1
+          fi
+
+          # dest.pub is written before SESSION CREATE, so it appearing proves
+          # only that DEST GENERATE worked. In run 29685601054 the relay died
+          # on the SESSION CREATE right after and this step still reported
+          # success. Confirm the relay is actually alive before going on.
+          if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
+            echo "relay wrote dest.pub and then died (SAM session never opened)"
+            tail -50 e2e-logs/relay.log
+            exit 1
           fi
 
           RELAY_DEST="$(cat e2e-state/relay/dest.pub)"
