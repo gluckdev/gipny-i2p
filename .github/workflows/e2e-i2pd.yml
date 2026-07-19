@@ -137,7 +137,7 @@ jobs:
       # Build all three binaries
       # ------------------------------------------------------------------
       - name: fetch the router built above
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: i2pd-linux-amd64
           path: router
