@@ -1,0 +1,291 @@
+name: e2e-i2pd
+
+# End-to-end messaging test: relay + two headless bot clients, latency report.
+#
+# Ships as `continue-on-error: true` because real i2p tunnels in CI are
+# inherently flaky (reseed, tunnel-build races, runner throttling).  It
+# proves the full "boot → link → deliver → measure" path end to end.
+#
+# Pattern reused from relay-testnet.yml:
+#   - SAM /dev/tcp probe loop
+#   - dest.pub written by the relay before its SAM session opens
+#   - GIPNY_RELAY_DATA for relay state directory
+#   - GIPNY_SAM_PORT so both bots attach to the single shared router
+#
+# Runs nightly + on demand rather than on every push/PR.
+#
+# Note (#42, #45): this job used to start THREE independent routers on one
+# runner (relay + one per bot). go-i2cp hardcodes its I2CP dial target to
+# 127.0.0.1:7654, so only the first router ever got a working transport. Relay
+# and both bots now share ONE router (GIPNY_SAM_PORT=7656).
+#
+# The router itself also needs i2p-router/wiring.go's I2CP reconnect: the
+# router's I2CP server drops idle client connections after 30 s (go-i2p#54),
+# which is always shorter than the gap between router boot and the first
+# SESSION CREATE. Without it every session here fails.
+#
+# Still continue-on-error: reseed and tunnel building are genuinely flaky, and
+# the delivery path beyond the transport is unproven. A green check on this job
+# means nothing by itself — read the PASS/FAIL line the harness prints to the
+# step summary and the echo count in [e2e-timing]. Re-add `pull_request` only
+# once it delivers messages reliably.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (relay + two bots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      # ------------------------------------------------------------------
+      # Checkout + toolchains
+      # ------------------------------------------------------------------
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: i2p-router/go.sum
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache the relay sub-workspace and the harness separately from the
+          # main workspace so the large Tauri/gstreamer deps don't bloat this job.
+          workspaces: |
+            core/relay
+            . -> target
+
+      # ------------------------------------------------------------------
+      # Build all three binaries
+      # ------------------------------------------------------------------
+      - name: download i2pd router
+        run: |
+          I2PD_VERSION=2.60.0
+          I2PD_BASE="https://github.com/PurpleI2P/i2pd/releases/download/${I2PD_VERSION}"
+
+          # Prefer the build for this runner's Ubuntu release: its boost
+          # dependency then matches what apt here can actually supply. Fall back
+          # to the generic Debian build.
+          . /etc/os-release
+          I2PD_DEB="i2pd_${I2PD_VERSION}-1${UBUNTU_CODENAME}1_amd64.deb"
+          if ! curl -fsSL "${I2PD_BASE}/${I2PD_DEB}" -o "$I2PD_DEB"; then
+            echo "[e2e-setup] no build for ${UBUNTU_CODENAME}, using the generic one"
+            I2PD_DEB="i2pd_${I2PD_VERSION}-1_amd64.deb"
+            curl -fsSL "${I2PD_BASE}/${I2PD_DEB}" -o "$I2PD_DEB"
+          fi
+          echo "[e2e-setup] using $I2PD_DEB"
+
+          # Install it properly and let apt resolve the dependencies. Unpacking
+          # the .deb by hand and fetching libraries one at a time does not
+          # converge: after libboost-program-options came libminiupnpc, and the
+          # list is whatever this build happens to link against.
+          sudo apt-get update
+          sudo apt-get install -y "./$I2PD_DEB"
+
+          # Fail here, not 200 lines later, if it still cannot start.
+          command -v i2pd
+          i2pd --version
+
+      - name: build relay
+        run: |
+          cargo build --release --manifest-path core/relay/Cargo.toml
+
+      - name: build e2e harness
+        run: |
+          cargo build --release -p e2e-harness
+
+      # ------------------------------------------------------------------
+      # Start the i2p router for the relay
+      # ------------------------------------------------------------------
+      - name: start router (relay)
+        run: |
+          mkdir -p e2e-state/relay-router e2e-state/relay e2e-state/bot-a e2e-state/bot-b e2e-logs
+          I2PD_DATA_DIR="$GITHUB_WORKSPACE/e2e-state/relay-router"
+          I2PD_LOG_FILE="$GITHUB_WORKSPACE/e2e-logs/relay-router.log"
+
+          nohup i2pd \
+            --datadir="$I2PD_DATA_DIR" \
+            --sam.enabled=true --sam.address=127.0.0.1 --sam.port=7656 \
+            --http.enabled=false --httpproxy.enabled=false --socksproxy.enabled=false \
+            --log=file --logfile="$I2PD_LOG_FILE" --loglevel=info \
+            > e2e-logs/relay-router.stdout.log 2>&1 &
+          echo $! > relay-router.pid
+          echo "[e2e-setup] relay router pid=$(cat relay-router.pid)"
+
+          # Wait for SAM to be ready (bash /dev/tcp probe — nc not guaranteed)
+          echo "[e2e-setup] waiting for SAM on 127.0.0.1:7656..."
+          for i in $(seq 1 180); do
+            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/7656' 2>/dev/null; then
+              echo "[e2e-setup] SAM ready after ${i}×2 s"
+              break
+            fi
+            if ! kill -0 "$(cat relay-router.pid)" 2>/dev/null; then
+              echo "relay router died during startup"
+              tail -50 e2e-logs/relay-router.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # Wait until the router reports a couple of outbound/inbound tunnels.
+          # This is a stronger readiness signal than sleeping for a fixed window.
+          echo "[e2e-setup] waiting for i2pd tunnels..."
+          outbound=0
+          inbound=0
+          for i in $(seq 1 180); do
+            # Count over the whole log: i2pd is chatty at info level, and a
+            # tail window can scroll past the tunnel lines and undercount.
+            outbound="$(grep -c 'Tunnel: Outbound tunnel .* has been created' e2e-logs/relay-router.log || true)"
+            inbound="$(grep -c 'Tunnel: Inbound tunnel .* has been created' e2e-logs/relay-router.log || true)"
+            if [ "$outbound" -ge 2 ] && [ "$inbound" -ge 2 ]; then
+              echo "[e2e-setup] i2pd tunnels ready after ${i}×2 s (outbound=$outbound inbound=$inbound)"
+              break
+            fi
+            if ! kill -0 "$(cat relay-router.pid)" 2>/dev/null; then
+              echo "relay router died during tunnel warmup"
+              tail -50 e2e-logs/relay-router.log
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$outbound" -lt 2 ] || [ "$inbound" -lt 2 ]; then
+            echo "i2pd tunnels did not warm up in time (outbound=$outbound inbound=$inbound)"
+            tail -120 e2e-logs/relay-router.log
+            exit 1
+          fi
+
+      # ------------------------------------------------------------------
+      # Start the relay; wait for dest.pub
+      # ------------------------------------------------------------------
+      - name: start relay, capture destination
+        run: |
+          GIPNY_RELAY_DATA=e2e-state/relay \
+          nohup ./core/relay/target/release/gipny-relay \
+            > e2e-logs/relay.log 2>&1 &
+          echo $! > relay.pid
+          echo "[e2e-setup] relay pid=$(cat relay.pid)"
+
+          # dest.pub is written by the relay before its SAM session opens.
+          echo "[e2e-setup] waiting for dest.pub..."
+          for i in $(seq 1 120); do
+            [ -s e2e-state/relay/dest.pub ] && break
+            if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
+              echo "relay died during startup"
+              tail -50 e2e-logs/relay.log
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ ! -s e2e-state/relay/dest.pub ]; then
+            echo "dest.pub never appeared"; tail -50 e2e-logs/relay.log; exit 1
+          fi
+
+          # dest.pub is written before SESSION CREATE, so it appearing proves
+          # only that DEST GENERATE worked. In run 29685601054 the relay died
+          # on the SESSION CREATE right after and this step still reported
+          # success. Confirm the relay is actually alive before going on.
+          if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
+            echo "relay wrote dest.pub and then died (SAM session never opened)"
+            tail -50 e2e-logs/relay.log
+            exit 1
+          fi
+
+          RELAY_DEST="$(cat e2e-state/relay/dest.pub)"
+          echo "RELAY_DEST=$RELAY_DEST" >> "$GITHUB_ENV"
+          echo "[e2e-setup] relay destination: ${RELAY_DEST:0:20}..."
+
+      # ------------------------------------------------------------------
+      # Run the end-to-end harness
+      # ------------------------------------------------------------------
+      - name: run e2e harness
+        env:
+          E2E_RELAY_DEST: ${{ env.RELAY_DEST }}
+          E2E_N_MESSAGES: '5'
+          E2E_TIMEOUT_SECS: '600'
+          E2E_WORK_DIR: e2e-state
+          # Point the bots to the single shared router on SAM port 7656
+          GIPNY_SAM_PORT: '7656'
+        run: |
+          # /usr/bin/time -v for peak RSS; fall back gracefully if unavailable.
+          if command -v /usr/bin/time >/dev/null 2>&1; then
+            /usr/bin/time -v ./target/release/e2e-harness \
+              > e2e-logs/harness.log 2>&1
+            TIME_RC=$?
+          else
+            ./target/release/e2e-harness > e2e-logs/harness.log 2>&1
+            TIME_RC=$?
+          fi
+          cat e2e-logs/harness.log
+          exit $TIME_RC
+
+      # ------------------------------------------------------------------
+      # Surface the SAM/I2CP path from the router log. With DEBUG_I2P=debug the
+      # raw log runs to hundreds of thousands of lines (tunnel building, NTCP2,
+      # netdb), so print only what explains a failed SESSION CREATE. The full
+      # log still goes up as an artifact.
+      # ------------------------------------------------------------------
+      - name: router log (SAM / tunnel path)
+        if: always()
+        run: |
+          echo "[e2e] router log: $(wc -l < e2e-logs/relay-router.log) lines total"
+          echo "[e2e] ---- i2pd SAM + tunnel lines ----"
+          grep -aE 'SAM|Tunnel: (Outbound|Inbound) tunnel .* has been created|LeaseSet|Session' \
+            e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
+
+      # ------------------------------------------------------------------
+      # Publish timing report to the job summary
+      # ------------------------------------------------------------------
+      - name: timing summary
+        if: always()
+        run: |
+          {
+            echo '### e2e messaging test'
+            echo ''
+            # Extract the timing table printed by the harness
+            if grep -q '\[e2e-timing\]' e2e-logs/harness.log 2>/dev/null; then
+              grep -A 20 '\[e2e-timing\]' e2e-logs/harness.log | tail -20
+            else
+              echo '_harness log not available or timing block missing_'
+            fi
+            echo ''
+            # Peak RSS from /usr/bin/time -v output (if available)
+            if grep -q 'Maximum resident' e2e-logs/harness.log 2>/dev/null; then
+              echo '**Peak RSS (harness process):**'
+              echo '```'
+              grep 'Maximum resident' e2e-logs/harness.log
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------
+      # Stop relay + router
+      # ------------------------------------------------------------------
+      - name: stop relay and router
+        if: always()
+        run: |
+          kill "$(cat relay.pid)" 2>/dev/null || true
+          sleep 2
+          kill "$(cat relay-router.pid)" 2>/dev/null || true
+          echo '--- relay log (last 30 lines) ---'
+          tail -30 e2e-logs/relay.log || true
+
+      # ------------------------------------------------------------------
+      # Upload logs as artifact on failure for post-mortem
+      # ------------------------------------------------------------------
+      - name: upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-logs
+          path: e2e-logs/
+          retention-days: 7
