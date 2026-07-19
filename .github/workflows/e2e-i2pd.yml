@@ -80,18 +80,21 @@ jobs:
           test -x "$I2PD_ROOT/usr/sbin/i2pd"
 
           sudo apt-get update
-          BOOST_PKG=""
+          BOOST_DEB=""
           for pkg in libboost-program-options1.83.0 libboost-program-options1.81.0 libboost-program-options1.74.0; do
             if apt-get download "$pkg"; then
-              BOOST_PKG="$pkg"
-              break
+              candidate="$(ls -1 "${pkg}"_*.deb 2>/dev/null | head -n1 || true)"
+              if [ -n "$candidate" ]; then
+                BOOST_DEB="$candidate"
+                break
+              fi
             fi
           done
-          if [ -z "$BOOST_PKG" ]; then
+          if [ -z "$BOOST_DEB" ]; then
             echo "failed to download libboost-program-options runtime package"
             exit 1
           fi
-          dpkg-deb -x "${BOOST_PKG}"_*.deb "$I2PD_ROOT"
+          dpkg-deb -x "$BOOST_DEB" "$I2PD_ROOT"
 
       - name: build relay
         run: |
@@ -233,12 +236,12 @@ jobs:
       # netdb), so print only what explains a failed SESSION CREATE. The full
       # log still goes up as an artifact.
       # ------------------------------------------------------------------
-      - name: router log (SAM / I2CP path)
+      - name: router log (SAM / tunnel path)
         if: always()
         run: |
           echo "[e2e] router log: $(wc -l < e2e-logs/relay-router.log) lines total"
-          echo "[e2e] ---- SAM + I2CP + session lines ----"
-          grep -aE 'wired-bridge|pkg=(bridge|handler)|i2cp\.Server|i2cp\.ReadMessage|SESSION|session_|CreateSession|SessionStatus' \
+          echo "[e2e] ---- i2pd SAM + tunnel lines ----"
+          grep -aE 'SAM|Tunnel: (Outbound|Inbound) tunnel .* has been created|LeaseSet|Session' \
             e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
 
       # ------------------------------------------------------------------
