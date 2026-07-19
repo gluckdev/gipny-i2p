@@ -3,11 +3,24 @@
 Written 2026-07-19 after a full day of debugging why no message ever reached its
 destination. Records what was measured, so none of it has to be rediscovered.
 
-**Verdict: go-i2p cannot currently carry gipny traffic.** Four defects sat on
-top of each other. Three were ours and are fixed. The fourth is upstream, is not
-a single bug, and blocks everything: client tunnels never finish building, so
-there is no anonymous transport at all. i2pd on the same machine, the same
-minute, fetched a real eepsite in seconds.
+**Verdict: go-i2p cannot currently carry gipny traffic, and the rest of the
+stack is fine.** Four defects sat on top of each other. Three were ours and are
+fixed. The fourth is upstream, is not a single bug, and blocks everything:
+client tunnels never finish building, so there is no anonymous transport at all.
+
+This is no longer an inference. Swapping only the router — same relay, same
+bots, same harness, same code — the end-to-end test **delivers 5 of 5 messages
+over live i2p in 49 seconds** (run 29693889188, `.github/workflows/e2e-i2pd.yml`):
+
+```
+| messages sent   | 5       |
+| echoes received | 5       |
+| RTT median      | 5798 ms |
+| total elapsed   | 49108 ms |
+[e2e] SUCCESS — all 5 messages delivered and echoed
+```
+
+Against go-i2p the same harness has never delivered a single message.
 
 ## The four layers
 
@@ -115,6 +128,31 @@ i2pd 2.60.0, SAM on the same port, driven by the same script (`tools/`):
 20 tunnels in its first two minutes. Same uplink, same script. The go-i2p
 behaviour also reproduces on a GitHub Actions runner, so it is not specific to
 one network.
+
+## Control experiment 2: the whole product over i2pd
+
+`.github/workflows/e2e-i2pd.yml` is `e2e.yml` with the router swapped and
+nothing else changed — same relay binary, same bots, same harness, same
+`GIPNY_SAM_PORT=7656` shared-router arrangement.
+
+| | go-i2p | i2pd 2.60.0 |
+|---|---|---|
+| tunnels | never ready | seconds |
+| real eepsite | unreachable | fetched |
+| **e2e messages delivered** | **0 of 5, ever** | **5 of 5** |
+
+Bot startup ~15 s, relay connect 13–19 s, RTT ~5.8 s median. Those are ordinary
+i2p numbers.
+
+This also confirms the three fixes above were necessary rather than incidental:
+both bots attach to one shared router here too, which only works because each
+SAM session gets its own I2CP client.
+
+Setup notes worth keeping: install the `.deb` with `apt-get install -y ./file`
+rather than unpacking it — the runtime dependency list (boost, miniupnpc, …) is
+whatever that build links against and does not converge if fetched by hand. Pick
+the build matching the runner's Ubuntu codename so apt can satisfy it; the
+binary is at `usr/bin/i2pd`.
 
 ## The first-hop patch experiment (not shipped)
 
