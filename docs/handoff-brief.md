@@ -50,19 +50,30 @@ IN FLIGHT AT THE END OF 2026-07-19:
 
 - Branch `ci/i2pd-router-build`, workflow `.github/workflows/i2pd-build.yml`:
   builds i2pd ourselves for linux x86_64 (static), windows x86_64 (msys2), and
-  Android arm64-v8a / x86_64 / armeabi-v7a. Run 29695096389 was still going.
-  Linux already built cleanly on the first attempt; the Android legs are slow
-  because boost and openssl are compiled from source per ABI.
-  Nothing is wired into the app — this only answers whether we can produce the
-  binaries.
+  Android arm64-v8a / x86_64 / armeabi-v7a. Nothing is wired into the app — it
+  only answers whether we can produce the binaries.
+
+  Run 29695096389: **linux and windows both built, all three Android legs
+  failed** in Boost-for-Android with "Undefined or not supported Android NDK
+  version: 27.3". So desktop is done and Android is one step from done.
+
+  The NDK pin is still wrong, and the reason is worth knowing: the supported
+  version list was read from Boost-for-Android's **master**, but i2pd-android
+  pins that submodule to an older commit whose list is shorter — hence their
+  documentation pinning NDK 21.4.7075529. Next step is to use 21.4 (installing
+  it via sdkmanager, since the runners no longer ship it), or to advance the
+  boost submodule to master and keep 27.3. 21.4 is the conservative choice and
+  matches what upstream tests; 27.3 would keep router and APK on one toolchain,
+  which is why it was tried first.
 - PR #48 is ready for review, with a temporary push trigger already removed.
 - #49 (LeaseSet exposure) is still open and still unanswered.
 
 THINGS LEARNED THE HARD WAY IN THAT WORKFLOW, DO NOT REDISCOVER:
 
-- Boost-for-Android matches the NDK version against a fixed list that ends at
-  28.2 and refuses anything else; the runners now default to 29.0. Pinned to
-  27.3.13750724, which is also what build.yml uses for the APK.
+- Boost-for-Android matches the NDK version against a fixed list and refuses
+  anything outside it. Read that list from the **submodule commit i2pd-android
+  pins**, not from its master branch: master reaches 28.2, the pinned one does
+  not even accept 27.3, and reading the wrong one cost a full CI cycle.
 - i2pd-android's dependency scripts take arm64/x86_64/arm/x86, not ABI names,
   and an unrecognised argument falls through their `*)` case, builds nothing,
   and still exits 0.
