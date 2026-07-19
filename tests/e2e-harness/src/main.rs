@@ -57,7 +57,11 @@ async fn start_bot(
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("{name}: create data dir"))?;
 
-    eprintln!("[e2e] {name}: starting i2p router...");
+    if std::env::var("GIPNY_SAM_PORT").is_ok() {
+        eprintln!("[e2e] {name}: attaching to shared i2p router...");
+    } else {
+        eprintln!("[e2e] {name}: starting i2p router...");
+    }
     let t0 = Instant::now();
     let node = Arc::new(
         TorNode::start(&data_dir)
@@ -185,12 +189,10 @@ async fn main() -> Result<()> {
     );
 
     // -----------------------------------------------------------------------
-    // 1. Start both bots concurrently (each launches its own i2p router).
+    // 1. Start both bots sequentially (sharing the same i2p router).
     // -----------------------------------------------------------------------
-    let (a_result, b_result) = tokio::join!(
-        start_bot("bot-a", &work_dir, &relay_dest),
-        start_bot("bot-b", &work_dir, &relay_dest),
-    );
+    let a_result = start_bot("bot-a", &work_dir, &relay_dest).await;
+    let b_result = start_bot("bot-b", &work_dir, &relay_dest).await;
     let (a, mut a_events) = a_result.context("bot-a start")?;
     let (b, mut b_events) = b_result.context("bot-b start")?;
 

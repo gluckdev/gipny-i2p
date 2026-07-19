@@ -25,8 +25,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-
-	"github.com/go-i2p/go-sam-bridge/lib/embedding"
 )
 
 func main() {
@@ -34,6 +32,12 @@ func main() {
 	dataDir := flag.String("data", "", "router data directory (i2p netdb/state)")
 	debug := flag.Bool("debug", false, "enable debug logging")
 	flag.Parse()
+
+	// Only reachable in `-tags mocksam` builds; a no-op otherwise (mock_sam.go).
+	if mockSAMRequested() {
+		runMockSAM(*samListen)
+		return
+	}
 
 	// Isolate the embedded router's on-disk state under the profile directory.
 	// The embedding API has no explicit data-dir option yet, so we chdir into
@@ -51,26 +55,21 @@ func main() {
 		}
 	}
 
-	bridge, err := embedding.New(
-		embedding.WithListenAddr(*samListen),
-		embedding.WithDebug(*debug),
-	)
-	if err != nil {
-		log.Fatalf("gipny-i2p-router: init bridge: %v", err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := bridge.Start(ctx); err != nil {
-		log.Fatalf("gipny-i2p-router: start bridge: %v", err)
+	// Start the embedded router + SAM bridge with I2CP transport wired in, so
+	// STREAM sessions can actually carry data (see wiring.go).
+	wb, err := startWiredBridge(ctx, *samListen, *debug)
+	if err != nil {
+		log.Fatalf("gipny-i2p-router: %v", err)
 	}
-	log.Printf("gipny-i2p-router: SAMv3 bridge listening on %s (embedded go-i2p router)", *samListen)
+	log.Printf("gipny-i2p-router: SAMv3 bridge listening on %s (embedded go-i2p router, I2CP wired)", *samListen)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
 	log.Printf("gipny-i2p-router: shutting down")
-	bridge.Stop(context.Background())
+	wb.Stop(context.Background())
 }

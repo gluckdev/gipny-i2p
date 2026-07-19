@@ -70,3 +70,18 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+
+  # Vendored router sources (third_party/i2pd, third_party/i2pd-android).
+  #
+  # These track upstream branches and are bumped automatically by e2e-i2pd.yml
+  # when a revision proves it delivers messages. Dependabot is the safety net
+  # for the case where that job has not run or has been failing: it raises the
+  # bump as a PR instead, and the same e2e runs on that PR (see the workflow's
+  # pull_request trigger), so nothing reaches the pin without having delivered.
+  - package-ecosystem: gitsubmodule
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      router-sources:
+        patterns: ["*"]

@@ -21,38 +21,76 @@ jobs:
   # 1. Bundled i2p router (pure Go, CGO off -> cross-compiles anywhere).
   # ---------------------------------------------------------------------------
   router:
-    name: router (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
+    name: router (i2pd, ${{ matrix.label }})
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux,   goarch: amd64,  out: gipny-i2p-router }
-          - { goos: windows, goarch: amd64,  out: gipny-i2p-router.exe }
+          # Linux is built against musl and fully static, so one file runs on
+          # every distribution — Arch, Void, CentOS, Deepin — instead of
+          # carrying a glibc floor from whatever image built it.
+          - { label: linux/amd64, runs-on: ubuntu-latest, out: i2pd, artifact: router-linux-amd64 }
+          - { label: windows/amd64, runs-on: windows-latest, out: i2pd.exe, artifact: router-windows-amd64 }
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
         with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
-      - name: build
-        working-directory: i2p-router
-        env:
-          CGO_ENABLED: '0'
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" .
-      # Shrink the bundled router ~60%. Linux only: UPX-packed Windows
-      # executables routinely trip antivirus false positives.
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      # Built from third_party/i2pd, not downloaded: a release must be
+      # reproducible from this repository, and an upstream binary would also be
+      # a binary nobody here reviewed. See docs/i2p-transport-evaluation.md for
+      # why the router changed at all — go-i2p never delivered a message.
+      - name: build (linux, static musl)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            apk add --no-cache build-base git make g++ \
+              boost-dev boost-static openssl-dev openssl-libs-static zlib-dev zlib-static
+            git config --global --add safe.directory "*"
+            cd third_party/i2pd
+            make USE_UPNP=no LDFLAGS=-static -j"$(nproc)"
+            strip --strip-unneeded i2pd
+          '
+          ldd third_party/i2pd/i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked' \
+            || { echo "router is not static — it would not run on other distros"; exit 1; }
+          ls -lh third_party/i2pd/i2pd
+
+      - name: build (windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cd third_party/i2pd
+          make USE_UPNP=no -j"$(nproc)"
+          strip --strip-unneeded i2pd.exe
+          ls -lh i2pd.exe
+
+      # Shrink the bundled router. Linux only: UPX-packed Windows executables
+      # routinely trip antivirus false positives.
       - name: compress router (UPX)
-        if: matrix.goos == 'linux'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y upx-ucl
-          upx --best --lzma "i2p-router/${{ matrix.out }}"
+          upx --best --lzma "third_party/i2pd/${{ matrix.out }}"
+          ls -lh "third_party/i2pd/${{ matrix.out }}"
+
       - uses: actions/upload-artifact@v7
         with:
-          name: router-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: i2p-router/${{ matrix.out }}
+          name: ${{ matrix.artifact }}
+          path: third_party/i2pd/${{ matrix.out }}
 
   # ---------------------------------------------------------------------------
   # 2. Desktop: Linux (AppImage + deb) and Windows (NSIS). Stages the matching
@@ -65,8 +103,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04, router: router-linux-amd64,   rbin: gipny-i2p-router,     bundles: 'appimage,deb' }
-          - { os: windows-latest, router: router-windows-amd64, rbin: gipny-i2p-router.exe, bundles: 'nsis' }
+          - { os: ubuntu-22.04, router: router-linux-amd64,   rbin: i2pd,                 bundles: 'appimage,deb' }
+          - { os: windows-latest, router: router-windows-amd64, rbin: i2pd.exe,             bundles: 'nsis' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -143,7 +181,7 @@ jobs:
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
       - uses: actions/download-artifact@v8
         with: { name: router-linux-amd64, path: core/resources }
-      - run: chmod +x core/resources/gipny-i2p-router
+      - run: chmod +x core/resources/i2pd
       - name: build frontend (xbox theme)
         env: { VITE_THEME: xbox }
         run: cd ui && npm ci && npm run build

@@ -1,0 +1,449 @@
+name: i2pd-build
+
+# Builds the i2pd router ourselves, for the platforms gipny ships on, so we can
+# bundle it the way we bundle gipny-i2p-router today.
+#
+# Why: go-i2p never finishes building client tunnels, so it delivers nothing
+# (#46, go-i2p#55). With i2pd underneath, the same relay, bots and harness
+# deliver 5/5 messages over live i2p — see docs/i2p-transport-evaluation.md.
+# Nothing in the Rust code changes: it speaks plain SAMv3 to whatever answers
+# on 127.0.0.1:7656.
+#
+# This is a spike. It answers "can we produce these binaries in CI at all",
+# not "are they ready to ship". Nothing here is wired into the app yet.
+#
+# Desktop comes from the i2pd repo directly (static link, so the bundle has no
+# runtime dependencies). Android comes from i2pd-android's binary/ build, which
+# produces a standalone i2pd executable rather than their app.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/i2pd-router-build
+  # Nightly, twice: upstream branch heads move under us, so the morning should
+  # show whether they still build, and a second run means one flaky runner does
+  # not leave the question unanswered. The e2e runs sit between them (03:17,
+  # 06:17) so each build has something that checks it actually delivers.
+  schedule:
+    - cron: '17 1 * * *'
+    - cron: '17 5 * * *'
+
+permissions:
+  contents: read
+
+# No version string is defined here on purpose. Every job builds the head of the branch
+# each submodule tracks (.gitmodules: i2pd -> openssl, i2pd-android -> master),
+# resolved fresh at build time, and prints the revision it resolved to.
+#
+# The trade-off is stated once: this always builds the newest upstream code,
+# so two runs of the same commit of *this* repo can produce different routers.
+# The version check in each job is what keeps that honest — the binary is
+# stamped with its own source revision and asserted against it, so a build is
+# always identifiable even when it is not repeatable.
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Desktop: linux x86_64, statically linked against boost/openssl/zlib.
+  # --------------------------------------------------------------------------
+  linux:
+    name: linux x86_64 (static)
+    # Same image the release job builds the desktop bundles on. boost, openssl
+    # and zlib are linked statically, but glibc cannot be — so the binary still
+    # carries a minimum glibc, and building on a newer image than the release
+    # uses would produce a router the app itself cannot run on older distros.
+    # This is a real regression against today's Go router, which is built with
+    # CGO_ENABLED=0 and depends on nothing at all. If it bites, the answer is a
+    # musl build, not a newer runner.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          # The -dev packages carry the .a archives USE_STATIC=yes links against.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libboost-program-options-dev libssl-dev zlib1g-dev
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: update vendored sources to branch heads
+        run: |
+          # Only our own two submodules follow a branch. --remote --recursive
+          # would also drag every nested dependency to its own branch head —
+          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
+          # inside i2pd-android, in conflicts that are none of our business.
+          # --checkout keeps it a plain checkout rather than a rebase or merge.
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --remote --checkout -- third_party/i2pd-android
+
+          # Nested dependencies then come from whatever those heads pin.
+          git submodule update --init --recursive
+
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
+
+      - name: build
+        working-directory: third_party/i2pd
+        run: |
+          # USE_UPNP is off: gipny only ever talks to a loopback SAM port, and
+          # leaving UPnP out drops a dependency and a hole-punching side effect
+          # nobody asked for.
+          #
+          # USE_GIT_VERSION stamps `git describe` into the binary. The submodule
+          # tracks upstream's development branch, so "2.61.0" alone would not say
+          # which of its commits this is; the stamp makes the binary name its own
+          # source, and gives the check below something to compare against.
+          make USE_STATIC=yes USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+
+      - name: verify
+        working-directory: third_party/i2pd
+        run: |
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd --version | head -1)"
+          echo "expected source revision: $EXPECTED"
+          echo "binary reports:           $ACTUAL"
+          # Assert the binary was built from the revision this repo pins, rather
+          # than trusting that whatever landed in the artifact is the right
+          # thing. A stale or mismatched router is otherwise invisible.
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — binary does not report the pinned revision"; exit 1 ;;
+          esac
+
+          # Unstripped this is ~116 MB of debug symbols we would ship to every
+          # user (run 29695534157). The Android legs were already stripped,
+          # which is why they came out at 11 MB.
+          echo "--- size before strip ---"; ls -lh i2pd
+          strip --strip-unneeded i2pd
+          echo "--- size shipped ---"
+          ls -lh i2pd
+          echo "--- dynamic dependencies (want: libc/libm/libstdc++ only) ---"
+          ldd ./i2pd || echo "(not a dynamic executable)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-linux-x86_64
+          path: third_party/i2pd/i2pd
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Fully static musl build: one binary for every linux distribution.
+  #
+  # The glibc job above can only run where glibc is at least as new as the
+  # builder's, which rules out Arch, Void, CentOS and anything older than the
+  # runner. Rather than a job per distribution, link everything — libc included
+  # — and ship a single file that depends on nothing. This is what makes the
+  # bundled router as portable as today's Go one.
+  # --------------------------------------------------------------------------
+  linux-musl:
+    name: linux x86_64 (static, musl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: alpine:3.21
+    steps:
+      - name: install build dependencies
+        run: |
+          apk add --no-cache build-essential 2>/dev/null || \
+            apk add --no-cache build-base
+          apk add --no-cache git make g++ \
+            boost-dev boost-static \
+            openssl-dev openssl-libs-static \
+            zlib-dev zlib-static
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: update vendored sources to branch heads
+        run: |
+          git config --global --add safe.directory '*'
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --init --recursive -- third_party/i2pd
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
+
+      - name: build
+        working-directory: third_party/i2pd
+        run: |
+          # -static rather than USE_STATIC=yes: that path hardcodes
+          # /usr/lib/<triple> paths that do not exist on Alpine. Alpine's
+          # *-static packages provide the archives, and -static also pulls in
+          # musl itself, which is the whole point.
+          make USE_UPNP=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
+
+      - name: verify
+        working-directory: third_party/i2pd
+        run: |
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd --version | head -1)"
+          echo "built from: $EXPECTED"
+          echo "reports:    $ACTUAL"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED"; exit 1 ;;
+          esac
+          echo "--- size before strip ---"; ls -lh i2pd
+          strip --strip-unneeded i2pd
+          echo "--- size shipped ---"; ls -lh i2pd
+          # The point of this job: nothing dynamic, so it runs on any distro.
+          if ldd ./i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked'; then
+            echo "portability check: OK — fully static"
+          else
+            echo "portability check: FAILED — binary still has dynamic dependencies"
+            ldd ./i2pd || true
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-linux-x86_64-musl
+          path: third_party/i2pd/i2pd
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Windows: the release job ships an NSIS installer, so the router has to
+  # exist for it too. msys2's mingw packages supply boost and openssl, which is
+  # how upstream builds their own Windows releases.
+  # --------------------------------------------------------------------------
+  windows:
+    name: windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: update vendored sources to branch heads
+        run: |
+          # Only our own two submodules follow a branch. --remote --recursive
+          # would also drag every nested dependency to its own branch head —
+          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
+          # inside i2pd-android, in conflicts that are none of our business.
+          # --checkout keeps it a plain checkout rather than a rebase or merge.
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --remote --checkout -- third_party/i2pd-android
+
+          # Nested dependencies then come from whatever those heads pin.
+          git submodule update --init --recursive
+
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
+
+      - name: build
+        working-directory: third_party/i2pd
+        run: |
+          make USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+
+      - name: verify
+        working-directory: third_party/i2pd
+        run: |
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd.exe --version | head -1)"
+          echo "expected source revision: $EXPECTED"
+          echo "binary reports:           $ACTUAL"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — binary does not report the pinned revision"; exit 1 ;;
+          esac
+          echo "--- size before strip ---"; ls -lh i2pd.exe
+          strip --strip-unneeded i2pd.exe
+          echo "--- size shipped ---"; ls -lh i2pd.exe
+          # Which mingw DLLs travel with it decides what the installer bundles.
+          ldd ./i2pd.exe | grep -iv '/c/windows' || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-windows-x86_64
+          path: third_party/i2pd/i2pd.exe
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Android: standalone executable per ABI, matching the ABIs the APK ships.
+  #
+  # i2pd itself carries no Android build; it lives in i2pd-android, whose
+  # binary/jni builds boost, openssl and miniupnpc from source per ABI and then
+  # runs ndk-build. That is slow (tens of minutes) but it is the upstream path,
+  # not a homemade one.
+  # --------------------------------------------------------------------------
+  android:
+    name: android ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same two the APK ships today: arm64-v8a for devices, x86_64 for the
+        # emulator. `arch` is what the dependency scripts call it — they accept
+        # arm64/x86_64/arm/x86 and silently ignore anything else (an unknown
+        # argument falls through their `*)` case and builds nothing), while
+        # ndk-build wants the ABI name.
+        include:
+          - abi: arm64-v8a
+            arch: arm64
+          - abi: x86_64
+            arch: x86_64
+          # 32-bit ARM is a measurement, not a commitment: the APK ships no
+          # 32-bit ABI today (no armv7 Rust target, no 32-bit go-i2p .so), so
+          # this leg only answers whether it builds and what it costs, for when
+          # 32-bit device support is decided on its own merits.
+          - abi: armeabi-v7a
+            arch: arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: update vendored sources to branch heads
+        run: |
+          # Only our own two submodules follow a branch. --remote --recursive
+          # would also drag every nested dependency to its own branch head —
+          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
+          # inside i2pd-android, in conflicts that are none of our business.
+          # --checkout keeps it a plain checkout rather than a rebase or merge.
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --remote --checkout -- third_party/i2pd-android
+
+          # Nested dependencies then come from whatever those heads pin.
+          git submodule update --init --recursive
+
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
+
+      - name: align the vendored sources
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          # Build the i2pd revision this repo pins, not the one i2pd-android
+          # happens to point at. The revision is read from our own submodule so
+          # desktop and Android cannot end up on different code.
+          I2PD_REV="$(git -C "$GITHUB_WORKSPACE/third_party/i2pd" rev-parse HEAD)"
+          git -C i2pd fetch --tags --quiet origin
+          git -C i2pd checkout --quiet "$I2PD_REV"
+          echo "[i2pd] i2pd at $(git -C i2pd describe --tags) ($I2PD_REV)"
+
+          # i2pd-android pins Boost-for-Android to a commit whose NDK whitelist
+          # predates every NDK the runners ship — run 29695096389 was rejected
+          # with "Undefined or not supported Android NDK version: 27.3". A later
+          # revision accepts up to 28.2. Overriding it in our own build is
+          # exactly why these are submodules of this repo.
+          #
+          # Tracks master, like everything else here, and logs what it resolved
+          # to so a build can always be traced back to its sources.
+          git -C boost fetch --depth 1 origin master
+          git -C boost checkout FETCH_HEAD
+
+          # The dependency scripts hardcode API 16 for the 32-bit ABIs, which
+          # NDK r26 and later dropped — run 29695534157's armeabi-v7a leg died
+          # on "armv7a-linux-androideabi16-clang: not found" while the 64-bit
+          # legs, which already ask for 21, built fine. 21 is the floor these
+          # NDKs support and is still below the android-24 the build targets.
+          sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh build_miniupnpc.sh
+          grep -n 'API=' build_boost.sh build_openssl.sh build_miniupnpc.sh | sort -u | head
+          echo "[i2pd] Boost-for-Android at $(git -C boost log --oneline -1)"
+
+      - name: resolve NDK
+        env:
+          # Pinned, not "whatever is newest". Boost-for-Android matches the NDK
+          # version against a fixed list and refuses anything outside it: run
+          # 29694856790 died on "Undefined or not supported Android NDK version:
+          # 29.0", which is what the runners now ship by default. Its list ends
+          # at 28.2, and 27.3 is also exactly the NDK build.yml uses for the APK,
+          # so the router and the app are built with the same toolchain.
+          NDK_VERSION: 27.3.13750724
+        run: |
+          NDK_DIR="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [ ! -d "$NDK_DIR" ]; then
+            echo "[i2pd] NDK $NDK_VERSION not present, installing"
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          fi
+          test -d "$NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "[i2pd] using NDK $NDK_DIR"
+          cat "$NDK_DIR/source.properties" || true
+
+      - name: build dependencies (boost, openssl, miniupnpc)
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          ./build_boost.sh ${{ matrix.arch }}
+          ./build_openssl.sh ${{ matrix.arch }}
+          ./build_miniupnpc.sh ${{ matrix.arch }}
+
+          # The scripts exit 0 whether or not they built anything, so check the
+          # outputs exist before spending half an hour on ndk-build.
+          for lib in boost openssl miniupnp; do
+            if ! find "$lib" -name '*.a' | grep -q .; then
+              echo "$lib produced no static libraries for ${{ matrix.arch }}"
+              exit 1
+            fi
+          done
+
+      - name: build i2pd
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          # APP_ABI in Application.mk is "all"; narrow it to the one ABI this
+          # matrix leg is for. APP_PLATFORM there is android-16, which modern
+          # NDKs no longer support — 24 matches what the app targets.
+          "$ANDROID_NDK_HOME/ndk-build" \
+            -j"$(nproc)" \
+            NDK_MODULE_PATH="$PWD" \
+            APP_ABI=${{ matrix.abi }} \
+            APP_PLATFORM=android-24
+
+      - name: verify and stage
+        working-directory: third_party/i2pd-android/binary
+        run: |
+          BIN="libs/${{ matrix.abi }}/i2pd"
+          test -f "$BIN"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" -s "$BIN"
+          file "$BIN"
+          ls -lh "$BIN"
+
+          # Android refuses to execute binaries from the app's data directory,
+          # so an executable has to travel inside the APK as a lib*.so in
+          # jniLibs to land in nativeLibraryDir, which is executable.
+          mkdir -p staged
+          cp "$BIN" "staged/libi2pd.so"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-android-${{ matrix.abi }}
+          path: third_party/i2pd-android/binary/staged/libi2pd.so
+          if-no-files-found: error
