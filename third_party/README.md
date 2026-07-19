@@ -10,8 +10,20 @@ on a developer's disk.
 | `i2pd-android` | upstream default branch | its `binary/jni` target, which produces a standalone i2pd executable for Android; i2pd itself carries no Android build |
 
 Both are upstream, unmodified. Anything we need to change on top lives in this
-repository — as a patch under `docs/patches/`, applied by CI — so it is visible
-in review instead of hiding in a fork nobody can see.
+repository — as a patch under `docs/patches/`, or as a step in the workflow — so
+it is visible in review instead of hiding in a fork nobody can see.
+
+**These point at upstream, not at forks of ours, and that is deliberate.** A
+submodule pins which revision we build; it does not make the code ours. We
+cannot commit to it, which is why the one change we need — moving
+Boost-for-Android past an NDK whitelist older than any NDK the runners ship — is
+a command in the Android build rather than a commit.
+
+Forking (into `gluckdev/`) would turn such changes into reviewable commits and
+cut the dependency on upstream not rewriting tags. It also means keeping two
+repositories in sync with an actively developed codebase, and falling behind on
+a cryptographic router is worse than the workaround. Revisit when there is a
+second or third change upstream will not take; one line does not justify it.
 
 Clone with submodules:
 
