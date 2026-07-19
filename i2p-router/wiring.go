@@ -248,6 +248,10 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 		ReduceIdleTime:         cfg.ReduceIdleTime,
 		CloseIdleTime:          cfg.CloseIdleTime,
 	}
+	if err := a.ensureConnected(ctx); err != nil {
+		return nil, err
+	}
+
 	// Return the handle as-is. Do not wrap it: handler/session.go blocks on
 	// handle.WaitForTunnels before answering SESSION STATUS, which is what keeps
 	// a STREAM CONNECT from firing into a session whose tunnels are not built
@@ -255,7 +259,58 @@ func (a *i2cpProviderAdapter) CreateSessionForSAM(ctx context.Context, samSessio
 	// CANT_REACH_PEER failure #42 fixed, only nondeterministically. It also
 	// breaks embedding/handlers.go, which type-asserts the handle to
 	// *i2cp.I2CPSession for the datagram/raw paths.
+	handle, err := a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+	if err == nil {
+		return handle, nil
+	}
+
+	// A create failure usually means the write went into a socket the router
+	// already closed. IsConnected cannot be used to tell: the read loop does not
+	// observe the close, so the client keeps reporting the link as up (verified
+	// against go-sam-bridge v0.1.59999 — no [wired-bridge] reconnect fired while
+	// every CreateSession write failed). So force a reconnect and retry once.
+	//
+	// Guard on there being no live session: an established session means the
+	// link is carrying traffic and the failure is something else, and on a
+	// shared router a reconnect would drop other clients' sessions with it.
+	if a.client.GetFirstSession() != nil {
+		return nil, err
+	}
+	log.Printf("[wired-bridge] session %s: create failed (%v), reconnecting I2CP and retrying once", samSessionID, err)
+	_ = a.client.Close()
+	if rerr := a.client.Connect(ctx); rerr != nil {
+		return nil, fmt.Errorf("%w (reconnect also failed: %v)", err, rerr)
+	}
 	return a.client.CreateSessionForSAM(ctx, samSessionID, i2cpConfig)
+}
+
+// ensureConnected re-establishes the I2CP link if the router has dropped it.
+//
+// The embedded router's I2CP server arms a 30 s read deadline before every
+// message read (go-i2p lib/i2cp/protocol.go:175,400) and treats the timeout as
+// a fatal read error, closing the client connection. Nothing in go-i2cp sends
+// keepalives. So the client this wiring opens once at startup is reliably dead
+// by the time the first SAM session arrives: the CreateSession write fails, the
+// SAM handler returns an error, and bridge/server.go closes the client socket
+// without sending SESSION STATUS — which reaches the Rust side as the useless
+// `invalid message from router`.
+//
+// Reconnecting on demand rather than on a timer is deliberate. The idle window
+// is exactly the gap before any session exists; once one is live, I2CP carries
+// lease and message traffic and the deadline never fires. A periodic reconnect
+// would instead tear live sessions off their client every 30 s.
+//
+// Note this only catches the case where the client noticed the drop. It often
+// does not — see the retry path in CreateSessionForSAM.
+func (a *i2cpProviderAdapter) ensureConnected(ctx context.Context) error {
+	if a.client.IsConnected() {
+		return nil
+	}
+	log.Printf("[wired-bridge] I2CP link is down, reconnecting before session create")
+	if err := a.client.Connect(ctx); err != nil {
+		return fmt.Errorf("reconnect i2cp client: %w", err)
+	}
+	return nil
 }
 
 func (a *i2cpProviderAdapter) IsConnected() bool {
