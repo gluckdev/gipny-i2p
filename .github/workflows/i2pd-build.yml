@@ -27,16 +27,15 @@ on:
 permissions:
   contents: read
 
-env:
-  # No version string here on purpose. Every job builds the head of the branch
-  # each submodule tracks (.gitmodules: i2pd -> openssl, i2pd-android -> master),
-  # resolved fresh at build time, and prints the revision it resolved to.
-  #
-  # The trade-off is stated once: this always builds the newest upstream code,
-  # so two runs of the same commit of *this* repo can produce different routers.
-  # The version check in each job is what keeps that honest — the binary is
-  # stamped with its own source revision and asserted against it, so a build is
-  # always identifiable even when it is not repeatable.
+# No version string is defined here on purpose. Every job builds the head of the branch
+# each submodule tracks (.gitmodules: i2pd -> openssl, i2pd-android -> master),
+# resolved fresh at build time, and prints the revision it resolved to.
+#
+# The trade-off is stated once: this always builds the newest upstream code,
+# so two runs of the same commit of *this* repo can produce different routers.
+# The version check in each job is what keeps that honest — the binary is
+# stamped with its own source revision and asserted against it, so a build is
+# always identifiable even when it is not repeatable.
 
 jobs:
   # --------------------------------------------------------------------------
