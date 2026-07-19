@@ -1,0 +1,235 @@
+diff --git a/lib/netdb/std.go b/lib/netdb/std.go
+index 7134028..b74431e 100644
+--- a/lib/netdb/std.go
++++ b/lib/netdb/std.go
+@@ -43,6 +43,12 @@ type StdNetDB struct {
+ 
+ 	PeerTracker *PeerTracker // tracks connection success/failure for peers
+ 
++	// ConnectedPeers optionally reports the peers a transport session exists
++	// with right now. When set, SelectPeers puts one of them first so the
++	// tunnel's gateway is a router we can already reach. Set by the router
++	// from its transport muxer; nil is fine and restores the old behaviour.
++	ConnectedPeers func() []common.Hash
++
+ 	// riRefreshCooldown stores the time of the last RequestRouterInfoRefresh
+ 	// call per peer hash to prevent thundering-herd re-fetches.
+ 	// Uses time-bucketed structure for O(1) cleanup without iteration.
+diff --git a/lib/netdb/std_peer_selection.go b/lib/netdb/std_peer_selection.go
+index ac6201b..69675d2 100644
+--- a/lib/netdb/std_peer_selection.go
++++ b/lib/netdb/std_peer_selection.go
+@@ -341,6 +341,7 @@ func (db *StdNetDB) SelectPeers(count int, exclude []common.Hash) ([]router_info
+ 	}
+ 
+ 	selected := db.selectRandomPeers(available, count)
++	selected = db.preferConnectedFirstHop(selected, available)
+ 	log.WithFields(logger.Fields{
+ 		"at":             "StdNetDB.SelectPeers",
+ 		"reason":         "selection_complete",
+@@ -349,6 +350,93 @@ func (db *StdNetDB) SelectPeers(count int, exclude []common.Hash) ([]router_info
+ 	return selected, nil
+ }
+ 
++// preferConnectedFirstHop makes selected[0] a router we already hold a
++// transport session with, when one is available.
++//
++// The gateway is the only hop we dial ourselves; the rest are reached through
++// the tunnel. Choosing it purely from netdb means an unreachable gateway is
++// only discovered when the build request fails, and every miss costs a full
++// build attempt plus peers marked failed — which on a network where many
++// advertised routers are undialable can stall tunnel building indefinitely.
++//
++// i2pd takes the first hop from its transport peer set for the same reason
++// (TunnelPool.cpp:598-620, "Can't select first hop for a tunnel. Trying
++// already connected"). Only the first hop is touched here, so hop selection
++// stays otherwise random and the anonymity properties of the remaining hops
++// are unchanged.
++func (db *StdNetDB) preferConnectedFirstHop(selected, available []router_info.RouterInfo) []router_info.RouterInfo {
++	if db.ConnectedPeers == nil || len(selected) == 0 {
++		return selected
++	}
++	connected := db.ConnectedPeers()
++	if len(connected) == 0 {
++		return selected
++	}
++	connectedSet := make(map[common.Hash]struct{}, len(connected))
++	for _, hash := range connected {
++		connectedSet[hash] = struct{}{}
++	}
++
++	isConnected := func(ri router_info.RouterInfo) bool {
++		hash, err := ri.IdentHash()
++		if err != nil {
++			return false
++		}
++		_, ok := connectedSet[hash]
++		return ok
++	}
++
++	// Already good, or one of the other hops qualifies — swap it to the front.
++	for i, ri := range selected {
++		if !isConnected(ri) {
++			continue
++		}
++		if i > 0 {
++			selected[0], selected[i] = selected[i], selected[0]
++			log.WithFields(logger.Fields{
++				"at":     "StdNetDB.preferConnectedFirstHop",
++				"reason": "promoted an already-connected hop to gateway",
++				"from":   i,
++			}).Debug("first hop reordered")
++		}
++		return selected
++	}
++
++	// None of the picked hops is connected: substitute a connected peer that
++	// passed the same filtering, as long as it is not already in the path.
++	inPath := make(map[common.Hash]struct{}, len(selected))
++	for _, ri := range selected {
++		if hash, err := ri.IdentHash(); err == nil {
++			inPath[hash] = struct{}{}
++		}
++	}
++	for _, candidate := range available {
++		hash, err := candidate.IdentHash()
++		if err != nil {
++			continue
++		}
++		if _, dup := inPath[hash]; dup {
++			continue
++		}
++		if _, ok := connectedSet[hash]; !ok {
++			continue
++		}
++		log.WithFields(logger.Fields{
++			"at":     "StdNetDB.preferConnectedFirstHop",
++			"reason": "no selected hop was connected, substituted a connected peer as gateway",
++		}).Debug("first hop substituted")
++		selected[0] = candidate
++		return selected
++	}
++
++	log.WithFields(logger.Fields{
++		"at":              "StdNetDB.preferConnectedFirstHop",
++		"reason":          "no connected peer passed filtering, leaving selection as is",
++		"connected_peers": len(connected),
++	}).Debug("first hop unchanged")
++	return selected
++}
++
+ // SelectFloodfillRouters selects the closest floodfill routers to a target hash
+ // using XOR distance metric (Kademlia-style selection).
+ //
+diff --git a/lib/router/router.go b/lib/router/router.go
+index 3f298a7..494f600 100644
+--- a/lib/router/router.go
++++ b/lib/router/router.go
+@@ -173,6 +173,13 @@ func initializeNetDBAndTransports(r *Router, ri *router_info.RouterInfo, cfg *co
+ 	}
+ 
+ 	r.transports = transport.Mux(transports...)
++
++	// Let peer selection see which peers are reachable right now, so a tunnel's
++	// gateway is one we already hold a session with rather than one that merely
++	// advertises an address. Without this the first hop is picked blind and an
++	// undialable gateway only surfaces when the build request fails.
++	r.netdb.ConnectedPeers = r.transports.ConnectedPeers
++
+ 	return nil
+ }
+ 
+diff --git a/lib/transport/multi.go b/lib/transport/multi.go
+index b91c69b..4403b7e 100644
+--- a/lib/transport/multi.go
++++ b/lib/transport/multi.go
+@@ -10,6 +10,7 @@ import (
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/go-i2p/common/data"
+ 	"github.com/go-i2p/common/router_info"
+ 	"github.com/go-i2p/logger"
+ 	"github.com/samber/oops"
+@@ -840,3 +841,36 @@ func (tc *trackedConn) Close() error {
+ 	}
+ 	return tc.Conn.Close()
+ }
++
++// connectedPeersReporter is implemented by transports that can enumerate the
++// peers they currently hold a session with.
++type connectedPeersReporter interface {
++	ConnectedPeers() []data.Hash
++}
++
++// ConnectedPeers returns the router hashes reachable right now over any
++// transport, deduplicated.
++//
++// Tunnel peer selection uses this to choose a first hop we already have a
++// session with. Selecting purely on netdb RouterInfo means the build request
++// only discovers an unreachable gateway when it times out, and each such miss
++// costs a full build attempt plus a peer marked failed. i2pd avoids this by
++// drawing the first hop from its transport peer set (TunnelPool.cpp:598-620).
++func (tmux *TransportMuxer) ConnectedPeers() []data.Hash {
++	seen := make(map[data.Hash]struct{})
++	var peers []data.Hash
++	for _, t := range tmux.trans {
++		reporter, ok := t.(connectedPeersReporter)
++		if !ok {
++			continue
++		}
++		for _, hash := range reporter.ConnectedPeers() {
++			if _, dup := seen[hash]; dup {
++				continue
++			}
++			seen[hash] = struct{}{}
++			peers = append(peers, hash)
++		}
++	}
++	return peers
++}
+diff --git a/lib/transport/ntcp2/transport.go b/lib/transport/ntcp2/transport.go
+index 887b1b6..0f31f94 100644
+--- a/lib/transport/ntcp2/transport.go
++++ b/lib/transport/ntcp2/transport.go
+@@ -1568,3 +1568,18 @@ func (t *NTCP2Transport) handleCloseCompletion(listenerErr error) error {
+ func (t *NTCP2Transport) Name() string {
+ 	return "NTCP2"
+ }
++
++// ConnectedPeers returns the router hashes this transport currently holds a
++// session for. Used by tunnel peer selection to prefer a first hop we can
++// already reach, instead of discovering unreachability only after a build
++// request times out.
++func (t *NTCP2Transport) ConnectedPeers() []data.Hash {
++	var peers []data.Hash
++	t.sessions.Range(func(key, _ interface{}) bool {
++		if hash, ok := key.(data.Hash); ok {
++			peers = append(peers, hash)
++		}
++		return true
++	})
++	return peers
++}
+diff --git a/lib/transport/ssu2/transport.go b/lib/transport/ssu2/transport.go
+index beeb95c..f903e7d 100644
+--- a/lib/transport/ssu2/transport.go
++++ b/lib/transport/ssu2/transport.go
+@@ -856,3 +856,17 @@ func (s *SSU2Session) RemoteUDPAddr() *net.UDPAddr {
+ 	}
+ 	return s.conn.GetRemoteAddr()
+ }
++
++// ConnectedPeers returns the router hashes this transport currently holds a
++// session for. See the NTCP2 implementation for why tunnel peer selection
++// wants this.
++func (t *SSU2Transport) ConnectedPeers() []data.Hash {
++	var peers []data.Hash
++	t.sessions.Range(func(key, _ interface{}) bool {
++		if hash, ok := key.(data.Hash); ok {
++			peers = append(peers, hash)
++		}
++		return true
++	})
++	return peers
++}

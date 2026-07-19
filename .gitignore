@@ -44,3 +44,12 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Local i2p debugging leftovers: router binaries built for experiments, plus the
+# e2e harness's state and (very large, with DEBUG_I2P=debug) logs.
+/gipny-i2p-router
+/gipny-i2p-router-*
+/i2p-router/i2p-router
+e2e-logs/
+e2e-state/
+__pycache__/

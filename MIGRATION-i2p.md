@@ -66,6 +66,15 @@ gipny (Rust) ──SAMv3 127.0.0.1:7656──▶ gipny-i2p-router (Go)
                                          └─ SAMv3 bridge
 ```
 
+> **Status 2026‑07‑19: this transport does not currently deliver anything.**
+> go‑i2p never finishes building client tunnels, so there is no anonymous
+> transport and no message ever arrives — while i2pd on the same machine fetched
+> a real eepsite in seconds. Measurements, the four stacked defects behind it,
+> the security implications, and the open decision about i2pd are in
+> [docs/i2p-transport-evaluation.md](docs/i2p-transport-evaluation.md).
+> Upstream: [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54),
+> [go-i2p#55](https://github.com/go-i2p/go-i2p/issues/55).
+
 **Risks (accepted):** go‑i2p is early‑stage (“probably not safe yet”); its
 streaming is a *prototype* — the exact thing our long‑lived relay stream relies
 on. First connection is slower than Tor (reseed + tunnel build). The design stays
