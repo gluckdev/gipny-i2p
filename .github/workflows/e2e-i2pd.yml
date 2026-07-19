@@ -34,6 +34,13 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+  # Any change to the vendored router — dependabot's weekly submodule bump, or
+  # ours — has to prove it still delivers before it can be merged. Compiling is
+  # not the bar; carrying messages over live i2p is.
+  pull_request:
+    paths:
+      - 'third_party/**'
+      - '.github/workflows/e2e-i2pd.yml'
 
 permissions:
   contents: read
@@ -51,6 +58,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       revision: ${{ steps.build.outputs.revision }}
+      sha: ${{ steps.build.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,6 +96,7 @@ jobs:
             *) echo "version check: FAILED"; exit 1 ;;
           esac
           echo "revision=$EXPECTED" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -101,6 +110,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
+    outputs:
+      delivered: ${{ steps.harness.outputs.delivered }}
     steps:
       # ------------------------------------------------------------------
       # Checkout + toolchains
@@ -264,6 +275,7 @@ jobs:
       # Run the end-to-end harness
       # ------------------------------------------------------------------
       - name: run e2e harness
+        id: harness
         env:
           E2E_RELAY_DEST: ${{ env.RELAY_DEST }}
           E2E_N_MESSAGES: '5'
@@ -282,6 +294,16 @@ jobs:
             TIME_RC=$?
           fi
           cat e2e-logs/harness.log
+
+          # The job is continue-on-error, so its conclusion says nothing. What
+          # counts is whether messages arrived, and that is what gates the bump
+          # below.
+          if [ "$TIME_RC" -eq 0 ] && grep -q '\[e2e\] SUCCESS' e2e-logs/harness.log; then
+            echo "delivered=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "delivered=false" >> "$GITHUB_OUTPUT"
+          fi
+
           exit $TIME_RC
 
       # ------------------------------------------------------------------
@@ -345,3 +367,56 @@ jobs:
           name: e2e-logs
           path: e2e-logs/
           retention-days: 7
+
+  # ------------------------------------------------------------------
+  # Record the revision that actually delivered.
+  #
+  # The submodule follows upstream's branch, so a build alone proves only that
+  # the code compiles. This moves the pin in the repository to the revision
+  # that just carried five messages over live i2p, giving us a "last known
+  # good router" rather than "whatever upstream had that night".
+  #
+  # It only ever moves the pin forward on success. A failed run leaves the
+  # previous proven revision in place: e2e is network-bound and genuinely
+  # flaky, so one bad night says nothing about the revision and must not
+  # revert anything.
+  # ------------------------------------------------------------------
+  bump:
+    name: record the proven revision
+    needs: [router, e2e]
+    if: >-
+      github.repository == 'gluckdev/gipny-i2p' &&
+      github.event_name != 'pull_request' &&
+      needs.e2e.outputs.delivered == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          ref: ${{ github.ref_name }}
+
+      - name: move the pin to the proven revision
+        env:
+          PROVEN_SHA: ${{ needs.router.outputs.sha }}
+          PROVEN_REV: ${{ needs.router.outputs.revision }}
+        run: |
+          git -C third_party/i2pd fetch --quiet origin
+          git -C third_party/i2pd checkout --quiet "$PROVEN_SHA"
+          git add third_party/i2pd
+
+          if git diff --cached --quiet; then
+            echo "pin is already at $PROVEN_REV — nothing to record"
+            exit 0
+          fi
+
+          git -c user.name=gluckdev -c user.email=dep_it@spbsot.kz commit -m \
+            "build(i2pd): pin the revision that delivered end to end
+
+          $PROVEN_REV ($PROVEN_SHA) built and carried five messages over live
+          i2p in run ${{ github.run_id }}. Recorded automatically so the
+          repository holds a router proven to deliver rather than whatever
+          upstream happened to have at build time."
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "recorded $PROVEN_REV"
