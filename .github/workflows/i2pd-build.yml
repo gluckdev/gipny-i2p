@@ -114,7 +114,12 @@ jobs:
             *) echo "version check: FAILED — binary does not report the pinned revision"; exit 1 ;;
           esac
 
-          echo "--- size ---"
+          # Unstripped this is ~116 MB of debug symbols we would ship to every
+          # user (run 29695534157). The Android legs were already stripped,
+          # which is why they came out at 11 MB.
+          echo "--- size before strip ---"; ls -lh i2pd
+          strip --strip-unneeded i2pd
+          echo "--- size shipped ---"
           ls -lh i2pd
           echo "--- dynamic dependencies (want: libc/libm/libstdc++ only) ---"
           ldd ./i2pd || echo "(not a dynamic executable)"
@@ -182,7 +187,9 @@ jobs:
             *"$EXPECTED"*) echo "version check: OK" ;;
             *) echo "version check: FAILED"; exit 1 ;;
           esac
-          ls -lh i2pd
+          echo "--- size before strip ---"; ls -lh i2pd
+          strip --strip-unneeded i2pd
+          echo "--- size shipped ---"; ls -lh i2pd
           # The point of this job: nothing dynamic, so it runs on any distro.
           if ldd ./i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked'; then
             echo "portability check: OK — fully static"
@@ -265,7 +272,9 @@ jobs:
             *"$EXPECTED"*) echo "version check: OK" ;;
             *) echo "version check: FAILED — binary does not report the pinned revision"; exit 1 ;;
           esac
-          ls -lh i2pd.exe
+          echo "--- size before strip ---"; ls -lh i2pd.exe
+          strip --strip-unneeded i2pd.exe
+          echo "--- size shipped ---"; ls -lh i2pd.exe
           # Which mingw DLLs travel with it decides what the installer bundles.
           ldd ./i2pd.exe | grep -iv '/c/windows' || true
 
