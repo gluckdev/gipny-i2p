@@ -77,6 +77,12 @@ jobs:
           # Nested dependencies then come from whatever those heads pin.
           git submodule update --init --recursive
 
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
           echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
@@ -91,7 +97,6 @@ jobs:
           # tracks upstream's development branch, so "2.61.0" alone would not say
           # which of its commits this is; the stamp makes the binary name its own
           # source, and gives the check below something to compare against.
-          git fetch --tags --quiet origin || true
           make USE_STATIC=yes USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify
@@ -121,6 +126,79 @@ jobs:
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
+  # Fully static musl build: one binary for every linux distribution.
+  #
+  # The glibc job above can only run where glibc is at least as new as the
+  # builder's, which rules out Arch, Void, CentOS and anything older than the
+  # runner. Rather than a job per distribution, link everything — libc included
+  # — and ship a single file that depends on nothing. This is what makes the
+  # bundled router as portable as today's Go one.
+  # --------------------------------------------------------------------------
+  linux-musl:
+    name: linux x86_64 (static, musl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: alpine:3.21
+    steps:
+      - name: install build dependencies
+        run: |
+          apk add --no-cache build-essential 2>/dev/null || \
+            apk add --no-cache build-base
+          apk add --no-cache git make g++ \
+            boost-dev boost-static \
+            openssl-dev openssl-libs-static \
+            zlib-dev zlib-static
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: update vendored sources to branch heads
+        run: |
+          git config --global --add safe.directory '*'
+          git submodule update --remote --checkout -- third_party/i2pd
+          git submodule update --init --recursive -- third_party/i2pd
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
+
+      - name: build
+        working-directory: third_party/i2pd
+        run: |
+          # -static rather than USE_STATIC=yes: that path hardcodes
+          # /usr/lib/<triple> paths that do not exist on Alpine. Alpine's
+          # *-static packages provide the archives, and -static also pulls in
+          # musl itself, which is the whole point.
+          make USE_UPNP=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
+
+      - name: verify
+        working-directory: third_party/i2pd
+        run: |
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd --version | head -1)"
+          echo "built from: $EXPECTED"
+          echo "reports:    $ACTUAL"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED"; exit 1 ;;
+          esac
+          ls -lh i2pd
+          # The point of this job: nothing dynamic, so it runs on any distro.
+          if ldd ./i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked'; then
+            echo "portability check: OK — fully static"
+          else
+            echo "portability check: FAILED — binary still has dynamic dependencies"
+            ldd ./i2pd || true
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-linux-x86_64-musl
+          path: third_party/i2pd/i2pd
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
   # Windows: the release job ships an NSIS installer, so the router has to
   # exist for it too. msys2's mingw packages supply boost and openssl, which is
   # how upstream builds their own Windows releases.
@@ -139,6 +217,7 @@ jobs:
           update: true
           install: >-
             base-devel
+            git
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-boost
             mingw-w64-x86_64-openssl
@@ -161,13 +240,18 @@ jobs:
           # Nested dependencies then come from whatever those heads pin.
           git submodule update --init --recursive
 
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
           echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
       - name: build
         working-directory: third_party/i2pd
         run: |
-          git fetch --tags --quiet origin || true
           make USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify
@@ -239,6 +323,12 @@ jobs:
 
           # Nested dependencies then come from whatever those heads pin.
           git submodule update --init --recursive
+
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
 
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
           echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
