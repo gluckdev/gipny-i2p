@@ -87,7 +87,12 @@ jobs:
       - name: start router (relay)
         run: |
           mkdir -p e2e-state/relay-router e2e-state/relay e2e-state/bot-a e2e-state/bot-b e2e-logs
-          nohup ./gipny-i2p-router \
+          # DEBUG_I2P is what actually turns on go-i2p's logger; the router's
+          # own --debug flag only reaches go-sam-bridge's embedding options and
+          # leaves the router (and the SAM handler layer) silent. Without this
+          # the log is a handful of lines and a failing SESSION CREATE is
+          # undiagnosable — runs 29687267218 and 29687624260 were both blind.
+          DEBUG_I2P=debug nohup ./gipny-i2p-router \
             --sam-listen 127.0.0.1:7656 \
             --data e2e-state/relay-router \
             --debug \
@@ -184,6 +189,20 @@ jobs:
           fi
           cat e2e-logs/harness.log
           exit $TIME_RC
+
+      # ------------------------------------------------------------------
+      # Surface the SAM/I2CP path from the router log. With DEBUG_I2P=debug the
+      # raw log runs to hundreds of thousands of lines (tunnel building, NTCP2,
+      # netdb), so print only what explains a failed SESSION CREATE. The full
+      # log still goes up as an artifact.
+      # ------------------------------------------------------------------
+      - name: router log (SAM / I2CP path)
+        if: always()
+        run: |
+          echo "[e2e] router log: $(wc -l < e2e-logs/relay-router.log) lines total"
+          echo "[e2e] ---- SAM + I2CP + session lines ----"
+          grep -aE 'wired-bridge|pkg=(bridge|handler)|i2cp\.Server|i2cp\.ReadMessage|SESSION|session_|CreateSession|SessionStatus' \
+            e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
 
       # ------------------------------------------------------------------
       # Publish timing report to the job summary
