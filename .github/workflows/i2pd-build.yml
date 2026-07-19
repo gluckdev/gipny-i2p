@@ -1,0 +1,177 @@
+name: i2pd-build
+
+# Builds the i2pd router ourselves, for the platforms gipny ships on, so we can
+# bundle it the way we bundle gipny-i2p-router today.
+#
+# Why: go-i2p never finishes building client tunnels, so it delivers nothing
+# (#46, go-i2p#55). With i2pd underneath, the same relay, bots and harness
+# deliver 5/5 messages over live i2p — see docs/i2p-transport-evaluation.md.
+# Nothing in the Rust code changes: it speaks plain SAMv3 to whatever answers
+# on 127.0.0.1:7656.
+#
+# This is a spike. It answers "can we produce these binaries in CI at all",
+# not "are they ready to ship". Nothing here is wired into the app yet.
+#
+# Desktop comes from the i2pd repo directly (static link, so the bundle has no
+# runtime dependencies). Android comes from i2pd-android's binary/ build, which
+# produces a standalone i2pd executable rather than their app.
+
+on:
+  workflow_dispatch:
+  # TEMPORARY, remove before merging: workflow_dispatch only resolves for
+  # workflows already on the default branch.
+  push:
+    branches:
+      - ci/i2pd-router-build
+
+permissions:
+  contents: read
+
+env:
+  I2PD_VERSION: '2.60.0'
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Desktop: linux x86_64, statically linked against boost/openssl/zlib.
+  # --------------------------------------------------------------------------
+  linux:
+    name: linux x86_64 (static)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: install build dependencies
+        run: |
+          sudo apt-get update
+          # The -dev packages carry the .a archives USE_STATIC=yes links against.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libboost-program-options-dev libssl-dev zlib1g-dev
+
+      - name: checkout i2pd
+        uses: actions/checkout@v7
+        with:
+          repository: PurpleI2P/i2pd
+          ref: ${{ env.I2PD_VERSION }}
+          path: i2pd
+
+      - name: build
+        working-directory: i2pd
+        run: |
+          # USE_UPNP is off: gipny only ever talks to a loopback SAM port, and
+          # leaving UPnP out drops a dependency and a hole-punching side effect
+          # nobody asked for.
+          make USE_STATIC=yes USE_UPNP=no -j"$(nproc)"
+
+      - name: verify
+        working-directory: i2pd
+        run: |
+          ./i2pd --version
+          echo "--- size ---"
+          ls -lh i2pd
+          echo "--- dynamic dependencies (want: libc/libm/libstdc++ only) ---"
+          ldd ./i2pd || echo "(not a dynamic executable)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-linux-x86_64
+          path: i2pd/i2pd
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
+  # Android: standalone executable per ABI, matching the ABIs the APK ships.
+  #
+  # i2pd itself carries no Android build; it lives in i2pd-android, whose
+  # binary/jni builds boost, openssl and miniupnpc from source per ABI and then
+  # runs ndk-build. That is slow (tens of minutes) but it is the upstream path,
+  # not a homemade one.
+  # --------------------------------------------------------------------------
+  android:
+    name: android ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same two the APK ships today: arm64-v8a for devices, x86_64 for the
+        # emulator. `arch` is what the dependency scripts call it — they accept
+        # arm64/x86_64/arm/x86 and silently ignore anything else (an unknown
+        # argument falls through their `*)` case and builds nothing), while
+        # ndk-build wants the ABI name.
+        include:
+          - abi: arm64-v8a
+            arch: arm64
+          - abi: x86_64
+            arch: x86_64
+    steps:
+      - name: checkout i2pd-android
+        uses: actions/checkout@v7
+        with:
+          repository: PurpleI2P/i2pd-android
+          submodules: recursive
+          path: i2pd-android
+
+      - name: pin i2pd submodule to ${{ env.I2PD_VERSION }}
+        working-directory: i2pd-android/binary/jni/i2pd
+        run: |
+          git fetch --tags --depth 1 origin "$I2PD_VERSION"
+          git checkout "$I2PD_VERSION"
+          git log --oneline -1
+
+      - name: resolve NDK
+        run: |
+          # Upstream pins NDK 21.4; the runners ship much newer ones. Use what is
+          # here and let the build say whether that matters — that is one of the
+          # two questions this spike exists to answer.
+          NDK_DIR="$(ls -d "$ANDROID_SDK_ROOT"/ndk/* | sort -V | tail -1)"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "[i2pd] using NDK $NDK_DIR"
+          cat "$NDK_DIR/source.properties" || true
+
+      - name: build dependencies (boost, openssl, miniupnpc)
+        working-directory: i2pd-android/binary/jni
+        run: |
+          ./build_boost.sh ${{ matrix.arch }}
+          ./build_openssl.sh ${{ matrix.arch }}
+          ./build_miniupnpc.sh ${{ matrix.arch }}
+
+          # The scripts exit 0 whether or not they built anything, so check the
+          # outputs exist before spending half an hour on ndk-build.
+          for lib in boost openssl miniupnp; do
+            if ! find "$lib" -name '*.a' | grep -q .; then
+              echo "$lib produced no static libraries for ${{ matrix.arch }}"
+              exit 1
+            fi
+          done
+
+      - name: build i2pd
+        working-directory: i2pd-android/binary/jni
+        run: |
+          # APP_ABI in Application.mk is "all"; narrow it to the one ABI this
+          # matrix leg is for. APP_PLATFORM there is android-16, which modern
+          # NDKs no longer support — 24 matches what the app targets.
+          "$ANDROID_NDK_HOME/ndk-build" \
+            -j"$(nproc)" \
+            NDK_MODULE_PATH="$PWD" \
+            APP_ABI=${{ matrix.abi }} \
+            APP_PLATFORM=android-24
+
+      - name: verify and stage
+        working-directory: i2pd-android/binary
+        run: |
+          BIN="libs/${{ matrix.abi }}/i2pd"
+          test -f "$BIN"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" -s "$BIN"
+          file "$BIN"
+          ls -lh "$BIN"
+
+          # Android refuses to execute binaries from the app's data directory,
+          # so an executable has to travel inside the APK as a lib*.so in
+          # jniLibs to land in nativeLibraryDir, which is executable.
+          mkdir -p staged
+          cp "$BIN" "staged/libi2pd.so"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i2pd-android-${{ matrix.abi }}
+          path: i2pd-android/binary/staged/libi2pd.so
+          if-no-files-found: error
