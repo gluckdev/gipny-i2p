@@ -95,7 +95,7 @@ func startWiredBridge(ctx context.Context, samListen string, debug bool) (*wired
 		embedding.WithListenAddr(samListen),
 		embedding.WithI2CPAddr(i2cpAddr),
 		embedding.WithI2CPProvider(newI2CPProviderAdapter(client)),
-		embedding.WithHandlerRegistrar(wiredHandlerRegistrar(client)),
+		embedding.WithHandlerRegistrar(wiredHandlerRegistrar(client, debug)),
 		embedding.WithDebug(debug),
 	)
 	if err != nil {
@@ -142,7 +142,16 @@ func waitForTCP(addr string, timeout time.Duration) error {
 // wiredHandlerRegistrar registers the default SAM handlers plus STREAM handlers
 // that are backed by a StreamManager per session, built from the connected
 // I2CP client. Mirrors go-sam-bridge/cmd/sam-bridge/main.go.
-func wiredHandlerRegistrar(client *i2cp.Client) embedding.HandlerRegistrarFunc {
+func wiredHandlerRegistrar(client *i2cp.Client, debug bool) embedding.HandlerRegistrarFunc {
+	// Per-session trace of the registration path. Only useful when diagnosing a
+	// dead STREAM transport, and it fires for every session, so it is gated on
+	// --debug; the failure branches below log unconditionally.
+	debugf := func(format string, args ...any) {
+		if debug {
+			log.Printf("[wired-bridge] "+format, args...)
+		}
+	}
+
 	return func(router *handler.Router, deps *embedding.Dependencies) {
 		// Base handlers first (HELLO, DEST, PING, etc.); the STREAM/SESSION
 		// handlers below are re-registered on top with I2CP wiring.
@@ -156,52 +165,46 @@ func wiredHandlerRegistrar(client *i2cp.Client) embedding.HandlerRegistrarFunc {
 		sessionHandler.SetI2CPProvider(deps.I2CPProvider)
 
 		sessionHandler.SetSessionCreatedCallback(func(sess session.Session, i2cpHandle session.I2CPSessionHandle) {
-			log.Printf("[wired-bridge] SessionCreatedCallback invoked for sessionID=%s style=%s", sess.ID(), sess.Style())
+			debugf("session created: id=%s style=%s", sess.ID(), sess.Style())
 
 			if sess.Style() != session.StyleStream {
-				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because style is not STREAM")
+				debugf("session %s: not STREAM, nothing to wire", sess.ID())
 				return
 			}
 			if i2cpHandle == nil {
-				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because i2cpHandle is nil")
+				log.Printf("[wired-bridge] session %s: no I2CP handle, STREAM will not work", sess.ID())
 				return
 			}
 
 			i2cpSess, ok := i2cpHandle.(*i2cp.I2CPSession)
 			if !ok {
-				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because i2cpHandle has unexpected type: %T", i2cpHandle)
+				log.Printf("[wired-bridge] session %s: unexpected I2CP handle type %T, STREAM will not work", sess.ID(), i2cpHandle)
 				return
 			}
 
 			underlyingSession := i2cpSess.Session()
 			underlyingClient := client.I2CPClient()
-			if underlyingSession == nil {
-				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because underlyingSession is nil")
-				return
-			}
-			if underlyingClient == nil {
-				log.Printf("[wired-bridge] SessionCreatedCallback: skipped because underlyingClient is nil")
+			if underlyingSession == nil || underlyingClient == nil {
+				log.Printf("[wired-bridge] session %s: I2CP session/client missing, STREAM will not work", sess.ID())
 				return
 			}
 
 			streamManager, err := gostreaming.NewStreamManagerFromSession(underlyingClient, underlyingSession)
 			if err != nil {
-				log.Printf("[wired-bridge] SessionCreatedCallback: NewStreamManagerFromSession failed: %v", err)
+				log.Printf("[wired-bridge] session %s: NewStreamManagerFromSession: %v", sess.ID(), err)
 				return
 			}
 			adapter, err := samstreaming.NewAdapter(streamManager)
 			if err != nil {
-				log.Printf("[wired-bridge] SessionCreatedCallback: NewAdapter failed: %v", err)
+				log.Printf("[wired-bridge] session %s: NewAdapter: %v", sess.ID(), err)
 				return
 			}
 			streamConnector.RegisterManager(sess.ID(), adapter)
 			if err := streamAcceptor.RegisterManager(sess.ID(), adapter); err != nil {
-				log.Printf("[wired-bridge] SessionCreatedCallback: streamAcceptor.RegisterManager failed: %v", err)
-			} else {
-				log.Printf("[wired-bridge] SessionCreatedCallback: streamAcceptor.RegisterManager succeeded")
+				log.Printf("[wired-bridge] session %s: acceptor RegisterManager: %v", sess.ID(), err)
 			}
 			streamForwarder.RegisterManager(sess.ID(), adapter)
-			log.Printf("[wired-bridge] SessionCreatedCallback: registration finished successfully")
+			debugf("session %s: stream manager registered", sess.ID())
 		})
 
 		router.Register("SESSION CREATE", sessionHandler)

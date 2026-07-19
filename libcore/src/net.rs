@@ -150,15 +150,21 @@ impl I2pNode {
     pub async fn start(data_dir: &Path) -> Result<Self> {
         #[cfg(target_os = "android")]
         let router = RouterHandle::attach(DEFAULT_SAM_PORT).await?;
+        // GIPNY_SAM_PORT attaches to a router someone else already started
+        // instead of spawning our own — the e2e harness uses it to put every
+        // bot on one shared router (only one router per host can hold I2CP, see
+        // i2p-router/wiring.go). A malformed value is a configuration error, not
+        // a reason to quietly spawn a second router that will then fail to build
+        // tunnels somewhere far from here.
         #[cfg(not(target_os = "android"))]
-        let router = if let Ok(port_str) = std::env::var("GIPNY_SAM_PORT") {
-            if let Ok(port) = port_str.parse::<u16>() {
+        let router = match std::env::var("GIPNY_SAM_PORT") {
+            Ok(raw) => {
+                let port = raw.trim().parse::<u16>().map_err(|e| {
+                    NetError::I2p(format!("GIPNY_SAM_PORT={raw:?} is not a valid port: {e}"))
+                })?;
                 RouterHandle::attach(port).await?
-            } else {
-                RouterHandle::start(data_dir, None).await?
             }
-        } else {
-            RouterHandle::start(data_dir, None).await?
+            Err(_) => RouterHandle::start(data_dir, None).await?,
         };
 
         let sam_port = router.sam_port();
