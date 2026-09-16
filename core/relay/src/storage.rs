@@ -122,9 +122,14 @@ impl Storage {
         Ok(out)
     }
 
-    pub fn ack(&self, id: i64) -> anyhow::Result<()> {
+    /// Delete message `id`, but only from `pk`'s own inbox.
+    ///
+    /// This used to delete by id alone. Ids are sequential, so any client that
+    /// could authenticate — any keypair at all — could erase everyone's queued
+    /// mail by acking 1, 2, 3, ... An ack is only the recipient's to give.
+    pub fn ack(&self, pk: &[u8], id: i64) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        conn.execute("DELETE FROM messages WHERE id = ?1 AND recipient_pk = ?2", params![id, pk])?;
         Ok(())
     }
 
@@ -146,4 +151,22 @@ impl Storage {
 
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ack_deletes_only_from_the_acking_recipients_inbox() {
+        let s = Storage::open(Path::new(":memory:")).unwrap();
+        let (alice, mallory) = ([0xA_u8; 32], [0xE_u8; 32]);
+        let id = s.deposit(&alice, b"for alice").unwrap();
+
+        s.ack(&mallory, id).unwrap();
+        assert_eq!(s.pending_for(&alice).unwrap().len(), 1, "a stranger's ack must not delete");
+
+        s.ack(&alice, id).unwrap();
+        assert!(s.pending_for(&alice).unwrap().is_empty());
+    }
 }

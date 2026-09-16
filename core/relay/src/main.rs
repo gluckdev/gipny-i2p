@@ -187,7 +187,15 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
 
     let result = client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, &storage, &connections, cursor.clone()).await;
     refresh_handle.abort();
-    connections.write().await.remove(&sign_pk);
+    // Only our own entry. A client that reconnects registers a new sender under
+    // the same key; when the old connection finally errors out, removing by key
+    // would drop the new one and leave the recipient unreachable for live push.
+    {
+        let mut conns = connections.write().await;
+        if conns.get(&sign_pk).is_some_and(|tx| tx.same_channel(&push_tx)) {
+            conns.remove(&sign_pk);
+        }
+    }
     eprintln!("[relay] client gone {}", hex_short(&sign_pk));
     result
 }
@@ -225,7 +233,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                         }
                     }
                     ClientToRelay::Ack { id } => {
-                        storage.ack(id as i64)?;
+                        storage.ack(&sign_pk, id as i64)?;
                         let cur_val = *cursor.lock().await;
                         match storage.pending_above(&sign_pk, cur_val) {
                             Ok(more) => {
