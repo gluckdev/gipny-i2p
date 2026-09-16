@@ -16,16 +16,18 @@ name: i2pd-build
 # (boost, OpenSSL) and its DaemonAndroid wrapper, not for its own app.
 #
 # This workflow is the wide net: release.yml builds the router it actually ships
-# on the release path. What only lives here is musl, armeabi-v7a and the second
-# Android ABI, so upstream breakage surfaces before a tag needs it.
+# on the release path. What only lives here is the glibc build and the x86_64
+# Android ABI; everything else is built here weekly too, so upstream breakage
+# surfaces before a tag needs it.
 
 on:
   workflow_dispatch:
   # Weekly, not nightly. e2e-i2pd already builds the Linux router every night
   # as part of proving it delivers, so a nightly run here would build the same
   # binary twice for the same answer. What this job adds is the platforms that
-  # test cannot cover — musl, Windows, the three Android ABIs — and "does
-  # upstream still compile everywhere" does not change fast enough to ask daily.
+  # test cannot cover — musl, arm64, macOS, Windows, the three Android ABIs —
+  # and "does upstream still compile everywhere" does not change fast enough to
+  # ask daily.
   schedule:
     - cron: '17 1 * * 1'
 
@@ -225,6 +227,68 @@ jobs:
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
+  # linux arm64, musl, on GitHub's native arm64 runner: the router release.yml
+  # bundles into the arm64 AppImage/deb and ships with the arm64 relay.
+  #
+  # docker run rather than `container:` as in the x86_64 musl job: GitHub cannot
+  # run JavaScript actions (checkout, upload-artifact) inside an Alpine container
+  # on arm64, so the build goes in a container and the actions stay outside.
+  # --------------------------------------------------------------------------
+  linux-arm64-musl:
+    name: linux arm64 (static, musl)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: unshallow the router sources (git describe needs tags)
+        run: |
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
+
+      - name: build
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
+            apk add --no-cache build-base git make g++ \
+              boost-dev boost-static openssl-dev openssl-libs-static zlib-dev zlib-static
+            git config --global --add safe.directory "*"
+            cd third_party/i2pd
+            make USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
+            strip --strip-unneeded i2pd
+          '
+
+      - name: verify
+        working-directory: third_party/i2pd
+        run: |
+          EXPECTED="$(git describe --tags)"
+          ACTUAL="$(./i2pd --version | head -1)"
+          echo "built from: $EXPECTED"
+          echo "reports:    $ACTUAL"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED"; exit 1 ;;
+          esac
+          file i2pd
+          file i2pd | grep -q 'ARM aarch64' || { echo "not an arm64 binary"; exit 1; }
+          if ldd ./i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked'; then
+            echo "portability check: OK — fully static"
+          else
+            echo "portability check: FAILED — binary still has dynamic dependencies"
+            ldd ./i2pd || true
+            exit 1
+          fi
+          ls -lh i2pd
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: i2pd-linux-arm64-musl
+          path: third_party/i2pd/i2pd
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
   # macOS, Apple Silicon and Intel. Homebrew supplies boost and openssl, linked
   # statically; .github/scripts/build-i2pd-macos.sh is shared with release.yml.
   # macos-14 is deprecated on GitHub's runners, so the floor is macOS 15.
@@ -377,10 +441,7 @@ jobs:
             arch: arm64
           - abi: x86_64
             arch: x86_64
-          # 32-bit ARM is a measurement, not a commitment: the APK ships no
-          # 32-bit ABI today (no armv7 Rust target, no 32-bit go-i2p .so), so
-          # this leg only answers whether it builds and what it costs, for when
-          # 32-bit device support is decided on its own merits.
+          # 32-bit ARM: release.yml ships an armv7 APK alongside arm64.
           - abi: armeabi-v7a
             arch: arm
     steps:

@@ -140,8 +140,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Android integration: build installable debug APKs for arm64-v8a (real
-  # devices) and x86_64 (emulator) and assert the Rust cdylib is packaged for
-  # each ABI.
+  # devices) and x86_64 (emulator), compile armeabi-v7a (32-bit devices), and
+  # assert the Rust cdylib is packaged for each ABI.
   #
   # Built with -PskipRouter, so these APKs carry no i2pd and cannot connect —
   # they exist to prove the Kotlin/Rust/Tauri side compiles and packages. APKs
@@ -154,7 +154,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
@@ -170,8 +170,10 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
           # openssl-src's Android build expects binutils-style `<triple>-ranlib`/
           # `<triple>-ar`; NDK r23+ ships only the llvm-* names. Shim them.
+          # 32-bit ARM goes by two prefixes: arm-linux-androideabi for binutils
+          # and armv7a-linux-androideabi for the clang wrappers.
           tc="$ANDROID_SDK_ROOT/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          for triple in aarch64-linux-android x86_64-linux-android; do
+          for triple in aarch64-linux-android x86_64-linux-android arm-linux-androideabi armv7a-linux-androideabi; do
             ln -sf "$tc/llvm-ranlib" "$tc/$triple-ranlib"
             ln -sf "$tc/llvm-ar" "$tc/$triple-ar"
           done
@@ -218,6 +220,18 @@ jobs:
           find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/x86_64/ \;
           ls -la dist/x86_64
           test -n "$(find dist/x86_64 -type f -name '*.apk' -print -quit)"
+          rm -rf core/gen/android/app/build/outputs
+      # 32-bit ARM ships in release.yml; compiling it here is what catches code
+      # that only breaks where usize is 32 bits, on a push rather than a tag.
+      - name: build Android APK (armv7)
+        env:
+          ORG_GRADLE_PROJECT_skipRouter: 'true'
+        run: cd core && cargo tauri android build --debug --apk --target armv7
+      - name: verify APK (armv7)
+        run: |
+          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          unzip -l "$apk" | grep -F 'lib/armeabi-v7a/libgipny_lib.so'
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-debug-apk-no-router

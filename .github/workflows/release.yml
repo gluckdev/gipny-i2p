@@ -1,8 +1,9 @@
 name: release
 
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
-# Builds the bundled i2pd router and every desktop artifact (Linux AppImage/deb,
-# Windows NSIS, macOS dmg for Apple Silicon and Intel), plus Android (i2pd embedded in-process via JNI; see
+# Builds the bundled i2pd router and every desktop artifact (Linux AppImage/deb
+# for amd64 and arm64, Windows NSIS, macOS dmg for Apple Silicon and Intel),
+# the relay server for Linux amd64/arm64, plus Android arm64 and armv7 (i2pd embedded in-process via JNI; see
 # android-router/jni).
 #
 # Trigger: push a tag `v*` (e.g. v0.3.0) or run manually.
@@ -31,6 +32,9 @@ jobs:
           # every distribution — Arch, Void, CentOS, Deepin — instead of
           # carrying a glibc floor from whatever image built it.
           - { label: linux/amd64, runs-on: ubuntu-latest, out: i2pd, artifact: router-linux-amd64 }
+          # Native arm64 runner: the Alpine container is pulled for the host's
+          # architecture, so the same build yields an arm64 musl binary.
+          - { label: linux/arm64, runs-on: ubuntu-24.04-arm, out: i2pd, artifact: router-linux-arm64 }
           - { label: windows/amd64, runs-on: windows-latest, out: i2pd.exe, artifact: router-windows-amd64 }
           # macos-14 is deprecated on GitHub's runners; building on 15 makes
           # macOS 15 the floor (see .github/scripts/build-i2pd-macos.sh).
@@ -151,7 +155,8 @@ jobs:
           path: third_party/i2pd/${{ matrix.out }}
 
   # ---------------------------------------------------------------------------
-  # 2. Desktop: Linux (AppImage + deb), Windows (NSIS), macOS (dmg). Stages
+  # 2. Desktop: Linux amd64/arm64 (AppImage + deb), Windows (NSIS), macOS
+  #    (dmg). Stages
   #    the matching router binary into core/resources so Tauri bundles it (see
   #    tauri.conf).
   # ---------------------------------------------------------------------------
@@ -163,6 +168,8 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-22.04,   router: router-linux-amd64,   rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux }
+          # 22.04 like amd64, so the arm64 bundles carry the same glibc floor.
+          - { os: ubuntu-22.04-arm, router: router-linux-arm64, rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux-arm64 }
           - { os: windows-latest, router: router-windows-amd64, rbin: i2pd.exe, bundles: 'nsis',         artifact: gipny-Windows }
           - { os: macos-15,       router: router-macos-arm64,   rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-arm64 }
           - { os: macos-15-intel, router: router-macos-x86_64,  rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-x86_64 }
@@ -216,14 +223,71 @@ jobs:
             target/release/bundle/**/*.dmg
 
   # ---------------------------------------------------------------------------
-  # 2c. Android router: i2pd built as the JNI library GipnyService loads.
-  #     Cached on the i2pd pin + NDK + boost revision, because a cold build is
-  #     ~1h (boost and OpenSSL from source) and the pin rarely moves.
+  # 2b. Relay server for Linux amd64 and arm64: gipny-relay, the same musl i2pd
+  #     the desktop app bundles, and both systemd units, in one tarball. arm64
+  #     is here for the cheap always-on machines a relay actually runs on — a
+  #     Raspberry Pi, an ARM VPS.
+  # ---------------------------------------------------------------------------
+  relay:
+    name: relay (linux ${{ matrix.arch }})
+    needs: router
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 sets the glibc floor at 2.35: Debian 12, Ubuntu 22.04 and
+          # Raspberry Pi OS bookworm all meet it.
+          - { arch: amd64, runs-on: ubuntu-22.04, router: router-linux-amd64 }
+          - { arch: arm64, runs-on: ubuntu-22.04-arm, router: router-linux-arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/relay
+      - name: fetch the router built above
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.router }}
+          path: router
+      - name: build and package
+        run: |
+          cargo build --release --manifest-path core/relay/Cargo.toml
+          VERSION="$(jq -r .version core/tauri.conf.json)"
+          name="gipny-relay_${VERSION}_linux-${{ matrix.arch }}"
+          mkdir -p "dist/$name"
+          install -m 0755 core/relay/target/release/gipny-relay "dist/$name/"
+          install -m 0755 router/i2pd "dist/$name/"
+          install -m 0644 core/relay/gipny-relay.service core/relay/gipny-i2pd.service "dist/$name/"
+          # Both binaries must run on the architecture this tarball is named for.
+          "dist/$name/i2pd" --version | head -1
+          file "dist/$name/gipny-relay" "dist/$name/i2pd"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          ls -lh dist/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-relay-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2c. Android router: i2pd built as the JNI library GipnyService loads, for
+  #     64- and 32-bit ARM. Cached on the i2pd pin + NDK + boost revision,
+  #     because a cold build is ~1h (boost and OpenSSL from source) and the pin
+  #     rarely moves.
   # ---------------------------------------------------------------------------
   android-router:
-    name: router (i2pd, android arm64-v8a)
+    name: router (i2pd, android ${{ matrix.abi }})
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # arch is what i2pd-android's build_boost.sh/build_openssl.sh call it.
+          - { abi: arm64-v8a, arch: arm64 }
+          - { abi: armeabi-v7a, arch: arm }
     env:
       NDK_VERSION: 27.3.13750724
       # Pinned; see i2pd-build.yml. Must match it, or the release ships an
@@ -246,7 +310,7 @@ jobs:
           path: staged/libi2pd.so
           # The jni tree is in the key: changing a compiler flag there must not
           # restore a library built without it.
-          key: i2pd-android-arm64-v8a-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-jni${{ hashFiles('android-router/jni/**') }}
+          key: i2pd-android-${{ matrix.abi }}-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-jni${{ hashFiles('android-router/jni/**') }}
 
       - uses: actions/setup-java@v6
         if: steps.cache.outputs.cache-hit != 'true'
@@ -291,8 +355,8 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: third_party/i2pd-android/binary/jni
         run: |
-          ./build_boost.sh arm64
-          ./build_openssl.sh arm64
+          ./build_boost.sh ${{ matrix.arch }}
+          ./build_openssl.sh ${{ matrix.arch }}
           for lib in boost openssl; do
             find "$lib" -name '*.a' | grep -q . || { echo "$lib built nothing"; exit 1; }
           done
@@ -305,10 +369,10 @@ jobs:
             -j"$(nproc)" \
             NDK_MODULE_PATH="$GITHUB_WORKSPACE/third_party/i2pd-android/binary/jni" \
             NDK_PROJECT_PATH="$GITHUB_WORKSPACE/android-router" \
-            APP_ABI=arm64-v8a \
+            APP_ABI=${{ matrix.abi }} \
             APP_PLATFORM=android-24
 
-          LIB="android-router/libs/arm64-v8a/libi2pd.so"
+          LIB="android-router/libs/${{ matrix.abi }}/libi2pd.so"
           NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           for sym in Java_app_gipny_GipnyService_nativeStartSam \
                      Java_app_gipny_GipnyService_nativeStopSam; do
@@ -324,7 +388,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: router-android-arm64-v8a
+          name: router-android-${{ matrix.abi }}
           path: staged/libi2pd.so
           if-no-files-found: error
 
@@ -342,14 +406,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: stage the embedded router
+      - name: stage the embedded router (arm64-v8a)
         uses: actions/download-artifact@v8
         with:
           name: router-android-arm64-v8a
           path: android-router/prebuilt/arm64-v8a
+      - name: stage the embedded router (armeabi-v7a)
+        uses: actions/download-artifact@v8
+        with:
+          name: router-android-armeabi-v7a
+          path: android-router/prebuilt/armeabi-v7a
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
@@ -365,8 +434,10 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
           # openssl-src's Android build expects binutils-style `<triple>-ranlib`/
           # `<triple>-ar`; NDK r23+ ships only the llvm-* names. Shim them.
+          # 32-bit ARM goes by two prefixes: arm-linux-androideabi for binutils
+          # and armv7a-linux-androideabi for the clang wrappers.
           tc="$ANDROID_SDK_ROOT/ndk/27.3.13750724/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          for triple in aarch64-linux-android x86_64-linux-android; do
+          for triple in aarch64-linux-android arm-linux-androideabi armv7a-linux-androideabi; do
             ln -sf "$tc/llvm-ranlib" "$tc/$triple-ranlib"
             ln -sf "$tc/llvm-ar" "$tc/$triple-ar"
           done
@@ -395,32 +466,48 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # The APK ships aarch64 only, so stage that one ABI. Without this the
-          # Gradle task for x86_64 fails by design: no prebuilt library for it.
-          ORG_GRADLE_PROJECT_routerAbis: arm64-v8a
-        run: cd core && cargo tauri android build --apk --target aarch64
-      - name: verify signed APK
+          # The two ABIs the release ships. Without this Gradle also asks for
+          # x86_64, and fails by design: no prebuilt library for it here.
+          ORG_GRADLE_PROJECT_routerAbis: arm64-v8a,armeabi-v7a
+        # --split-per-abi: one APK per ABI, so a 64-bit phone does not download
+        # the 32-bit libraries it will never load. It also keeps each APK to
+        # its own ABI: Tauri's per-arch flavors filter jniLibs, while the
+        # universal flavor would pack every ABI staged in jniLibs.
+        run: cd core && cargo tauri android build --apk --split-per-abi --target aarch64 --target armv7
+      - name: verify signed APKs
         run: |
           # apksigner is not on PATH — pick the newest build-tools copy.
           APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)"
           test -n "$APKSIGNER"
-          mapfile -d '' apks < <(find core/gen/android/app/build/outputs -type f -name '*.apk' -print0)
-          test "${#apks[@]}" -gt 0
-          for apk in "${apks[@]}"; do
+          VERSION="$(jq -r .version core/tauri.conf.json)"
+          out=core/gen/android/app/build/outputs/apk
+          mkdir -p dist
+          # <flavor> <abi in the APK> <name users see>
+          for spec in "arm64 arm64-v8a arm64" "arm armeabi-v7a armv7"; do
+            set -- $spec
+            apk="$(find "$out/$1" -type f -name '*.apk' -print -quit)"
+            test -n "$apk" || { echo "no APK for $2"; exit 1; }
             "$APKSIGNER" verify --verbose "$apk"
             # The router has to actually be in there. A release APK without
             # libi2pd.so installs, starts, and never connects — the exact
             # failure the i2pd migration exists to end, and one nothing
             # downstream would catch.
-            unzip -l "$apk" | grep -F 'lib/arm64-v8a/libi2pd.so'
-            unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipny_lib.so'
+            unzip -l "$apk" | grep -F "lib/$2/libi2pd.so"
+            unzip -l "$apk" | grep -F "lib/$2/libgipny_lib.so"
             unzip -l "$apk" | grep -qF 'assets/certificates/reseed/' \
               || { echo "APK carries no reseed certificates — a fresh router cannot bootstrap"; exit 1; }
+            # Exactly one ABI. A stray second one makes Android pick it as the
+            # primary on a device that supports both, and load a directory
+            # where libgipny_lib.so may not exist.
+            abis="$(unzip -Z1 "$apk" | sed -n 's#^lib/\([^/]*\)/.*#\1#p' | sort -u)"
+            test "$abis" = "$2" || { echo "$apk carries ABIs: $abis (want only $2)"; exit 1; }
+            cp "$apk" "dist/gipny-i2p_${VERSION}_android-$3.apk"
           done
+          ls -lh dist
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android
-          path: core/gen/android/app/build/outputs/**/*.apk
+          path: dist/*.apk
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -428,7 +515,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [desktop, android]
+    needs: [desktop, relay, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release + upload assets
