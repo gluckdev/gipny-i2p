@@ -424,21 +424,10 @@ impl EphemeralRelay {
             .generate_destination()
             .await
             .map_err(|e| NetError::I2p(format!("relay destination: {e}")))?;
-        // The key lives only in the session options; yosemite owns that copy for
-        // the life of the session. It is never written anywhere.
-        let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
-        let opts = SessionOptions {
-            nickname: format!("gipny-relay-{}-{}", std::process::id(), seq),
-            destination: DestinationKind::Persistent { private_key },
-            samv3_tcp_port: sam_port,
-            publish: true,
-            // Payloads are E2E-encrypted and padded to size buckets already.
-            gzip: false,
-            ..Default::default()
-        };
-        let mut session = Session::<style::Stream>::new(opts)
-            .await
-            .map_err(|e| NetError::I2p(format!("relay SAM session: {e}")))?;
+        // Kept in memory only, for rebuilding the session on the same address.
+        // It is never written anywhere.
+        let private_key = zeroize::Zeroizing::new(private_key);
+        let first = open_session(sam_port, &private_key).await?;
 
         let store = Arc::new(MemStore::new(limits));
         let connections: Connections = Arc::default();
@@ -450,11 +439,25 @@ impl EphemeralRelay {
         let accept = tokio::spawn({
             let store = store.clone();
             async move {
+                let mut session = Some(first);
+                let mut failures = 0u32;
                 let mut clients = JoinSet::new();
                 loop {
+                    let Some(live) = session.as_mut() else {
+                        tokio::time::sleep(rebuild_backoff(failures)).await;
+                        match open_session(sam_port, &private_key).await {
+                            Ok(s) => session = Some(s),
+                            Err(e) => {
+                                failures += 1;
+                                eprintln!("[relay-server] session rebuild failed: {e}");
+                            }
+                        }
+                        continue;
+                    };
                     tokio::select! {
-                        accepted = session.accept() => match accepted {
+                        accepted = live.accept() => match accepted {
                             Ok(stream) => {
+                                failures = 0;
                                 let (store, connections) = (store.clone(), connections.clone());
                                 clients.spawn(async move {
                                     if let Err(e) = handle_client(stream, store, connections).await {
@@ -462,9 +465,15 @@ impl EphemeralRelay {
                                     }
                                 });
                             }
+                            // yosemite poisons the session's controller on any
+                            // reply it cannot parse, and every later accept on it
+                            // fails while the destination drops off the router
+                            // (e2e run 35076520090, both standalone relays). Drop
+                            // it, releasing the destination, and reopen.
                             Err(e) => {
-                                eprintln!("[relay-server] accept err: {e}");
-                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                failures += 1;
+                                eprintln!("[relay-server] accept err: {e}; rebuilding the session");
+                                session = None;
                             }
                         },
                         // Reap finished clients so the set does not grow for the
@@ -498,6 +507,30 @@ impl EphemeralRelay {
     pub fn stats(&self) -> StoreStats {
         self.store.stats()
     }
+}
+
+/// A publishing STREAM session on `private_key`, under a nickname no other
+/// session on the router has: IDs are router-wide, and a rebuild can race the
+/// router's teardown of the session it replaces.
+async fn open_session(sam_port: u16, private_key: &str) -> Result<Session<style::Stream>, NetError> {
+    let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
+    let opts = SessionOptions {
+        nickname: format!("gipny-relay-{}-{}", std::process::id(), seq),
+        destination: DestinationKind::Persistent { private_key: private_key.to_string() },
+        samv3_tcp_port: sam_port,
+        publish: true,
+        // Payloads are E2E-encrypted and padded to size buckets already.
+        gzip: false,
+        ..Default::default()
+    };
+    Session::<style::Stream>::new(opts)
+        .await
+        .map_err(|e| NetError::I2p(format!("relay SAM session: {e}")))
+}
+
+/// 0.5 s doubling to a 30 s ceiling.
+fn rebuild_backoff(failures: u32) -> Duration {
+    Duration::from_millis(500u64.saturating_mul(1 << failures.min(6)).min(30_000))
 }
 
 impl Drop for EphemeralRelay {

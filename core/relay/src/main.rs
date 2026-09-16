@@ -37,23 +37,7 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[relay] connecting to SAMv3 bridge on 127.0.0.1:{sam_port}...");
     let (dest_pub, privkey) = load_or_create_identity(&data_dir, sam_port).await?;
 
-    let opts = SessionOptions {
-        // Unique per process. SAM session IDs are router-wide, so two relays on
-        // one router with a fixed nickname collide: the second gets
-        // DUPLICATED_ID, which yosemite 0.7 cannot parse and reports only as
-        // "invalid message from router" (e2e run 35074027215, relay-b).
-        nickname: format!("{HS_NICKNAME}-{}", std::process::id()),
-        destination: DestinationKind::Persistent { private_key: privkey },
-        samv3_tcp_port: sam_port,
-        // Servers must publish their leaseSet so clients can reach them.
-        publish: true,
-        // Relay payloads are already E2E-encrypted/padded; SAM gzip is wasted work.
-        gzip: false,
-        ..Default::default()
-    };
-    let mut session = Session::<style::Stream>::new(opts).await
-        .map_err(|e| anyhow::anyhow!("SAM session: {e}"))?;
-
+    let mut session = Some(open_session(sam_port, &privkey).await?);
     eprintln!("========================================================");
     eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
     eprintln!("{dest_pub}");
@@ -72,12 +56,39 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let mut failures = 0u32;
     loop {
-        let stream = match session.accept().await {
-            Ok(s) => s,
+        let Some(live) = session.as_mut() else {
+            // Rebuild on the same key, so the destination clients have stays
+            // valid. Back off: a router that is restarting refuses for a while.
+            tokio::time::sleep(rebuild_backoff(failures)).await;
+            match open_session(sam_port, &privkey).await {
+                Ok(s) => {
+                    eprintln!("[relay] SAM session rebuilt after {failures} failure(s)");
+                    session = Some(s);
+                }
+                Err(e) => {
+                    failures += 1;
+                    eprintln!("[relay] SAM session rebuild failed: {e}");
+                }
+            }
+            continue;
+        };
+        let stream = match live.accept().await {
+            Ok(s) => {
+                failures = 0;
+                s
+            }
             Err(e) => {
-                eprintln!("[relay] accept err: {e}");
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // A reply yosemite cannot parse leaves the session's controller
+                // poisoned for good, and every later accept on it is dead: in e2e
+                // run 35076520090 both relays hit this once, stayed up, and
+                // their destinations dropped off the router ("Destination to
+                // connect not found") for the rest of the run. Drop the session
+                // — closing it releases the destination — and open a new one.
+                failures += 1;
+                eprintln!("[relay] accept err: {e}; rebuilding the SAM session");
+                session = None;
                 continue;
             }
         };
@@ -89,6 +100,33 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+}
+
+/// Open a publishing STREAM session on the relay's persistent destination.
+async fn open_session(sam_port: u16, privkey: &str) -> anyhow::Result<Session<style::Stream>> {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let opts = SessionOptions {
+        // Unique per process and per attempt. SAM session IDs are router-wide:
+        // two relays on one router with a fixed nickname collide, the second
+        // getting DUPLICATED_ID, which yosemite 0.7 cannot parse and reports
+        // only as "invalid message from router" (e2e run 35074027215). A
+        // rebuild can race the router's teardown of the previous session too.
+        nickname: format!("{HS_NICKNAME}-{}-{seq}", std::process::id()),
+        destination: DestinationKind::Persistent { private_key: privkey.to_string() },
+        samv3_tcp_port: sam_port,
+        // Servers must publish their leaseSet so clients can reach them.
+        publish: true,
+        // Relay payloads are already E2E-encrypted/padded; SAM gzip is wasted work.
+        gzip: false,
+        ..Default::default()
+    };
+    Session::<style::Stream>::new(opts).await.map_err(|e| anyhow::anyhow!("SAM session: {e}"))
+}
+
+/// 0.5 s doubling to a 30 s ceiling.
+fn rebuild_backoff(failures: u32) -> Duration {
+    Duration::from_millis(500u64.saturating_mul(1 << failures.min(6)).min(30_000))
 }
 
 /// Load the persistent i2p identity, generating it on first run.
