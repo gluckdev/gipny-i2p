@@ -278,6 +278,17 @@ jobs:
         with:
           name: gipny-android-debug-apk-x86_64-no-router
           path: apk-x86_64
+      # Without KVM the x86_64 emulator runs unaccelerated and never finishes
+      # booting: every run of this job to date died on "Timeout waiting for
+      # emulator to boot", and continue-on-error kept the workflow green over
+      # it. The runners have /dev/kvm; only its permissions stand in the way.
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
       - name: emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
         with:
