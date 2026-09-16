@@ -66,14 +66,36 @@ pub struct RelayClient {
     pub in_rx: Arc<Mutex<mpsc::Receiver<RelayToClient>>>,
 }
 
+/// Connect to our own relay. Failures count toward SAM session health.
 pub async fn connect(
     node: &Arc<TorNode>,
     onion: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
     let stream = node.connect_relay(onion, RELAY_PORT).await?;
-    let mut stream = stream.into_inner();
+    handshake(stream.into_inner(), identity).await
+}
 
+/// Connect to a contact's relay, to deposit a message where they collect.
+///
+/// Unlike [`connect`], a failure here says nothing about our own session: a
+/// contact's relay may be offline, retired, or an ephemeral one that died with
+/// its app. Counting those toward session health let five unreachable contact
+/// relays tear down a session that was carrying our own traffic fine, and do it
+/// again every cooldown.
+pub async fn connect_peer(
+    node: &Arc<TorNode>,
+    onion: &str,
+    identity: &Arc<Identity>,
+) -> Result<RelayClient> {
+    let stream = node.connect_service(onion, RELAY_PORT).await?;
+    handshake(stream.into_inner(), identity).await
+}
+
+async fn handshake(
+    mut stream: std::pin::Pin<Box<dyn crate::net::DuplexStream>>,
+    identity: &Arc<Identity>,
+) -> Result<RelayClient> {
     let challenge = match recv::<_, RelayToClient>(&mut stream).await? {
         RelayToClient::Challenge(c) => c,
         _ => return Err(RelayError::Proto("expected Challenge".into())),

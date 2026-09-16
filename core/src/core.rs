@@ -1010,7 +1010,7 @@ impl Core {
             let short = &key[..16.min(key.len())];
             let dial = tokio::time::timeout(
                 PEER_RELAY_CONNECT_TIMEOUT,
-                relay::connect(&this.node, &key, &this.identity),
+                relay::connect_peer(&this.node, &key, &this.identity),
             ).await;
             let client = match dial {
                 Ok(Ok(c)) => c,
