@@ -38,7 +38,6 @@ pub type Result<T> = std::result::Result<T, NetError>;
 pub enum NetError {
     #[error("io")] Io(#[from] std::io::Error),
     #[error("i2p: {0}")] I2p(String),
-    #[error("proxy: {0}")] Proxy(String),
     #[error("codec")] Codec,
     #[error("frame too large")] TooLarge,
     #[error("closed")] Closed,
