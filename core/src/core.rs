@@ -188,6 +188,7 @@ pub struct Core {
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
     /// Ids of console commands to run, in order, by the single agent worker.
     agent_tx: mpsc::UnboundedSender<i64>,
+    hosted_relay: Arc<Mutex<Option<gipny_libcore::EphemeralRelay>>>,
 }
 
 impl Core {
@@ -219,6 +220,7 @@ impl Core {
             pending_update: Arc::new(Mutex::new(None)),
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             agent_tx,
+            hosted_relay: Arc::new(Mutex::new(None)),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -273,6 +275,32 @@ impl Core {
         self.db.set_setting(SETTING_RELAY_ONION, addr.trim().as_bytes())?;
         Ok(())
     }
+
+    /// Spin up an in-process, memory-only relay server on our router.
+    /// Returns the relay's published i2p destination and sets it as our own relay.
+    pub async fn start_hosted_relay(self: &Arc<Self>) -> Result<String> {
+        let sam_port = self.node.sam_port();
+        eprintln!("[relay-hosted] starting in-process relay on SAM port {sam_port}...");
+        let relay = gipny_libcore::EphemeralRelay::start(sam_port, gipny_libcore::MemStoreLimits::default()).await?;
+        let addr = relay.address().to_string();
+        *self.hosted_relay.lock().await = Some(relay);
+        self.set_relay_address(&addr)?;
+        eprintln!("[relay-hosted] in-process relay ready at {}", &addr[..addr.len().min(16)]);
+        Ok(addr)
+    }
+
+    /// Shut down the in-process relay.
+    pub async fn stop_hosted_relay(&self) -> Result<()> {
+        *self.hosted_relay.lock().await = None;
+        eprintln!("[relay-hosted] stopped in-process relay");
+        Ok(())
+    }
+
+    /// Destination of the in-process relay if running.
+    pub async fn hosted_relay_address(&self) -> Option<String> {
+        self.hosted_relay.lock().await.as_ref().map(|r| r.address().to_string())
+    }
+
 
     // ----- agent mode ------------------------------------------------------
 
@@ -597,6 +625,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -637,6 +666,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -673,6 +703,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -725,6 +756,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -771,6 +803,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
@@ -837,6 +870,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1452,6 +1486,17 @@ impl Core {
             });
             return Ok(());
         }
+        if let Some(relay) = payload.relay_address.as_deref() {
+            let trimmed = relay.trim();
+            if !trimmed.is_empty() && gipny_libcore::card::is_valid_i2p_address(trimmed) {
+                if let Ok(current) = self.db.contact_relay(contact_id) {
+                    if current.as_deref() != Some(trimmed) {
+                        eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
+                        let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
+                    }
+                }
+            }
+        }
         if let Some(name) = payload.sender_name.as_deref() {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
@@ -1732,6 +1777,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = match self.relay_for(contact).await {
             Some(x) => x,
@@ -1982,6 +2028,12 @@ impl Core {
         if payload.sender_name.is_none() {
             payload.sender_name = self.outgoing_sender_name();
         }
+        if payload.relay_address.is_none() {
+            let r = self.relay_onion();
+            if !r.is_empty() {
+                payload.relay_address = Some(r);
+            }
+        }
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
         let raw = encode_payload(payload)?;
         if raw.len() > MAX_PAYLOAD_BYTES {
@@ -2154,7 +2206,7 @@ fn make_typing_payload(group: Option<WireGroupRef>, typing: bool) -> WirePayload
         origin_msg_id: 0, body: String::new(), attachments: vec![], sent_at: now_ms(),
         ttl_ms: None, group, buttons: None, callback_data: None,
         edit_of: None, pin: None, ack_for: None, sender_name: None,
-        reply_to: None, typing: Some(typing), notify_sound: None, console: None,
+        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None,
     }
 }
 

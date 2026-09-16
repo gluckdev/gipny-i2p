@@ -93,6 +93,8 @@ pub struct WirePayload {
     pub notify_sound: Option<String>,
     #[serde(default)]
     pub console: Option<WireConsole>,
+    #[serde(default)]
+    pub relay_address: Option<String>,
 }
 
 impl WirePayload {
@@ -101,7 +103,7 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None, notify_sound: None, console: None,
+            typing: None, notify_sound: None, console: None, relay_address: None,
         }
     }
 }
@@ -320,6 +322,7 @@ impl From<WireV7> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound, console: None,
+            relay_address: None,
         }
     }
 }
@@ -332,6 +335,7 @@ impl From<WireV6> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: None, console: None,
+            relay_address: None,
         }
     }
 }
@@ -399,7 +403,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None, notify_sound: None, console: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None,
         }
     }
 }
@@ -411,7 +415,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None, notify_sound: None, console: None,
+            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
         }
     }
 }
@@ -423,7 +427,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
         }
     }
 }
@@ -435,7 +439,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
         }
     }
 }
@@ -446,7 +450,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
         }
     }
 }
@@ -458,13 +462,14 @@ impl From<WireV0> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
             edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
+            relay_address: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
-    if p.console.is_some()                         { bincode::serialize(p) }
-    else if p.notify_sound.is_some()               { bincode::serialize(&WireV7::from(p)) }
+    if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(p) }
+    else if p.notify_sound.is_some()                    { bincode::serialize(&WireV7::from(p)) }
     else if p.typing.is_some()                     { bincode::serialize(&WireV6::from(p)) }
     else if p.reply_to.is_some()                   { bincode::serialize(&WireV5::from(p)) }
     else if p.sender_name.is_some()                { bincode::serialize(&WireV4::from(p)) }
@@ -720,6 +725,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -754,6 +760,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -866,6 +873,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -903,6 +911,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1271,6 +1280,17 @@ impl SessionManager {
             }
         }
 
+        if let Some(relay) = payload.relay_address.as_deref() {
+            let trimmed = relay.trim();
+            if !trimmed.is_empty() && crate::card::is_valid_i2p_address(trimmed) {
+                if let Ok(current) = self.db.contact_relay(contact_id) {
+                    if current.as_deref() != Some(trimmed) {
+                        eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
+                        let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
+                    }
+                }
+            }
+        }
         let is_empty = payload.body.is_empty()
             && payload.attachments.is_empty()
             && payload.group.is_none()
@@ -1487,6 +1507,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
+            relay_address: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1690,6 +1711,10 @@ impl SessionManager {
         p.buttons = buttons;
         p.notify_sound = sound;
         p.console = console;
+        let r = self.relay_onion();
+        if !r.is_empty() {
+            p.relay_address = Some(r);
+        }
         Ok(p)
     }
 

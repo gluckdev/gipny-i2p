@@ -15,8 +15,9 @@ pub use db::{Db, DbError, Contact, Message, NewAttachment, Direction, TrustLevel
 pub use net::{I2pNode, TorNode, NetError};
 pub use router::RouterHandle;
 pub use relay::{RelayClient, RelayError, ClientToRelay, RelayToClient, EnvelopeBlob, DEFAULT_RELAY};
+pub use relay_server::{EphemeralRelay, MemStoreLimits};
 pub use security::{MasterKey, Vault, DuressMode, UnlockOutcome};
 pub use session::{SessionManager, SessionError, SessionEvent, WirePayload, WireAttachment, WireButton, WireGroupRef, WireMember, WirePin, WireConsole};
 pub use session::{CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF};
-pub use card::{ContactCard, CardError};
+pub use card::{ContactCard, CardError, is_valid_i2p_address};
 pub use update::{Updater, UpdateError, UpdateInfo, Manifest, Artifact, DEFAULT_UPDATE_ONION};

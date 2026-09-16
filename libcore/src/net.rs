@@ -215,6 +215,9 @@ impl I2pNode {
     /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
     pub fn onion_address(&self) -> &str { &self.address }
 
+    /// The SAM bridge TCP port this node talks to.
+    pub fn sam_port(&self) -> u16 { self.sam_port }
+
     /// Short `.b32.i2p` address derived from the destination.
     ///
     /// The b32 address is `base32(sha256(binary_destination)).b32.i2p`.

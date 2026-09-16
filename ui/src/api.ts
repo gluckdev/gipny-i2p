@@ -225,6 +225,15 @@ export class Api {
   static setRelayAddress(addr: string): Promise<void> {
     return invoke('set_relay_address', { addr });
   }
+  static startHostedRelay(): Promise<string> {
+    return invoke('start_hosted_relay');
+  }
+  static stopHostedRelay(): Promise<void> {
+    return invoke('stop_hosted_relay');
+  }
+  static getHostedRelay(): Promise<string | null> {
+    return invoke('get_hosted_relay');
+  }
   static addContact(
     onion: string, signPk: string, dhPk: string, name: string, relay?: string,
   ): Promise<number> {
