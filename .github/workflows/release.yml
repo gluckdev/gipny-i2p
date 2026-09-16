@@ -302,24 +302,31 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2c. Headless agent: gipny-agent binary + README, packaged as a tar.gz for
-  #     Linux amd64 and arm64. The agent is a standalone daemon that accepts
-  #     shell commands over the encrypted I2P channel from a trusted master.
+  # 2c. Headless agent: gipny-agent + the i2pd it spawns + a systemd unit,
+  #     as a tar.gz for Linux amd64 and arm64. The router is in the tarball
+  #     because the agent looks for i2pd next to its own executable first
+  #     (libcore/src/router.rs); without it the daemon cannot start on a
+  #     clean host, which is exactly what v0.4.0 shipped.
   # ---------------------------------------------------------------------------
   agent:
     name: agent (linux ${{ matrix.arch }})
-    needs: version
+    needs: router
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, runs-on: ubuntu-22.04 }
-          - { arch: arm64, runs-on: ubuntu-22.04-arm }
+          - { arch: amd64, runs-on: ubuntu-22.04, router: router-linux-amd64 }
+          - { arch: arm64, runs-on: ubuntu-22.04-arm, router: router-linux-arm64 }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: fetch the router built above
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.router }}
+          path: router
       - name: build gipny-agent
         run: cargo build --release -p gipny-agent
       - name: package
@@ -328,20 +335,41 @@ jobs:
           name="gipny-agent_${VERSION}_linux-${{ matrix.arch }}"
           mkdir -p "dist/$name"
           install -m 0755 target/release/gipny-agent "dist/$name/"
+          install -m 0755 router/i2pd "dist/$name/"
+          install -m 0644 agent/gipny-agent.service "dist/$name/"
           cat > "dist/$name/README.txt" << 'EOF'
           gipny-agent — headless console agent for gipny-i2p
 
-          Usage:
-            gipny-agent --data <dir> --master <card> [options]
+          What is in this archive:
+            gipny-agent           the agent
+            i2pd                  the i2p router it starts (keep it next to gipny-agent)
+            gipny-agent.service   systemd unit
+
+          Run by hand:
+            ./gipny-agent --data <dir> --master <gipny:v2:... card of the master>
+
+          Install as a service (Linux, as root):
+            install -m 0755 gipny-agent i2pd /usr/local/bin/
+            install -m 0644 gipny-agent.service /etc/systemd/system/
+            mkdir -p /var/lib/gipny-agent
+            printf 'GIPNY_AGENT_ARGS=--master %s\n' 'gipny:v2:...' > /etc/gipny-agent.env
+            chmod 0600 /etc/gipny-agent.env
+            systemctl daemon-reload && systemctl enable --now gipny-agent
+            journalctl -u gipny-agent -f      # prints "agent card: ..." once the router is up
+
+          The master's app gains a contact for this agent by itself; the
+          chat with it has a chat/console switch.
 
           Options:
-            --name <name>      Display name for this agent (default: hostname)
-            --relay <onion>    Relay to use (default: from master card or compiled-in)
-            --sam <port>       Attach to existing SAM bridge on this port
-            --cwd <dir>        Working directory for commands (default: home dir)
-            --timeout <secs>   Per-command timeout in seconds (default: 120)
+            --name <name>      display name for this agent (default: hostname)
+            --relay <dest>     relay to use (default: the master card's relay)
+            --sam <port>       attach to an already running SAM bridge instead of spawning i2pd
+            --cwd <dir>        working directory for commands (default: home directory)
+            --timeout <secs>   per-command timeout (default: 120)
           EOF
-          file "dist/$name/gipny-agent"
+          # Both binaries must run on the architecture this tarball is named for.
+          "dist/$name/i2pd" --version | head -1
+          file "dist/$name/gipny-agent" "dist/$name/i2pd"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
       - uses: actions/upload-artifact@v7

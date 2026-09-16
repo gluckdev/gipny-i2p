@@ -1,0 +1,26 @@
+[Unit]
+Description=gipny console agent (headless, over i2p)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The agent runs the master's commands, so it runs as whatever this unit runs
+# as. Left at root on purpose: an agent installed with sudo is expected to be
+# able to do what its operator could do. Set User=/Group= to confine it.
+WorkingDirectory=/var/lib/gipny-agent
+# GIPNY_AGENT_ARGS holds the master's card, e.g.
+#   GIPNY_AGENT_ARGS=--master gipny:v2:...
+EnvironmentFile=-/etc/gipny-agent.env
+# The agent spawns its own i2pd; it looks for the binary next to itself first
+# (libcore/src/router.rs), which is where the tarball's install puts it.
+ExecStart=/usr/local/bin/gipny-agent --data /var/lib/gipny-agent $GIPNY_AGENT_ARGS
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+# No ProtectSystem/ProtectHome/PrivateTmp: unlike the relay, this service
+# exists to see and change the system it runs on.
+
+[Install]
+WantedBy=multi-user.target
