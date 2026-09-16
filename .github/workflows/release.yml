@@ -265,7 +265,7 @@ jobs:
 
       - name: restore cached router
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: staged/libi2pd.so
           key: i2pd-android-arm64-v8a-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}
