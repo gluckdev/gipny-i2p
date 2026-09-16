@@ -1783,3 +1783,218 @@ a { color: var(--phosphor); }
   pointer-events: none;
   user-select: none;
 }
+
+/* --------------------------------------------------------------------------
+ * Modern & User-Friendly Additions: Attachments, Voice & Privacy UI
+ * -------------------------------------------------------------------------- */
+
+.attach-btn, .voice-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-bright);
+  background: var(--surface);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.attach-btn:hover, .voice-btn:hover {
+  background: var(--surface-2);
+  color: var(--phosphor);
+  border-color: var(--phosphor);
+  transform: scale(1.04);
+}
+
+.voice-btn.recording {
+  background: var(--danger);
+  color: #ffffff;
+  border-color: var(--danger);
+  animation: pulse-danger 1.2s infinite;
+}
+
+@keyframes pulse-danger {
+  0% { box-shadow: 0 0 0 0 rgba(217, 74, 69, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(217, 74, 69, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(217, 74, 69, 0); }
+}
+
+.pending-chips-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.pending-file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--xbox-radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.pending-file-badge {
+  background: rgba(43, 127, 212, 0.12);
+  color: var(--phosphor);
+  font-size: 9px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.pending-file-del {
+  cursor: pointer;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.pending-file-del:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.audio-player-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--xbox-radius-sm);
+  padding: 6px 12px;
+  min-width: 200px;
+  max-width: 320px;
+  margin-top: 4px;
+}
+
+.audio-play-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--btn-bg);
+  color: var(--on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.audio-play-btn:hover {
+  background: var(--btn-bg-hover);
+}
+
+.audio-wave {
+  flex: 1;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.audio-bar {
+  flex: 1;
+  background: var(--border-bright);
+  border-radius: 1px;
+  transition: background 0.1s ease;
+}
+
+.audio-bar.active {
+  background: var(--phosphor);
+}
+
+.audio-duration {
+  font-size: 10px;
+  color: var(--text-faint);
+  min-width: 28px;
+  text-align: right;
+}
+
+.voice-recording-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--danger);
+  border-radius: var(--xbox-radius-sm);
+  padding: 6px 14px;
+}
+
+.voice-recording-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--danger);
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.voice-privacy-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(43, 127, 212, 0.12);
+  color: var(--phosphor);
+  border: 1px solid var(--phosphor-faint);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.voice-privacy-pill.active {
+  background: var(--phosphor);
+  color: var(--on-accent);
+}
+
+.security-lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--success);
+  font-size: 11px;
+  cursor: default;
+}
+
+.photo-preview-tile {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+  border-radius: var(--xbox-radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border-bright);
+  margin-top: 4px;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.photo-preview-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--phosphor);
+  box-shadow: 0 4px 12px var(--phosphor-glow);
+}
+
+.photo-preview-tile img {
+  display: block;
+  max-width: 280px;
+  max-height: 200px;
+  object-fit: cover;
+  border-radius: calc(var(--xbox-radius-sm) - 1px);
+}

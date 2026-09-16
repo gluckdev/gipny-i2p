@@ -1,5 +1,6 @@
 mod core;
 mod notify;
+mod sanitizer;
 mod tray;
 
 use std::path::PathBuf;
@@ -873,10 +874,19 @@ fn read_one_attachment(p: &str) -> Result<PendingAttachment, String> {
         ));
     }
     let data = std::fs::read(&path).map_err(err)?;
-    let name = path.file_name()
+    let original_name = path.file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "file".into());
+
+    // White-hat sanitizer: strip EXIF/XMP/IPTC and anonymize filenames
+    let (name, data) = sanitizer::sanitize_attachment_data(&original_name, &data);
+
+    // If file came from paste temp directory, securely shred and remove it
+    if path.starts_with(std::env::temp_dir().join("gipny-i2p-paste")) {
+        let _ = std::fs::remove_file(&path);
+    }
+
     Ok(PendingAttachment { name, data })
 }
 

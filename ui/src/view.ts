@@ -98,12 +98,17 @@ export function isImageName(name: string): boolean {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name);
 }
 
+export function isAudioName(name: string): boolean {
+  return /\.(wav|ogg|opus|mp3|m4a|aac|flac)$/i.test(name);
+}
+
 export function mimeFromName(name: string): string {
   const m = name.toLowerCase().match(/\.([a-z0-9]+)$/);
   const ext = m?.[1] ?? '';
   const map: Record<string, string> = {
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
     gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml',
+    wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/opus', mp3: 'audio/mpeg', m4a: 'audio/mp4',
   };
   return map[ext] ?? 'application/octet-stream';
 }
