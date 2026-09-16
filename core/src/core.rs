@@ -188,7 +188,6 @@ pub struct Core {
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
     /// Ids of console commands to run, in order, by the single agent worker.
     agent_tx: mpsc::UnboundedSender<i64>,
-    hosted_relay: Arc<Mutex<Option<gipny_libcore::EphemeralRelay>>>,
 }
 
 impl Core {
@@ -220,7 +219,6 @@ impl Core {
             pending_update: Arc::new(Mutex::new(None)),
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             agent_tx,
-            hosted_relay: Arc::new(Mutex::new(None)),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -275,32 +273,6 @@ impl Core {
         self.db.set_setting(SETTING_RELAY_ONION, addr.trim().as_bytes())?;
         Ok(())
     }
-
-    /// Spin up an in-process, memory-only relay server on our router.
-    /// Returns the relay's published i2p destination and sets it as our own relay.
-    pub async fn start_hosted_relay(self: &Arc<Self>) -> Result<String> {
-        let sam_port = self.node.sam_port();
-        eprintln!("[relay-hosted] starting in-process relay on SAM port {sam_port}...");
-        let relay = gipny_libcore::EphemeralRelay::start(sam_port, gipny_libcore::MemStoreLimits::default()).await?;
-        let addr = relay.address().to_string();
-        *self.hosted_relay.lock().await = Some(relay);
-        self.set_relay_address(&addr)?;
-        eprintln!("[relay-hosted] in-process relay ready at {}", &addr[..addr.len().min(16)]);
-        Ok(addr)
-    }
-
-    /// Shut down the in-process relay.
-    pub async fn stop_hosted_relay(&self) -> Result<()> {
-        *self.hosted_relay.lock().await = None;
-        eprintln!("[relay-hosted] stopped in-process relay");
-        Ok(())
-    }
-
-    /// Destination of the in-process relay if running.
-    pub async fn hosted_relay_address(&self) -> Option<String> {
-        self.hosted_relay.lock().await.as_ref().map(|r| r.address().to_string())
-    }
-
 
     // ----- agent mode ------------------------------------------------------
 
@@ -2028,7 +2000,10 @@ impl Core {
         if payload.sender_name.is_none() {
             payload.sender_name = self.outgoing_sender_name();
         }
-        if payload.relay_address.is_none() {
+        // Our relay rides along so the contact learns where we collect, but
+        // not on typing notices: they are the most frequent payload by far and
+        // a full destination is ~520 bytes of padding-bucket every keystroke.
+        if payload.relay_address.is_none() && payload.typing.is_none() {
             let r = self.relay_onion();
             if !r.is_empty() {
                 payload.relay_address = Some(r);

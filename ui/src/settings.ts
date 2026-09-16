@@ -120,31 +120,7 @@ export class SettingsModal {
         (() => {
           const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) — leave empty to disable', 'aria-label': 'relay i2p destination' }) as HTMLInputElement;
           const relayErr = h('div', { class: 'err' });
-          const hostedStatus = h('div', { class: 'hint', style: { margin: '8px 0 4px' } });
-          const hostedToggle = h('button', { class: 'btn btn-block btn-ghost' }) as HTMLButtonElement;
-
-          const refresh = async (): Promise<void> => {
-            try {
-              const [val, hosted] = await Promise.all([
-                Api.getRelayAddress().catch(() => ''),
-                Api.getHostedRelay().catch(() => null),
-              ]);
-              relayI.value = val;
-              if (hosted) {
-                hostedStatus.textContent = `локальный релей запущен (${hosted.slice(0, 16)}…)`;
-                hostedToggle.textContent = 'Остановить локальный релей';
-                hostedToggle.className = 'btn btn-block btn-danger';
-              } else {
-                hostedStatus.textContent = 'локальный релей не запущен';
-                hostedToggle.textContent = 'Запустить встроенный релей';
-                hostedToggle.className = 'btn btn-block btn-ghost';
-              }
-            } catch (e) {
-              relayErr.textContent = String(e);
-            }
-          };
-          void refresh();
-
+          Api.getRelayAddress().then((v) => { relayI.value = v; }).catch(() => {});
           const saveBtn = h('button', {
             class: 'btn btn-block',
             onClick: () => busy(saveBtn, async () => {
@@ -152,26 +128,9 @@ export class SettingsModal {
               try {
                 await Api.setRelayAddress(relayI.value.trim());
                 store.showToast('relay address saved — will reconnect shortly');
-                await refresh();
               } catch (e) { relayErr.textContent = String(e); }
             }),
           }, 'Save relay address') as HTMLButtonElement;
-
-          hostedToggle.addEventListener('click', () => busy(hostedToggle, async () => {
-            relayErr.textContent = '';
-            try {
-              const hosted = await Api.getHostedRelay().catch(() => null);
-              if (hosted) {
-                await Api.stopHostedRelay();
-                store.showToast('локальный релей остановлен');
-              } else {
-                const addr = await Api.startHostedRelay();
-                store.showToast('локальный релей запущен');
-                relayI.value = addr;
-              }
-              await refresh();
-            } catch (e) { relayErr.textContent = String(e); }
-          }));
 
           return h('div', null,
             h('div', { class: 'hint', style: { marginBottom: '6px' } },
@@ -180,8 +139,6 @@ export class SettingsModal {
             h('div', { class: 'field' }, relayI),
             relayErr,
             saveBtn,
-            hostedStatus,
-            hostedToggle,
           );
         })(),
 

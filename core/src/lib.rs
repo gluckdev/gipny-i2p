@@ -114,7 +114,6 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
-            start_hosted_relay, stop_hosted_relay, get_hosted_relay,
             update_configured,
             get_router_settings, set_router_settings,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
@@ -623,21 +622,6 @@ async fn get_relay_address(ctx: State<'_, AppCtx>) -> Result<String, String> {
 #[tauri::command]
 async fn set_relay_address(addr: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     core_of(&ctx).await?.set_relay_address(&addr).map_err(err)
-}
-
-#[tauri::command]
-async fn start_hosted_relay(ctx: State<'_, AppCtx>) -> Result<String, String> {
-    core_of(&ctx).await?.start_hosted_relay().await.map_err(err)
-}
-
-#[tauri::command]
-async fn stop_hosted_relay(ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.stop_hosted_relay().await.map_err(err)
-}
-
-#[tauri::command]
-async fn get_hosted_relay(ctx: State<'_, AppCtx>) -> Result<Option<String>, String> {
-    Ok(core_of(&ctx).await?.hosted_relay_address().await)
 }
 
 #[tauri::command]
