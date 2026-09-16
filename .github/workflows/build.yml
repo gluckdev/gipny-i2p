@@ -282,12 +282,12 @@ jobs:
       # booting: every run of this job to date died on "Timeout waiting for
       # emulator to boot", and continue-on-error kept the workflow green over
       # it. The runners have /dev/kvm; only its permissions stand in the way.
+      # chmod rather than the usual udev rule: this image has no
+      # /etc/udev/rules, and the job only lives for one boot anyway.
       - name: enable KVM
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          sudo chmod 666 /dev/kvm
           ls -l /dev/kvm
       - name: emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
