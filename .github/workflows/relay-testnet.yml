@@ -45,24 +45,28 @@ jobs:
           path: relay-state
           key: relay-testnet-state-${{ github.run_id }}
           restore-keys: relay-testnet-state-
-      # i2pd from the distro rather than from third_party: this is throwaway test
-      # infrastructure, not something that ships, and building i2pd from source
-      # would cost most of the run's useful lifetime.
-      - name: install i2pd + build relay
+      # Build the router from the pinned submodule, not from apt. The distro
+      # binary aborted on startup — boost::filesystem::create_directory
+      # "Permission denied" on its own datadir under the runner workspace — and
+      # it is the wrong binary anyway: this relay should exercise the router the
+      # release ships, from the same pin. A few minutes of build against a 5.5h
+      # serve window is a fair trade.
+      - name: build router + relay
         run: |
           sudo apt-get update
-          sudo apt-get install -y i2pd
-          # Debian policy starts the daemon on install; it would hold SAM 7656
-          # and its own datadir alongside the one this job manages.
-          sudo systemctl disable --now i2pd || true
-          i2pd --version
+          sudo apt-get install -y build-essential libboost-all-dev libssl-dev zlib1g-dev
+          git submodule update --init --recursive -- third_party/i2pd
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+          make -C third_party/i2pd USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+          ./third_party/i2pd/i2pd --version
           cargo build --release --manifest-path core/relay/Cargo.toml
       # Split into start/serve/stop steps so the destination lands in the job
       # summary minutes after start, not when the 5.5h serve step ends.
       - name: start router + relay, print destination
         run: |
           mkdir -p relay-state/router relay-state/relay
-          nohup i2pd \
+          nohup ./third_party/i2pd/i2pd \
             --datadir="$PWD/relay-state/router" \
             --sam.enabled=true --sam.address=127.0.0.1 --sam.port=7656 \
             --http.enabled=false --httpproxy.enabled=false \
