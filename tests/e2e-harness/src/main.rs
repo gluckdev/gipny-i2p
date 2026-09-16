@@ -7,9 +7,13 @@
 //!
 //! # Required environment variables
 //! * `E2E_RELAY_DEST` — i2p destination of the running relay (contents of
-//!   `dest.pub` as printed by `gipny-relay` and `relay-testnet.yml`).
+//!   `dest.pub` as printed by `gipny-relay` and `relay-testnet.yml`). Not
+//!   needed with `E2E_IN_PROCESS_RELAYS=1`.
 //!
 //! # Optional environment variables
+//! * `E2E_RELAY_DEST_A` / `E2E_RELAY_DEST_B` — a separate relay per bot.
+//! * `E2E_IN_PROCESS_RELAYS=1` — no standalone relay: each bot gets an
+//!   in-process `EphemeralRelay` on the router at `GIPNY_SAM_PORT`.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -25,6 +29,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use gipny_libcore::relay_server::{EphemeralRelay, MemStoreLimits};
 use gipny_libcore::{Db, IdentityCard, SessionEvent, SessionManager, TorNode};
 use tokio::sync::{Mutex, Notify};
 
@@ -94,6 +99,37 @@ async fn start_bot(
     eprintln!("[e2e] {name}: identity sign_pk={}", hex8(&card.sign_pk));
 
     Ok((BotHandle { session, card, onion, router_ready_ms }, events))
+}
+
+/// Start one in-process relay per bot on the shared router.
+///
+/// A published destination is not usable until its tunnels exist, which is
+/// what `EphemeralRelay::start` waits for, so this can take a couple of
+/// minutes. It runs before the delivery clock starts and has its own deadline.
+async fn start_in_process_relays() -> Result<(EphemeralRelay, EphemeralRelay)> {
+    let port: u16 = std::env::var("GIPNY_SAM_PORT")
+        .context("E2E_IN_PROCESS_RELAYS needs GIPNY_SAM_PORT, the shared router's SAM port")?
+        .trim()
+        .parse()
+        .context("GIPNY_SAM_PORT is not a port")?;
+    eprintln!("[e2e] starting two in-process relays on SAM port {port}...");
+    let t0 = Instant::now();
+    let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
+        tokio::join!(
+            EphemeralRelay::start(port, MemStoreLimits::default()),
+            EphemeralRelay::start(port, MemStoreLimits::default()),
+        )
+    })
+    .await
+    .context("timeout: in-process relays did not come up in 300s")?;
+    let (a, b) = (a.context("in-process relay A")?, b.context("in-process relay B")?);
+    eprintln!(
+        "[e2e] in-process relays up in {} ms (A={}... B={}...)",
+        t0.elapsed().as_millis(),
+        &a.address()[..20.min(a.address().len())],
+        &b.address()[..20.min(b.address().len())],
+    );
+    Ok((a, b))
 }
 
 // ---------------------------------------------------------------------------
@@ -168,10 +204,22 @@ async fn main() -> Result<()> {
     // own, and a message only arrives if the sender deposits on the *recipient's*
     // relay rather than its own. With a single destination this degenerates to
     // the old shared-relay run, which is still worth having.
-    let relay_dest = std::env::var("E2E_RELAY_DEST")
-        .context("E2E_RELAY_DEST env var is required (contents of dest.pub)")?;
-    let relay_a = std::env::var("E2E_RELAY_DEST_A").unwrap_or_else(|_| relay_dest.clone());
-    let relay_b = std::env::var("E2E_RELAY_DEST_B").unwrap_or_else(|_| relay_dest.clone());
+    //
+    // Or, with E2E_IN_PROCESS_RELAYS=1, no standalone relay at all: each bot's
+    // relay is an EphemeralRelay started inside this process, on a destination
+    // that exists only in memory. That is the relay every client can run, over
+    // real i2p, with the bots reaching it exactly as they would a remote one.
+    let in_process = std::env::var("E2E_IN_PROCESS_RELAYS").is_ok_and(|v| v == "1");
+    let (relay_a, relay_b, in_process_relays) = if in_process {
+        let (a, b) = start_in_process_relays().await?;
+        (a.address().to_string(), b.address().to_string(), Some((a, b)))
+    } else {
+        let relay_dest = std::env::var("E2E_RELAY_DEST")
+            .context("E2E_RELAY_DEST env var is required (contents of dest.pub)")?;
+        let a = std::env::var("E2E_RELAY_DEST_A").unwrap_or_else(|_| relay_dest.clone());
+        let b = std::env::var("E2E_RELAY_DEST_B").unwrap_or_else(|_| relay_dest.clone());
+        (a, b, None)
+    };
     let split_relays = relay_a != relay_b;
     let n_messages: usize = std::env::var("E2E_N_MESSAGES")
         .ok()
@@ -514,6 +562,18 @@ async fn main() -> Result<()> {
             "delivery assertion failed: received {}/{n_messages} echoes",
             echoes.len()
         );
+    }
+
+    // Delivery alone could in principle come from somewhere else; a bundle held
+    // in each in-process store shows each bot really authenticated to its relay
+    // over i2p and published there.
+    if let Some((ra, rb)) = &in_process_relays {
+        let (sa, sb) = (ra.stats(), rb.stats());
+        eprintln!("[e2e] in-process relay A: {sa:?}");
+        eprintln!("[e2e] in-process relay B: {sb:?}");
+        if sa.bundles == 0 || sb.bundles == 0 {
+            bail!("in-process relay assertion failed: a bot never published to its relay");
+        }
     }
 
     eprintln!("[e2e] SUCCESS — all {n_messages} messages delivered and echoed");

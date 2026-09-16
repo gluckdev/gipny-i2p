@@ -205,61 +205,7 @@ jobs:
       # Start the i2p router for the relay
       # ------------------------------------------------------------------
       - name: start router (relay)
-        run: |
-          mkdir -p e2e-state/relay-router e2e-state/relay e2e-state/bot-a e2e-state/bot-b e2e-logs
-          I2PD_DATA_DIR="$GITHUB_WORKSPACE/e2e-state/relay-router"
-          I2PD_LOG_FILE="$GITHUB_WORKSPACE/e2e-logs/relay-router.log"
-
-          nohup i2pd \
-            --datadir="$I2PD_DATA_DIR" \
-            --sam.enabled=true --sam.address=127.0.0.1 --sam.port=7656 \
-            --http.enabled=false --httpproxy.enabled=false --socksproxy.enabled=false \
-            --log=file --logfile="$I2PD_LOG_FILE" --loglevel=info \
-            > e2e-logs/relay-router.stdout.log 2>&1 &
-          echo $! > relay-router.pid
-          echo "[e2e-setup] relay router pid=$(cat relay-router.pid)"
-
-          # Wait for SAM to be ready (bash /dev/tcp probe — nc not guaranteed)
-          echo "[e2e-setup] waiting for SAM on 127.0.0.1:7656..."
-          for i in $(seq 1 180); do
-            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/7656' 2>/dev/null; then
-              echo "[e2e-setup] SAM ready after ${i}×2 s"
-              break
-            fi
-            if ! kill -0 "$(cat relay-router.pid)" 2>/dev/null; then
-              echo "relay router died during startup"
-              tail -50 e2e-logs/relay-router.log
-              exit 1
-            fi
-            sleep 2
-          done
-
-          # Wait until the router reports a couple of outbound/inbound tunnels.
-          # This is a stronger readiness signal than sleeping for a fixed window.
-          echo "[e2e-setup] waiting for i2pd tunnels..."
-          outbound=0
-          inbound=0
-          for i in $(seq 1 180); do
-            # Count over the whole log: i2pd is chatty at info level, and a
-            # tail window can scroll past the tunnel lines and undercount.
-            outbound="$(grep -c 'Tunnel: Outbound tunnel .* has been created' e2e-logs/relay-router.log || true)"
-            inbound="$(grep -c 'Tunnel: Inbound tunnel .* has been created' e2e-logs/relay-router.log || true)"
-            if [ "$outbound" -ge 2 ] && [ "$inbound" -ge 2 ]; then
-              echo "[e2e-setup] i2pd tunnels ready after ${i}×2 s (outbound=$outbound inbound=$inbound)"
-              break
-            fi
-            if ! kill -0 "$(cat relay-router.pid)" 2>/dev/null; then
-              echo "relay router died during tunnel warmup"
-              tail -50 e2e-logs/relay-router.log
-              exit 1
-            fi
-            sleep 2
-          done
-          if [ "$outbound" -lt 2 ] || [ "$inbound" -lt 2 ]; then
-            echo "i2pd tunnels did not warm up in time (outbound=$outbound inbound=$inbound)"
-            tail -120 e2e-logs/relay-router.log
-            exit 1
-          fi
+        run: tests/e2e-harness/start-router.sh
 
       # ------------------------------------------------------------------
       # Start the relay; wait for dest.pub
@@ -413,6 +359,91 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: e2e-logs
+          path: e2e-logs/
+          retention-days: 7
+
+  # ------------------------------------------------------------------
+  # The same delivery test with no standalone relay: each bot's relay is an
+  # EphemeralRelay running inside the harness process, on a destination that
+  # exists only in memory. This is what proves libcore's relay server works
+  # over live i2p, not just over the in-memory pipe its unit tests use.
+  #
+  # A separate job, and not in bump's needs: it tests our relay code, so its
+  # failure must not hold back a router revision the relay job proved.
+  # ------------------------------------------------------------------
+  e2e-in-process:
+    name: e2e (relays inside the bots)
+    needs: router
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: fetch the router built above
+        uses: actions/download-artifact@v8
+        with:
+          name: i2pd-linux-amd64
+          path: router
+
+      - name: install router and check its version
+        run: |
+          chmod +x router/i2pd
+          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
+
+          # The artifact is not taken on trust. The router job reports which
+          # revision it built, the binary is stamped with its own source, and
+          # this asserts they agree — so a stale or foreign artifact cannot
+          # quietly become the thing under test. Comparing against the job
+          # output rather than the branch also survives upstream pushing
+          # between the two jobs.
+          EXPECTED="${{ needs.router.outputs.revision }}"
+          ACTUAL="$(i2pd --version | head -1)"
+          echo "router job built: $EXPECTED"
+          echo "artifact reports: $ACTUAL"
+          test -n "$EXPECTED"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
+          esac
+
+      - name: build e2e harness
+        run: cargo build --release -p e2e-harness
+
+      - name: start router
+        run: tests/e2e-harness/start-router.sh
+
+      - name: run e2e harness
+        env:
+          E2E_IN_PROCESS_RELAYS: '1'
+          E2E_N_MESSAGES: '5'
+          E2E_TIMEOUT_SECS: '600'
+          E2E_WORK_DIR: e2e-state
+          GIPNY_SAM_PORT: '7656'
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
+
+      - name: router log (SAM / tunnel path)
+        if: always()
+        run: |
+          grep -aE 'SAM|LeaseSet|Session' e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
+
+      - name: stop router
+        if: always()
+        run: kill "$(cat relay-router.pid)" 2>/dev/null || true
+
+      - name: upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-in-process-logs
           path: e2e-logs/
           retention-days: 7
 
