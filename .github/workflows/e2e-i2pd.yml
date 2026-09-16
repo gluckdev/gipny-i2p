@@ -69,20 +69,29 @@ jobs:
       # how the pin earns its way forward — by delivering, not by compiling.
       - name: check out the upstream head under test
         run: |
+          # Unshallow FIRST. actions/checkout clones submodules shallow, so the
+          # branch head does not exist locally and `--remote` silently leaves the
+          # pinned commit in place — this job claimed for months to test ahead of
+          # the pin while actually re-testing the pin. It also gives `git
+          # describe --tags` the tags USE_GIT_VERSION needs, without which the
+          # build dies on "No tags can describe <sha>".
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
+          PINNED="$(git -C third_party/i2pd rev-parse --short HEAD)"
+
           # Just i2pd, and as a checkout: --remote --recursive would drag every
           # nested dependency to its own branch head too (see i2pd-build.yml).
           git submodule update --remote --checkout -- third_party/i2pd
           git submodule update --init --recursive -- third_party/i2pd
 
-          # USE_GIT_VERSION below stamps the binary with `git describe --tags`,
-          # and actions/checkout clones submodules shallow with no tags — the
-          # build dies on "No tags can describe <sha>". Same fix i2pd-build.yml
-          # and release.yml carry; this job was the one still missing it.
-          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
-            git -C third_party/i2pd fetch --quiet --tags origin
-
-          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
+          HEAD_REV="$(git -C third_party/i2pd rev-parse --short HEAD)"
+          echo "pinned:   $PINNED"
+          echo "under test: $HEAD_REV  $(git -C third_party/i2pd log --oneline -1 | cut -d' ' -f2-)"
           echo "describe: $(git -C third_party/i2pd describe --tags)"
+          if [ "$PINNED" = "$HEAD_REV" ]; then
+            echo "note: branch head equals the pin — this run re-proves the pinned router"
+          fi
 
       - name: install build dependencies
         run: |
