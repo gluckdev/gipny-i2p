@@ -78,15 +78,19 @@ export class MediaModal {
         },
       }, '[ SAVE ]'));
       tile.addEventListener('click', () => this.openInChat(it));
-      if (isImage) void this.fillPreview(preview, it.id);
+      if (isImage) void this.fillPreview(preview, it.id, mime);
       this.grid.appendChild(tile);
     }
   }
 
-  private async fillPreview(into: HTMLElement, attId: number): Promise<void> {
+  private async fillPreview(into: HTMLElement, attId: number, mime: string): Promise<void> {
     try {
       const b64 = await Api.loadAttachment(attId);
-      const img = h('img', { src: `data:application/octet-stream;base64,${b64}` });
+      // The MIME in a data: URL is authoritative in WebKitGTK — served as
+      // application/octet-stream the image simply does not decode, and the tile
+      // fell through to the error glyph below. The chat bubble always passed the
+      // real type (chat.ts), which is why the same file opened fine from there.
+      const img = h('img', { src: `data:${mime};base64,${b64}` });
       into.replaceChildren(img);
     } catch {
       into.textContent = '⨯';

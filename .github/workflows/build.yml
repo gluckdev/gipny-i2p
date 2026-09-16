@@ -58,12 +58,13 @@ jobs:
           cargo build --release -p gipny
 
   # ---------------------------------------------------------------------------
-  # Rust tests: vault lifecycle, first-run recovery, KDF timing report.
+  # Rust tests: crypto core (X3DH, Double Ratchet, attachment chunks), vault
+  # lifecycle, first-run recovery, KDF timing report.
   # Timing lines ([timing] …) are lifted into the job summary so unlock speed
   # is visible on every build.
   # ---------------------------------------------------------------------------
   tests:
-    name: rust tests (vault/kdf)
+    name: rust tests (crypto/vault/kdf)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
