@@ -100,19 +100,6 @@ jobs:
             *) echo "version check: FAILED — binary is not the pinned source"; exit 1 ;;
           esac
 
-      # Upstream guards every other use of the i2p::win32 namespace behind
-      # WIN32_APP but missed one, so USE_WIN32_APP=no does not compile. We need
-      # that flag: with WIN32_APP the daemon registers a tray icon
-      # unconditionally, and gipny's router is a background child process.
-      - name: patch the unguarded WIN32_APP call
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          # Relative to the submodule, as in i2pd-build.yml: no Windows-path
-          # handling to depend on.
-          cd third_party/i2pd
-          git apply --verbose ../../docs/patches/i2pd-win32-guard-graceful-shutdown.patch
-
       - name: build (windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
