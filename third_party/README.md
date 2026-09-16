@@ -6,8 +6,13 @@ on a developer's disk.
 
 | Submodule | Pinned at | Used for |
 |---|---|---|
-| `i2pd` | tag `2.60.0` | the router itself — desktop builds link it statically |
-| `i2pd-android` | upstream default branch | its `binary/jni` target, which produces a standalone i2pd executable for Android; i2pd itself carries no Android build |
+| `i2pd` | `2.60.0-190-g62bf51cd` (a commit, not the tag) | the router itself — desktop builds link it statically, and Android builds the same sources into a JNI library |
+| `i2pd-android` | a commit on upstream `master` | its `binary/jni` dependency scripts (boost, OpenSSL) and its `DaemonAndroid` wrapper; i2pd itself carries no Android build |
+
+The i2pd pin runs well past the `2.60.0` tag it started at; `git submodule
+status` is the authority, and `git describe --tags` in CI stamps the binary with
+it. The pin is advanced only by `e2e-i2pd.yml`'s bump job, and only after a run
+that actually delivered messages over live i2p — compiling is not the bar.
 
 Both are upstream, unmodified. Anything we need to change on top lives in this
 repository — as a patch under `docs/patches/`, or as a step in the workflow — so
@@ -33,7 +38,15 @@ git clone --recurse-submodules …
 git submodule update --init --recursive
 ```
 
-`.github/workflows/i2pd-build.yml` builds from these.
+`release.yml` builds the router it ships from these pins.
+`i2pd-build.yml` covers the wider matrix (musl, armeabi-v7a, the second Android
+ABI). `e2e-i2pd.yml` deliberately runs ahead of the `i2pd` pin — that is how the
+pin earns its way forward.
+
+The Android library is *not* built from `i2pd-android`'s own `app/jni`: that
+exports `Java_org_purplei2p_*` symbols for their app. `android-router/jni` in
+this repository compiles the same i2pd sources plus gipny's two JNI entry
+points, reusing only `DaemonAndroid.cpp` from upstream.
 
 ## Why these are here and go-i2p is not
 
@@ -52,3 +65,10 @@ built here.
 `i2pd-android` pins Boost-for-Android to a commit whose NDK whitelist is older
 than the NDKs the CI runners ship, so the Android build overrides that pin at
 build time. Details are in the workflow next to where it happens.
+
+**This is the one input to the router build that this repository does not
+record.** Boost-for-Android is a nested submodule of `i2pd-android`, and the
+override is `BOOST_FOR_ANDROID_REV`, which still defaults to `master`. Until a
+known-good revision is measured and pasted in, the Android router is the only
+part of the build that is not reproducible from this repository alone. The
+resolved SHA is printed by every Android build.

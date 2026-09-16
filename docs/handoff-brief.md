@@ -1,143 +1,104 @@
 Repo: gluckdev/gipny-i2p — a Rust messenger (Tauri desktop + Android) that runs
-over I2P. Rust speaks SAMv3 (`yosemite` crate) to a bundled router binary; the
-router is currently a thin Go wrapper (`i2p-router/`) around go-sam-bridge's
-embedded go-i2p router.
+over I2P. Rust speaks SAMv3 (`yosemite` crate) to a bundled router.
 
 Context handoff for whoever picks this up next — a person or another agent.
-Replaces the earlier root-level brief about #42, which is now resolved.
+Replaces the 2026-07-19 brief, which described a go-i2p router that no longer
+exists in this tree.
 
-STATE (2026-07-19). Everything above the router works; the router does not.
-Branch `fix/i2p-router-i2cp-wiring`, not merged. Full write-up with all
-measurements: docs/i2p-transport-evaluation.md. Read that before starting — it
-will save you a day.
+STATE (2026-09-16).
 
-Four defects were stacked. Three were ours and are fixed:
+THE BLOCKER, AND IT IS NOT TECHNICAL: **the GitHub repository is archived.**
+Nothing has run since 2026-07-20 — no CI, no scheduled jobs, no testnet relay —
+and nothing can be pushed, released, or closed until the owner unarchives it
+(Settings → General → Danger Zone). Every workflow below is written and
+committed; none of it has executed.
 
-1. The SAM bridge was built with no I2CP client at all, so no STREAM session had
-   a transport (#42, 97788e6).
-2. The router closes I2CP connections idle for 30 s, and go-i2cp neither keeps
-   them alive nor notices the close, so the connection was always dead before
-   the first session (go-i2p#54, e0a3826 — now obsolete, see 3).
-3. One I2CP client only ever carries one working session: go-i2cp reads the
-   SessionStatus of the first session on a connection and no other. That capped
-   the bridge at a single SAM session, which is why the relay always worked and
-   every bot always failed. Fixed by giving each SAM session its own I2CP client
-   (18edc66). Verified: 7 sessions in CI.
+WHAT CHANGED SINCE THE LAST BRIEF
 
-The fourth is upstream and blocks everything: go-i2p never finishes building
-client tunnels (go-i2p#55). Sessions are created, stream managers register, and
-then every client tunnel build expires. No LeaseSet is published. Nothing is
-reachable in either direction.
+go-i2p is gone from the repository. It never finished building client tunnels
+and delivered nothing (docs/i2p-transport-evaluation.md); i2pd carried 5/5
+messages over live i2p on the same harness. The switch had been made for desktop
+only, in 769d6ae, and everything else was left behind. Now:
 
-The decisive experiment, and the one that ended a day of guessing: forget our
-e2e harness and just fetch a real eepsite through the router
-(`tools/sam-eepsite.py`). go-i2p never got as far as STREAM CONNECT. i2pd
-2.60.0, same machine, same uplink, same script, minutes apart: tunnels in 4
-seconds, STREAM CONNECT OK in 3.5 s, and a live HTTP 302 from the official
-project site inside I2P. That reproduces on a GitHub runner too, so it is not
-about one network.
+- `i2p-router/` deleted. No Go anywhere in the build.
+- Android runs i2pd in-process via JNI. `android-router/jni` builds the same
+  i2pd sources plus two entry points (`Java_app_gipny_GipnyService_nativeStart/
+  StopSam`) into `libi2pd.so`. The standalone binary the old workflow produced
+  could never have worked: it exports no JNI symbols.
+- Relay systemd units, the testnet relay workflow and `run-e2e.sh` all run i2pd.
+  `run-e2e.sh` lost its mock-SAM mode entirely — it ran in seconds and proved
+  nothing, which is how a dead transport stayed hidden.
+- Submodules are pinned again instead of tracking branch heads.
 
-SETTLED SINCE: the stack is fine, the router was the whole problem.
+THINGS THAT WERE BROKEN AND ARE NOW FIXED — worth knowing because each one hid
+in plain sight:
 
-PR #48 (`.github/workflows/e2e-i2pd.yml`) is e2e.yml with only the router
-swapped. Run 29693889188 delivered **5 of 5 messages over live i2p in 49 s**,
-median RTT 5.8 s. The same harness has never delivered one message over go-i2p.
-Relay, bot-sdk, session layer, shared-router arrangement (#45) — all correct.
+- `core/tauri.conf.json` carried two resource globs while only one could ever
+  match. tauri-build errors on a glob with no match, so **no fresh clone could
+  build at all**, and both release.yml and build.yml were failing on it.
+- A fresh install never left the boot screen. `RelayConnected` was the only
+  transition into the main view, `DEFAULT_RELAY` is empty so the core never
+  dials, and the relay field that would fix it lives in Settings — inside the
+  view it could not reach.
+- Duress decoy returned "bad key" instead of a decoy profile, because the decoy
+  master key is random and cannot open `data.db`. It now opens `decoy.db`. The
+  existing test passed the whole time: it stopped at the vault.
+- The update loop dialed an empty destination forever, and each failure counted
+  against the *shared* relay health counter, forcing SAM session rebuilds.
+- The e2e job was `continue-on-error`, so its check was green at 0/5 delivered;
+  and a `set -e` interaction meant a failed harness never even recorded
+  `delivered=false`.
+- The Windows router was built as the tray/GUI daemon (`USE_WIN32_APP` defaults
+  to yes in Makefile.mingw), and the release binary carried no version stamp.
 
-So #46 is no longer "is go-i2p the problem" but "what does shipping i2pd cost".
+#49 (LeaseSet exposure) is answered and closed out in
+docs/go-i2p-leaseset-analysis.md: ruled out by source reading, with the limits
+of that evidence stated. It is moot for anything shipped from here, since
+go-i2p is gone; it is not moot for v0.3.4 and earlier.
 
-IN FLIGHT AT THE END OF 2026-07-19:
+WHAT IS STILL OPEN, IN ORDER
 
-- Branch `ci/i2pd-router-build`, workflow `.github/workflows/i2pd-build.yml`:
-  builds i2pd ourselves for linux x86_64 (static), windows x86_64 (msys2), and
-  Android arm64-v8a / x86_64 / armeabi-v7a. Nothing is wired into the app — it
-  only answers whether we can produce the binaries.
+1. **Unarchive the repository.** Everything below is blocked on it.
+2. **Run the pipelines once.** None of this work has been executed: not the
+   Android JNI build, not the release path, not the e2e. Expect the first
+   Android run to need fixing — it has never compiled.
+3. **Pin Boost-for-Android.** `BOOST_FOR_ANDROID_REV` still defaults to
+   `master`. It is the one build input this repo does not record, and the
+   Android router is not reproducible until a measured revision is pasted in.
+4. **Deal with the published releases.** v0.3.4 and earlier ship go-i2p and
+   deliver nothing. They are still the download link in the README's own words
+   until they are pulled or marked.
+5. **Deploy a relay, or decide not to need one.** `DEFAULT_RELAY` is empty and
+   there is no production relay. See docs/relay-independence.md — the
+   recommendation there is to make the relay address part of the contact card
+   before building anything else.
+6. **Test the crypto core.** `libcore/src/crypto.rs` — X3DH, Double Ratchet,
+   header encryption — has no tests. It is the largest coverage gap in the repo
+   by a wide margin.
+7. **Android on a real device.** i2pd will be built for it and the APK will be
+   asserted to contain it, but nothing has run on hardware.
 
-  Run 29695096389: **linux and windows both built, all three Android legs
-  failed** in Boost-for-Android with "Undefined or not supported Android NDK
-  version: 27.3". So desktop is done and Android is one step from done.
+KNOWN DEAD CODE, DELIBERATELY LEFT ALONE
 
-  The NDK pin is still wrong, and the reason is worth knowing: the supported
-  version list was read from Boost-for-Android's **master**, but i2pd-android
-  pins that submodule to an older commit whose list is shorter — hence their
-  documentation pinning NDK 21.4.7075529. Next step is to use 21.4 (installing
-  it via sdkmanager, since the runners no longer ship it), or to advance the
-  boost submodule to master and keep 27.3. 21.4 is the conservative choice and
-  matches what upstream tests; 27.3 would keep router and APK on one toolchain,
-  which is why it was tried first.
-- PR #48 is ready for review, with a temporary push trigger already removed.
-- #49 (LeaseSet exposure) is still open and still unanswered.
+- `libcore/src/proxy.rs` (sing-box lifecycle) is exported and has no callers.
+- The whole inbound/P2P surface of `libcore/src/net.rs` — `connect`, `accept`,
+  `Frame` — is unused. It is also exactly what a relay-less design would build
+  on, which is why it has not been deleted.
+- `libcore/src/session.rs` and `core/src/core.rs` are ~1500-line copy-paste
+  siblings. Bots cannot create groups or send typing indicators, and every
+  messaging fix has to be written twice.
 
-THINGS LEARNED THE HARD WAY IN THAT WORKFLOW, DO NOT REDISCOVER:
+USEFUL TO KNOW
 
-- Boost-for-Android matches the NDK version against a fixed list and refuses
-  anything outside it. Read that list from the **submodule commit i2pd-android
-  pins**, not from its master branch: master reaches 28.2, the pinned one does
-  not even accept 27.3, and reading the wrong one cost a full CI cycle.
-- i2pd-android's dependency scripts take arm64/x86_64/arm/x86, not ABI names,
-  and an unrecognised argument falls through their `*)` case, builds nothing,
-  and still exits 0.
-- Their Application.mk pins APP_PLATFORM to android-16 (dropped by modern NDKs)
-  and APP_ABI to "all"; both are overridden on the ndk-build command line.
-- Desktop must build on ubuntu-22.04, the image release.yml uses. boost/openssl
-  link statically but glibc cannot, so a newer image yields a router the bundles
-  cannot run beside on older distros. Note this is a genuine regression against
-  today's Go router, which is CGO_ENABLED=0 and depends on nothing; if it bites,
-  the answer is a musl build.
-- Android will not execute a binary from the app's data directory, so the router
-  has to travel in jniLibs as lib*.so to land in nativeLibraryDir.
-- The APK ships no 32-bit ABI today, so the armeabi-v7a leg is a measurement,
-  not a commitment.
-
-STILL OPEN, ROUGHLY IN ORDER:
-1. #49 — LeaseSet exposure. Security, cheap to settle, blocks nothing else.
-2. Finish reading the i2pd-build results; decide desktop bundling (glibc floor,
-   which mingw DLLs the Windows installer needs).
-3. Android integration: standalone binary in jniLibs versus libi2pd.so + JNI.
-   The app already loads a router .so in-process via GipnyService.kt, so the JNI
-   shape is closer to what exists; i2pd-android has a wrapper to borrow.
-4. #46 — take the decision once 2 and 3 have numbers.
-
-THE OPEN TASK — #49, and it is the one that actually matters right now:
-
-Confirm or rule out that go-i2p publishes a LeaseSet exposing our IP.
-
-With the experimental patch the tunnel-wait timeouts stopped and the log shows
-`Publishing all LeaseSets`, while the only tunnels that ever completed were
-zero-hop exploratory ones. A LeaseSet lists the gateways of inbound tunnels; for
-a zero-hop tunnel that gateway is our own router. netdb is public. If that is
-what is being published, current builds do not merely fail to deliver — they put
-the user's IP in the public netdb next to their destination, which is the exact
-inverse of what this app promises.
-
-This is inferred from log lines. Nobody has looked at an actual published
-LeaseSet. Any of three approaches settles it, and one needs no network at all —
-see the issue. Reading whether `monitorTunnelsAndRequestLeaseSet` counts
-exploratory zero-hop tunnels toward readiness may be enough to prove it from
-source.
-
-USEFUL TO KNOW:
-- `DEBUG_I2P=debug` is what enables go-i2p's logging. The router's own `--debug`
-  flag only reaches go-sam-bridge's embedding options and leaves the router
-  silent. Expect ~300 MB of log for a few minutes.
-- `NAMING LOOKUP` for a .b32.i2p address returns KEY_NOT_FOUND in 0.0 s — no
-  netdb lookup is attempted. Use base64 destinations from the official hosts.txt
-  (I2P source tree, installer/resources/hosts.txt) instead of names.
-- The mock SAM server behind `-tags mocksam` bypasses i2p entirely. Useful for
-  the local dev loop, useless as evidence — never draw conclusions from it.
-- A green check on the e2e job means nothing: it is continue-on-error. The
-  signal is the harness's `[e2e] SUCCESS` line and the echo count in the
-  `[e2e-timing]` table. Two runs on main reported success while delivering zero
-  messages; that is how #42 stayed hidden.
-- go-i2p's own README says it "is probably very distinct on the network" and
-  that you should use a more established router for now. That is a standing
-  anonymity argument against it that no fix of ours can address.
-- A patched go-i2p checkout sits at /home/artamonov/projects/go-i2p-fork (first
-  hop taken from already-connected peers, i2pd-style). The same diff is in
-  docs/patches/. It removed the tunnel-wait timeouts but did not make the
-  network reachable, and it must not ship: it lacks i2pd's peer-count
-  thresholds, so with few peers connected every tunnel shares the same gateways.
+- `tools/sam-eepsite.py` fetches a real eepsite through whatever router is on
+  SAM 7656. It is the fastest way to tell "the router works" from "our code is
+  wrong", and it is what ended a day of guessing last time.
+- The e2e job's real signal is the `[e2e] SUCCESS` line and the echo count in
+  `[e2e-timing]`. That is still true even now that the job fails honestly.
+- Local shell may carry `CC`/`CXX` pointing at an Android NDK from a previous
+  session; `cargo check` then tries to build OpenSSL for Android and fails
+  confusingly. `unset CC CXX`.
 
 CONVENTIONS: commits are authored `gluckdev <dep_it@spbsot.kz>` with no AI
-attribution trailers. Do not commit the experiment binaries or DEBUG_I2P logs —
-.gitignore covers them.
+attribution trailers. Do not commit router binaries or DEBUG logs — .gitignore
+covers them, including `core/resources/i2pd`, which it did not before.

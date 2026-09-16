@@ -166,7 +166,7 @@ export class AuthUnlock extends View {
 
 export class AuthBooting extends View {
   el: HTMLElement;
-  private stageTor: HTMLElement;
+  private stageRouter: HTMLElement;
   private stageRelay: HTMLElement;
   private statusLine: HTMLElement;
   private log: HTMLElement;
@@ -178,7 +178,7 @@ export class AuthBooting extends View {
     '> обновление netdb (reseed)...',
     '> строим входящие/исходящие туннели...',
     '> генерация destination...',
-    '> публикация leaseSet...',
+    '> открытие SAM-сессии...',
     '> i2p-адрес зарезервирован.',
     '> подключение к релею через i2p...',
     '> аутентификация ed25519...',
@@ -188,7 +188,7 @@ export class AuthBooting extends View {
   constructor(store: Store) {
     super();
 
-    this.stageTor = this.makeStage('[ ] i2p router', 'building tunnels');
+    this.stageRouter = this.makeStage('[ ] i2p router', 'building tunnels');
     this.stageRelay = this.makeStage('[ ] relay connect', 'authenticating');
 
     this.statusLine = h('div', {
@@ -215,14 +215,14 @@ export class AuthBooting extends View {
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card', style: { maxWidth: '560px' } },
         h('pre', { class: 'auth-logo' }, LOGO),
-        h('div', { class: 'auth-title' }, ':: ESTABLISHING TOR CIRCUIT ::'),
+        h('div', { class: 'auth-title' }, ':: BUILDING I2P TUNNELS ::'),
         h('div', { class: 'auth-sub', style: { textAlign: 'center' } },
           'this may take ',
           h('span', { style: { color: '#ffb000' } }, '30 seconds to 10 minutes'),
           ' on first unlock',
         ),
         h('div', { class: 'stack', style: { gap: '10px', marginTop: '20px' } },
-          this.stageTor,
+          this.stageRouter,
           this.stageRelay,
         ),
         this.statusLine,
@@ -290,19 +290,19 @@ export class AuthBooting extends View {
 
     switch (stage) {
       case 'unlocking':
-        setStage(this.stageTor, 'idle');
+        setStage(this.stageRouter, 'idle');
         setStage(this.stageRelay, 'idle');
         break;
       case 'i2p':
-        setStage(this.stageTor, 'active');
+        setStage(this.stageRouter, 'active');
         setStage(this.stageRelay, 'idle');
         break;
       case 'relay':
-        setStage(this.stageTor, 'done');
+        setStage(this.stageRouter, 'done');
         setStage(this.stageRelay, 'active');
         break;
       case 'done':
-        setStage(this.stageTor, 'done');
+        setStage(this.stageRouter, 'done');
         setStage(this.stageRelay, 'done');
         break;
     }

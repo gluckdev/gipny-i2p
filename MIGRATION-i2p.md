@@ -1,5 +1,13 @@
 # gipny: Tor → i2p migration
 
+> **Статус на 2026‑09‑16.** Этот документ описывает переход Tor → i2p и во
+> многом историчен: роутер с тех пор сменился второй раз, с go‑i2p на **i2pd**,
+> потому что go‑i2p не достраивал клиентские туннели и не доставил ни одного
+> сообщения (`docs/i2p-transport-evaluation.md`). Разделы про архитектуру
+> транспорта, крипту и релей актуальны; всё, что описывает `i2p-router/`,
+> `gipny-i2p-router` и I2CP‑обвязку go‑i2p — это история, такого кода в дереве
+> больше нет. Текущее состояние: `docs/handoff-brief.md`.
+
 This fork replaces the network transport of gipny from **Tor (embedded Arti)**
 to **i2p**, using the pure‑Go **go‑i2p** router (via its SAMv3 bridge) bundled as
 a sidecar. Everything else — X3DH + Double Ratchet crypto, SQLCipher vault,
@@ -60,9 +68,8 @@ destination.
   on a shared router a reconnect would drop other clients' sessions with it.
 
 ```
-gipny (Rust) ──SAMv3 127.0.0.1:7656──▶ gipny-i2p-router (Go)
-                                         ├─ embedded go-i2p router (I2CP :7654)
-                                         ├─ i2cp.Client ⇄ router (wires STREAM transport)
+gipny (Rust) ──SAMv3 127.0.0.1:7656──▶ i2pd (C++)
+                                         ├─ роутер i2p
                                          └─ SAMv3 bridge
 ```
 
@@ -93,7 +100,7 @@ go‑i2p proves unstable.
   `jni_shim_android.c` (`JNI_OnLoad` / `Java_…` glue), built with
   `buildmode=c-shared` into a per-ABI `libgipnyi2p.so` by the
   `buildGoRouterJniLibs` Gradle task
-  (`core/gen/android/buildSrc/…/GoRouterTask.kt`).
+  (`core/gen/android/buildSrc/…/I2pdRouterTask.kt`).
 - **`core/tauri.android.conf.json`** — Android platform config override:
   `bundle.resources = []`, so the desktop sidecar binary is not packaged into
   the APK (Android runs the router in-process; the resource glob would
@@ -138,7 +145,7 @@ go‑i2p proves unstable.
   `.endsWith('.onion')` to “`.i2p` or a full base64 destination”; boot log/stage
   copy Tor → i2p (`BootStage` `'tor'` → `'i2p'`). Address fields/labels are
   opaque and otherwise unchanged.
-- **`core/tauri.conf.json`** — bundles `resources/gipny-i2p-router*`.
+- **`core/tauri.conf.json`** — bundles `resources/i2pd*`.
 - **Android** — Gradle cross-compiles the Go router as a per-ABI JNI library
   (`libgipnyi2p.so`); `GipnyService.kt` loads it, starts SAM on
   `127.0.0.1:7656` off the main thread and keeps it alive in the foreground
@@ -176,15 +183,16 @@ The identity card shows both the full base64 destination and the short
 
 ### Router (standalone, for testing)
 ```bash
-cd i2p-router
-CGO_ENABLED=0 go build -o gipny-i2p-router .
-./gipny-i2p-router --sam-listen 127.0.0.1:7656 --data ./router-data
+git submodule update --init --recursive
+make -C third_party/i2pd USE_UPNP=no -j"$(nproc)"
+./third_party/i2pd/i2pd --datadir="$PWD/router-data" \
+  --sam.enabled=true --sam.port=7656 --http.enabled=false --upnp.enabled=false
 # verify:  printf 'HELLO VERSION MIN=3.0 MAX=3.3\n' | nc 127.0.0.1 7656  → RESULT=OK
 ```
 
 ### App
 The Rust app auto‑spawns the bundled router. Override its path with
-`GIPNY_I2P_BIN=/path/to/gipny-i2p-router`.
+`GIPNY_I2P_BIN=/path/to/i2pd` (a system i2pd works too).
 
 To run several local profiles, point them at **one** router with
 `GIPNY_SAM_PORT=<port>` (`I2pNode::start` then attaches instead of spawning).
@@ -224,7 +232,7 @@ symlink them to `llvm-ranlib`/`llvm-ar` before building.
 
 ## Deploy a relay (required before it works end‑to‑end)
 
-1. On a server, run go‑i2p (or i2pd) exposing SAMv3 on `127.0.0.1:7656`.
+1. On a server, run i2pd exposing SAMv3 on `127.0.0.1:7656`.
 2. Run `gipny-relay` (`GIPNY_RELAY_DATA=/var/lib/gipny-relay`). It prints
    `I2P DESTINATION: <base64>`.
 3. Paste that into `libcore/src/relay.rs::DEFAULT_RELAY` and rebuild. (Same for
