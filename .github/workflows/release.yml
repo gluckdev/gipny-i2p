@@ -377,6 +377,33 @@ jobs:
           file "dist/$name/gipny-agent" "dist/$name/i2pd"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
+      # The whole point of bundling i2pd: a clean host has none. Unpack the
+      # tarball somewhere fresh, make sure no i2pd is on PATH, start the agent
+      # with a syntactically valid throwaway master card and wait for it to
+      # print its own card — which it only does after it found and started
+      # the router next to itself. v0.4.0 would have failed here.
+      - name: smoke test — the tarball starts with no system i2pd
+        run: |
+          if command -v i2pd >/dev/null; then echo "an i2pd on PATH would mask this test"; exit 1; fi
+          smoke="$(mktemp -d)"
+          tar -C "$smoke" -xzf dist/*.tar.gz
+          cd "$smoke"/gipny-agent_*/
+          zeros="$(printf '0%.0s' $(seq 1 64))"
+          b32="$(printf 'a%.0s' $(seq 1 52)).b32.i2p"
+          setsid ./gipny-agent --data "$smoke/data" --master "gipny:v2:$b32:$zeros:$zeros:$b32" > "$smoke/agent.log" 2>&1 &
+          pid=$!
+          for i in $(seq 1 150); do
+            grep -q "agent card:" "$smoke/agent.log" && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 2
+          done
+          kill -TERM -- -"$pid" 2>/dev/null || true; sleep 2; kill -KILL -- -"$pid" 2>/dev/null || true
+          if grep -q "agent card:" "$smoke/agent.log"; then
+            echo "smoke: the agent started its router from the tarball and printed its card"
+            grep -E "i2p address|agent card" "$smoke/agent.log"
+          else
+            echo "smoke: the agent did not come up from the tarball"; cat "$smoke/agent.log"; exit 1
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-agent-linux-${{ matrix.arch }}
