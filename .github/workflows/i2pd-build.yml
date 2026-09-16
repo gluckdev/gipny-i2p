@@ -268,10 +268,21 @@ jobs:
           echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
           echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
+      # Same patch the release path applies: upstream left one WIN32_APP call
+      # unguarded, so USE_WIN32_APP=no does not compile. Both paths must build
+      # the router the same way or this workflow stops representing the release.
+      - name: patch the unguarded WIN32_APP call
+        shell: msys2 {0}
+        run: |
+          git -C third_party/i2pd apply --verbose \
+            docs/patches/i2pd-win32-guard-graceful-shutdown.patch
+
       - name: build
         working-directory: third_party/i2pd
         run: |
-          make USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+          # USE_WIN32_APP=no: the default builds the tray/GUI daemon, and gipny's
+          # router is a background child process driven over SAM.
+          make USE_UPNP=no USE_WIN32_APP=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify
         working-directory: third_party/i2pd

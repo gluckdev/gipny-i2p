@@ -77,6 +77,17 @@ impl RouterHandle {
             .arg("--upnp.enabled=false")
             .arg("--log=file")
             .arg(format!("--logfile={}", router_dir.join("i2pd.log").display()));
+        // Without WIN32_APP the router is a console subsystem binary, so Windows
+        // would flash a console window every time we spawn it. CREATE_NO_WINDOW
+        // suppresses that; the router talks to us over SAM and has no console
+        // output anyone reads (it logs to --logfile).
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
