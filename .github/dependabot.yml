@@ -47,15 +47,6 @@ updates:
       relay-deps:
         patterns: ["*"]
 
-  # Go: the bundled i2p router wrapper.
-  - package-ecosystem: gomod
-    directory: "/i2p-router"
-    schedule:
-      interval: weekly
-    groups:
-      go-deps:
-        patterns: ["*"]
-
   # Frontend.
   - package-ecosystem: npm
     directory: "/ui"
