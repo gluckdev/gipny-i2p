@@ -334,7 +334,9 @@ jobs:
           NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           for sym in Java_app_gipny_GipnyService_nativeStartSam \
                      Java_app_gipny_GipnyService_nativeStopSam; do
-            "$NM" --defined-only --extern-only "$LIB" | grep -q "$sym" \
+            # --dynamic: ndk-build strips the copy it installs into libs/, and
+            # the dynamic table is what the JVM resolves against anyway.
+            "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym" \
               || { echo "libi2pd.so does not export $sym"; exit 1; }
           done
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
