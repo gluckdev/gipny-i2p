@@ -69,7 +69,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             // Store native libs compressed inside the APK (extract on install):
-            // the go-i2p .so dominates APK size and compresses ~2x. Costs some
+            // libi2pd.so dominates APK size and compresses ~2x. Costs some
             // installed-size/extraction, shrinks the download substantially.
             packaging {
                 jniLibs.useLegacyPackaging = true
@@ -93,34 +93,42 @@ rust {
     rootDirRel = "../../../"
 }
 
-// Builds the embedded go-i2p SAM router (see i2p-router/android_export.go) as
-// a per-ABI JNI .so, dropped into src/main/jniLibs so it's packaged alongside
-// the Rust/Tauri cdylib. Loaded + started from GipnyService.kt via JNI.
-// Skippable with -PskipGoRouter for environments without a Go/NDK toolchain
-// (e.g. plain `assembleDebug` iteration on non-router code).
-if (!project.hasProperty("skipGoRouter")) {
-    val goRouterAbis = listOf(
-        Triple("arm64", "arm64-v8a", "aarch64-linux-android"),
-        Triple("amd64", "x86_64", "x86_64-linux-android")
-    )
-    val goRouterUmbrella = tasks.register("buildGoRouterJniLibs") {
+// Stages the embedded i2pd router (built in CI from android-router/jni) as a
+// per-ABI libi2pd.so in src/main/jniLibs, so it is packaged alongside the
+// Rust/Tauri cdylib, plus the reseed certificates it needs to bootstrap.
+// GipnyService.kt loads and starts it via JNI.
+//
+// Unlike the pure-Go predecessor, i2pd is not built here: it is C++ with boost
+// and OpenSSL and takes hours per ABI. See I2pdRouterTask for where it looks.
+// Skippable with -PskipRouter for iteration on non-router code — the resulting
+// APK starts but never connects.
+if (!project.hasProperty("skipRouter")) {
+    val routerAbis = listOf("arm64-v8a", "x86_64")
+    val certsTask = tasks.register("stageI2pdCertificates", I2pdCertificatesTask::class.java) {
         group = "router"
-        description = "Build the embedded i2p router JNI .so for all supported ABIs"
+        description = "Copy i2pd reseed certificates into the APK assets"
+        rootDirRel = "../../../.."
     }
-    for ((goArch, abi, triple) in goRouterAbis) {
+    val routerUmbrella = tasks.register("stageI2pdJniLibs") {
+        group = "router"
+        description = "Stage the embedded i2pd router for all supported ABIs"
+        dependsOn(certsTask)
+    }
+    for (abi in routerAbis) {
         val abiCapitalized = abi.replace("-", "_").replaceFirstChar { it.uppercase() }
-        val abiTask = tasks.register("buildGoRouter$abiCapitalized", GoRouterTask::class.java) {
+        val abiTask = tasks.register("stageI2pd$abiCapitalized", I2pdRouterTask::class.java) {
             group = "router"
-            description = "Build the embedded i2p router JNI .so for $abi"
+            description = "Stage the embedded i2pd router for $abi"
             rootDirRel = "../../../.."
-            this.goArch = goArch
             this.abi = abi
-            ndkTriple = triple
         }
-        goRouterUmbrella.configure { dependsOn(abiTask) }
+        routerUmbrella.configure { dependsOn(abiTask) }
     }
     tasks.matching { it.name.endsWith("JniLibFolders") }.configureEach {
-        dependsOn(goRouterUmbrella)
+        dependsOn(routerUmbrella)
+    }
+    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+        dependsOn(certsTask)
     }
 }
 

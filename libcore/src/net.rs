@@ -7,7 +7,7 @@
 //! operates over an abstract [`DuplexStream`]. Only this module and the relay
 //! server know we speak SAMv3.
 //!
-//! The actual i2p router (go-i2p) runs as a separate process/host; see
+//! The actual i2p router (i2pd) runs as a separate process/host; see
 //! [`crate::router`]. Here we open one SAMv3 STREAM session bound to our
 //! persistent destination and use it for outbound connections (and, optionally,
 //! inbound via `STREAM FORWARD`).
@@ -38,6 +38,7 @@ pub type Result<T> = std::result::Result<T, NetError>;
 pub enum NetError {
     #[error("io")] Io(#[from] std::io::Error),
     #[error("i2p: {0}")] I2p(String),
+    #[error("proxy: {0}")] Proxy(String),
     #[error("codec")] Codec,
     #[error("frame too large")] TooLarge,
     #[error("closed")] Closed,
@@ -153,7 +154,7 @@ impl I2pNode {
         // GIPNY_SAM_PORT attaches to a router someone else already started
         // instead of spawning our own — the e2e harness uses it to put every
         // bot on one shared router (only one router per host can hold I2CP, see
-        // i2p-router/wiring.go). A malformed value is a configuration error, not
+        // the SAM bridge). A malformed value is a configuration error, not
         // a reason to quietly spawn a second router that will then fail to build
         // tunnels somewhere far from here.
         #[cfg(not(target_os = "android"))]

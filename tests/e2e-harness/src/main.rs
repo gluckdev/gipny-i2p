@@ -14,7 +14,7 @@
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
 //!   `/tmp/e2e-harness`).
-//! * `GIPNY_I2P_BIN`    — path to the `gipny-i2p-router` binary; libcore
+//! * `GIPNY_I2P_BIN`    — path to the `i2pd` binary; libcore
 //!   falls back to the executable's directory and `$PATH` when not set.
 //! * `GITHUB_STEP_SUMMARY` — when set (always true in GitHub Actions), the
 //!   timing table is appended to this file.

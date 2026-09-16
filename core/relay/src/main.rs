@@ -17,8 +17,8 @@ use crate::storage::Storage;
 
 type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
 
-/// Default SAMv3 port. The relay is server-side infrastructure: run go-i2p (or
-/// i2pd) as a system service exposing SAMv3 here (see gipny-relay.service).
+/// Default SAMv3 port. The relay is server-side infrastructure: run i2pd as a
+/// system service exposing SAMv3 here (see gipny-i2pd.service).
 const DEFAULT_SAM_PORT: u16 = 7656;
 
 #[tokio::main]

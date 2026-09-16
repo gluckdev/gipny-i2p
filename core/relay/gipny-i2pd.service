@@ -1,0 +1,35 @@
+[Unit]
+Description=gipny i2p router (i2pd SAMv3 bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gipny
+Group=gipny
+WorkingDirectory=/var/lib/gipny-i2pd
+# Everything but SAM is off: the relay talks SAMv3 over loopback and has no use
+# for the HTTP console, the proxies, or UPnP. Matches the flags the desktop app
+# passes in libcore/src/router.rs.
+ExecStart=/usr/local/bin/i2pd \
+  --datadir=/var/lib/gipny-i2pd \
+  --sam.enabled=true \
+  --sam.address=127.0.0.1 \
+  --sam.port=7656 \
+  --http.enabled=false \
+  --httpproxy.enabled=false \
+  --socksproxy.enabled=false \
+  --upnp.enabled=false \
+  --log=stdout
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/gipny-i2pd
+
+[Install]
+WantedBy=multi-user.target
