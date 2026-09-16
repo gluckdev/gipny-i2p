@@ -251,8 +251,9 @@ jobs:
     timeout-minutes: 120
     env:
       NDK_VERSION: 27.3.13750724
-      # See i2pd-build.yml: the one build input this repo does not record.
-      BOOST_FOR_ANDROID_REV: master
+      # Pinned; see i2pd-build.yml. Must match it, or the release ships an
+      # Android router built from different sources than the one that was tested.
+      BOOST_FOR_ANDROID_REV: 7943955c4d11a5bd61381a8b200c28619323eb0f
     steps:
       - uses: actions/checkout@v7
         with:

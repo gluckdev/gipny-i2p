@@ -309,10 +309,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      # The one build input this repo does not record. Set it to a SHA to make
-      # the Android router reproducible; "master" is what it resolved to before
-      # anyone measured which revision works.
-      BOOST_FOR_ANDROID_REV: master
+      # The one build input this repo does not record, now pinned. This is the
+      # revision that produced the first libi2pd.so to build and export the JNI
+      # entry points on all three ABIs (run 35061210535). Tracking master here
+      # meant the Android router was the only part of the build that was not
+      # reproducible from this repository alone.
+      BOOST_FOR_ANDROID_REV: 7943955c4d11a5bd61381a8b200c28619323eb0f
     strategy:
       fail-fast: false
       matrix:
@@ -373,12 +375,9 @@ jobs:
           # revision accepts up to 28.2. Overriding it in our own build is
           # exactly why these are submodules of this repo.
           #
-          # BOOST_FOR_ANDROID_REV pins it. It defaults to master because no
-          # known-good revision has been recorded yet; the resolved SHA is
-          # printed and must be pasted back here before the first Android
-          # release, since this is the one input to the router build that
-          # nothing in this repo records.
-          git -C boost fetch --depth 1 origin "${BOOST_FOR_ANDROID_REV:-master}"
+          # BOOST_FOR_ANDROID_REV pins it, and the resolved revision is printed
+          # so a build can always be traced back to its sources.
+          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
           git -C boost checkout FETCH_HEAD
 
           # The dependency scripts hardcode API 16 for the 32-bit ABIs, which

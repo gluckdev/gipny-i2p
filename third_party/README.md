@@ -66,9 +66,9 @@ built here.
 than the NDKs the CI runners ship, so the Android build overrides that pin at
 build time. Details are in the workflow next to where it happens.
 
-**This is the one input to the router build that this repository does not
-record.** Boost-for-Android is a nested submodule of `i2pd-android`, and the
-override is `BOOST_FOR_ANDROID_REV`, which still defaults to `master`. Until a
-known-good revision is measured and pasted in, the Android router is the only
-part of the build that is not reproducible from this repository alone. The
-resolved SHA is printed by every Android build.
+Boost-for-Android is a nested submodule of `i2pd-android`, so this repository
+cannot pin it with a gitlink; the override is the `BOOST_FOR_ANDROID_REV` env in
+`i2pd-build.yml` and `release.yml`, and the two must match. It is pinned at
+`7943955c4d11a5bd61381a8b200c28619323eb0f` — the revision that produced the
+first `libi2pd.so` to build and export the JNI entry points on all three ABIs
+(run 35061210535). Every Android build prints the revision it resolved.
