@@ -133,7 +133,12 @@ pub struct Core {
     sessions: Arc<Mutex<HashMap<i64, RatchetState>>>,
     events: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
+    /// Connection to our own relay — where we receive, and where our prekey
+    /// bundle is published.
     relay_out: Arc<RwLock<Option<mpsc::Sender<ClientToRelay>>>>,
+    /// Connections to other people's relays, keyed by destination. A message
+    /// goes to where its recipient collects it, which is usually not here.
+    peer_relays: Arc<Mutex<HashMap<String, mpsc::Sender<ClientToRelay>>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<BundleWaiter>>>>,
     send_kick: Arc<tokio::sync::Notify>,
     tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
@@ -162,6 +167,7 @@ impl Core {
             events: events_tx,
             data_dir,
             relay_out: Arc::new(RwLock::new(None)),
+            peer_relays: Arc::new(Mutex::new(HashMap::new())),
             bundle_waiters: Arc::new(Mutex::new(HashMap::new())),
             send_kick: Arc::new(tokio::sync::Notify::new()),
             tiebreaker_waits: Arc::new(Mutex::new(HashMap::new())),
@@ -226,7 +232,7 @@ impl Core {
     /// in-memory maps that would otherwise hold stale entries forever
     /// (sessions, tiebreaker_waits, session_created_at, incoming_since_send,
     /// and the bundle_waiters entry keyed on the contact's signing key).
-    pub async fn delete_contact(&self, contact_id: i64) -> Result<()> {
+    pub async fn delete_contact(self: &Arc<Self>, contact_id: i64) -> Result<()> {
         // Capture identity_sign before the DB row is gone so we can purge
         // the bundle_waiters map (keyed by sign_pk, not by contact id).
         let sign_pk: Option<[u8; 32]> = self.db.get_contact(contact_id)?
@@ -374,7 +380,7 @@ impl Core {
         }
     }
 
-    pub async fn press_button(&self, contact_id: i64, message_id: i64, callback_data: String) -> Result<()> {
+    pub async fn press_button(self: &Arc<Self>, contact_id: i64, message_id: i64, callback_data: String) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let origin_msg_id = self.db.message_origin(message_id)?.unwrap_or(message_id);
         let mut payload = WirePayload {
@@ -394,15 +400,12 @@ impl Core {
             typing: None,
             notify_sound: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(CoreError::State)?
-        };
+        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
 
-    pub async fn press_group_button(&self, group_id: &[u8], message_id: i64, callback_data: String) -> Result<()> {
+    pub async fn press_group_button(self: &Arc<Self>, group_id: &[u8], message_id: i64, callback_data: String) -> Result<()> {
         let msg = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
         if msg.group_id.as_deref() != Some(group_id) { return Err(CoreError::State); }
         let sender_sign = msg.sender_sign_pk.clone().ok_or(CoreError::State)?;
@@ -436,15 +439,12 @@ impl Core {
             typing: None,
             notify_sound: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(CoreError::State)?
-        };
+        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
 
-    pub async fn send_edit(&self, contact_id: i64, message_id: i64, new_body: String) -> Result<()> {
+    pub async fn send_edit(self: &Arc<Self>, contact_id: i64, message_id: i64, new_body: String) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let msg = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
         if !matches!(msg.direction, Direction::Out) || msg.contact_id != Some(contact_id) {
@@ -474,15 +474,12 @@ impl Core {
             typing: None,
             notify_sound: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(CoreError::State)?
-        };
+        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
 
-    pub async fn send_edit_group(&self, group_id: &[u8], message_id: i64, new_body: String) -> Result<()> {
+    pub async fn send_edit_group(self: &Arc<Self>, group_id: &[u8], message_id: i64, new_body: String) -> Result<()> {
         let msg = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
         if !matches!(msg.direction, Direction::Out) || msg.group_id.as_deref() != Some(group_id) {
             return Err(CoreError::State);
@@ -533,7 +530,7 @@ impl Core {
         Ok(())
     }
 
-    pub async fn pin_contact_message(&self, contact_id: i64, message_id: i64, unpin: bool) -> Result<()> {
+    pub async fn pin_contact_message(self: &Arc<Self>, contact_id: i64, message_id: i64, unpin: bool) -> Result<()> {
         let msg = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
         if msg.contact_id != Some(contact_id) { return Err(CoreError::State); }
 
@@ -573,16 +570,13 @@ impl Core {
             typing: None,
             notify_sound: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(CoreError::State)?
-        };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
 
-    pub async fn pin_group_message(&self, group_id: &[u8], message_id: i64, unpin: bool) -> Result<()> {
+    pub async fn pin_group_message(self: &Arc<Self>, group_id: &[u8], message_id: i64, unpin: bool) -> Result<()> {
         let msg = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
         if msg.group_id.as_deref() != Some(group_id) { return Err(CoreError::State); }
 
@@ -745,7 +739,7 @@ impl Core {
         }
     }
 
-    pub async fn create_group(&self, name: &str, member_contact_ids: &[i64]) -> Result<Vec<u8>> {
+    pub async fn create_group(self: &Arc<Self>, name: &str, member_contact_ids: &[i64]) -> Result<Vec<u8>> {
         let mut gid = vec![0u8; 32];
         OsRng.fill_bytes(&mut gid);
         self.db.create_group(&gid, name)?;
@@ -779,7 +773,7 @@ impl Core {
         Ok(gid)
     }
 
-    pub async fn add_group_member(&self, group_id: &[u8], contact_id: i64) -> Result<()> {
+    pub async fn add_group_member(self: &Arc<Self>, group_id: &[u8], contact_id: i64) -> Result<()> {
         let group_name = self.db.get_group_name(group_id)?.ok_or(CoreError::NotFound)?;
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         if self.db.is_group_member(group_id, &contact.identity_sign)? {
@@ -817,7 +811,7 @@ impl Core {
     }
 
     pub async fn send_to_group(
-        &self,
+        self: &Arc<Self>,
         group_id: &[u8],
         body: String,
         attachments: Vec<PendingAttachment>,
@@ -938,6 +932,68 @@ impl Core {
         self.tasks.lock().unwrap().push(handle);
     }
 
+    /// The connection to deposit this contact's mail on.
+    ///
+    /// Their card names where they collect; ours is only the fallback for
+    /// contacts added before cards carried a relay. Connections to other
+    /// people's relays are opened on demand and kept for reuse — a contact is
+    /// written to repeatedly, and i2p charges tunnel setup for every new
+    /// destination.
+    ///
+    /// Returns a boxed future on purpose: this calls into the spawned receive
+    /// loop, which handles a frame, which may send an ack, which comes back
+    /// here. `async fn` would make that an infinitely recursive future type and
+    /// the compiler cannot prove it `Send`.
+    fn relay_for<'a>(
+        self: &'a Arc<Self>,
+        contact: &'a gipny_libcore::db::Contact,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<mpsc::Sender<ClientToRelay>>> + Send + 'a>> {
+        Box::pin(async move {
+        let theirs = contact.relay_address.as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty());
+        let Some(theirs) = theirs else {
+            return self.relay_out.read().await.clone();
+        };
+        if theirs == self.relay_onion() {
+            return self.relay_out.read().await.clone();
+        }
+
+        if let Some(tx) = self.peer_relays.lock().await.get(theirs) {
+            if !tx.is_closed() {
+                return Some(tx.clone());
+            }
+        }
+
+        let client = match relay::connect(&self.node, theirs, &self.identity).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[relay-client] cannot reach relay {} for contact {}: {:?}",
+                    &theirs[..16.min(theirs.len())], contact.id, e);
+                return None;
+            }
+        };
+        eprintln!("[relay-client] connected to peer relay {}", &theirs[..16.min(theirs.len())]);
+        let tx = client.out_tx.clone();
+        self.peer_relays.lock().await.insert(theirs.to_string(), tx.clone());
+
+        // Drain it like our own: a relay we deposit on may also be holding mail
+        // for us, and the frame handling is identical. On exit drop the cached
+        // sender so the next send reconnects rather than writing into a dead
+        // channel. No RelayConnected event — that state is about our own relay,
+        // and flipping it here would tell the user the wrong thing.
+        let this = self.clone();
+        let key = theirs.to_string();
+        let handle = tokio::spawn(async move {
+            this.clone().run_recv_loop(client).await;
+            this.peer_relays.lock().await.remove(&key);
+            eprintln!("[relay-client] peer relay {} disconnected", &key[..16.min(key.len())]);
+        });
+        self.tasks.lock().unwrap().push(handle);
+        Some(tx)
+        })
+    }
+
     async fn run_recv_loop(self: Arc<Self>, client: RelayClient) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
@@ -967,7 +1023,7 @@ impl Core {
     }
 
     async fn handle_relay_frame(
-        &self,
+        self: &Arc<Self>,
         frame: RelayToClient,
         out_tx: &mpsc::Sender<ClientToRelay>,
     ) -> Result<()> {
@@ -1019,7 +1075,7 @@ impl Core {
         Ok(())
     }
 
-    async fn handle_incoming_envelope(&self, from_pk: &[u8; 32], blob: &[u8]) -> Result<()> {
+    async fn handle_incoming_envelope(self: &Arc<Self>, from_pk: &[u8; 32], blob: &[u8]) -> Result<()> {
         let envelope: EnvelopeBlob = bincode::deserialize(blob)?;
         let sealed = from_pk == &[0u8; 32];
         match envelope {
@@ -1148,7 +1204,7 @@ impl Core {
         Ok((state, pt))
     }
 
-    async fn persist_incoming(&self, contact_id: i64, payload: WirePayload) -> Result<()> {
+    async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
         if let Some(typing) = payload.typing {
             let group_id_hex = payload.group.as_ref().map(|g| hex_bytes(&g.id));
             let sender_sign_hex = self.db.get_contact(contact_id).ok().flatten()
@@ -1388,7 +1444,7 @@ impl Core {
         Ok(())
     }
 
-    async fn send_ack(&self, contact: &gipny_libcore::db::Contact, original: &WirePayload) -> Result<()> {
+    async fn send_ack(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, original: &WirePayload) -> Result<()> {
         if original.origin_msg_id == 0 { return Ok(()); }
         let mut payload = WirePayload {
             origin_msg_id: 0,
@@ -1407,9 +1463,9 @@ impl Core {
             typing: None,
             notify_sound: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            match g.clone() { Some(x) => x, None => return Ok(()) }
+        let out = match self.relay_for(contact).await {
+            Some(x) => x,
+            None => return Ok(()),
         };
         if self.ensure_session_for(contact, &out).await.is_err() {
             return Ok(());
@@ -1437,11 +1493,12 @@ impl Core {
         self.tasks.lock().unwrap().push(handle);
     }
 
-    async fn flush_all_pending(&self) -> Result<()> {
-        let out = {
-            let g = self.relay_out.read().await;
-            match g.clone() { Some(x) => x, None => return Ok(()) }
-        };
+    async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
+        // Our own relay must be up before we do anything: it is where replies
+        // come back to, and where sessions get established from.
+        if self.relay_out.read().await.is_none() {
+            return Ok(());
+        }
         let contacts = self.db.list_contacts()?;
         let groups_by_id: HashMap<Vec<u8>, String> = self.db.list_groups()?
             .into_iter().map(|g| (g.id, g.name)).collect();
@@ -1457,6 +1514,8 @@ impl Core {
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
                 && self.sessions.lock().await.contains_key(&contact.id);
             if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
+            // Deposit on the relay this contact collects from, not on ours.
+            let Some(out) = self.relay_for(&contact).await else { continue };
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
@@ -1522,24 +1581,21 @@ impl Core {
         Ok(())
     }
 
-    async fn send_to_contact(&self, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
-        let out = {
-            let g = self.relay_out.read().await;
-            match g.clone() { Some(x) => x, None => return Err(CoreError::State) }
-        };
+    async fn send_to_contact(self: &Arc<Self>, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, payload, &out).await
     }
 
-    pub async fn send_typing_dm(&self, contact_id: i64, typing: bool) -> Result<()> {
+    pub async fn send_typing_dm(self: &Arc<Self>, contact_id: i64, typing: bool) -> Result<()> {
         if !self.sessions.lock().await.contains_key(&contact_id) { return Ok(()); }
         let mut payload = make_typing_payload(None, typing);
         let _ = self.send_to_contact(contact_id, &mut payload).await;
         Ok(())
     }
 
-    pub async fn send_typing_group(&self, group_id: &[u8], typing: bool) -> Result<()> {
+    pub async fn send_typing_group(self: &Arc<Self>, group_id: &[u8], typing: bool) -> Result<()> {
         let members = self.db.list_group_members(group_id)?;
         let gref = WireGroupRef {
             id: group_id.to_vec(),
