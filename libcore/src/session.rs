@@ -495,7 +495,6 @@ const PADDING_BUCKETS: &[usize] = &[
 ];
 
 pub fn pad_payload(pt: &[u8]) -> Vec<u8> {
-    use rand::RngCore;
     let with_header = 4 + pt.len();
     let bucket = PADDING_BUCKETS.iter().copied().find(|&b| b >= with_header).unwrap_or(with_header);
     let mut out = Vec::with_capacity(bucket);
@@ -503,7 +502,7 @@ pub fn pad_payload(pt: &[u8]) -> Vec<u8> {
     out.extend_from_slice(pt);
     if bucket > with_header {
         let mut pad = vec![0u8; bucket - with_header];
-        rand::rngs::OsRng.fill_bytes(&mut pad);
+        crate::crypto::fill_random(&mut pad);
         out.extend_from_slice(&pad);
     }
     out
@@ -1778,11 +1777,10 @@ fn load_or_create_identity(db: &Db) -> Result<Identity> {
 }
 
 fn store_attachment(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], String, u64)> {
-    use rand::RngCore;
     let cipher = AttachmentCipher::generate();
     let encrypted = cipher.encrypt_chunk(0, &[], data)?;
     let mut name = [0u8; 24];
-    rand::rngs::OsRng.fill_bytes(&mut name);
+    crate::crypto::fill_random(&mut name);
     let hex = to_hex(&name);
     let path = data_dir.join(ATTACHMENTS_DIR).join(&hex);
     std::fs::write(&path, &encrypted)?;

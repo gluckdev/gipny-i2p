@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rand::{rngs::OsRng, RngCore};
+use gipny_libcore::crypto::fill_random;
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -950,7 +950,7 @@ impl Core {
 
     pub async fn create_group(self: &Arc<Self>, name: &str, member_contact_ids: &[i64]) -> Result<Vec<u8>> {
         let mut gid = vec![0u8; 32];
-        OsRng.fill_bytes(&mut gid);
+        fill_random(&mut gid);
         self.db.create_group(&gid, name)?;
         self.db.add_group_member(&gid, &self.identity.card().sign_pk, &self.identity.card().dh_pk,
             self.node.onion_address(), &self.display_name().unwrap_or_default(), true)?;
@@ -1085,7 +1085,7 @@ impl Core {
         let cipher = AttachmentCipher::generate();
         let encrypted = cipher.encrypt_chunk(0, &[], data)?;
         let mut name = [0u8; 24];
-        OsRng.fill_bytes(&mut name);
+        fill_random(&mut name);
         let hex = to_hex(&name);
         let dir = self.data_dir.join(ATTACHMENTS_DIR);
         let path = dir.join(&hex);
@@ -2158,7 +2158,7 @@ fn store_attachment_raw(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], St
     let cipher = AttachmentCipher::generate();
     let encrypted = cipher.encrypt_chunk(0, &[], data)?;
     let mut name = [0u8; 24];
-    OsRng.fill_bytes(&mut name);
+    fill_random(&mut name);
     let hex = to_hex(&name);
     let path = data_dir.join(ATTACHMENTS_DIR).join(&hex);
     std::fs::write(&path, &encrypted)?;

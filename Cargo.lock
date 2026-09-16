@@ -1760,7 +1760,6 @@ dependencies = [
  "image",
  "libc",
  "png 0.18.1",
- "rand 0.10.2",
  "rodio",
  "rusqlite",
  "serde",
