@@ -278,8 +278,11 @@ jobs:
       - name: patch the unguarded WIN32_APP call
         shell: msys2 {0}
         run: |
-          git -C third_party/i2pd apply --verbose \
-            docs/patches/i2pd-win32-guard-graceful-shutdown.patch
+          # Relative to the submodule: `git -C dir apply <path>` resolves the
+          # path inside dir, so the workspace-relative form was not found (run
+          # 35074059720).
+          cd third_party/i2pd
+          git apply --verbose ../../docs/patches/i2pd-win32-guard-graceful-shutdown.patch
 
       - name: build
         working-directory: third_party/i2pd

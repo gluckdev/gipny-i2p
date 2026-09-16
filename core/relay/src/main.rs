@@ -38,7 +38,11 @@ async fn main() -> anyhow::Result<()> {
     let (dest_pub, privkey) = load_or_create_identity(&data_dir, sam_port).await?;
 
     let opts = SessionOptions {
-        nickname: "gipny-relay".to_string(),
+        // Unique per process. SAM session IDs are router-wide, so two relays on
+        // one router with a fixed nickname collide: the second gets
+        // DUPLICATED_ID, which yosemite 0.7 cannot parse and reports only as
+        // "invalid message from router" (e2e run 35074027215, relay-b).
+        nickname: format!("{HS_NICKNAME}-{}", std::process::id()),
         destination: DestinationKind::Persistent { private_key: privkey },
         samv3_tcp_port: sam_port,
         // Servers must publish their leaseSet so clients can reach them.

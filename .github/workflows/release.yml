@@ -104,8 +104,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          git -C third_party/i2pd apply --verbose \
-            "$GITHUB_WORKSPACE/docs/patches/i2pd-win32-guard-graceful-shutdown.patch"
+          # Relative to the submodule, as in i2pd-build.yml: no Windows-path
+          # handling to depend on.
+          cd third_party/i2pd
+          git apply --verbose ../../docs/patches/i2pd-win32-guard-graceful-shutdown.patch
 
       - name: build (windows)
         if: runner.os == 'Windows'
