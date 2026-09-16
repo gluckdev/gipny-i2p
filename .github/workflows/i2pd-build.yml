@@ -225,6 +225,44 @@ jobs:
           if-no-files-found: error
 
   # --------------------------------------------------------------------------
+  # macOS, Apple Silicon and Intel. Homebrew supplies boost and openssl, linked
+  # statically; .github/scripts/build-i2pd-macos.sh is shared with release.yml.
+  # macos-14 is deprecated on GitHub's runners, so the floor is macOS 15.
+  # --------------------------------------------------------------------------
+  macos:
+    name: macos ${{ matrix.arch }}
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, runs-on: macos-15 }
+          - { arch: x86_64, runs-on: macos-15-intel }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: unshallow the router sources (git describe needs tags)
+        run: |
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
+
+      - name: build and verify
+        run: .github/scripts/build-i2pd-macos.sh
+
+      - name: check it is the architecture this leg claims
+        run: test "$(lipo -archs third_party/i2pd/i2pd)" = "${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: i2pd-macos-${{ matrix.arch }}
+          path: third_party/i2pd/i2pd
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------
   # Windows: the release job ships an NSIS installer, so the router has to
   # exist for it too. msys2's mingw packages supply boost and openssl, which is
   # how upstream builds their own Windows releases.

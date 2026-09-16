@@ -74,6 +74,25 @@ sudo apt install ./gipny-i2p_*_amd64.deb
 
 Установщик кладёт приложение в свой каталог `gipny-i2p` и создаёт ярлык в меню «Пуск» — с оригинальным gipny не пересекается.
 
+### macOS
+
+- `gipny-i2p_*_aarch64.dmg` — Apple Silicon (M1 и новее).
+- `gipny-i2p_*_x64.dmg` — Intel.
+
+Нужна **macOS 15 (Sequoia) или новее**: роутер собирается на раннерах GitHub с
+macOS 15 (образ 14 там уже снят с поддержки), и его библиотеки несут эту
+минимальную версию.
+
+Сборка **не подписана сертификатом Apple и не нотаризована** — на это нужен
+платный аккаунт разработчика. Приложение подписано ad‑hoc, поэтому при первом
+запуске macOS его заблокирует. Открыть: перетащи `gipny-i2p` в «Программы»,
+попробуй запустить, затем открой «Системные настройки → Конфиденциальность и
+безопасность» и разреши открытие под сообщением о gipny-i2p. Либо из терминала:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/gipny-i2p.app
+```
+
 ### Android — экспериментальная поддержка
 
 На Android i2pd встроен непосредственно в процесс приложения через JNI:
@@ -129,7 +148,7 @@ ui/             UI на TypeScript (ванильный, без фреймвор�
 
 ## Сборка из исходников
 
-Цели: **Linux** (AppImage / .deb / .tar.gz), **Windows** (установщик NSIS / портативный zip), **Android arm64** (экспериментальный APK). macOS пока не поддерживается.
+Цели: **Linux** (AppImage / .deb / .tar.gz), **Windows** (установщик NSIS / портативный zip), **macOS 15+** (dmg, Apple Silicon и Intel), **Android arm64** (экспериментальный APK).
 
 Нужны:
 - **Rust** (stable) — сам мессенджер. Ставится через [rustup](https://rustup.rs/).
@@ -333,6 +352,7 @@ async fn main() -> anyhow::Result<()> {
 ```
 Linux:    $XDG_DATA_HOME/gipny-i2p/profiles/<имя>/   (по умолчанию: ~/.local/share/gipny-i2p/...)
 Windows:  %APPDATA%/gipny-i2p/profiles/<имя>/
+macOS:    ~/Library/Application Support/gipny-i2p/profiles/<имя>/
 Android:  /data/user/0/app.gipny.i2p/gipny/profiles/<имя>/
 ```
 

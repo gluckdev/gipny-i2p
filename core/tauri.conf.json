@@ -39,6 +39,10 @@
     "copyright": "",
     "category": "SocialNetworking",
     "shortDescription": "Private messenger",
-    "longDescription": "Anonymous messenger over i2p with E2E encryption."
+    "longDescription": "Anonymous messenger over i2p with E2E encryption.",
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "15.0"
+    }
   }
 }

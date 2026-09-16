@@ -64,6 +64,33 @@ jobs:
           cargo build --release -p gipny
 
   # ---------------------------------------------------------------------------
+  # macOS: the app and libcore's tests on Apple Silicon. The Rust is the same on
+  # Intel, and release.yml bundles both; this is here so macOS-only breakage —
+  # memory locking, paths, the bundler's platform code — shows up on a push
+  # rather than on a release tag.
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macos (app + libcore tests)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - name: stage router placeholder (tauri.conf resources glob needs a match)
+        run: |
+          mkdir -p core/resources
+          printf 'placeholder: build.yml is a compile check and ships nothing\n' \
+            > core/resources/i2pd
+      - name: libcore tests
+        run: cargo test --release -p gipny-libcore
+      - name: build app (frontend + tauri)
+        run: |
+          cd ui && npm ci && npm run build && cd ..
+          cargo build --release -p gipny
+
+  # ---------------------------------------------------------------------------
   # Rust tests: crypto core (X3DH, Double Ratchet, attachment chunks), vault
   # lifecycle, first-run recovery, KDF timing report.
   # Timing lines ([timing] …) are lifted into the job summary so unlock speed

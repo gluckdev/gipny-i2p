@@ -1,8 +1,8 @@
 name: release
 
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
-# Builds the bundled i2pd router and every desktop artifact (Linux AppImage/deb
-# + Windows NSIS), plus Android (i2pd embedded in-process via JNI; see
+# Builds the bundled i2pd router and every desktop artifact (Linux AppImage/deb,
+# Windows NSIS, macOS dmg for Apple Silicon and Intel), plus Android (i2pd embedded in-process via JNI; see
 # android-router/jni).
 #
 # Trigger: push a tag `v*` (e.g. v0.3.0) or run manually.
@@ -32,6 +32,10 @@ jobs:
           # carrying a glibc floor from whatever image built it.
           - { label: linux/amd64, runs-on: ubuntu-latest, out: i2pd, artifact: router-linux-amd64 }
           - { label: windows/amd64, runs-on: windows-latest, out: i2pd.exe, artifact: router-windows-amd64 }
+          # macos-14 is deprecated on GitHub's runners; building on 15 makes
+          # macOS 15 the floor (see .github/scripts/build-i2pd-macos.sh).
+          - { label: macos/arm64, runs-on: macos-15, out: i2pd, artifact: router-macos-arm64 }
+          - { label: macos/x86_64, runs-on: macos-15-intel, out: i2pd, artifact: router-macos-x86_64 }
     steps:
       - uses: msys2/setup-msys2@v2
         if: runner.os == 'Windows'
@@ -127,6 +131,12 @@ jobs:
           ls -lh i2pd.exe
           ./i2pd.exe --version
 
+      # Static against Homebrew's boost/openssl, stripped, ad-hoc signed, and
+      # checked to link nothing outside the OS — shared with i2pd-build.yml.
+      - name: build (macos)
+        if: runner.os == 'macOS'
+        run: .github/scripts/build-i2pd-macos.sh
+
       # Shrink the bundled router. Linux only: UPX-packed Windows executables
       # routinely trip antivirus false positives.
       - name: compress router (UPX)
@@ -154,8 +164,9 @@ jobs:
           path: third_party/i2pd/${{ matrix.out }}
 
   # ---------------------------------------------------------------------------
-  # 2. Desktop: Linux (AppImage + deb) and Windows (NSIS). Stages the matching
-  #    router binary into core/resources so Tauri bundles it (see tauri.conf).
+  # 2. Desktop: Linux (AppImage + deb), Windows (NSIS), macOS (dmg). Stages
+  #    the matching router binary into core/resources so Tauri bundles it (see
+  #    tauri.conf).
   # ---------------------------------------------------------------------------
   desktop:
     name: desktop (${{ matrix.os }})
@@ -164,8 +175,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04, router: router-linux-amd64,   rbin: i2pd,                 bundles: 'appimage,deb' }
-          - { os: windows-latest, router: router-windows-amd64, rbin: i2pd.exe,             bundles: 'nsis' }
+          - { os: ubuntu-22.04,   router: router-linux-amd64,   rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux }
+          - { os: windows-latest, router: router-windows-amd64, rbin: i2pd.exe, bundles: 'nsis',         artifact: gipny-Windows }
+          - { os: macos-15,       router: router-macos-arm64,   rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-arm64 }
+          - { os: macos-15-intel, router: router-macos-x86_64,  rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -191,8 +204,9 @@ jobs:
         with:
           name: ${{ matrix.router }}
           path: core/resources
-      - name: mark router executable (Linux)
-        if: runner.os == 'Linux'
+      # Artifacts do not keep the executable bit.
+      - name: mark router executable
+        if: runner.os != 'Windows'
         run: chmod +x core/resources/${{ matrix.rbin }}
       - name: build frontend
         run: cd ui && npm ci && npm run build
@@ -203,7 +217,7 @@ jobs:
           args: --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v7
         with:
-          name: gipny-${{ runner.os }}
+          name: ${{ matrix.artifact }}
           # The app crate is a workspace member — cargo's target dir is at the
           # repo root, not under core/.
           if-no-files-found: error
@@ -212,6 +226,7 @@ jobs:
             target/release/bundle/**/*.deb
             target/release/bundle/**/*-setup.exe
             target/release/bundle/**/*.msi
+            target/release/bundle/**/*.dmg
 
   # ---------------------------------------------------------------------------
   # 2c. Android router: i2pd built as the JNI library GipnyService loads.
