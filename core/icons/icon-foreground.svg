@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    Android adaptive-icon foreground layer.
+
+    The canvas is 108dp but launchers may mask it to anything from a circle to a
+    squircle, and only the middle 72dp is guaranteed to survive. So the mark sits
+    inside that safe zone at two thirds scale, with no background of its own: the
+    system draws ic_launcher_background behind it and animates the two layers
+    apart on some launchers.
+
+    Same gesture as icon.svg, no tile and no glow — a blur here would smear
+    against whatever background the launcher composites underneath.
+  -->
+  <g transform="translate(256 256) scale(0.62) translate(-256 -256)">
+    <path d="M168 148 L280 256 L168 364"
+          fill="none" stroke="#6ce86c" stroke-width="46"
+          stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="300" y="318" width="120" height="40" rx="20" fill="#d7e8d7"/>
+  </g>
+</svg>

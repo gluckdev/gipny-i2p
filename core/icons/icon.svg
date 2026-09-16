@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    gipny app icon — source of truth. Every PNG/ICO in this directory and every
+    Android mipmap is rasterised from this file by tools/gen-icons.sh.
+
+    The mark keeps the terminal prompt of the previous icon, because that is what
+    people recognise, but redrawn in the language the app now uses: the Xbox
+    dashboard palette from ui/src/styles.css — near-black neutral ground, a
+    single green accent, soft rounded geometry — instead of CRT green on black.
+    The cursor bar was amber; the theme replaced amber with a soft neutral, so it
+    follows.
+  -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#151b15"/>
+      <stop offset="1" stop-color="#0a0d0b"/>
+    </linearGradient>
+    <radialGradient id="nexus" cx="0.5" cy="0.06" r="0.72">
+      <stop offset="0" stop-color="#107C10" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#107C10" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Tile. 96px corner radius is the squircle-ish curve the UI uses on cards,
+       scaled up from the 12px the UI uses on a ~64px control. -->
+  <rect width="512" height="512" rx="96" fill="url(#tile)"/>
+  <rect width="512" height="512" rx="96" fill="url(#nexus)"/>
+  <!-- Hairline edge so the tile keeps an outline on a dark wallpaper. -->
+  <rect x="1" y="1" width="510" height="510" rx="95" fill="none"
+        stroke="#2c5f2c" stroke-width="2" stroke-opacity="0.8"/>
+
+  <g filter="url(#glow)">
+    <!-- The prompt. Round joins and caps: the old icon was stepped pixels, this
+         one is the same gesture drawn smoothly. -->
+    <path d="M168 148 L280 256 L168 364"
+          fill="none" stroke="#6ce86c" stroke-width="46"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <!-- Cursor. Neutral rather than the old amber, matching the theme's secondary
+       accent, which is now a soft near-white rather than amber. -->
+  <rect x="300" y="318" width="120" height="40" rx="20" fill="#d7e8d7"/>
+</svg>
