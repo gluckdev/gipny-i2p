@@ -69,6 +69,9 @@ pub struct Contact {
     pub is_bot: bool,
     pub pinned_at: Option<i64>,
     pub last_message_at: Option<i64>,
+    /// Relay this contact receives through, from their card. `None` means "use
+    /// whatever this client has configured" — the old single-relay behaviour.
+    pub relay_address: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -209,7 +212,7 @@ CREATE TABLE settings (
 );
 "#;
 
-macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at FROM contacts" }; }
+macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address FROM contacts" }; }
 macro_rules! select_group { () => { "SELECT id, name, created_at, pinned_at, last_message_at FROM groups" }; }
 macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to" }; }
 macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to" }; }
@@ -454,6 +457,10 @@ impl Db {
         Self::ensure_column(conn, "contacts", "is_bot", "INTEGER NOT NULL DEFAULT 0")?;
         let added_contact_lma = Self::ensure_column(conn, "contacts", "last_message_at", "INTEGER")?;
         Self::ensure_column(conn, "contacts", "pinned_at", "INTEGER")?;
+        // Per-contact relay, carried in their contact card. Before this every
+        // client had exactly one relay for everyone, which meant somebody had to
+        // run infrastructure for the whole network.
+        Self::ensure_column(conn, "contacts", "relay_address", "TEXT")?;
         let added_group_lma = Self::ensure_column(conn, "groups", "last_message_at", "INTEGER")?;
         Self::ensure_column(conn, "groups", "pinned_at", "INTEGER")?;
         if added_contact_lma {
@@ -510,13 +517,39 @@ impl Db {
         }
     }
 
-    pub fn add_contact(&self, sign: &[u8], dh: &[u8], onion: &str, name: &str) -> Result<i64> {
+    pub fn add_contact(
+        &self, sign: &[u8], dh: &[u8], onion: &str, name: &str, relay: Option<&str>,
+    ) -> Result<i64> {
+        let relay = relay.map(str::trim).filter(|r| !r.is_empty());
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, onion_address, display_name, trust, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-                params![sign, dh, onion, name, now_ms()],
+                "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, onion_address, display_name, trust, created_at, relay_address) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+                params![sign, dh, onion, name, now_ms(), relay],
             )?;
+            // A card seen again may carry a relay the stored contact predates, or
+            // a new one after they moved. Adopt it; never overwrite with nothing.
+            if relay.is_some() {
+                conn.execute(
+                    "UPDATE contacts SET relay_address = ?2 WHERE identity_dh = ?1",
+                    params![dh, relay],
+                )?;
+            }
             Ok(conn.query_row("SELECT id FROM contacts WHERE identity_dh = ?1", params![dh], |r| r.get(0))?)
+        })
+    }
+
+    /// The relay this contact receives through, if their card named one.
+    pub fn contact_relay(&self, id: i64) -> Result<Option<String>> {
+        self.with_conn(|c| Ok(c.query_row(
+            "SELECT relay_address FROM contacts WHERE id = ?1",
+            params![id], |r| r.get::<_, Option<String>>(0)).optional()?.flatten()))
+    }
+
+    pub fn set_contact_relay(&self, id: i64, relay: Option<&str>) -> Result<()> {
+        let relay = relay.map(str::trim).filter(|r| !r.is_empty());
+        self.with_conn(|c| {
+            c.execute("UPDATE contacts SET relay_address = ?2 WHERE id = ?1", params![id, relay])?;
+            Ok(())
         })
     }
 
@@ -600,6 +633,7 @@ impl Db {
             is_bot: r.get::<_, i64>(8)? != 0,
             pinned_at: r.get(9)?,
             last_message_at: r.get(10)?,
+            relay_address: r.get(11)?,
         })
     }
 

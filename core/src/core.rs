@@ -308,8 +308,16 @@ impl Core {
         Ok(bundle)
     }
 
-    pub async fn add_contact(&self, card: &gipny_libcore::crypto::IdentityCard, onion: &str, name: &str) -> Result<i64> {
-        let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name)?;
+    /// Add a contact, recording the relay their card named.
+    ///
+    /// `relay` is where *they* receive: messages to this contact are deposited
+    /// there, not on whatever relay this client happens to use. `None` keeps the
+    /// old behaviour of falling back to this client's configured relay.
+    pub async fn add_contact_via(
+        &self, card: &gipny_libcore::crypto::IdentityCard, onion: &str, name: &str,
+        relay: Option<&str>,
+    ) -> Result<i64> {
+        let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
         let _ = self.events.try_send(CoreEvent::ContactAdded { contact_id: id });
         self.send_kick.notify_one();
         Ok(id)
@@ -1022,7 +1030,7 @@ impl Core {
                     Some(c) => c,
                     None => {
                         let name = hex_short(&sender_sign);
-                        let id = self.db.add_contact(&sender_sign, &sender_dh, "", &name)?;
+                        let id = self.db.add_contact(&sender_sign, &sender_dh, "", &name, None)?;
                         let _ = self.events.try_send(CoreEvent::ContactAdded { contact_id: id });
                         self.db.get_contact(id)?.ok_or(CoreError::NotFound)?
                     }
@@ -1783,7 +1791,7 @@ async fn ensure_group_from_wire(
         let name = if m.name.is_empty() { hex_short(&m.sign_pk) } else { m.name.clone() };
         db.add_group_member(&gref.id, &m.sign_pk, &m.dh_pk, &m.onion, &name, is_self)?;
         if !is_self && db.find_contact_by_identity(&m.dh_pk)?.is_none() {
-            let _ = db.add_contact(&m.sign_pk, &m.dh_pk, &m.onion, &name)?;
+            let _ = db.add_contact(&m.sign_pk, &m.dh_pk, &m.onion, &name, None)?;
         }
     }
     let _ = events.try_send(CoreEvent::GroupUpdated { group_id: to_hex(&gref.id) });

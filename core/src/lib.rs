@@ -211,6 +211,9 @@ struct ContactDto {
     id: i64, sign_pk: String, dh_pk: String, onion: String, name: String,
     trust: u8, created_at: i64, last_seen: Option<i64>, is_bot: bool,
     pinned_at: Option<i64>, last_message_at: Option<i64>,
+    /// Relay this contact receives through, from their card. `None` means this
+    /// client's own relay setting is used, as it was before cards carried one.
+    relay: Option<String>,
 }
 
 impl From<Contact> for ContactDto {
@@ -223,6 +226,7 @@ impl From<Contact> for ContactDto {
             },
             created_at: c.created_at, last_seen: c.last_seen, is_bot: c.is_bot,
             pinned_at: c.pinned_at, last_message_at: c.last_message_at,
+            relay: c.relay_address,
         }
     }
 }
@@ -602,13 +606,14 @@ async fn set_display_name(name: String, ctx: State<'_, AppCtx>) -> Result<(), St
 
 #[tauri::command]
 async fn add_contact(
-    onion: String, sign_pk: String, dh_pk: String, name: String,
+    onion: String, sign_pk: String, dh_pk: String, name: String, relay: Option<String>,
     ctx: State<'_, AppCtx>,
 ) -> Result<i64, String> {
     let sign = parse_hex32(&sign_pk)?;
     let dh = parse_hex32(&dh_pk)?;
     let card = IdentityCard { sign_pk: sign, dh_pk: dh };
-    core_of(&ctx).await?.add_contact(&card, &onion, &name).await.map_err(err)
+    let relay = relay.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    core_of(&ctx).await?.add_contact_via(&card, &onion, &name, relay).await.map_err(err)
 }
 
 #[tauri::command]
@@ -1419,7 +1424,7 @@ async fn import_identity_to_profile(
 
     let mut contact_updates: Vec<(i64, String, gipny_libcore::db::TrustLevel, bool)> = Vec::with_capacity(backup.contacts.len());
     for c in &backup.contacts {
-        let cid = db.add_contact(&c.sign_pk, &c.dh_pk, &c.onion, &c.name).map_err(err)?;
+        let cid = db.add_contact(&c.sign_pk, &c.dh_pk, &c.onion, &c.name, None).map_err(err)?;
         let trust = match c.trust { 1 => gipny_libcore::db::TrustLevel::Verified, 2 => gipny_libcore::db::TrustLevel::Blocked, _ => gipny_libcore::db::TrustLevel::Unverified };
         contact_updates.push((cid, c.name.clone(), trust, c.is_bot));
     }

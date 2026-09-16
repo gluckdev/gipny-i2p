@@ -525,7 +525,18 @@ impl SessionManager {
     }
 
     pub async fn add_contact(&self, card: &crate::crypto::IdentityCard, onion: &str, name: &str) -> Result<i64> {
-        let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name)?;
+        self.add_contact_via(card, onion, name, None).await
+    }
+
+    /// Add a contact, recording the relay their card named.
+    ///
+    /// `relay` is where *they* receive: messages to this contact are deposited
+    /// there, not on whatever relay this client happens to use. `None` keeps the
+    /// old behaviour of falling back to this client's configured relay.
+    pub async fn add_contact_via(
+        &self, card: &crate::crypto::IdentityCard, onion: &str, name: &str, relay: Option<&str>,
+    ) -> Result<i64> {
+        let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
         let _ = self.events.send(SessionEvent::ContactAdded { contact_id: id }).await;
         self.send_kick.notify_one();
         Ok(id)
@@ -935,7 +946,7 @@ impl SessionManager {
                     Some(c) => c,
                     None => {
                         let name = hex_short(&sender_sign);
-                        let id = self.db.add_contact(&sender_sign, &sender_dh, "", &name)?;
+                        let id = self.db.add_contact(&sender_sign, &sender_dh, "", &name, None)?;
                         let _ = self.events.send(SessionEvent::ContactAdded { contact_id: id }).await;
                         self.db.get_contact(id)?.ok_or(SessionError::NotFound)?
                     }
@@ -1493,7 +1504,7 @@ fn ensure_group_session(db: &Arc<Db>, identity: &Arc<Identity>, gref: &WireGroup
         let name = if m.name.is_empty() { hex_short(&m.sign_pk) } else { m.name.clone() };
         db.add_group_member(&gref.id, &m.sign_pk, &m.dh_pk, &m.onion, &name, is_self)?;
         if !is_self && db.find_contact_by_identity(&m.dh_pk)?.is_none() {
-            let _ = db.add_contact(&m.sign_pk, &m.dh_pk, &m.onion, &name)?;
+            let _ = db.add_contact(&m.sign_pk, &m.dh_pk, &m.onion, &name, None)?;
         }
     }
     Ok(())

@@ -17,6 +17,8 @@ export interface Contact {
   is_bot: boolean;
   pinned_at: number | null;
   last_message_at: number | null;
+  /** Relay this contact receives through; null falls back to our own setting. */
+  relay: string | null;
 }
 
 export interface Button { text: string; callback_data: string; }
@@ -174,8 +176,10 @@ export class Api {
   static setRelayAddress(addr: string): Promise<void> {
     return invoke('set_relay_address', { addr });
   }
-  static addContact(onion: string, signPk: string, dhPk: string, name: string): Promise<number> {
-    return invoke('add_contact', { onion, signPk, dhPk, name });
+  static addContact(
+    onion: string, signPk: string, dhPk: string, name: string, relay?: string,
+  ): Promise<number> {
+    return invoke('add_contact', { onion, signPk, dhPk, name, relay: relay ?? null });
   }
   static listContacts(): Promise<Contact[]> {
     return invoke('list_contacts');
@@ -365,8 +369,29 @@ export class Api {
   }
 }
 
-export function encodeCard(onion: string, signPk: string, dhPk: string, name?: string): string {
-  const base = `gipny:v1:${onion}:${signPk}:${dhPk}`;
+/**
+ * A shareable contact card.
+ *
+ * v2 adds the relay the holder receives through. That is what makes more than
+ * one relay possible: before it, every client had a single relay setting for
+ * everyone, so somebody had to run infrastructure for the whole network. With
+ * the relay in the card, a message goes to where its *recipient* collects it.
+ *
+ * The address slot is the holder's i2p destination. It is regenerated every
+ * launch and nothing dials it, so it is informational only — the relay is what
+ * delivery actually uses.
+ */
+export function encodeCard(
+  onion: string, signPk: string, dhPk: string, name?: string, relay?: string,
+): string {
+  const r = relay?.trim() ?? '';
+  // v1 stays the format when there is no relay to carry, so cards handed out by
+  // clients that have none keep working with older builds.
+  if (!r) {
+    const base = `gipny:v1:${onion}:${signPk}:${dhPk}`;
+    return name ? `${base}:${encodeURIComponent(name)}` : base;
+  }
+  const base = `gipny:v2:${onion}:${signPk}:${dhPk}:${r}`;
   return name ? `${base}:${encodeURIComponent(name)}` : base;
 }
 
@@ -387,13 +412,37 @@ export function isValidI2pAddress(addr: string): boolean {
   return /^[A-Za-z0-9~-]{516,}={0,2}$/.test(a);
 }
 
-export function decodeCard(input: string): { onion: string; signPk: string; dhPk: string; name?: string } | null {
-  const m = input.trim().match(/^gipny:v1:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64})(?::(.+))?$/);
-  if (!m) return null;
+export interface DecodedCard {
+  onion: string;
+  signPk: string;
+  dhPk: string;
+  name?: string;
+  /** Relay the holder receives through; absent on v1 cards. */
+  relay?: string;
+}
+
+export function decodeCard(input: string): DecodedCard | null {
+  const raw = input.trim();
+
+  const v2 = raw.match(
+    /^gipny:v2:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64}):([^:]+)(?::(.+))?$/,
+  );
+  if (v2) {
+    return {
+      onion: v2[1]!,
+      signPk: v2[2]!.toLowerCase(),
+      dhPk: v2[3]!.toLowerCase(),
+      relay: v2[4]!,
+      name: v2[5] ? decodeURIComponent(v2[5]) : undefined,
+    };
+  }
+
+  const v1 = raw.match(/^gipny:v1:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64})(?::(.+))?$/);
+  if (!v1) return null;
   return {
-    onion: m[1]!,
-    signPk: m[2]!.toLowerCase(),
-    dhPk: m[3]!.toLowerCase(),
-    name: m[4] ? decodeURIComponent(m[4]) : undefined,
+    onion: v1[1]!,
+    signPk: v1[2]!.toLowerCase(),
+    dhPk: v1[3]!.toLowerCase(),
+    name: v1[4] ? decodeURIComponent(v1[4]) : undefined,
   };
 }

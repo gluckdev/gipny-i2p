@@ -25,13 +25,20 @@ export class IdentityModal {
       placeholder: 'e.g., gipny', maxlength: '64',
     }) as HTMLInputElement;
     const cardBlock = h('div', { class: 'card-block' });
+    // The card carries the relay we receive through, so whoever adds us deposits
+    // where we actually collect. Without it they would have to already use the
+    // same relay as us, which is what made one shared relay mandatory.
+    let myRelay = '';
     const updateCard = (): void => {
       const name = nameI.value.trim();
       cardBlock.textContent = id
-        ? encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined)
+        ? encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay)
         : '';
     };
     updateCard();
+    Api.getRelayAddress()
+      .then((r) => { myRelay = r.trim(); updateCard(); })
+      .catch(() => {});
     nameI.addEventListener('input', updateCard);
 
     Api.myBundle().then((b: Bundle) => {

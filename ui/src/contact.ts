@@ -95,6 +95,11 @@ export class AddContactModal {
     }) as HTMLTextAreaElement;
     const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
     const onionI = h('input', { class: 'input', placeholder: 'i2p destination (b64) or abc...xyz.b32.i2p' });
+    const relayI = h('input', {
+      class: 'input',
+      placeholder: 'relay of this contact — leave empty to use your own',
+      'aria-label': 'contact relay destination',
+    }) as HTMLInputElement;
     const signI = h('input', { class: 'input', placeholder: 'sign_pk (64 hex)' });
     const dhI = h('input', { class: 'input', placeholder: 'dh_pk (64 hex)' });
     let cardName = '';
@@ -105,6 +110,9 @@ export class AddContactModal {
         onionI.value = parsed.onion;
         signI.value = parsed.signPk;
         dhI.value = parsed.dhPk;
+        // v1 cards carry no relay; leaving the field alone then means "use ours",
+        // which is exactly the old behaviour.
+        relayI.value = parsed.relay ?? '';
         cardName = parsed.name?.trim() ?? '';
         err.textContent = '';
       }
@@ -121,6 +129,10 @@ export class AddContactModal {
           'имя контакта приходит из его карточки и потом обновляется автоматически из его сообщений. локально не задаётся — каждый сам себя называет.'),
         h('div', { class: 'divider-text' }, 'manual entry'),
         h('div', { class: 'field' }, h('label', null, 'i2p address'), onionI),
+        h('div', { class: 'field' }, h('label', null, 'relay'), relayI),
+        h('div', { class: 'hint', style: { marginBottom: '8px' } },
+          'релей — это где контакт забирает почту. приходит из его карточки; ' +
+          'пусто — используется твой.'),
         h('div', { class: 'field' }, h('label', null, 'sign_pk'), signI),
         h('div', { class: 'field' }, h('label', null, 'dh_pk'), dhI),
         err,
@@ -140,8 +152,13 @@ export class AddContactModal {
             }
             if (!/^[0-9a-f]{64}$/.test(sign)) { err.textContent = 'sign_pk must be 64 hex'; return; }
             if (!/^[0-9a-f]{64}$/.test(dh)) { err.textContent = 'dh_pk must be 64 hex'; return; }
+            const relay = relayI.value.trim();
+            if (relay && !isValidI2pAddress(relay)) {
+              err.textContent = 'relay must be a .b32.i2p address or a full base64 destination';
+              return;
+            }
             try {
-              await Api.addContact(onion, sign, dh, name);
+              await Api.addContact(onion, sign, dh, name, relay || undefined);
               await store.refreshContacts();
               store.showToast('contact added');
               close();
