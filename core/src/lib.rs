@@ -462,16 +462,22 @@ async fn boot(
         }
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join("data.db"), &mk).map_err(err)?);
-    // Point the transport at the bundled go-i2p router shipped as a Tauri
-    // resource. On desktop it's spawned as a child; on Android the router is
-    // started in-process by the foreground service, so this is a no-op there.
+    // Point the transport at the bundled i2pd shipped as a Tauri resource. On
+    // desktop it's spawned as a child; on Android the router is started
+    // in-process by the foreground service, so this is a no-op there.
+    //
+    // resource_dir() is authoritative: the deb and AppImage put resources under
+    // usr/lib/<product>/resources/, which router.rs's relative probing does not
+    // reach. Resolving here means the bundled router is always found.
     #[cfg(not(target_os = "android"))]
     if std::env::var_os("GIPNY_I2P_BIN").is_none() {
         if let Ok(res) = app.path().resource_dir() {
-            let name = if cfg!(windows) { "gipny-i2p-router.exe" } else { "gipny-i2p-router" };
-            let cand = res.join(name);
-            if cand.exists() {
-                std::env::set_var("GIPNY_I2P_BIN", cand);
+            let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
+            for cand in [res.join(name), res.join("resources").join(name)] {
+                if cand.exists() {
+                    std::env::set_var("GIPNY_I2P_BIN", cand);
+                    break;
+                }
             }
         }
     }
