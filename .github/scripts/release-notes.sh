@@ -110,7 +110,7 @@ highlights="docs/releases/$VERSION.md"
   echo "- **Linux** — AppImage: \`chmod +x gipny-i2p_*.AppImage\` и запустить. deb: \`sudo apt install ./gipny-i2p_*.deb\`"
   echo "- **Android** — разрешите установку из этого источника, когда телефон спросит. Релизы подписаны одним постоянным ключом, поэтому следующие версии ставятся поверх установленной."
   echo "- **Релей** — архив для своего сервера: \`gipny-relay\`, \`i2pd\` и systemd-юниты. Как развернуть — [в README](https://github.com/$REPO#2-запуск-собственного-выделенного-релея)."
-  echo "- **Агент** — архив для сервера: \`gipny-agent\`, \`i2pd\` и systemd-юнит; как поставить — в \`README.txt\` внутри и [в README](https://github.com/$REPO#%EF%B8%8F-remote-agent--удалённая-консоль)."
+  echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P. В архиве \`gipny-agent\`, \`i2pd\` и systemd-юнит; как поставить — в \`README.txt\` внутри и [в README](https://github.com/$REPO#%EF%B8%8F-remote-agent--удалённая-консоль)."
   echo
   echo "## Проверка файлов"
   echo
