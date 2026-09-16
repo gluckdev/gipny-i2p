@@ -141,6 +141,65 @@ export class SettingsModal {
           );
         })(),
 
+        h('div', { class: 'divider-text' }, 'agent mode'),
+        (() => {
+          const picker = h('select', { class: 'input' }) as HTMLSelectElement;
+          const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
+          const err = h('div', { class: 'err' });
+          const toggle = h('button', { class: 'btn btn-block' }) as HTMLButtonElement;
+
+          const candidates = () => store.contacts.get().filter((c) => c.trust !== 2);
+
+          const render = (): void => {
+            const master = store.agentMode.get();
+            picker.replaceChildren();
+            for (const c of candidates()) picker.appendChild(h('option', { value: String(c.id) }, c.name));
+            if (master) {
+              status.textContent = `включён · мастер: ${master.name || 'unnamed'} · ${master.sign_pk.slice(0, 16)}…`;
+              toggle.textContent = 'Выключить режим агента';
+              toggle.className = 'btn btn-block btn-danger';
+              picker.disabled = true;
+            } else {
+              status.textContent = candidates().length === 0
+                ? 'нет контактов, которым можно доверить консоль'
+                : 'выключен';
+              toggle.textContent = 'Включить режим агента';
+              toggle.className = 'btn btn-block';
+              picker.disabled = false;
+            }
+            toggle.disabled = !master && candidates().length === 0;
+          };
+          render();
+
+          toggle.addEventListener('click', () => busy(toggle, async () => {
+            err.textContent = '';
+            try {
+              const master = store.agentMode.get();
+              if (master) {
+                await store.setAgentMode(null);
+                store.showToast('agent mode off');
+              } else {
+                const id = parseInt(picker.value, 10);
+                if (!Number.isFinite(id)) { err.textContent = 'выберите мастера'; return; }
+                await store.setAgentMode(id);
+                store.showToast('agent mode on');
+              }
+              render();
+            } catch (e) { err.textContent = String(e); }
+          }));
+
+          return h('div', null,
+            h('div', { class: 'hint', style: { marginBottom: '6px' } },
+              'мастер сможет выполнять на этом устройстве команды от вашего имени, а вы — '
+              + 'видеть вывод. выключить может и мастер, и вы. откройте режим чата/консоли '
+              + 'в переписке с мастером. на Android команды идут в песочнице приложения.'),
+            h('div', { class: 'field' }, picker),
+            status,
+            err,
+            toggle,
+          );
+        })(),
+
         h('div', { class: 'divider-text' }, 'appearance'),
         (() => {
           // Applied the moment it is picked — unlike the router settings there is

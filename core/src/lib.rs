@@ -9,7 +9,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
-use crate::core::{Core, PendingAttachment};
+use crate::core::{AgentMaster, Core, PendingAttachment};
+use gipny_libcore::{WireConsole, CONSOLE_COMMAND, CONSOLE_OFF};
+use gipny_libcore::agent::BODY_OFF;
 use gipny_libcore::crypto::IdentityCard;
 use gipny_libcore::db::{Contact, Group, GroupMember, Message, TrustLevel};
 use gipny_libcore::net::I2pNode;
@@ -116,6 +118,7 @@ pub fn run() {
             get_router_settings, set_router_settings,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
             set_contact_bot, reset_contact_session,
+            get_agent_mode, set_agent_mode, send_console_command, send_agent_off,
             list_messages, message_position, unread_count, mark_read, delete_message,
             send_message, send_message_paths, send_edit, send_edit_group,
             forward_message,
@@ -215,6 +218,8 @@ struct ContactDto {
     /// Relay this contact receives through, from their card. `None` means this
     /// client's own relay setting is used, as it was before cards carried one.
     relay: Option<String>,
+    /// This contact is in agent mode with us as master: its console is open.
+    agent_granted: bool,
 }
 
 impl From<Contact> for ContactDto {
@@ -228,6 +233,7 @@ impl From<Contact> for ContactDto {
             created_at: c.created_at, last_seen: c.last_seen, is_bot: c.is_bot,
             pinned_at: c.pinned_at, last_message_at: c.last_message_at,
             relay: c.relay_address,
+            agent_granted: c.agent_granted,
         }
     }
 }
@@ -250,17 +256,36 @@ struct MessageDto {
     expires_at: Option<i64>,
     buttons: Option<Vec<Vec<ButtonDto>>>,
     reply_to: Option<i64>,
+    /// Console framing: a command, its output, or an agent-mode marker.
+    console: Option<ConsoleDto>,
 }
 
-fn attach_buttons(db: &gipny_libcore::db::Db, dtos: &mut [MessageDto]) -> Result<(), String> {
+#[derive(Serialize)]
+struct ConsoleDto {
+    kind: u8,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+    truncated: bool,
+}
+
+/// Per-message extras kept beside the row: inline buttons and console frames.
+fn attach_extras(db: &gipny_libcore::db::Db, dtos: &mut [MessageDto]) -> Result<(), String> {
     let ids: Vec<i64> = dtos.iter().map(|d| d.id).collect();
     let map = db.load_buttons_batch(&ids).map_err(err)?;
+    let consoles = db.load_settings_batch("console_", &ids).map_err(err)?;
     for dto in dtos.iter_mut() {
         if let Some(bytes) = map.get(&dto.id) {
             if let Ok(wire) = bincode::deserialize::<Vec<Vec<gipny_libcore::WireButton>>>(bytes) {
                 dto.buttons = Some(wire.into_iter()
                     .map(|row| row.into_iter().map(|b| ButtonDto { text: b.text, callback_data: b.callback_data }).collect())
                     .collect());
+            }
+        }
+        if let Some(bytes) = consoles.get(&dto.id) {
+            if let Ok(c) = bincode::deserialize::<WireConsole>(bytes) {
+                dto.console = Some(ConsoleDto {
+                    kind: c.kind, exit_code: c.exit_code, duration_ms: c.duration_ms, truncated: c.truncated,
+                });
             }
         }
     }
@@ -279,6 +304,7 @@ impl From<Message> for MessageDto {
             sent: m.sent, delivered: m.delivered, read: m.read, expires_at: m.expires_at,
             buttons: None,
             reply_to: m.reply_to,
+            console: None,
         }
     }
 }
@@ -655,7 +681,42 @@ async fn update_contact(id: i64, name: String, trust: u8, ctx: State<'_, AppCtx>
         0 => TrustLevel::Unverified, 1 => TrustLevel::Verified, 2 => TrustLevel::Blocked,
         _ => return Err("bad trust".into()),
     };
-    core_of(&ctx).await?.db().update_contact(id, &name, t).map_err(err)
+    core_of(&ctx).await?.update_contact(id, &name, t).await.map_err(err)
+}
+
+// ----- agent mode ------------------------------------------------------------
+
+#[tauri::command]
+async fn get_agent_mode(ctx: State<'_, AppCtx>) -> Result<Option<AgentMaster>, String> {
+    Ok(core_of(&ctx).await?.agent_master())
+}
+
+/// `Some(contact)` switches agent mode on with that contact as master; `None`
+/// switches it off and tells the master.
+#[tauri::command]
+async fn set_agent_mode(contact_id: Option<i64>, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.set_agent_mode(contact_id).await.map_err(err)
+}
+
+/// Master side: a line typed in the console, with any files to upload first.
+#[tauri::command]
+async fn send_console_command(
+    contact_id: i64, body: String, paths: Vec<String>, ctx: State<'_, AppCtx>,
+) -> Result<i64, String> {
+    let core = core_of(&ctx).await?;
+    let mut atts = Vec::with_capacity(paths.len());
+    for p in &paths {
+        atts.push(read_one_attachment(p)?);
+    }
+    core.send_console(contact_id, body, WireConsole::new(CONSOLE_COMMAND), atts).await.map_err(err)
+}
+
+/// Master side: switch the agent's mode off remotely.
+#[tauri::command]
+async fn send_agent_off(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<i64, String> {
+    core_of(&ctx).await?
+        .send_console(contact_id, BODY_OFF.into(), WireConsole::new(CONSOLE_OFF), vec![])
+        .await.map_err(err)
 }
 
 #[tauri::command]
@@ -682,7 +743,7 @@ async fn list_messages(
     let db = core.db();
     let list = db.list_messages(contact_id, limit, before_id).map_err(err)?;
     let mut dtos: Vec<MessageDto> = list.into_iter().map(MessageDto::from).collect();
-    attach_buttons(db, &mut dtos)?;
+    attach_extras(db, &mut dtos)?;
     Ok(dtos)
 }
 
@@ -875,7 +936,7 @@ async fn search_messages(
     if trimmed.is_empty() { return Ok(vec![]); }
     let rows = db.search_messages(trimmed, contact_id, gid_bytes.as_deref(), limit).map_err(err)?;
     let mut dtos: Vec<MessageDto> = rows.into_iter().map(MessageDto::from).collect();
-    attach_buttons(db, &mut dtos)?;
+    attach_extras(db, &mut dtos)?;
     let contacts_by_id: std::collections::HashMap<i64, String> =
         db.list_contacts().map_err(err)?.into_iter().map(|c| (c.id, c.display_name)).collect();
     let groups_by_hex: std::collections::HashMap<String, String> =
@@ -1030,7 +1091,7 @@ async fn list_group_messages(
     let db = core.db();
     let list = db.list_group_messages(&gid, limit, before_id).map_err(err)?;
     let mut dtos: Vec<MessageDto> = list.into_iter().map(MessageDto::from).collect();
-    attach_buttons(db, &mut dtos)?;
+    attach_extras(db, &mut dtos)?;
     Ok(dtos)
 }
 
@@ -1110,7 +1171,7 @@ async fn list_pinned_contact(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<
     let db = core.db();
     let list = db.list_pinned_contact(contact_id).map_err(err)?;
     let mut dtos: Vec<MessageDto> = list.into_iter().map(MessageDto::from).collect();
-    attach_buttons(db, &mut dtos)?;
+    attach_extras(db, &mut dtos)?;
     Ok(dtos)
 }
 
@@ -1164,7 +1225,7 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
     let db = core.db();
     let list = db.list_pinned_group(&gid).map_err(err)?;
     let mut dtos: Vec<MessageDto> = list.into_iter().map(MessageDto::from).collect();
-    attach_buttons(db, &mut dtos)?;
+    attach_extras(db, &mut dtos)?;
     Ok(dtos)
 }
 

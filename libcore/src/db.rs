@@ -72,6 +72,9 @@ pub struct Contact {
     /// Relay this contact receives through, from their card. `None` means "use
     /// whatever this client has configured" — the old single-relay behaviour.
     pub relay_address: Option<String>,
+    /// This contact has put itself in agent mode with us as master: its console
+    /// is open to us until it sends a revoke.
+    pub agent_granted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -212,7 +215,7 @@ CREATE TABLE settings (
 );
 "#;
 
-macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address FROM contacts" }; }
+macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0) FROM contacts" }; }
 macro_rules! select_group { () => { "SELECT id, name, created_at, pinned_at, last_message_at FROM groups" }; }
 macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to" }; }
 macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to" }; }
@@ -441,6 +444,12 @@ impl Db {
                     DELETE FROM settings WHERE k = 'buttons_' || OLD.id;
                 END;
 
+            CREATE TRIGGER IF NOT EXISTS tr_console_msg_del
+                AFTER DELETE ON messages
+                BEGIN
+                    DELETE FROM settings WHERE k = 'console_' || OLD.id OR k = 'console_pending_' || OLD.id;
+                END;
+
             CREATE TRIGGER IF NOT EXISTS tr_messages_fts_ai AFTER INSERT ON messages BEGIN
                 INSERT INTO messages_fts(rowid, body) VALUES (NEW.id, NEW.body);
             END;
@@ -461,6 +470,7 @@ impl Db {
         // client had exactly one relay for everyone, which meant somebody had to
         // run infrastructure for the whole network.
         Self::ensure_column(conn, "contacts", "relay_address", "TEXT")?;
+        Self::ensure_column(conn, "contacts", "agent_granted", "INTEGER NOT NULL DEFAULT 0")?;
         let added_group_lma = Self::ensure_column(conn, "groups", "last_message_at", "INTEGER")?;
         Self::ensure_column(conn, "groups", "pinned_at", "INTEGER")?;
         if added_contact_lma {
@@ -634,6 +644,7 @@ impl Db {
             pinned_at: r.get(9)?,
             last_message_at: r.get(10)?,
             relay_address: r.get(11)?,
+            agent_granted: r.get::<_, i64>(12)? != 0,
         })
     }
 
@@ -641,6 +652,13 @@ impl Db {
         self.with_conn(|c| Ok(c.execute(
             "UPDATE contacts SET is_bot = ?1 WHERE id = ?2 AND is_bot <> ?1",
             params![is_bot as i64, id])? > 0))
+    }
+
+    /// Returns whether the flag actually changed.
+    pub fn set_contact_agent_granted(&self, id: i64, granted: bool) -> Result<bool> {
+        self.with_conn(|c| Ok(c.execute(
+            "UPDATE contacts SET agent_granted = ?1 WHERE id = ?2 AND agent_granted <> ?1",
+            params![granted as i64, id])? > 0))
     }
 
     pub fn put_session(&self, contact_id: i64, state: &[u8]) -> Result<()> {
@@ -1225,6 +1243,39 @@ impl Db {
                 }
             }
             Ok(out)
+        })
+    }
+
+    /// Per-message extras under `<prefix><message id>`, for a batch of ids.
+    pub fn load_settings_batch(&self, prefix: &str, ids: &[i64]) -> Result<HashMap<i64, Vec<u8>>> {
+        if ids.is_empty() { return Ok(HashMap::new()); }
+        let keys: Vec<String> = ids.iter().map(|i| format!("{prefix}{i}")).collect();
+        let placeholders = (0..keys.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT k, v FROM settings WHERE k IN ({})", placeholders);
+        self.with_conn(|c| {
+            let mut s = c.prepare(&sql)?;
+            let mut out: HashMap<i64, Vec<u8>> = HashMap::with_capacity(keys.len());
+            for row in s.query_map(rusqlite::params_from_iter(keys.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))? {
+                let (k, v) = row?;
+                if let Some(mid) = k.strip_prefix(prefix).and_then(|s| s.parse::<i64>().ok()) {
+                    out.insert(mid, v);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Message ids that have a `<prefix><id>` setting, ascending. `substr`
+    /// rather than `LIKE`: the prefixes carry `_`, which LIKE treats as a wildcard.
+    pub fn list_setting_ids_with_prefix(&self, prefix: &str) -> Result<Vec<i64>> {
+        self.with_conn(|c| {
+            let mut s = c.prepare("SELECT k FROM settings WHERE substr(k, 1, length(?1)) = ?1")?;
+            let mut ids: Vec<i64> = s.query_map(params![prefix], |r| r.get::<_, String>(0))?
+                .filter_map(|k| k.ok())
+                .filter_map(|k| k.strip_prefix(prefix).and_then(|s| s.parse::<i64>().ok()))
+                .collect();
+            ids.sort_unstable();
+            Ok(ids)
         })
     }
 

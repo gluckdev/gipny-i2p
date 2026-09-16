@@ -91,6 +91,8 @@ pub struct WirePayload {
     pub typing: Option<bool>,
     #[serde(default)]
     pub notify_sound: Option<String>,
+    #[serde(default)]
+    pub console: Option<WireConsole>,
 }
 
 impl WirePayload {
@@ -99,8 +101,42 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None, notify_sound: None,
+            typing: None, notify_sound: None, console: None,
         }
+    }
+}
+
+/// Agent-mode "console" marker on a message. Carried as an optional trailing
+/// field so a client without this field simply sees the message's text body
+/// (a short ASCII marker for control kinds, the command or its output otherwise)
+/// and ignores the console framing. `kind` is a `u8`, not an enum, so an
+/// unknown future kind decodes cleanly instead of failing the whole payload.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct WireConsole {
+    /// See the `CONSOLE_*` constants.
+    pub kind: u8,
+    /// Process exit code for `CONSOLE_OUTPUT`; `None` if killed by signal/timeout.
+    pub exit_code: Option<i32>,
+    /// Wall-clock duration of the command for `CONSOLE_OUTPUT`.
+    pub duration_ms: Option<u64>,
+    /// Output was capped and trimmed.
+    pub truncated: bool,
+}
+
+/// A command the master wants run on the agent.
+pub const CONSOLE_COMMAND: u8 = 0;
+/// The result of running a command, sent back to the master.
+pub const CONSOLE_OUTPUT: u8 = 1;
+/// The agent telling the master "you may drive my console" (agent mode on).
+pub const CONSOLE_GRANT: u8 = 2;
+/// The agent telling the master the console is closed (agent mode off).
+pub const CONSOLE_REVOKE: u8 = 3;
+/// The master telling the agent to switch agent mode off.
+pub const CONSOLE_OFF: u8 = 4;
+
+impl WireConsole {
+    pub fn new(kind: u8) -> Self {
+        Self { kind, exit_code: None, duration_ms: None, truncated: false }
     }
 }
 
@@ -214,6 +250,25 @@ struct WireV5 {
 }
 
 #[derive(Serialize, Deserialize)]
+struct WireV7 {
+    origin_msg_id: u64,
+    body: String,
+    attachments: Vec<WireAttachment>,
+    sent_at: i64,
+    ttl_ms: Option<i64>,
+    group: Option<WireGroupRef>,
+    buttons: Option<Vec<Vec<WireButton>>>,
+    callback_data: Option<String>,
+    edit_of: Option<u64>,
+    pin: Option<WirePin>,
+    ack_for: Option<u64>,
+    sender_name: Option<String>,
+    reply_to: Option<WireReply>,
+    typing: Option<bool>,
+    notify_sound: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct WireV6 {
     origin_msg_id: u64,
     body: String,
@@ -244,6 +299,31 @@ impl From<&WirePayload> for WireV6 {
     }
 }
 
+impl From<&WirePayload> for WireV7 {
+    fn from(p: &WirePayload) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id, body: p.body.clone(), attachments: p.attachments.clone(),
+            sent_at: p.sent_at, ttl_ms: p.ttl_ms, group: p.group.clone(),
+            buttons: p.buttons.clone(), callback_data: p.callback_data.clone(),
+            edit_of: p.edit_of, pin: p.pin.clone(), ack_for: p.ack_for,
+            sender_name: p.sender_name.clone(), reply_to: p.reply_to.clone(),
+            typing: p.typing, notify_sound: p.notify_sound.clone(),
+        }
+    }
+}
+
+impl From<WireV7> for WirePayload {
+    fn from(v: WireV7) -> Self {
+        Self {
+            origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
+            sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
+            buttons: v.buttons, callback_data: v.callback_data,
+            edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
+            reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound, console: None,
+        }
+    }
+}
+
 impl From<WireV6> for WirePayload {
     fn from(v: WireV6) -> Self {
         Self {
@@ -251,7 +331,7 @@ impl From<WireV6> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: v.typing, notify_sound: None,
+            reply_to: v.reply_to, typing: v.typing, notify_sound: None, console: None,
         }
     }
 }
@@ -319,7 +399,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None, notify_sound: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None, console: None,
         }
     }
 }
@@ -331,7 +411,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None, notify_sound: None,
+            reply_to: None, typing: None, notify_sound: None, console: None,
         }
     }
 }
@@ -343,7 +423,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None, notify_sound: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
         }
     }
 }
@@ -355,7 +435,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
         }
     }
 }
@@ -366,7 +446,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
         }
     }
 }
@@ -377,13 +457,14 @@ impl From<WireV0> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
-    if p.notify_sound.is_some()                    { bincode::serialize(p) }
+    if p.console.is_some()                         { bincode::serialize(p) }
+    else if p.notify_sound.is_some()               { bincode::serialize(&WireV7::from(p)) }
     else if p.typing.is_some()                     { bincode::serialize(&WireV6::from(p)) }
     else if p.reply_to.is_some()                   { bincode::serialize(&WireV5::from(p)) }
     else if p.sender_name.is_some()                { bincode::serialize(&WireV4::from(p)) }
@@ -394,6 +475,7 @@ pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::
 
 pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Ok(v) = bincode::deserialize::<WirePayload>(pt) { return Ok(v); }
+    if let Ok(v) = bincode::deserialize::<WireV7>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV6>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV5>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV4>(pt)      { return Ok(v.into()); }
@@ -593,6 +675,33 @@ impl SessionManager {
         Ok(msg_id)
     }
 
+    /// Sends a console-framed message: a command, its output, or a control
+    /// marker. The frame rides in `console_<id>` next to the row, as buttons
+    /// and sounds do, and goes onto the wire when the send loop builds the
+    /// payload — so it is queued, retried and acked like any other message.
+    pub async fn send_console(
+        &self,
+        contact_id: i64,
+        body: String,
+        console: WireConsole,
+        attachments: Vec<(String, Vec<u8>)>,
+    ) -> Result<i64> {
+        let sent_at = now_ms();
+        let mut stored = Vec::with_capacity(attachments.len());
+        for (name, data) in &attachments {
+            let (key, path, size) = store_attachment(&self.data_dir, data)?;
+            stored.push(NewAttachment {
+                name: name.clone(), size: size as i64, key: key.to_vec(), path,
+            });
+        }
+        let msg_id = self.db.insert_message(
+            contact_id, Direction::Out, &body, sent_at, None, &stored,
+        )?;
+        self.db.set_setting(&format!("console_{}", msg_id), &bincode::serialize(&console)?)?;
+        self.send_kick.notify_one();
+        Ok(msg_id)
+    }
+
     pub async fn send_callback(&self, contact_id: i64, data: String) -> Result<()> {
         let mut payload = WirePayload {
             origin_msg_id: 0,
@@ -610,6 +719,7 @@ impl SessionManager {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -643,6 +753,7 @@ impl SessionManager {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -754,6 +865,7 @@ impl SessionManager {
                 reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -790,6 +902,7 @@ impl SessionManager {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1164,7 +1277,8 @@ impl SessionManager {
             && payload.callback_data.is_none()
             && payload.edit_of.is_none()
             && payload.pin.is_none()
-            && payload.ack_for.is_none();
+            && payload.ack_for.is_none()
+            && payload.console.is_none();
         if is_empty { return Ok(()); }
 
         if let Some(gref) = &payload.group {
@@ -1287,6 +1401,27 @@ impl SessionManager {
                 self.db.set_setting(&format!("buttons_{}", mid), &b)?;
             }
         }
+        if let Some(c) = &payload.console {
+            if let Ok(b) = bincode::serialize(c) {
+                self.db.set_setting(&format!("console_{}", mid), &b)?;
+            }
+            // Console framing is a DM affair; in a group it is stored for
+            // display and nothing more.
+            if payload.group.is_none() {
+                match c.kind {
+                    CONSOLE_COMMAND => {
+                        self.db.set_setting(&format!("console_pending_{}", mid), b"1")?;
+                    }
+                    CONSOLE_GRANT | CONSOLE_REVOKE => {
+                        let granted = c.kind == CONSOLE_GRANT;
+                        if self.db.set_contact_agent_granted(contact_id, granted).unwrap_or(false) {
+                            let _ = self.events.send(SessionEvent::ContactUpdated { contact_id }).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         self.db.touch_contact(contact_id)?;
         let payload_for_ack = payload.clone();
         let _ = self.events.send(SessionEvent::IncomingPayload {
@@ -1351,6 +1486,7 @@ impl SessionManager {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = {
             let g = self.relay_out.read().await;
@@ -1546,10 +1682,14 @@ impl SessionManager {
         let sound: Option<String> = self.db.get_setting(&format!("sound_{}", msg.id))
             .ok().flatten()
             .and_then(|b| String::from_utf8(b).ok());
+        let console: Option<WireConsole> = self.db.get_setting(&format!("console_{}", msg.id))
+            .ok().flatten()
+            .and_then(|b| bincode::deserialize::<WireConsole>(&b).ok());
         let ttl_ms = msg.expires_at.map(|e| e - msg.sent_at);
         let mut p = WirePayload::simple(msg.id as u64, msg.body.clone(), wire_atts, msg.sent_at, ttl_ms);
         p.buttons = buttons;
         p.notify_sound = sound;
+        p.console = console;
         Ok(p)
     }
 
@@ -1651,4 +1791,72 @@ fn hex_short(b: &[u8]) -> String {
     let mut s = String::new();
     for x in &b[..8.min(b.len())] { s.push_str(&format!("{:02x}", x)); }
     s
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    fn sample() -> WirePayload {
+        let mut p = WirePayload::simple(7, "uptime".into(), vec![], 1_700_000_000_000, None);
+        p.sender_name = Some("laptop".into());
+        p
+    }
+
+    #[test]
+    fn console_roundtrips() {
+        let mut p = sample();
+        p.console = Some(WireConsole {
+            kind: CONSOLE_OUTPUT, exit_code: Some(0), duration_ms: Some(42), truncated: true,
+        });
+        let bytes = encode_payload(&p).unwrap();
+        let back = decode_payload(&bytes).unwrap();
+        assert_eq!(back.console, p.console);
+        assert_eq!(back.body, "uptime");
+        assert_eq!(back.sender_name.as_deref(), Some("laptop"));
+    }
+
+    #[test]
+    fn older_shapes_decode_with_no_console() {
+        // sender_name alone is a WireV4; a newer client must still read it.
+        let p = sample();
+        let bytes = encode_payload(&p).unwrap();
+        assert!(bincode::deserialize::<WirePayload>(&bytes).is_err(), "must fall through, not misread");
+        let back = decode_payload(&bytes).unwrap();
+        assert_eq!(back.console, None);
+        assert_eq!(back.sender_name.as_deref(), Some("laptop"));
+    }
+
+    #[test]
+    fn notify_sound_alone_is_the_v7_shape() {
+        let mut p = sample();
+        p.notify_sound = Some("ping".into());
+        let bytes = encode_payload(&p).unwrap();
+        assert_eq!(bytes, bincode::serialize(&WireV7::from(&p)).unwrap());
+        let back = decode_payload(&bytes).unwrap();
+        assert_eq!(back.notify_sound.as_deref(), Some("ping"));
+        assert_eq!(back.console, None);
+    }
+
+    #[test]
+    fn a_build_without_the_console_field_still_reads_the_body() {
+        // What a pre-console client does: deserialize its own newest shape from
+        // bytes that carry one more trailing field. bincode's `deserialize`
+        // tolerates trailing bytes, so the marker body comes through as text.
+        let mut p = sample();
+        p.body = crate::agent::BODY_GRANT.into();
+        p.console = Some(WireConsole::new(CONSOLE_GRANT));
+        let bytes = encode_payload(&p).unwrap();
+        let old: WireV7 = bincode::deserialize(&bytes).expect("trailing field tolerated");
+        assert_eq!(old.body, "[agent on]");
+        assert_eq!(old.sender_name.as_deref(), Some("laptop"));
+    }
+
+    #[test]
+    fn unknown_console_kind_still_decodes() {
+        let mut p = sample();
+        p.console = Some(WireConsole::new(200));
+        let back = decode_payload(&encode_payload(&p).unwrap()).unwrap();
+        assert_eq!(back.console.map(|c| c.kind), Some(200));
+    }
 }

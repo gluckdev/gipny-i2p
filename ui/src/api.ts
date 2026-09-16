@@ -19,6 +19,9 @@ export interface Contact {
   last_message_at: number | null;
   /** Relay this contact receives through; null falls back to our own setting. */
   relay: string | null;
+  /** This contact is running in agent mode with us as master: its console is
+   * open. The chat shows the чат/консоль switch when true. */
+  agent_granted: boolean;
 }
 
 export type TransitProfile = 'frugal' | 'balanced' | 'generous';
@@ -32,6 +35,32 @@ export interface RouterSettings {
 }
 
 export interface Button { text: string; callback_data: string; }
+
+/** Console framing on a message. `kind` is one of the CONSOLE_* constants. */
+export interface ConsoleFrame {
+  kind: number;
+  exit_code: number | null;
+  duration_ms: number | null;
+  truncated: boolean;
+}
+
+/** A contact that put this client into agent mode, from `get_agent_mode`. */
+export interface AgentMaster {
+  contact_id: number;
+  name: string;
+  sign_pk: string;
+}
+
+/**
+ * Console message kinds. Mirrors the `CONSOLE_*` u8 constants in
+ * `libcore/src/session.rs`; a value the UI does not know is drawn as a plain
+ * system line rather than breaking the log.
+ */
+export const CONSOLE_COMMAND = 0;
+export const CONSOLE_OUTPUT = 1;
+export const CONSOLE_GRANT = 2;
+export const CONSOLE_REVOKE = 3;
+export const CONSOLE_OFF = 4;
 
 export interface Message {
   id: number;
@@ -47,6 +76,8 @@ export interface Message {
   expires_at: number | null;
   buttons?: Button[][] | null;
   reply_to: number | null;
+  /** Set when the row is console-framed (command, output or mode marker). */
+  console?: ConsoleFrame | null;
 }
 
 export interface Group {
@@ -108,7 +139,7 @@ export interface ApkArtifact { arch: string; size: number; }
 export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 
 export type CoreEvent =
-  | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null } }
+  | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null; console_kind: number | null } }
   | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
   | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
@@ -123,7 +154,9 @@ export type CoreEvent =
   | { UpdateAvailable: { version: string; notes: string; target_key: string; size: number } }
   | { UpdateProgress: { downloaded: number; total: number; pct: number } }
   | { UpdateReady: { path: string } }
-  | { UpdateFailed: { reason: string } };
+  | { UpdateFailed: { reason: string } }
+  | { AgentModeChanged: { master: AgentMaster | null } }
+  | { ConsoleActivity: { contact_id: number } };
 
 export interface PendingAttachment { name: string; data: string; }
 
@@ -214,6 +247,22 @@ export class Api {
   }
   static resetContactSession(id: number): Promise<void> {
     return invoke('reset_contact_session', { id });
+  }
+  /** The contact this client runs console commands for, if agent mode is on. */
+  static getAgentMode(): Promise<AgentMaster | null> {
+    return invoke('get_agent_mode');
+  }
+  /** `some contact` opens this client's console to them; `null` closes it. */
+  static setAgentMode(contactId: number | null): Promise<void> {
+    return invoke('set_agent_mode', { contactId });
+  }
+  /** Master side: one console line, with files to upload before it runs. */
+  static sendConsoleCommand(contactId: number, body: string, paths: string[] = []): Promise<number> {
+    return invoke('send_console_command', { contactId, body, paths });
+  }
+  /** Master side: close the agent's console remotely. */
+  static sendAgentOff(contactId: number): Promise<number> {
+    return invoke('send_agent_off', { contactId });
   }
   static messagePosition(contactId: number | null, groupId: string | null, messageId: number): Promise<number | null> {
     return invoke('message_position', { contactId, groupId, messageId });

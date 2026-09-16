@@ -1,5 +1,5 @@
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { Api } from './api';
+import { Api, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 import type { Message } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
@@ -41,6 +41,9 @@ export class ChatView extends View {
   private lastScrollTop = 0;
   private static readonly STICKY_THRESHOLD = 4;
   private static readonly LOAD_MORE_THRESHOLD = 200;
+  private modeBtn: HTMLButtonElement;
+  private agentOffBtn: HTMLButtonElement;
+  private promptEl: HTMLElement;
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
@@ -132,6 +135,45 @@ export class ChatView extends View {
     const searchBtn = h('button', { class: 'btn btn-ghost', title: 'search in this chat', onClick: () => this.openSearch() }, '⌕');
     const mediaBtn = h('button', { class: 'btn btn-ghost', title: 'media in this chat', onClick: () => this.openMedia() }, '◉');
 
+    const agentControls = h('div', { class: 'agent-controls' });
+    this.modeBtn = h('button', {
+      class: 'btn btn-ghost btn-sm',
+      onClick: () => {
+        store.toggleConsoleMode(target);
+        renderAgentControls();
+        renderInputMode();
+        this.renderLog();
+      },
+    }) as HTMLButtonElement;
+    this.agentOffBtn = h('button', {
+      class: 'btn btn-danger btn-sm',
+      onClick: () => void this.disableRemoteAgent(),
+    }, 'disable') as HTMLButtonElement;
+    const renderAgentControls = (): void => {
+      if (isGroup) { agentControls.replaceChildren(); return; }
+      const c = store.contacts.get().find((x) => x.id === (target.id as number));
+      if (!c?.agent_granted) {
+        agentControls.replaceChildren();
+        if (store.isConsoleMode(target)) store.toggleConsoleMode(target);
+        return;
+      }
+      const consoleMode = store.isConsoleMode(target);
+      this.modeBtn.textContent = consoleMode ? 'chat' : 'console';
+      this.modeBtn.title = consoleMode ? 'show ordinary chat' : 'open remote console';
+      agentControls.replaceChildren(this.modeBtn, this.agentOffBtn);
+    };
+    const renderInputMode = (): void => {
+      const consoleMode = !isGroup && store.isConsoleMode(target);
+      this.el?.classList.toggle('console', consoleMode);
+      this.promptEl.textContent = consoleMode ? '$' : '>';
+      this.input.placeholder = consoleMode
+        ? 'command... (enter to run, shift+enter newline)'
+        : 'type message... (enter to send, shift+enter newline)';
+      this.ttlPicker.classList.toggle('hidden', consoleMode);
+      this.replyChip.classList.toggle('hidden', consoleMode);
+    };
+    renderAgentControls();
+
     const headerRight = isGroup
       ? h('div', { class: 'row' }, searchBtn, mediaBtn, detailsBtn)
       : (() => {
@@ -140,6 +182,7 @@ export class ChatView extends View {
             h('span', {
               class: 'trust-badge trust-' + (c?.trust ?? 0),
             }, trustLabel(c?.trust ?? 0)),
+            agentControls,
             searchBtn,
             mediaBtn,
             detailsBtn,
@@ -169,7 +212,7 @@ export class ChatView extends View {
         this.replyChip,
         this.fileChips,
         h('div', { class: 'chat-input-row' },
-          h('div', { class: 'prompt' }, '>'),
+          this.promptEl = h('div', { class: 'prompt' }, '>'),
           this.input,
           h('button', { class: 'btn btn-ghost', title: 'attach', onClick: () => this.pickFiles() }, '[+]'),
           h('button', { class: 'btn', onClick: () => this.send() }, 'Send'),
@@ -187,7 +230,8 @@ export class ChatView extends View {
       if (isGroup) this.renderLog();
     }, false);
     this.sub(store.pinned, () => this.renderLog(), false);
-    this.sub(store.contacts, () => this.renderLog(), false);
+    this.sub(store.contacts, () => { renderAgentControls(); this.renderLog(); }, false);
+    this.sub(store.consoleMode, () => { renderAgentControls(); renderInputMode(); this.renderLog(); }, false);
     this.sub(store.scrollToMessage, (s) => {
       if (!s || !sameTarget(s.target, target)) return;
       void this.scrollToMessage(s.messageId);
@@ -202,6 +246,31 @@ export class ChatView extends View {
         store.groupMembers.update((m) => { const n = new Map(m); n.set(target.id as string, members); return n; });
       }).catch(() => {});
     }
+    renderInputMode();
+  }
+
+  /**
+   * Which messages this pane shows, and how a console frame becomes a row.
+   *
+   * The master's console pane is only framed messages. In the ordinary log a
+   * client that holds a peer's console keeps commands and output out of the
+   * conversation (they live in the console pane); a client that only *is* an
+   * agent has no pane, so it keeps them inline, marked as commands. Mode
+   * markers (grant/revoke/off) are conversation-level events and always show.
+   */
+  private showsInLog(m: Message): boolean {
+    const kind = m.console?.kind;
+    if (kind == null) return true;
+    if (this.store.isConsoleMode(this.target)) return true;
+    if (kind === CONSOLE_COMMAND || kind === CONSOLE_OUTPUT) {
+      return !this.holdsPeerConsole();
+    }
+    return true;
+  }
+
+  private holdsPeerConsole(): boolean {
+    if (this.target.kind !== 'contact') return false;
+    return !!this.store.contacts.get().find((c) => c.id === (this.target.id as number))?.agent_granted;
   }
 
   destroy(): void {
@@ -318,12 +387,13 @@ export class ChatView extends View {
   private msgSignature(m: Message): string {
     const pinned = this.isPinned(m) ? '1' : '0';
     const btns = m.buttons ? JSON.stringify(m.buttons) : '';
-    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${this.editingId === m.id ? 'e' : ''}`;
+    const consoleFrame = m.console ? JSON.stringify(m.console) : '';
+    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${this.editingId === m.id ? 'e' : ''}`;
   }
 
   private renderLog(): void {
     const key = targetKey(this.target);
-    const list = this.store.messages.get().get(key) ?? [];
+    const list = (this.store.messages.get().get(key) ?? []).filter((m) => this.showsInLog(m));
     const wasAtBottom = this.isAtBottom();
     const newIds = list.map((m) => m.id);
 
@@ -483,6 +553,7 @@ export class ChatView extends View {
   }
 
   private renderMessage(m: Message): HTMLElement {
+    if (m.console) return this.renderConsoleMessage(m);
     if (this.editingId === m.id) return this.renderEditing(m);
     const meta = m.outgoing
       ? (m.delivered ? 'delivered ✓✓' : (m.sent ? 'sent ✓' : 'pending…'))
@@ -537,6 +608,51 @@ export class ChatView extends View {
       wrap.appendChild(btns);
     }
     return wrap;
+  }
+
+  /**
+   * A console-framed row. Commands read as `$ line`, output as its text with a
+   * dim `exit · time · truncated` trailer, and the three mode markers as the
+   * same system divider the chat uses for days — they are events about the
+   * conversation, not console traffic.
+   */
+  private renderConsoleMessage(m: Message): HTMLElement {
+    const frame = m.console!;
+    if (frame.kind === CONSOLE_GRANT || frame.kind === CONSOLE_REVOKE || frame.kind === CONSOLE_OFF) {
+      const text = frame.kind === CONSOLE_GRANT ? '── консоль открыта ──'
+        : frame.kind === CONSOLE_OFF ? '── мастер выключил режим агента ──'
+        : '── консоль закрыта ──';
+      return h('div', { class: 'divider-text console-divider', 'data-mid': String(m.id) }, text);
+    }
+    const wrap = h('div', { class: 'console-msg', 'data-mid': String(m.id) });
+    if (frame.kind !== CONSOLE_COMMAND && frame.kind !== CONSOLE_OUTPUT) {
+      wrap.appendChild(h('div', { class: 'divider-text console-divider' }, `── console #${frame.kind} ──`));
+      return wrap;
+    }
+    if (frame.kind === CONSOLE_COMMAND) {
+      wrap.classList.add('cmd');
+      wrap.appendChild(h('span', { class: 'console-prompt' }, '$'));
+      wrap.appendChild(h('div', { class: 'console-body' }, m.body));
+    } else {
+      wrap.classList.add('out');
+      wrap.appendChild(h('div', { class: 'console-body' }, m.body || '(no output)'));
+      const bits: string[] = [];
+      if (m.outgoing) bits.push(frame.exit_code == null ? 'no exit code' : `exit ${frame.exit_code}`);
+      if (frame.duration_ms != null) bits.push(`${(frame.duration_ms / 1000).toFixed(2)}s`);
+      if (frame.truncated) bits.push('truncated');
+      if (bits.length > 0) wrap.appendChild(h('div', { class: 'console-meta' }, bits.join(' · ')));
+    }
+    this.loadAttachmentsFor(m.id, wrap);
+    return wrap;
+  }
+
+  private async disableRemoteAgent(): Promise<void> {
+    try {
+      await this.store.sendAgentOff(this.target);
+      this.store.showToast('agent mode off requested');
+    } catch (e) {
+      this.store.showToast('agent off failed: ' + String(e), true);
+    }
   }
 
   private renderEditing(m: Message): HTMLElement {
@@ -777,6 +893,21 @@ export class ChatView extends View {
     const body = this.input.value.trim();
     if (!body && this.pending.length === 0) return;
     const paths = this.pending.map((f) => f.path);
+    const consoleMode = this.target.kind === 'contact' && this.store.isConsoleMode(this.target);
+    if (consoleMode) {
+      // A console line is a command, not a message: attachments go up first
+      // (the agent saves them), then the body runs.
+      this.input.value = '';
+      this.input.style.height = 'auto';
+      this.pending = [];
+      this.renderFileChips();
+      try {
+        await this.store.sendConsoleCommand(this.target, body, paths);
+      } catch (e) {
+        this.store.showToast('command failed: ' + String(e), true);
+      }
+      return;
+    }
     const replyToId = this.replyTo?.id ?? null;
     this.input.value = '';
     this.input.style.height = 'auto';

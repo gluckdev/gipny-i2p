@@ -1430,6 +1430,75 @@ a:hover { text-decoration: underline; }
   display: none;
 }
 
+/* Agent mode strip: same always-on row as the relay banner, but it must read as
+   an active remote shell rather than a health notice. Deliberately loud. */
+.agent-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--danger-soft, rgba(255, 60, 60, 0.14));
+  border-bottom: 1px solid var(--danger);
+  color: var(--danger);
+}
+.agent-banner.hidden { display: none; }
+.agent-controls { display: flex; gap: 6px; align-items: center; }
+
+/* ---------------------------------------------------------------------------
+   Console mode. `.console` is the same Chat view with different clothes: the
+   conversation pane is replaced by a command log, so it drops bubbles, avatars
+   and the message chrome and reads as a terminal over either theme.
+   --------------------------------------------------------------------------- */
+.chat.console { background: #000; }
+.chat.console .chat-log { background: #000; }
+.chat.console .msg,
+.chat.console .msg-body { max-width: none; }
+
+.console-msg {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.console-msg .console-prompt {
+  color: #33ff66;
+  flex-shrink: 0;
+}
+.console-msg.cmd .console-body {
+  color: #7dff9e;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.console-msg.out .console-body {
+  color: #d8d8d8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+  margin: 0;
+}
+.console-msg.out .console-meta {
+  color: #6a6a6a;
+  font-size: 10px;
+  align-self: flex-end;
+  white-space: nowrap;
+  padding-top: 2px;
+}
+.console-divider {
+  color: #4a4a4a;
+  text-transform: none;
+}
+.chat.console .msg-attachments .attachment {
+  background: #0a0a0a;
+  border-color: #333;
+  color: #d8d8d8;
+}
+
 /* Generic escape hatch for sections the app hides when the feature behind them
    is not configured (e.g. the update surface with no update server). */
 .hidden { display: none !important; }

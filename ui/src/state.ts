@@ -1,4 +1,11 @@
-import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo } from './api';
+import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster } from './api';
+import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
+
+const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF]);
+
+function isConsoleEvent(kind: number | null): boolean {
+  return kind != null && CONSOLE_KINDS.has(kind);
+}
 import { Api } from './api';
 import {
   isPermissionGranted,
@@ -73,6 +80,14 @@ export class Store {
   toast = new Signal<{ text: string; err: boolean } | null>(null);
   relayConnected = new Signal<boolean>(false);
   muted = new Signal<Set<string>>(new Set());
+  /** The contact driving this client's console, or null when agent mode is off. */
+  agentMode = new Signal<AgentMaster | null>(null);
+  /**
+   * Chats whose log is showing the console instead of the conversation, by
+   * `targetKey`. Session-only: which pane you were looking at is not worth
+   * persisting, and file/db state never depends on it.
+   */
+  consoleMode = new Signal<Set<string>>(new Set());
   typing = new Signal<Map<string, { sender_sign_pk: string | null; until: number }>>(new Map());
   private typingClearTimers: Map<string, number> = new Map();
   private settled = false;
@@ -395,6 +410,8 @@ export class Store {
     this.identity.set(null);
     this.currentProfile.set(null);
     this.relayConnected.set(false);
+    this.agentMode.set(null);
+    this.consoleMode.set(new Set());
     this.bootStage.set('unlocking');
     this.updateAvailable.set(null);
     this.updateProgress.set(null);
@@ -410,12 +427,14 @@ export class Store {
   }
 
   async refreshAll(): Promise<void> {
-    const [contacts, groups, mutedList] = await Promise.all([
+    const [contacts, groups, mutedList, agentMode] = await Promise.all([
       Api.listContacts(), Api.listGroups(), Api.listMuted().catch(() => []),
+      Api.getAgentMode().catch(() => null),
     ]);
     this.contacts.set(contacts);
     this.groups.set(groups);
     this.muted.set(new Set(mutedList));
+    this.agentMode.set(agentMode);
     for (const c of contacts) {
       if (c.last_seen != null) this.lastSeenMs.set(c.id, c.last_seen);
     }
@@ -645,6 +664,39 @@ export class Store {
     await Api.pressGroupButton(groupId, messageId, callbackData);
   }
 
+  /** Opens this client's console to `contactId`, or closes it with null. */
+  async setAgentMode(contactId: number | null): Promise<void> {
+    await Api.setAgentMode(contactId);
+    this.agentMode.set(await Api.getAgentMode().catch(() => null));
+  }
+
+  /** Master side: hand one line to the agent's console. */
+  async sendConsoleCommand(target: ChatTarget, body: string, paths: string[] = []): Promise<void> {
+    if (target.kind !== 'contact') return;
+    await Api.sendConsoleCommand(target.id, body, paths);
+    await this.loadMessages(target);
+  }
+
+  /** Master side: switch the agent's mode off remotely, then stop showing its console. */
+  async sendAgentOff(target: ChatTarget): Promise<void> {
+    if (target.kind !== 'contact') return;
+    await Api.sendAgentOff(target.id);
+    await this.loadMessages(target);
+  }
+
+  isConsoleMode(target: ChatTarget): boolean {
+    return this.consoleMode.get().has(targetKey(target));
+  }
+
+  toggleConsoleMode(target: ChatTarget): void {
+    const key = targetKey(target);
+    this.consoleMode.update((s) => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      return n;
+    });
+  }
+
   async createGroup(name: string, memberContactIds: number[]): Promise<string> {
     const gid = await Api.createGroup(name, memberContactIds);
     await this.refreshGroups();
@@ -745,7 +797,11 @@ export class Store {
       }
       const fresh = this.settled && (Date.now() - m.sent_at) < Store.NOTIFY_MAX_AGE_MS;
       const muted = this.muted.get().has(key);
-      const shouldNotify = fresh && !muted && !(isActiveChat && visible);
+      // Console commands and their output are deliberately silent: they are
+      // operator traffic, not ordinary chat notifications. Unread accounting
+      // above remains unchanged so the console still shows pending work.
+      const shouldNotify = fresh && !muted && !(isActiveChat && visible)
+        && !isConsoleEvent(m.console_kind);
       if (shouldNotify) {
         const label = target.kind === 'contact'
           ? (this.contacts.get().find((c) => c.id === target.id)?.name ?? 'unknown')
@@ -870,6 +926,17 @@ export class Store {
       this.refreshContacts();
     } else if ('ContactUpdated' in e) {
       this.refreshContacts();
+    } else if ('AgentModeChanged' in e) {
+      this.agentMode.set(e.AgentModeChanged.master);
+      if (!e.AgentModeChanged.master) {
+        // Closing agent mode also closes any local console pane. The message
+        // history remains available in chat mode.
+        this.consoleMode.set(new Set());
+      }
+    } else if ('ConsoleActivity' in e) {
+      const target: ChatTarget = { kind: 'contact', id: e.ConsoleActivity.contact_id };
+      this.bumpChatOrder(target, Date.now());
+      this.loadMessages(target).catch(() => {});
     } else if ('GroupUpdated' in e) {
       this.refreshGroups();
       const gid = e.GroupUpdated.group_id;

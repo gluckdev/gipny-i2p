@@ -226,6 +226,32 @@ class MainView extends View {
     this.subs.push(store.relayConnected.subscribe(paintBanner, true));
     this.subs.push(store.relayUnconfigured.subscribe(paintBanner, true));
     main.insertBefore(banner, main.firstChild);
+
+    // Agent mode is intentionally visible in the same always-on strip as relay
+    // health. A remote shell should never be easy to forget or accidentally
+    // leave enabled after the user returns to an ordinary chat.
+    const agentBanner = h('div', { class: 'agent-banner hidden' });
+    const paintAgentBanner = (): void => {
+      const master = store.agentMode.get();
+      agentBanner.classList.toggle('hidden', master == null);
+      if (!master) return;
+      const off = h('button', {
+        class: 'btn btn-danger btn-sm',
+        onClick: () => busy(off as HTMLButtonElement, async () => {
+          try {
+            await store.setAgentMode(null);
+          } catch (e) {
+            store.showToast('agent mode: ' + String(e), true);
+          }
+        }),
+      }, 'disable') as HTMLButtonElement;
+      agentBanner.replaceChildren(
+        h('span', null, `AGENT MODE · master: ${master.name || 'unnamed'}`),
+        off,
+      );
+    };
+    main.insertBefore(agentBanner, main.firstChild);
+    this.subs.push(store.agentMode.subscribe(paintAgentBanner, true));
     this.subs.push(store.sidebarCollapsed.subscribe((c: boolean) => {
       main.classList.toggle('sidebar-collapsed', c);
     }));

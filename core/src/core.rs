@@ -94,6 +94,9 @@ pub enum CoreEvent {
         body: String,
         sent_at: i64,
         notify_sound: Option<String>,
+        /// Set when the message is console-framed (a command, output, or an
+        /// agent-mode marker), so the UI can skip the usual notification.
+        console_kind: Option<u8>,
     },
     MessageEdited {
         message_id: i64,
@@ -127,9 +130,22 @@ pub enum CoreEvent {
     UpdateProgress { downloaded: u64, total: u64, pct: u8 },
     UpdateReady { path: String },
     UpdateFailed { reason: String },
+    /// Agent mode switched on (with this master) or off, locally or remotely.
+    AgentModeChanged { master: Option<AgentMaster> },
+    /// This client, in agent mode, produced console output for `contact_id`.
+    ConsoleActivity { contact_id: i64 },
 }
 
-use gipny_libcore::{WirePayload, WireAttachment, WireButton, WireGroupRef, WireMember};
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentMaster {
+    pub contact_id: i64,
+    pub name: String,
+    pub sign_pk: String,
+}
+
+use gipny_libcore::{WirePayload, WireAttachment, WireButton, WireGroupRef, WireMember, WireConsole};
+use gipny_libcore::{CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF};
+use gipny_libcore::agent::{self, ExecOptions, SETTING_AGENT_MASTER, BODY_GRANT, BODY_REVOKE};
 
 fn hex_bytes(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
@@ -170,6 +186,8 @@ pub struct Core {
     updater: Arc<Updater>,
     pending_update: Arc<Mutex<Option<UpdateInfo>>>,
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
+    /// Ids of console commands to run, in order, by the single agent worker.
+    agent_tx: mpsc::UnboundedSender<i64>,
 }
 
 impl Core {
@@ -182,6 +200,7 @@ impl Core {
         let identity = Arc::new(Self::load_or_create_identity(&db)?);
         let (events_tx, events_rx) = mpsc::channel(EVENTS_CAPACITY);
         let updater = Arc::new(Updater::new(node.clone()));
+        let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let core = Arc::new(Self {
             db: db.clone(),
             node: node.clone(),
@@ -199,6 +218,7 @@ impl Core {
             updater,
             pending_update: Arc::new(Mutex::new(None)),
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            agent_tx,
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -206,6 +226,12 @@ impl Core {
         core.clone().spawn_send_loop();
         core.clone().spawn_purge_loop();
         core.clone().spawn_update_loop();
+        core.clone().spawn_agent_worker(agent_rx);
+        if let Some(m) = core.agent_master() {
+            // Commands that arrived while the app was closed are on disk with
+            // their pending markers; pick them up in order.
+            core.enqueue_pending_commands(m.contact_id);
+        }
         Ok((core, events_rx))
     }
 
@@ -248,6 +274,148 @@ impl Core {
         Ok(())
     }
 
+    // ----- agent mode ------------------------------------------------------
+
+    /// The master this client runs console commands for: agent mode is on and
+    /// that contact still exists.
+    pub fn agent_master(&self) -> Option<AgentMaster> {
+        let pk = self.db.get_setting(SETTING_AGENT_MASTER).ok().flatten()?;
+        let pk: [u8; 32] = pk.as_slice().try_into().ok()?;
+        let c = self.db.find_contact_by_sign_pk(&pk).ok().flatten()?;
+        Some(AgentMaster { contact_id: c.id, name: c.display_name, sign_pk: to_hex(&c.identity_sign) })
+    }
+
+    /// Switches agent mode on for `contact_id`, or off with `None`. On: the
+    /// master is told (GRANT), and every command of theirs that arrived while
+    /// the mode was off is queued to run now, oldest first.
+    pub async fn set_agent_mode(self: &Arc<Self>, contact_id: Option<i64>) -> Result<()> {
+        let Some(cid) = contact_id else { return self.disable_agent_mode(true).await; };
+        let c = self.db.get_contact(cid)?.ok_or(CoreError::NotFound)?;
+        if c.trust == TrustLevel::Blocked { return Err(CoreError::State); }
+        if let Some(prev) = self.agent_master() {
+            if prev.contact_id != cid {
+                let _ = self.send_console(prev.contact_id, BODY_REVOKE.into(), WireConsole::new(CONSOLE_REVOKE), vec![]).await;
+            }
+        }
+        self.db.set_setting(SETTING_AGENT_MASTER, &c.identity_sign)?;
+        self.send_console(cid, BODY_GRANT.into(), WireConsole::new(CONSOLE_GRANT), vec![]).await?;
+        eprintln!("[agent] agent mode on, master = contact {cid}");
+        let _ = self.events.try_send(CoreEvent::AgentModeChanged { master: self.agent_master() });
+        self.enqueue_pending_commands(cid);
+        Ok(())
+    }
+
+    async fn disable_agent_mode(&self, notify_master: bool) -> Result<()> {
+        let prev = self.agent_master();
+        self.db.delete_setting(SETTING_AGENT_MASTER)?;
+        if let (true, Some(m)) = (notify_master, &prev) {
+            let _ = self.send_console(m.contact_id, BODY_REVOKE.into(), WireConsole::new(CONSOLE_REVOKE), vec![]).await;
+        }
+        eprintln!("[agent] agent mode off");
+        let _ = self.events.try_send(CoreEvent::AgentModeChanged { master: None });
+        Ok(())
+    }
+
+    /// Name/trust update that also drops agent mode when the master is blocked.
+    pub async fn update_contact(&self, id: i64, name: &str, trust: TrustLevel) -> Result<()> {
+        self.db.update_contact(id, name, trust)?;
+        if trust == TrustLevel::Blocked && self.agent_master().is_some_and(|m| m.contact_id == id) {
+            self.disable_agent_mode(false).await?;
+        }
+        Ok(())
+    }
+
+    fn enqueue_pending_commands(&self, master_id: i64) {
+        let ids = self.db.list_setting_ids_with_prefix("console_pending_").unwrap_or_default();
+        for id in ids {
+            if let Ok(Some(m)) = self.db.get_message(id) {
+                if m.contact_id == Some(master_id) && matches!(m.direction, Direction::In) {
+                    let _ = self.agent_tx.send(id);
+                }
+            }
+        }
+    }
+
+    /// Sends a console-framed message: a command, its output, or a control
+    /// marker. The frame rides in `console_<id>` next to the row, as buttons
+    /// do, so it is queued, retried and acked like any other message.
+    pub async fn send_console(
+        &self,
+        contact_id: i64,
+        body: String,
+        console: WireConsole,
+        attachments: Vec<PendingAttachment>,
+    ) -> Result<i64> {
+        let sent_at = now_ms();
+        let mut stored = Vec::with_capacity(attachments.len());
+        for a in &attachments {
+            let (key, path, size) = self.store_attachment(&a.data)?;
+            stored.push(NewAttachment {
+                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
+            });
+        }
+        let msg_id = self.db.insert_message(
+            contact_id, Direction::Out, &body, sent_at, None, &stored,
+        )?;
+        self.db.set_setting(&format!("console_{}", msg_id), &bincode::serialize(&console)?)?;
+        self.send_kick.notify_one();
+        Ok(msg_id)
+    }
+
+    fn spawn_agent_worker(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<i64>) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(mid) = rx.recv().await {
+                this.run_console_command(mid).await;
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// Runs one queued command. Everything is re-checked at run time, because
+    /// the queue outlives mode switches: the pending marker must still be
+    /// there, the mode still on, and the message still the master's.
+    async fn run_console_command(self: &Arc<Self>, mid: i64) {
+        let pending_key = format!("console_pending_{mid}");
+        if self.db.get_setting(&pending_key).ok().flatten().is_none() { return; }
+        let Some(master) = self.agent_master() else { return; };
+        let msg = match self.db.get_message(mid) {
+            Ok(Some(m)) if m.contact_id == Some(master.contact_id) && matches!(m.direction, Direction::In) => m,
+            _ => { let _ = self.db.delete_setting(&pending_key); return; }
+        };
+        let _ = self.db.delete_setting(&pending_key);
+        let files = self.load_attachment_data(mid).unwrap_or_default();
+        eprintln!(
+            "[agent] exec from {}: {}{}",
+            &master.sign_pk[..16], msg.body,
+            if files.is_empty() { String::new() } else { format!(" (+{} files)", files.len()) },
+        );
+        let reply = agent::handle_console_request(&msg.body, &files, &ExecOptions::default()).await;
+        eprintln!(
+            "[agent] exit={:?} dur={:?}ms truncated={}",
+            reply.console.exit_code, reply.console.duration_ms, reply.console.truncated,
+        );
+        let atts = reply.attachments.into_iter()
+            .map(|(name, data)| PendingAttachment { name, data })
+            .collect();
+        match self.send_console(master.contact_id, reply.body, reply.console, atts).await {
+            Ok(_) => { let _ = self.events.try_send(CoreEvent::ConsoleActivity { contact_id: master.contact_id }); }
+            Err(e) => eprintln!("[agent] reply failed: {e}"),
+        }
+    }
+
+    fn load_attachment_data(&self, msg_id: i64) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut out = Vec::new();
+        for a in self.db.list_attachments(msg_id)? {
+            let key = to_arr32(a.key.clone())?;
+            let full = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
+            let enc = std::fs::read(&full)?;
+            let data = AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc)?;
+            out.push((a.name, data));
+        }
+        Ok(out)
+    }
+
     /// Delete a contact and purge all associated in-memory state.
     ///
     /// The DB row deletion cascades to sessions/messages/attachments via
@@ -260,6 +428,12 @@ impl Core {
         // the bundle_waiters map (keyed by sign_pk, not by contact id).
         let sign_pk: Option<[u8; 32]> = self.db.get_contact(contact_id)?
             .and_then(|c| c.identity_sign.as_slice().try_into().ok());
+
+        // A master that is gone cannot be told, and a mode with no master is
+        // just a stale key.
+        if self.agent_master().is_some_and(|m| m.contact_id == contact_id) {
+            let _ = self.disable_agent_mode(false).await;
+        }
 
         self.db.delete_contact(contact_id)?;
 
@@ -422,6 +596,7 @@ impl Core {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -461,6 +636,7 @@ impl Core {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -496,6 +672,7 @@ impl Core {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -547,6 +724,7 @@ impl Core {
                 reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -592,6 +770,7 @@ impl Core {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
@@ -657,6 +836,7 @@ impl Core {
                 reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1378,7 +1558,7 @@ impl Core {
             return Ok(());
         }
 
-        let is_empty = payload.body.is_empty() && payload.attachments.is_empty() && payload.group.is_none() && payload.callback_data.is_none();
+        let is_empty = payload.body.is_empty() && payload.attachments.is_empty() && payload.group.is_none() && payload.callback_data.is_none() && payload.console.is_none();
         if is_empty { return Ok(()); }
 
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
@@ -1424,6 +1604,39 @@ impl Core {
         if let Some(btns) = &payload.buttons {
             if let Ok(b) = bincode::serialize(btns) {
                 self.db.set_setting(&format!("buttons_{}", mid), &b)?;
+            }
+        }
+        if let Some(c) = &payload.console {
+            if let Ok(b) = bincode::serialize(c) {
+                self.db.set_setting(&format!("console_{}", mid), &b)?;
+            }
+            // Console framing is a DM affair; in a group it is stored for
+            // display and nothing more.
+            if group_id_for_event.is_none() {
+                let from_master = self.agent_master().is_some_and(|m| m.contact_id == contact_id);
+                match c.kind {
+                    CONSOLE_COMMAND => {
+                        // Pending until run. Stays pending while the mode is
+                        // off, and runs when it is switched on for this contact.
+                        self.db.set_setting(&format!("console_pending_{}", mid), b"1")?;
+                        if from_master {
+                            let _ = self.agent_tx.send(mid);
+                        }
+                    }
+                    CONSOLE_OFF => {
+                        if from_master {
+                            eprintln!("[agent] master switched agent mode off");
+                            let _ = self.disable_agent_mode(true).await;
+                        }
+                    }
+                    CONSOLE_GRANT | CONSOLE_REVOKE => {
+                        let granted = c.kind == CONSOLE_GRANT;
+                        if self.db.set_contact_agent_granted(contact_id, granted).unwrap_or(false) {
+                            let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         if let Some(rep) = &payload.reply_to {
@@ -1474,6 +1687,7 @@ impl Core {
             message_id: mid,
             body: body_for_event, sent_at: payload.sent_at,
             notify_sound: payload.notify_sound.clone(),
+            console_kind: payload.console.as_ref().map(|c| c.kind),
         });
         let _ = self.send_ack(&contact, &payload).await;
         Ok(())
@@ -1517,6 +1731,7 @@ impl Core {
             reply_to: None,
             typing: None,
             notify_sound: None,
+            console: None,
         };
         let out = match self.relay_for(contact).await {
             Some(x) => x,
@@ -1820,6 +2035,9 @@ impl Core {
         if let Some(rt) = msg.reply_to {
             p.reply_to = self.build_wire_reply(rt)?;
         }
+        p.console = self.db.get_setting(&format!("console_{}", msg.id))
+            .ok().flatten()
+            .and_then(|b| bincode::deserialize::<WireConsole>(&b).ok());
         Ok(p)
     }
 
@@ -1936,7 +2154,7 @@ fn make_typing_payload(group: Option<WireGroupRef>, typing: bool) -> WirePayload
         origin_msg_id: 0, body: String::new(), attachments: vec![], sent_at: now_ms(),
         ttl_ms: None, group, buttons: None, callback_data: None,
         edit_of: None, pin: None, ack_for: None, sender_name: None,
-        reply_to: None, typing: Some(typing), notify_sound: None,
+        reply_to: None, typing: Some(typing), notify_sound: None, console: None,
     }
 }
 

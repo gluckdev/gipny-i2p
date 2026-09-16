@@ -1749,6 +1749,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gipny-agent"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "gipny-libcore",
+ "tokio",
+]
+
+[[package]]
 name = "gipny-bot"
 version = "0.1.0"
 dependencies = [
