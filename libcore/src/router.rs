@@ -102,6 +102,44 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 /// Per-probe connect/response timeout.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// When to carry i2p over a Yggdrasil mesh as well as plain IP.
+///
+/// Yggdrasil is a different underlay, so it is a way in when the normal way is
+/// blocked — i2p peers and reseed servers are both blockable. It needs a
+/// Yggdrasil node already running on this machine; i2pd looks up the local mesh
+/// address and does not provide one. With none present the router carries on
+/// over plain IP, so turning this on is harmless even when nothing is there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Yggdrasil {
+    /// Never. Plain IP only.
+    Off,
+    /// Try without it, and fall back to it if the router cannot start at all.
+    #[default]
+    Auto,
+    /// Always announce over the mesh.
+    On,
+}
+
+impl Yggdrasil {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+            Self::On => "on",
+        }
+    }
+
+    /// Unknown values fall back to the default rather than erroring: a setting
+    /// written by a newer build must not stop the router from starting.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "off" => Self::Off,
+            "on" => Self::On,
+            _ => Self::Auto,
+        }
+    }
+}
+
 /// Router knobs the user can change.
 ///
 /// Both are persisted per profile and only read when the router starts: i2pd
@@ -112,15 +150,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RouterSettings {
     pub transit: TransitProfile,
-    /// Carry i2p over a Yggdrasil mesh in addition to normal IP.
-    ///
-    /// This is a way in when the normal way is blocked: i2p peers and reseed
-    /// servers are both blockable, and Yggdrasil is a different underlay. It
-    /// needs a Yggdrasil node already running on this machine — i2pd looks up
-    /// the local mesh address and does not provide one. With none present it
-    /// logs and carries on over plain IP, so enabling it is safe even when
-    /// nothing is there.
-    pub yggdrasil: bool,
+    pub yggdrasil: Yggdrasil,
 }
 
 /// Handle to a running i2p router.
@@ -148,6 +178,31 @@ impl RouterHandle {
             Some(b) => b,
             None => resolve_router_bin()?,
         };
+        match settings.yggdrasil {
+            Yggdrasil::On => Self::spawn(data_dir, &bin, settings, true).await,
+            Yggdrasil::Off => Self::spawn(data_dir, &bin, settings, false).await,
+            // Try the ordinary way first; only reach for the mesh if the router
+            // could not come up at all. This catches a blocked start, which is
+            // the case a user cannot work around on their own. It does not catch
+            // a router that opens SAM and then fails to find peers — SAM comes up
+            // regardless of whether the network is reachable — so "auto" is a
+            // fallback for a dead start, not a general connectivity doctor.
+            Yggdrasil::Auto => match Self::spawn(data_dir, &bin, settings, false).await {
+                Ok(h) => Ok(h),
+                Err(e) => {
+                    eprintln!("[i2p] router did not come up ({e:?}); retrying over yggdrasil");
+                    Self::spawn(data_dir, &bin, settings, true).await
+                }
+            },
+        }
+    }
+
+    async fn spawn(
+        data_dir: &Path,
+        bin: &Path,
+        settings: RouterSettings,
+        yggdrasil: bool,
+    ) -> Result<Self> {
         let router_dir = data_dir.join("i2p").join("router");
         std::fs::create_dir_all(&router_dir)
             .map_err(|e| NetError::I2p(format!("router data dir: {e}")))?;
@@ -163,7 +218,7 @@ impl RouterHandle {
         // Everything but SAM is switched off: gipny talks SAMv3 over loopback and
         // has no use for the HTTP console, the proxies, or UPnP punching holes on
         // the user's behalf.
-        let mut cmd = Command::new(&bin);
+        let mut cmd = Command::new(bin);
         cmd.arg(format!("--datadir={}", router_dir.display()))
             .arg("--sam.enabled=true")
             .arg("--sam.address=127.0.0.1")
@@ -175,7 +230,7 @@ impl RouterHandle {
             .arg(format!("--bandwidth={}", settings.transit.bandwidth()))
             .arg(format!("--share={}", settings.transit.share_percent()))
             .arg(format!("--limits.transittunnels={}", settings.transit.transit_tunnels()))
-            .arg(format!("--meshnets.yggdrasil={}", settings.yggdrasil))
+            .arg(format!("--meshnets.yggdrasil={yggdrasil}"))
             .arg("--log=file")
             .arg(format!("--logfile={}", router_dir.join("i2pd.log").display()));
         // Without WIN32_APP the router is a console subsystem binary, so Windows

@@ -1,6 +1,6 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { Api } from './api';
-import type { RouterSettings, TransitProfile } from './api';
+import type { RouterSettings, TransitProfile, YggdrasilMode } from './api';
 import type { Store } from './state';
 import { h, busy, humanSize } from './view';
 import type { App } from './app';
@@ -156,12 +156,18 @@ export class SettingsModal {
             { id: 'generous', title: 'щедро',
               blurb: 'много чужого трафика — лучшая маскировка для тебя и польза сети' },
           ];
+          const yggLevels: { id: YggdrasilMode; title: string; blurb: string }[] = [
+            { id: 'off', title: 'выключен', blurb: 'только обычный интернет' },
+            { id: 'auto', title: 'автоматически',
+              blurb: 'попробовать обычный путь, а если роутер вообще не поднялся — пойти через mesh' },
+            { id: 'on', title: 'всегда', blurb: 'объявлять себя в mesh-сети постоянно' },
+          ];
           const radios = new Map<TransitProfile, HTMLInputElement>();
-          const ygg = h('input', { type: 'checkbox', id: 'opt-ygg' }) as HTMLInputElement;
+          const yggRadios = new Map<YggdrasilMode, HTMLInputElement>();
 
           const current = (): RouterSettings => ({
             transit: [...radios].find(([, r]) => r.checked)?.[0] ?? 'balanced',
-            yggdrasil: ygg.checked,
+            yggdrasil: [...yggRadios].find(([, r]) => r.checked)?.[0] ?? 'auto',
           });
           const persist = async (): Promise<void> => {
             err.textContent = '';
@@ -183,16 +189,29 @@ export class SettingsModal {
             );
           });
 
-          ygg.addEventListener('change', () => { void persist(); });
+          const yggOptions = yggLevels.map(({ id, title, blurb }) => {
+            const r = h('input', { type: 'radio', name: 'ygg', id: `opt-ygg-${id}` }) as HTMLInputElement;
+            yggRadios.set(id, r);
+            r.addEventListener('change', () => { void persist(); });
+            return h('label', { class: 'opt', for: `opt-ygg-${id}` },
+              r,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, title),
+                h('span', { class: 'opt-blurb' }, blurb)),
+            );
+          });
 
           Api.getRouterSettings()
             .then((s2) => {
-              radios.get(s2.transit)?.setAttribute('checked', 'checked');
-              const r = radios.get(s2.transit);
-              if (r) r.checked = true;
-              ygg.checked = s2.yggdrasil;
+              const t = radios.get(s2.transit);
+              if (t) t.checked = true;
+              const y = yggRadios.get(s2.yggdrasil);
+              if (y) y.checked = true;
             })
-            .catch(() => { radios.get('balanced')!.checked = true; });
+            .catch(() => {
+              radios.get('balanced')!.checked = true;
+              yggRadios.get('auto')!.checked = true;
+            });
 
           return h('div', null,
             h('div', { class: 'hint', style: { marginBottom: '8px' } },
@@ -200,15 +219,13 @@ export class SettingsModal {
               + 'а не щедрости: узел, через который идёт только собственный трафик, '
               + 'различить намного проще.'),
             h('div', { class: 'opt-group' }, ...options),
-            h('label', { class: 'opt', for: 'opt-ygg', style: { marginTop: '10px' } },
-              ygg,
-              h('span', { class: 'opt-text' },
-                h('span', { class: 'opt-title' }, 'yggdrasil'),
-                h('span', { class: 'opt-blurb' },
-                  'пускать i2p ещё и через mesh-сеть yggdrasil — обходной путь, '
-                  + 'если провайдер режет обычные входы. нужен запущенный узел yggdrasil; '
-                  + 'без него просто ничего не изменится')),
-            ),
+
+            h('div', { class: 'divider-text', style: { marginTop: '14px' } }, 'yggdrasil'),
+            h('div', { class: 'hint', style: { marginBottom: '8px' } },
+              'обходной путь, если провайдер режет обычные входы в i2p: туннели идут '
+              + 'поверх mesh-сети. нужен запущенный узел yggdrasil на этой машине — '
+              + 'без него ничего не изменится, включать безопасно.'),
+            h('div', { class: 'opt-group' }, ...yggOptions),
             note,
             err,
           );

@@ -22,12 +22,13 @@ export interface Contact {
 }
 
 export type TransitProfile = 'frugal' | 'balanced' | 'generous';
+export type YggdrasilMode = 'off' | 'auto' | 'on';
 
 export interface RouterSettings {
   /** How much of the line carries other people's tunnels. */
   transit: TransitProfile;
   /** Speak i2p over a Yggdrasil mesh as well, when one is running locally. */
-  yggdrasil: boolean;
+  yggdrasil: YggdrasilMode;
 }
 
 export interface Button { text: string; callback_data: string; }

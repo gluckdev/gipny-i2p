@@ -510,8 +510,9 @@ async fn boot(
         yggdrasil: db.get_setting(SETTING_ROUTER_YGGDRASIL)
             .ok()
             .flatten()
-            .map(|v| v == b"1")
-            .unwrap_or(false),
+            .and_then(|v| String::from_utf8(v).ok())
+            .map(|v| gipny_libcore::router::Yggdrasil::parse(&v))
+            .unwrap_or_default(),
     };
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
@@ -1174,7 +1175,8 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
 struct RouterSettingsDto {
     /// "frugal" | "balanced" | "generous"
     transit: String,
-    yggdrasil: bool,
+    /// "off" | "auto" | "on"
+    yggdrasil: String,
 }
 
 #[tauri::command]
@@ -1184,7 +1186,8 @@ async fn get_router_settings(ctx: State<'_, AppCtx>) -> Result<RouterSettingsDto
         .and_then(|v| String::from_utf8(v).ok())
         .unwrap_or_else(|| gipny_libcore::router::TransitProfile::default().as_str().to_string());
     let yggdrasil = db.get_setting(SETTING_ROUTER_YGGDRASIL).map_err(err)?
-        .map(|v| v == b"1").unwrap_or(false);
+        .and_then(|v| String::from_utf8(v).ok())
+        .unwrap_or_else(|| gipny_libcore::router::Yggdrasil::default().as_str().to_string());
     Ok(RouterSettingsDto { transit, yggdrasil })
 }
 
@@ -1199,8 +1202,8 @@ async fn set_router_settings(
     // Normalise through the parser so an unknown value cannot be stored.
     let transit = gipny_libcore::router::TransitProfile::parse(&settings.transit);
     db.set_setting(SETTING_ROUTER_TRANSIT, transit.as_str().as_bytes()).map_err(err)?;
-    db.set_setting(SETTING_ROUTER_YGGDRASIL, if settings.yggdrasil { b"1" } else { b"0" })
-        .map_err(err)?;
+    let ygg = gipny_libcore::router::Yggdrasil::parse(&settings.yggdrasil);
+    db.set_setting(SETTING_ROUTER_YGGDRASIL, ygg.as_str().as_bytes()).map_err(err)?;
     Ok(())
 }
 
