@@ -2,9 +2,9 @@ name: e2e-i2pd
 
 # End-to-end messaging test: relay + two headless bot clients, latency report.
 #
-# Ships as `continue-on-error: true` because real i2p tunnels in CI are
-# inherently flaky (reseed, tunnel-build races, runner throttling).  It
-# proves the full "boot → link → deliver → measure" path end to end.
+# This is the only job in the repo that answers the question the product turns
+# on: do messages arrive over live i2p. It proves the full
+# "boot → link → deliver → measure" path end to end.
 #
 # Pattern reused from relay-testnet.yml:
 #   - SAM /dev/tcp probe loop
@@ -19,16 +19,15 @@ name: e2e-i2pd
 # 127.0.0.1:7654, so only the first router ever got a working transport. Relay
 # and both bots now share ONE router (GIPNY_SAM_PORT=7656).
 #
-# The router itself also needs i2p-router/wiring.go's I2CP reconnect: the
-# router's I2CP server drops idle client connections after 30 s (go-i2p#54),
-# which is always shorter than the gap between router boot and the first
-# SESSION CREATE. Without it every session here fails.
+# The I2CP reconnect workaround this job used to need went away with go-i2p:
+# i2pd has no such defect.
 #
-# Still continue-on-error: reseed and tunnel building are genuinely flaky, and
-# the delivery path beyond the transport is unproven. A green check on this job
-# means nothing by itself — read the PASS/FAIL line the harness prints to the
-# step summary and the echo count in [e2e-timing]. Re-add `pull_request` only
-# once it delivers messages reliably.
+# It is NOT continue-on-error any more. It was, on the argument that reseed and
+# tunnel building are flaky — but that made a green check meaningless, and
+# meaningless green is how a transport that delivered zero messages stayed
+# hidden for weeks (#42). A failed delivery now reds the job. If real flakiness
+# turns out to red the nightly often, the answer is a retry or a quieter
+# notification, not hiding the result.
 
 on:
   schedule:
@@ -64,7 +63,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: update vendored sources to branch heads
+      # This is the one place that deliberately runs ahead of the pin. Every
+      # other workflow builds the pinned commit; this job tests the branch head
+      # and, when it delivers, the bump job below moves the pin to it. That is
+      # how the pin earns its way forward — by delivering, not by compiling.
+      - name: check out the upstream head under test
         run: |
           # Just i2pd, and as a checkout: --remote --recursive would drag every
           # nested dependency to its own branch head too (see i2pd-build.yml).
@@ -109,7 +112,6 @@ jobs:
     needs: router
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     outputs:
       delivered: ${{ steps.harness.outputs.delivered }}
     steps:
@@ -117,11 +119,6 @@ jobs:
       # Checkout + toolchains
       # ------------------------------------------------------------------
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -284,20 +281,22 @@ jobs:
           # Point the bots to the single shared router on SAM port 7656
           GIPNY_SAM_PORT: '7656'
         run: |
-          # /usr/bin/time -v for peak RSS; fall back gracefully if unavailable.
+          # `set -e` is the default shell here and it applies inside `if` bodies
+          # too, so the harness exiting non-zero used to abort this step on the
+          # spot: TIME_RC was never assigned, the log was never printed, and
+          # `delivered` was left empty rather than false. `|| TIME_RC=$?` keeps
+          # the failure as data.
+          TIME_RC=0
           if command -v /usr/bin/time >/dev/null 2>&1; then
             /usr/bin/time -v ./target/release/e2e-harness \
-              > e2e-logs/harness.log 2>&1
-            TIME_RC=$?
+              > e2e-logs/harness.log 2>&1 || TIME_RC=$?
           else
-            ./target/release/e2e-harness > e2e-logs/harness.log 2>&1
-            TIME_RC=$?
+            ./target/release/e2e-harness > e2e-logs/harness.log 2>&1 || TIME_RC=$?
           fi
           cat e2e-logs/harness.log
 
-          # The job is continue-on-error, so its conclusion says nothing. What
-          # counts is whether messages arrived, and that is what gates the bump
-          # below.
+          # Delivery, not exit status, is the question this job exists to answer,
+          # and it gates the pin bump below.
           if [ "$TIME_RC" -eq 0 ] && grep -q '\[e2e\] SUCCESS' e2e-logs/harness.log; then
             echo "delivered=true" >> "$GITHUB_OUTPUT"
           else
