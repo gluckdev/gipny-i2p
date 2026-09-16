@@ -34,6 +34,8 @@ ROWS=(
   "Android 7+ · 32-bit|APK для старых телефонов|gipny-i2p_${VERSION}_android-armv7.apk"
   "Релей · Linux x86_64|сервер, tar.gz|gipny-relay_${VERSION}_linux-amd64.tar.gz"
   "Релей · Linux ARM64|сервер, tar.gz|gipny-relay_${VERSION}_linux-arm64.tar.gz"
+  "Агент · Linux x86_64|консольный демон, tar.gz|gipny-agent_${VERSION}_linux-amd64.tar.gz"
+  "Агент · Linux ARM64|консольный демон, tar.gz|gipny-agent_${VERSION}_linux-arm64.tar.gz"
 )
 
 human() { awk -v b="$1" 'BEGIN { split("Б КБ МБ ГБ", u, " "); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } if (i == 1) printf "%d %s", b, u[i]; else printf "%.1f %s", b, u[i] }'; }
@@ -108,6 +110,7 @@ highlights="docs/releases/$VERSION.md"
   echo "- **Linux** — AppImage: \`chmod +x gipny-i2p_*.AppImage\` и запустить. deb: \`sudo apt install ./gipny-i2p_*.deb\`"
   echo "- **Android** — разрешите установку из этого источника, когда телефон спросит. Релизы подписаны одним постоянным ключом, поэтому следующие версии ставятся поверх установленной."
   echo "- **Релей** — архив для своего сервера: \`gipny-relay\`, \`i2pd\` и systemd-юниты. Как развернуть — [в README](https://github.com/$REPO#свой-релей-нужно-поднять-до-полноценной-работы)."
+  echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P."
   echo
   echo "## Проверка файлов"
   echo

@@ -302,7 +302,64 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2c. Android router: i2pd built as the JNI library GipnyService loads, for
+  # 2c. Headless agent: gipny-agent binary + README, packaged as a tar.gz for
+  #     Linux amd64 and arm64. The agent is a standalone daemon that accepts
+  #     shell commands over the encrypted I2P channel from a trusted master.
+  # ---------------------------------------------------------------------------
+  agent:
+    name: agent (linux ${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runs-on: ubuntu-22.04 }
+          - { arch: arm64, runs-on: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build gipny-agent
+        run: cargo build --release -p gipny-agent
+      - name: package
+        run: |
+          VERSION="$(jq -r .version core/tauri.conf.json)"
+          name="gipny-agent_${VERSION}_linux-${{ matrix.arch }}"
+          mkdir -p "dist/$name"
+          install -m 0755 target/release/gipny-agent "dist/$name/"
+          # Include a brief usage README so the tarball is self-contained.
+          cat > "dist/$name/README.txt" << 'EOF'
+gipny-agent — headless console agent for gipny-i2p
+
+Usage:
+  gipny-agent --data <dir> --master <gipny:v2:…card…> [options]
+
+Options:
+  --name <name>      Display name for this agent (default: hostname)
+  --relay <onion>    Relay to use (default: from master card or compiled-in)
+  --sam <port>       Attach to existing SAM bridge on this port
+  --cwd <dir>        Working directory for commands (default: home dir)
+  --timeout <secs>   Per-command timeout in seconds (default: 120)
+
+On first run the agent prints its contact card to stdout.
+Add it as a contact in gipny, then open the chat with the agent
+and use the console/terminal view to send commands.
+
+The agent executes commands as the user it runs as.
+Run it in a restricted account or container for production use.
+EOF
+          file "dist/$name/gipny-agent"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          ls -lh dist/*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-agent-linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2d. Android router: i2pd built as the JNI library GipnyService loads, for
   #     64- and 32-bit ARM. Cached on the i2pd pin + NDK + boost revision,
   #     because a cold build is ~1h (boost and OpenSSL from source) and the pin
   #     rarely moves.
@@ -549,7 +606,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: release page
-    needs: [desktop, relay, android]
+    needs: [desktop, relay, agent, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release + upload assets
