@@ -52,12 +52,9 @@ jobs:
         run: |
           cargo build --release -p gipny-libcore
           cargo build --release --manifest-path core/relay/Cargo.toml
-      # The bot SDK and the e2e harness call into libcore too. Without this a
-      # libcore signature change compiles green here and first fails half an
-      # hour into e2e-i2pd, after a router build — which is how TorNode::start
-      # gaining a settings argument went unnoticed.
-      - name: build bot-sdk + e2e harness
-        run: cargo build --release -p gipny-bot -p e2e-harness
+      # The bot SDK, agent and the e2e harness call into libcore too.
+      - name: build bot-sdk + agent + e2e harness
+        run: cargo build --release -p gipny-bot -p gipny-agent -p e2e-harness
       - name: build app (frontend + tauri)
         run: |
           cd ui && npm ci && npm run build && cd ..
