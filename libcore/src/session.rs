@@ -441,7 +441,10 @@ pub struct SessionManager {
     pub identity: Arc<Identity>,
     data_dir: PathBuf,
     sessions: Arc<Mutex<HashMap<i64, RatchetState>>>,
+    /// Connection to our own relay — where we receive and publish our bundle.
     relay_out: Arc<RwLock<Option<mpsc::Sender<ClientToRelay>>>>,
+    /// Connections to other people's relays, keyed by destination.
+    peer_relays: Arc<Mutex<HashMap<String, mpsc::Sender<ClientToRelay>>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<tokio::sync::oneshot::Sender<Option<Vec<u8>>>>>>>,
     tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
@@ -467,6 +470,7 @@ impl SessionManager {
             data_dir,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             relay_out: Arc::new(RwLock::new(None)),
+            peer_relays: Arc::new(Mutex::new(HashMap::new())),
             bundle_waiters: Arc::new(Mutex::new(HashMap::new())),
             tiebreaker_waits: Arc::new(Mutex::new(HashMap::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
@@ -636,7 +640,7 @@ impl SessionManager {
     }
 
     pub async fn send_to_group(
-        &self,
+        self: &Arc<Self>,
         group_id: &[u8],
         body: String,
         attachments: Vec<(String, Vec<u8>)>,
@@ -691,7 +695,7 @@ impl SessionManager {
     }
 
     pub async fn send_edit_group(
-        &self,
+        self: &Arc<Self>,
         group_id: &[u8],
         edit_target_origin: u64,
         new_body: String,
@@ -742,18 +746,15 @@ impl SessionManager {
         Ok(())
     }
 
-    async fn send_to_contact(&self, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
-        let out = {
-            let g = self.relay_out.read().await;
-            match g.clone() { Some(x) => x, None => return Err(SessionError::State) }
-        };
+    async fn send_to_contact(self: &Arc<Self>, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
+        let out = self.relay_for(&contact).await.ok_or(SessionError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, payload, &out).await
     }
 
     pub async fn send_pin_contact(
-        &self,
+        self: &Arc<Self>,
         contact_id: i64,
         sender_sign_pk: Vec<u8>,
         origin_msg_id: u64,
@@ -854,6 +855,49 @@ impl SessionManager {
         self.tasks.lock().unwrap().push(handle);
     }
 
+    /// The connection to deposit this contact's mail on: the relay their card
+    /// named, or ours when they named none. Mirrors Core::relay_for — see there
+    /// for why the future is boxed.
+    fn relay_for<'a>(
+        self: &'a Arc<Self>,
+        contact: &'a Contact,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<mpsc::Sender<ClientToRelay>>> + Send + 'a>> {
+        Box::pin(async move {
+            let theirs = contact.relay_address.as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty());
+            let Some(theirs) = theirs else {
+                return self.relay_out.read().await.clone();
+            };
+            if theirs == self.relay_onion() {
+                return self.relay_out.read().await.clone();
+            }
+            if let Some(tx) = self.peer_relays.lock().await.get(theirs) {
+                if !tx.is_closed() {
+                    return Some(tx.clone());
+                }
+            }
+            let client = match crate::relay::connect(&self.node, theirs, &self.identity).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[session] cannot reach relay {} for contact {}: {:?}",
+                        &theirs[..16.min(theirs.len())], contact.id, e);
+                    return None;
+                }
+            };
+            let tx = client.out_tx.clone();
+            self.peer_relays.lock().await.insert(theirs.to_string(), tx.clone());
+            let this = self.clone();
+            let key = theirs.to_string();
+            let handle = tokio::spawn(async move {
+                this.clone().run_recv_loop(client).await;
+                this.peer_relays.lock().await.remove(&key);
+            });
+            self.tasks.lock().unwrap().push(handle);
+            Some(tx)
+        })
+    }
+
     async fn run_recv_loop(self: Arc<Self>, client: RelayClient) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
@@ -883,7 +927,7 @@ impl SessionManager {
     }
 
     async fn handle_relay_frame(
-        &self,
+        self: &Arc<Self>,
         frame: RelayToClient,
         out_tx: &mpsc::Sender<ClientToRelay>,
     ) -> Result<()> {
@@ -935,7 +979,7 @@ impl SessionManager {
         Ok(())
     }
 
-    async fn handle_incoming_envelope(&self, from_pk: &[u8; 32], blob: &[u8]) -> Result<()> {
+    async fn handle_incoming_envelope(self: &Arc<Self>, from_pk: &[u8; 32], blob: &[u8]) -> Result<()> {
         let envelope: EnvelopeBlob = bincode::deserialize(blob)?;
         let sealed = from_pk == &[0u8; 32];
         match envelope {
@@ -1066,7 +1110,7 @@ impl SessionManager {
         Ok((state, pt))
     }
 
-    async fn persist_incoming(&self, contact_id: i64, payload: WirePayload) -> Result<()> {
+    async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
         if let Some(name) = payload.sender_name.as_deref() {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
@@ -1249,7 +1293,7 @@ impl SessionManager {
         Ok(())
     }
 
-    async fn send_ack(&self, contact: &Contact, original: &WirePayload) -> Result<()> {
+    async fn send_ack(self: &Arc<Self>, contact: &Contact, original: &WirePayload) -> Result<()> {
         if original.origin_msg_id == 0 { return Ok(()); }
         let mut payload = WirePayload {
             origin_msg_id: 0,
@@ -1298,11 +1342,11 @@ impl SessionManager {
         self.tasks.lock().unwrap().push(handle);
     }
 
-    async fn flush_all_pending(&self) -> Result<()> {
-        let out = {
-            let g = self.relay_out.read().await;
-            match g.clone() { Some(x) => x, None => return Ok(()) }
-        };
+    async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
+        // Our own relay must be up: replies come back there.
+        if self.relay_out.read().await.is_none() {
+            return Ok(());
+        }
         for contact in self.db.list_contacts()? {
             if contact.trust == TrustLevel::Blocked { continue; }
             let pending = self.db.list_unsent_outgoing(contact.id, 50)?;
@@ -1314,6 +1358,8 @@ impl SessionManager {
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
                 && self.sessions.lock().await.contains_key(&contact.id);
             if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
+            // Deposit where this contact collects, not where we do.
+            let Some(out) = self.relay_for(&contact).await else { continue };
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
