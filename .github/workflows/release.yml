@@ -73,7 +73,7 @@ jobs:
               boost-dev boost-static openssl-dev openssl-libs-static zlib-dev zlib-static
             git config --global --add safe.directory "*"
             cd third_party/i2pd
-            make USE_UPNP=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
+            make USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
             strip --strip-unneeded i2pd
           '
           ldd third_party/i2pd/i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked' \
@@ -116,6 +116,10 @@ jobs:
           # tray/GUI daemon with -mwindows. gipny's router is a background
           # process driven over SAM; the installer must not drop a tray icon and
           # a window on the user.
+          #
+          # No TORRENTS=no: Makefile.mingw ignores it and always links
+          # boost_json. The torrent code stays inert — it only starts from a
+          # tunnels.conf section gipny never writes.
           make USE_UPNP=no USE_WIN32_APP=no USE_GIT_VERSION=yes -j"$(nproc)"
           strip --strip-unneeded i2pd.exe
           ls -lh i2pd.exe
@@ -236,7 +240,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: staged/libi2pd.so
-          key: i2pd-android-arm64-v8a-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}
+          # The jni tree is in the key: changing a compiler flag there must not
+          # restore a library built without it.
+          key: i2pd-android-arm64-v8a-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-jni${{ hashFiles('android-router/jni/**') }}
 
       - uses: actions/setup-java@v6
         if: steps.cache.outputs.cache-hit != 'true'

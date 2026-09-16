@@ -1,7 +1,16 @@
 NDK_TOOLCHAIN_VERSION := clang
 APP_STL := c++_static
 
-APP_CPPFLAGS += -std=c++17 -fexceptions -frtti
+# C++20, not the c++17 i2pd-android still uses: upstream i2pd dropped C++17
+# (libi2pd/Tag.h now defines operator<=>), and its own Makefile asks clang for
+# c++20. The pinned revision builds either way, so this costs nothing today and
+# keeps the pin bump from breaking the Android router.
+APP_CPPFLAGS += -std=c++20 -fexceptions -frtti
+
+# NO_TORRENTS: the Android.mk wildcard picks up upstream's BitTorrent client and
+# its JSON-RPC server, which need boost_json — a library build_boost.sh does not
+# build. The desktop builds pass TORRENTS=no, which defines the same thing.
+APP_CPPFLAGS += -DNO_TORRENTS
 
 # No USE_UPNP: gipny only ever talks to a loopback SAM port, so UPnP is a
 # dependency (miniupnpc) and a hole-punching side effect nobody asked for. This

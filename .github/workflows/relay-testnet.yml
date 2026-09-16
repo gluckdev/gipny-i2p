@@ -58,7 +58,7 @@ jobs:
           git submodule update --init --recursive -- third_party/i2pd
           git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
             git -C third_party/i2pd fetch --quiet --tags origin
-          make -C third_party/i2pd USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+          make -C third_party/i2pd USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes -j"$(nproc)"
           ./third_party/i2pd/i2pd --version
           cargo build --release --manifest-path core/relay/Cargo.toml
       # Split into start/serve/stop steps so the destination lands in the job

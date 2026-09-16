@@ -99,7 +99,11 @@ jobs:
           # tracks upstream's development branch, so "2.61.0" alone would not say
           # which of its commits this is; the stamp makes the binary name its own
           # source, and gives the check below something to compare against.
-          make USE_STATIC=yes USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+          #
+          # TORRENTS=no: upstream's BitTorrent client and its JSON-RPC server are
+          # compiled in by default and pull in boost_json. gipny never configures
+          # them; building them only adds code and a dependency to ship.
+          make USE_STATIC=yes USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify
         working-directory: third_party/i2pd
@@ -189,7 +193,7 @@ jobs:
           # /usr/lib/<triple> paths that do not exist on Alpine. Alpine's
           # *-static packages provide the archives, and -static also pulls in
           # musl itself, which is the whole point.
-          make USE_UPNP=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
+          make USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
 
       - name: verify
         working-directory: third_party/i2pd
@@ -282,6 +286,11 @@ jobs:
         run: |
           # USE_WIN32_APP=no: the default builds the tray/GUI daemon, and gipny's
           # router is a background child process driven over SAM.
+          #
+          # No TORRENTS=no here: Makefile.mingw ignores it and links boost_json
+          # unconditionally (MSYS2's boost ships it). The torrent code is compiled
+          # but inert — it only starts from a tunnels.conf section gipny never
+          # writes.
           make USE_UPNP=no USE_WIN32_APP=no USE_GIT_VERSION=yes -j"$(nproc)"
 
       - name: verify

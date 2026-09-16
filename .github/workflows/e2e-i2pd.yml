@@ -114,7 +114,12 @@ jobs:
         working-directory: third_party/i2pd
         run: |
           git fetch --tags --quiet origin || true
-          make USE_STATIC=yes USE_UPNP=no USE_GIT_VERSION=yes -j"$(nproc)"
+          # TORRENTS=no: upstream added a BitTorrent client with a JSON-RPC
+          # server, compiled in by default and linking boost_json. Run
+          # 35072808411 died at link on the missing libboost_json.a. A
+          # messenger's router has no use for it, so leave it out rather than
+          # add a dependency to carry it.
+          make USE_STATIC=yes USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes -j"$(nproc)"
 
           # Assert the binary reports the revision it was built from, rather
           # than trusting whatever ends up in the artifact downstream.
