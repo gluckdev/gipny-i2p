@@ -113,6 +113,7 @@ pub fn run() {
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
             update_configured,
+            get_router_settings, set_router_settings,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
             set_contact_bot, reset_contact_session,
             list_messages, message_position, unread_count, mark_read, delete_message,
@@ -345,6 +346,11 @@ async fn core_of<'a>(ctx: &'a State<'_, AppCtx>) -> Result<Arc<Core>, String> {
 fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
 
 const SETTING_MUTES: &str = "muted_targets";
+/// How much transit traffic the bundled router carries. See
+/// [`gipny_libcore::router::TransitProfile`] — this is an anonymity setting.
+const SETTING_ROUTER_TRANSIT: &str = "router_transit";
+/// Whether the router also speaks over a Yggdrasil mesh, when one is running.
+const SETTING_ROUTER_YGGDRASIL: &str = "router_yggdrasil";
 
 fn parse_group_id(s: &str) -> Result<Vec<u8>, String> {
     hex_decode(s).ok_or_else(|| "bad group id".to_string())
@@ -492,10 +498,25 @@ async fn boot(
             }
         }
     }
+    // Router knobs are per profile and read once, here: i2pd takes them on its
+    // command line and exposes no way to change them afterwards.
+    let settings = gipny_libcore::router::RouterSettings {
+        transit: db.get_setting(SETTING_ROUTER_TRANSIT)
+            .ok()
+            .flatten()
+            .and_then(|v| String::from_utf8(v).ok())
+            .map(|v| gipny_libcore::router::TransitProfile::parse(&v))
+            .unwrap_or_default(),
+        yggdrasil: db.get_setting(SETTING_ROUTER_YGGDRASIL)
+            .ok()
+            .flatten()
+            .map(|v| v == b"1")
+            .unwrap_or(false),
+    };
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let node = Arc::new(I2pNode::start(dir).await.map_err(err)?);
+    let node = Arc::new(I2pNode::start(dir, settings).await.map_err(err)?);
     let warning: Option<String> = None;
     let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
     let app2 = app.clone();
@@ -1149,6 +1170,40 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
 /// Whether an update server destination is baked in. The UI hides the whole
 /// update surface when it is not: those buttons could only ever show a raw SAM
 /// error, and the APK listing fired on every Settings open.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RouterSettingsDto {
+    /// "frugal" | "balanced" | "generous"
+    transit: String,
+    yggdrasil: bool,
+}
+
+#[tauri::command]
+async fn get_router_settings(ctx: State<'_, AppCtx>) -> Result<RouterSettingsDto, String> {
+    let db = core_of(&ctx).await?.db().clone();
+    let transit = db.get_setting(SETTING_ROUTER_TRANSIT).map_err(err)?
+        .and_then(|v| String::from_utf8(v).ok())
+        .unwrap_or_else(|| gipny_libcore::router::TransitProfile::default().as_str().to_string());
+    let yggdrasil = db.get_setting(SETTING_ROUTER_YGGDRASIL).map_err(err)?
+        .map(|v| v == b"1").unwrap_or(false);
+    Ok(RouterSettingsDto { transit, yggdrasil })
+}
+
+/// Stored for the next start. i2pd reads these from its command line and has no
+/// reachable way to change them while running, so this cannot take effect until
+/// the router restarts — the UI says so rather than implying otherwise.
+#[tauri::command]
+async fn set_router_settings(
+    settings: RouterSettingsDto, ctx: State<'_, AppCtx>,
+) -> Result<(), String> {
+    let db = core_of(&ctx).await?.db().clone();
+    // Normalise through the parser so an unknown value cannot be stored.
+    let transit = gipny_libcore::router::TransitProfile::parse(&settings.transit);
+    db.set_setting(SETTING_ROUTER_TRANSIT, transit.as_str().as_bytes()).map_err(err)?;
+    db.set_setting(SETTING_ROUTER_YGGDRASIL, if settings.yggdrasil { b"1" } else { b"0" })
+        .map_err(err)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn update_configured(ctx: State<'_, AppCtx>) -> Result<bool, String> {
     Ok(core_of(&ctx).await?.update_configured())

@@ -21,6 +21,15 @@ export interface Contact {
   relay: string | null;
 }
 
+export type TransitProfile = 'frugal' | 'balanced' | 'generous';
+
+export interface RouterSettings {
+  /** How much of the line carries other people's tunnels. */
+  transit: TransitProfile;
+  /** Speak i2p over a Yggdrasil mesh as well, when one is running locally. */
+  yggdrasil: boolean;
+}
+
 export interface Button { text: string; callback_data: string; }
 
 export interface Message {
@@ -172,6 +181,12 @@ export class Api {
   /** Whether an update server destination is baked in; false hides the update UI. */
   static updateConfigured(): Promise<boolean> {
     return invoke('update_configured');
+  }
+  static getRouterSettings(): Promise<RouterSettings> {
+    return invoke('get_router_settings');
+  }
+  static setRouterSettings(settings: RouterSettings): Promise<void> {
+    return invoke('set_router_settings', { settings });
   }
   static setRelayAddress(addr: string): Promise<void> {
     return invoke('set_relay_address', { addr });

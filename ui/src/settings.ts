@@ -1,5 +1,6 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { Api } from './api';
+import type { RouterSettings, TransitProfile } from './api';
 import type { Store } from './state';
 import { h, busy, humanSize } from './view';
 import type { App } from './app';
@@ -135,6 +136,81 @@ export class SettingsModal {
             h('div', { class: 'field' }, relayI),
             relayErr,
             saveBtn,
+          );
+        })(),
+
+        h('div', { class: 'divider-text' }, 'i2p router'),
+        (() => {
+          const err = h('div', { class: 'err' });
+          const note = h('div', { class: 'hint', style: { marginTop: '6px' } });
+
+          // Transit is cover traffic other people generate and pay for: a router
+          // carrying only its own messages is far easier to single out. The
+          // labels say that, because "bandwidth setting" reads like generosity
+          // and this is actually about the user's own anonymity.
+          const levels: { id: TransitProfile; title: string; blurb: string }[] = [
+            { id: 'frugal', title: 'экономно',
+              blurb: 'минимум чужого трафика. для мобильной сети и батареи. маскировка слабее' },
+            { id: 'balanced', title: 'обычно',
+              blurb: 'разумный баланс. подходит большинству' },
+            { id: 'generous', title: 'щедро',
+              blurb: 'много чужого трафика — лучшая маскировка для тебя и польза сети' },
+          ];
+          const radios = new Map<TransitProfile, HTMLInputElement>();
+          const ygg = h('input', { type: 'checkbox', id: 'opt-ygg' }) as HTMLInputElement;
+
+          const current = (): RouterSettings => ({
+            transit: [...radios].find(([, r]) => r.checked)?.[0] ?? 'balanced',
+            yggdrasil: ygg.checked,
+          });
+          const persist = async (): Promise<void> => {
+            err.textContent = '';
+            try {
+              await Api.setRouterSettings(current());
+              note.textContent = 'сохранено — применится при следующем запуске приложения';
+            } catch (e) { err.textContent = String(e); }
+          };
+
+          const options = levels.map(({ id, title, blurb }) => {
+            const r = h('input', { type: 'radio', name: 'transit', id: `opt-${id}` }) as HTMLInputElement;
+            radios.set(id, r);
+            r.addEventListener('change', () => { void persist(); });
+            return h('label', { class: 'opt', for: `opt-${id}` },
+              r,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, title),
+                h('span', { class: 'opt-blurb' }, blurb)),
+            );
+          });
+
+          ygg.addEventListener('change', () => { void persist(); });
+
+          Api.getRouterSettings()
+            .then((s2) => {
+              radios.get(s2.transit)?.setAttribute('checked', 'checked');
+              const r = radios.get(s2.transit);
+              if (r) r.checked = true;
+              ygg.checked = s2.yggdrasil;
+            })
+            .catch(() => { radios.get('balanced')!.checked = true; });
+
+          return h('div', null,
+            h('div', { class: 'hint', style: { marginBottom: '8px' } },
+              'сколько чужих туннелей пропускает твой роутер. это настройка анонимности, '
+              + 'а не щедрости: узел, через который идёт только собственный трафик, '
+              + 'различить намного проще.'),
+            h('div', { class: 'opt-group' }, ...options),
+            h('label', { class: 'opt', for: 'opt-ygg', style: { marginTop: '10px' } },
+              ygg,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, 'yggdrasil'),
+                h('span', { class: 'opt-blurb' },
+                  'пускать i2p ещё и через mesh-сеть yggdrasil — обходной путь, '
+                  + 'если провайдер режет обычные входы. нужен запущенный узел yggdrasil; '
+                  + 'без него просто ничего не изменится')),
+            ),
+            note,
+            err,
           );
         })(),
 

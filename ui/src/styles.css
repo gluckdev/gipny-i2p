@@ -1497,3 +1497,74 @@ body::before {
 /* Selection + links in the accent. */
 ::selection { background: var(--phosphor); color: #06120a; }
 a { color: var(--phosphor); }
+
+/* --- Option rows (radio / checkbox with a label and an explanation) --------
+   Whole row is the hit target, not just the control: these sit in a modal on
+   touch screens too. The control keeps its native semantics — it is a real
+   input, so keyboard and screen readers work — and only its appearance is
+   replaced. */
+.opt-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.opt {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--xbox-radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+}
+.opt:hover { background: var(--surface-2); border-color: var(--border-bright); }
+.opt:has(input:checked) {
+  border-color: var(--phosphor-dim);
+  background: var(--surface-2);
+}
+/* Focus lands on the input; show it on the row, which is what the eye reads. */
+.opt:has(input:focus-visible) {
+  outline: 2px solid var(--phosphor-dim);
+  outline-offset: 2px;
+}
+.opt input {
+  appearance: none;
+  width: 16px; height: 16px;
+  margin: 2px 0 0;
+  border: 1px solid var(--border-bright);
+  background: var(--surface-3);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+  transition: border-color .12s ease, background .12s ease;
+}
+.opt input[type="radio"] { border-radius: 50%; }
+.opt input[type="checkbox"] { border-radius: 4px; }
+.opt input:checked { border-color: var(--phosphor); background: var(--phosphor); }
+.opt input:checked::after {
+  content: '';
+  width: 8px; height: 8px;
+  background: var(--bg);
+}
+.opt input[type="radio"]:checked::after { border-radius: 50%; }
+.opt input[type="checkbox"]:checked::after {
+  width: 9px; height: 5px;
+  background: none;
+  border: 2px solid var(--bg);
+  border-top: 0; border-right: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+.opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.opt-title {
+  color: var(--text);
+  font-size: 13px;
+  letter-spacing: .02em;
+}
+.opt-blurb {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}

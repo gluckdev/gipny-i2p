@@ -22,6 +22,78 @@ use crate::net::{NetError, Result};
 /// Default SAMv3 TCP port.
 pub const DEFAULT_SAM_PORT: u16 = 7656;
 
+/// How much of the line to give to other people's tunnels.
+///
+/// This is an anonymity setting, not a generosity setting. Transit traffic is
+/// cover traffic that strangers generate and pay for: a router carrying nothing
+/// but its own messages hands an observer a clean signal, while one relaying for
+/// others is indistinguishable from one merely passing something along. Carrying
+/// none is the cheapest way to lose anonymity, and carrying some is the cheapest
+/// way to buy it.
+///
+/// The cost is bandwidth, and on a metered or battery-powered device that cost
+/// is real, so this is a curve rather than a switch. i2pd's own defaults — 100%
+/// share, 25000 transit tunnels — sit at the server end of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TransitProfile {
+    /// Minimal but never zero: metered connections and battery. Still blends.
+    Frugal,
+    /// The default. A desktop on mains power, or a phone charging on wi-fi.
+    #[default]
+    Balanced,
+    /// A machine that is always on and not paying per gigabyte.
+    Generous,
+}
+
+impl TransitProfile {
+    /// i2pd's `bandwidth`: a letter (L=32, O=256, P=2048 KB/s) or a number.
+    pub fn bandwidth(self) -> &'static str {
+        match self {
+            Self::Frugal => "L",
+            Self::Balanced => "O",
+            Self::Generous => "P",
+        }
+    }
+
+    /// Percentage of that line offered to transit.
+    pub fn share_percent(self) -> u8 {
+        match self {
+            Self::Frugal => 15,
+            Self::Balanced => 50,
+            Self::Generous => 80,
+        }
+    }
+
+    /// Cap on simultaneous transit tunnels. Enough to blend into; far below
+    /// i2pd's 25000, which assumes a server.
+    pub fn transit_tunnels(self) -> u32 {
+        match self {
+            Self::Frugal => 32,
+            Self::Balanced => 256,
+            Self::Generous => 2048,
+        }
+    }
+
+    /// Stable name for storage and for the UI.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Frugal => "frugal",
+            Self::Balanced => "balanced",
+            Self::Generous => "generous",
+        }
+    }
+
+    /// Anything unrecognised falls back to the default rather than erroring: a
+    /// stored value from a newer build must not stop the router from starting.
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "frugal" => Self::Frugal,
+            "generous" => Self::Generous,
+            _ => Self::Balanced,
+        }
+    }
+}
+
 /// How long to wait for the router to come up. First run reseeds and builds
 /// tunnels, which can take a couple of minutes.
 const START_TIMEOUT: Duration = Duration::from_secs(180);
@@ -29,6 +101,27 @@ const START_TIMEOUT: Duration = Duration::from_secs(180);
 const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 /// Per-probe connect/response timeout.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Router knobs the user can change.
+///
+/// Both are persisted per profile and only read when the router starts: i2pd
+/// takes these from its command line, and its runtime setters are not wired to
+/// anything reachable from outside the process. Changing either therefore needs
+/// the router restarted, which drops built tunnels — so the UI says so rather
+/// than pretending the change is instant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouterSettings {
+    pub transit: TransitProfile,
+    /// Carry i2p over a Yggdrasil mesh in addition to normal IP.
+    ///
+    /// This is a way in when the normal way is blocked: i2p peers and reseed
+    /// servers are both blockable, and Yggdrasil is a different underlay. It
+    /// needs a Yggdrasil node already running on this machine — i2pd looks up
+    /// the local mesh address and does not provide one. With none present it
+    /// logs and carries on over plain IP, so enabling it is safe even when
+    /// nothing is there.
+    pub yggdrasil: bool,
+}
 
 /// Handle to a running i2p router.
 ///
@@ -46,7 +139,11 @@ impl RouterHandle {
     /// `data_dir` is the profile directory; router state lives under
     /// `data_dir/i2p/router`. `bin` overrides the router binary path (otherwise
     /// it is resolved from `GIPNY_I2P_BIN`, next to the executable, or `PATH`).
-    pub async fn start(data_dir: &Path, bin: Option<PathBuf>) -> Result<Self> {
+    pub async fn start(
+        data_dir: &Path,
+        bin: Option<PathBuf>,
+        settings: RouterSettings,
+    ) -> Result<Self> {
         let bin = match bin {
             Some(b) => b,
             None => resolve_router_bin()?,
@@ -75,6 +172,10 @@ impl RouterHandle {
             .arg("--httpproxy.enabled=false")
             .arg("--socksproxy.enabled=false")
             .arg("--upnp.enabled=false")
+            .arg(format!("--bandwidth={}", settings.transit.bandwidth()))
+            .arg(format!("--share={}", settings.transit.share_percent()))
+            .arg(format!("--limits.transittunnels={}", settings.transit.transit_tunnels()))
+            .arg(format!("--meshnets.yggdrasil={}", settings.yggdrasil))
             .arg("--log=file")
             .arg(format!("--logfile={}", router_dir.join("i2pd.log").display()));
         // Without WIN32_APP the router is a console subsystem binary, so Windows

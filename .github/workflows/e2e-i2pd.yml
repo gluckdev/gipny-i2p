@@ -69,23 +69,28 @@ jobs:
       # how the pin earns its way forward — by delivering, not by compiling.
       - name: check out the upstream head under test
         run: |
+          # Order matters, and getting it wrong is how this step failed twice.
+          #
+          # 1. Nested submodules first. `git submodule update` without --remote
+          #    checks out the commit the superproject records, so running it
+          #    *after* moving to the branch head silently undoes the move.
+          # 2. Unshallow next. actions/checkout clones shallow with no tags, and
+          #    USE_GIT_VERSION below shells out to `git describe --tags`, which
+          #    dies with "No tags can describe <sha>" without them.
+          # 3. Only then fetch the tracked branch by name and check it out.
+          #    `git submodule update --remote` cannot do this: checkout pins the
+          #    submodule's remote refspec to a single SHA, so origin/<branch>
+          #    does not exist locally and --remote finds nothing to move to.
+          git submodule update --init --recursive -- third_party/i2pd
+
           PINNED="$(git -C third_party/i2pd rev-parse --short HEAD)"
 
-          # Fetch the tracked branch BY NAME and check out FETCH_HEAD.
-          # `git submodule update --remote` does not work here: actions/checkout
-          # configures the submodule's remote with a refspec pinned to one SHA,
-          # so origin/<branch> does not exist locally, --remote finds nothing to
-          # move to, and silently leaves the pin in place. This job spent months
-          # claiming to test ahead of the pin while re-testing the pin — the run
-          # that delivered 5/5 reported 62bf51cd, the pin, while the branch head
-          # was two months further on.
-          #
-          # --tags also gives `git describe` what USE_GIT_VERSION needs; without
-          # it the build dies on "No tags can describe <sha>".
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+
           BRANCH="$(git config -f .gitmodules submodule.third_party/i2pd.branch)"
-          git -C third_party/i2pd fetch --quiet --tags origin "$BRANCH"
+          git -C third_party/i2pd fetch --quiet origin "$BRANCH"
           git -C third_party/i2pd checkout --quiet FETCH_HEAD
-          git submodule update --init --recursive -- third_party/i2pd
 
           HEAD_REV="$(git -C third_party/i2pd rev-parse --short HEAD)"
           echo "branch:     $BRANCH"

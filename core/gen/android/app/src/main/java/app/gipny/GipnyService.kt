@@ -133,7 +133,20 @@ class GipnyService : Service() {
             logfile = ${java.io.File(routerDir, "i2pd.log").absolutePath}
             ipv4 = true
             ipv6 = false
+
+            # Transit traffic is cover traffic other people generate and pay for.
+            # A router that carries nothing but its own messages gives an observer
+            # a clean signal; one that relays for strangers is indistinguishable
+            # from one that is merely passing something along. So carrying some
+            # transit buys anonymity that costs us only bandwidth.
+            #
+            # `share` is the fraction of the line offered to it, and the numbers
+            # below are the cautious end of the curve, not the free end: a phone
+            # should contribute, not volunteer as infrastructure. i2pd's own
+            # defaults — 100% share, 25000 transit tunnels — are sized for a
+            # server and would flatten a battery.
             bandwidth = L
+            share = 25
 
             [ntcp2]
             enabled = true
@@ -171,7 +184,9 @@ class GipnyService : Service() {
             verify = true
 
             [limits]
-            transittunnels = 0
+            # Enough to blend into, few enough that the phone stays a phone.
+            # This was 0, which was a silent trade of anonymity for battery.
+            transittunnels = 32
             """.trimIndent()
         )
 

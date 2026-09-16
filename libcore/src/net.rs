@@ -147,9 +147,15 @@ impl I2pNode {
     /// relay routes by that key — not by i2p address — so the network address is
     /// deliberately regenerated every session for unlinkability. Nothing is
     /// persisted to disk; the key stays within a session only (for `recreate`).
-    pub async fn start(data_dir: &Path) -> Result<Self> {
+    /// `settings` configures the router we spawn — transit share and Yggdrasil.
+    /// Ignored on Android and when attaching to a router somebody else started,
+    /// since those settings belong to whoever launched it.
+    pub async fn start(data_dir: &Path, settings: crate::router::RouterSettings) -> Result<Self> {
         #[cfg(target_os = "android")]
-        let router = RouterHandle::attach(DEFAULT_SAM_PORT).await?;
+        let router = {
+            let _ = settings; // the foreground service owns the router's config
+            RouterHandle::attach(DEFAULT_SAM_PORT).await?
+        };
         // GIPNY_SAM_PORT attaches to a router someone else already started
         // instead of spawning our own — the e2e harness uses it to put every
         // bot on one shared router (only one router per host can hold I2CP, see
@@ -164,7 +170,7 @@ impl I2pNode {
                 })?;
                 RouterHandle::attach(port).await?
             }
-            Err(_) => RouterHandle::start(data_dir, None).await?,
+            Err(_) => RouterHandle::start(data_dir, None, settings).await?,
         };
 
         let sam_port = router.sam_port();
