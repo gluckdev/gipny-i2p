@@ -19,10 +19,40 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # 0. On a tag, the version the tag names must be the version the code carries.
+  #    Checked first, because finding out at publish time means hours of builds
+  #    thrown away, and not finding out means assets named for one version on a
+  #    release page for another.
+  # ---------------------------------------------------------------------------
+  version:
+    name: version matches the tag
+    # Always runs, and only enforces on a tag. Skipping it on manual runs would
+    # skip every job downstream of it too: GitHub treats a skipped ancestor as
+    # not-success for the whole dependency chain.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: compare
+        run: |
+          ok=true
+          for pair in \
+            "core/tauri.conf.json=$(jq -r .version core/tauri.conf.json)" \
+            "ui/package.json=$(jq -r .version ui/package.json)" \
+            "core/Cargo.toml=$(sed -nE '0,/^version *= *"([^"]+)"/s//\1/p' core/Cargo.toml)"; do
+            file="${pair%%=*}"; have="${pair#*=}"
+            echo "$file: $have"
+            if [ "$GITHUB_REF_TYPE" = tag ] && [ "$have" != "${GITHUB_REF_NAME#v}" ]; then
+              echo "  does not match tag $GITHUB_REF_NAME"; ok=false
+            fi
+          done
+          $ok
+
+  # ---------------------------------------------------------------------------
   # 1. Bundled i2pd router, built from third_party/i2pd at the pinned commit.
   # ---------------------------------------------------------------------------
   router:
     name: router (i2pd, ${{ matrix.label }})
+    needs: version
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -279,6 +309,7 @@ jobs:
   # ---------------------------------------------------------------------------
   android-router:
     name: router (i2pd, android ${{ matrix.abi }})
+    needs: version
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     strategy:
@@ -511,19 +542,66 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 4. Collect desktop artifacts into a GitHub Release (on tags).
+  # 4. The release page. On a tag it publishes; on a manual run it builds the
+  #    same page and checksums and stops there, so the page can be read before
+  #    anything goes public. .github/scripts/release-notes.sh refuses to write
+  #    notes if any platform's file is missing or an unexpected file is present.
   # ---------------------------------------------------------------------------
   publish:
-    if: startsWith(github.ref, 'refs/tags/')
+    name: release page
     needs: [desktop, relay, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release + upload assets
     steps:
+      - uses: actions/checkout@v7
+        with:
+          # The changelog runs from the previous tag, which needs history.
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
-        with: { pattern: gipny-*, path: dist, merge-multiple: true }
-      - name: release
+        with: { pattern: gipny-*, path: artifacts }
+      - name: collect assets and checksums
+        run: |
+          mkdir -p dist
+          # Artifacts keep the bundler's directory layout; the release is flat,
+          # so two files with one name would silently become one.
+          find artifacts -type f -print0 | while IFS= read -r -d '' f; do
+            name="$(basename "$f")"
+            [ ! -e "dist/$name" ] || { echo "two assets named $name"; exit 1; }
+            cp "$f" "dist/$name"
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS.txt)
+          ls -lh dist
+      - name: write the release page
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            TAG="$GITHUB_REF_NAME"; REF="$GITHUB_REF_NAME"
+          else
+            TAG="v$(jq -r .version core/tauri.conf.json)"; REF=HEAD
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          .github/scripts/release-notes.sh "$TAG" dist "$GITHUB_REPOSITORY" "$REF" > notes.md
+          {
+            echo "# Release page preview: gipny-i2p $TAG"
+            echo
+            cat notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: keep the preview
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-page-preview
+          path: |
+            notes.md
+            dist/SHA256SUMS.txt
+      - name: publish
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/**/*
-          generate_release_notes: true
+          name: gipny-i2p ${{ env.TAG }}
+          body_path: notes.md
+          files: dist/*
+          fail_on_unmatched_files: true
+          # v1.2.3-rc1 and the like are pre-releases and never "Latest".
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
