@@ -112,6 +112,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
+            update_configured,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
             set_contact_bot, reset_contact_session,
             list_messages, message_position, unread_count, mark_read, delete_message,
@@ -451,9 +452,15 @@ async fn boot(
     pass: &str, profile: &str, dir: &std::path::Path,
 ) -> Result<Option<String>, String> {
     let outcome = vault.unlock(pass).map_err(err)?;
-    let mk = match outcome {
-        UnlockOutcome::Primary(k) => k,
-        UnlockOutcome::Decoy(k) => k,
+    // The decoy key is freshly random and unrelated to the primary master key,
+    // so it cannot open data.db — SQLCipher rejects it and the unlock screen
+    // showed a "bad key" error, in front of whoever was applying the coercion.
+    // That is the precise situation duress mode exists to avoid, so the decoy
+    // gets a database of its own. It is created empty on first use and looks
+    // like a profile nobody has written much in, which is the point.
+    let (mk, db_name) = match outcome {
+        UnlockOutcome::Primary(k) => (k, "data.db"),
+        UnlockOutcome::Decoy(k) => (k, "decoy.db"),
         UnlockOutcome::Wiped => {
             // Duress / attempt-limit wipe: also scrub the app-global debug.log,
             // which lives outside the per-profile dir that was just wiped.
@@ -461,7 +468,7 @@ async fn boot(
             return Err("wiped".into());
         }
     };
-    let db = Arc::new(gipny_libcore::db::Db::open(&dir.join("data.db"), &mk).map_err(err)?);
+    let db = Arc::new(gipny_libcore::db::Db::open(&dir.join(db_name), &mk).map_err(err)?);
     // Point the transport at the bundled i2pd shipped as a Tauri resource. On
     // desktop it's spawned as a child; on Android the router is started
     // in-process by the foreground service, so this is a no-op there.
@@ -1132,6 +1139,14 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
     let mut dtos: Vec<MessageDto> = list.into_iter().map(MessageDto::from).collect();
     attach_buttons(db, &mut dtos)?;
     Ok(dtos)
+}
+
+/// Whether an update server destination is baked in. The UI hides the whole
+/// update surface when it is not: those buttons could only ever show a raw SAM
+/// error, and the APK listing fired on every Settings open.
+#[tauri::command]
+async fn update_configured(ctx: State<'_, AppCtx>) -> Result<bool, String> {
+    Ok(core_of(&ctx).await?.update_configured())
 }
 
 #[tauri::command]

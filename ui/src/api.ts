@@ -167,6 +167,10 @@ export class Api {
   static getRelayAddress(): Promise<string> {
     return invoke('get_relay_address');
   }
+  /** Whether an update server destination is baked in; false hides the update UI. */
+  static updateConfigured(): Promise<boolean> {
+    return invoke('update_configured');
+  }
   static setRelayAddress(addr: string): Promise<void> {
     return invoke('set_relay_address', { addr });
   }

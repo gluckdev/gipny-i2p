@@ -190,13 +190,23 @@ section.
 
 Stated plainly, because this is a messenger that promises privacy.
 
-**Unverified but likely: the published LeaseSet may expose our IP.** With the
-patch, `timeout_waiting_for_tunnels` stopped firing and `Publishing all
-LeaseSets` appears in the log — while the only completed tunnels were zero-hop.
-A LeaseSet lists the gateways of inbound tunnels; for a zero-hop tunnel that
-gateway is *us*. netdb is public and floodfills serve LeaseSets to anyone. This
-was inferred from logs, not confirmed by inspecting a published LeaseSet —
-**worth confirming before anyone runs this against the real network.**
+**Likely ruled out: the published LeaseSet does not appear to expose our IP.**
+The suspicion was that with the patch, `timeout_waiting_for_tunnels` stopped
+firing and `Publishing all LeaseSets` appeared in the log while the only
+completed tunnels were zero-hop — and a LeaseSet lists the gateways of inbound
+tunnels, which for a zero-hop tunnel is *us*.
+
+Reading the source (docs/go-i2p-leaseset-analysis.md, #49) says otherwise on
+both halves: go-i2p drops zero-hop tunnels before it forms any lease
+(`lib/i2cp/session.go:861-864`) and fails lease creation outright when none
+remain, and `Publishing all LeaseSets` is logged at the top of the publisher
+sweep before it checks whether any LeaseSet exists — so the log line never meant
+what it was read to mean.
+
+Caveat kept deliberately: that is a source reading, not an inspection of a
+LeaseSet fetched from a floodfill, and it has not been re-checked by hand. It is
+moot for anything gipny ships today, since go-i2p is gone from the tree, but it
+is not moot for releases up to v0.3.4, which were built on it.
 
 **The first-hop patch collapses gateway diversity.** Pinning the first hop is
 not wrong in itself — I2P deliberately limits how many routers learn your IP —

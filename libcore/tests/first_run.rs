@@ -44,6 +44,49 @@ fn duress_decoy_unlocks_separately() {
     assert!(matches!(vault.unlock("duress pass").unwrap(), UnlockOutcome::Decoy(_)));
 }
 
+/// Duress decoy has to actually *open something*, not just return a key.
+///
+/// This used to pass while the feature was broken end to end: the test stopped
+/// at the vault, and the app then handed the decoy key to `data.db`, which
+/// SQLCipher refused because the decoy master key is freshly random and
+/// unrelated to the primary one. The user saw "bad key" — in front of whoever
+/// was applying the coercion. The decoy now gets its own database, so the test
+/// follows the key all the way to an open DB, the way the app does.
+#[test]
+fn duress_decoy_opens_its_own_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let params = ArgonParams { m: 8192, t: 1, p: 1 };
+    Vault::create_with_params(dir.path(), "real pass", Some("duress pass"), DuressMode::Decoy, 0, params)
+        .unwrap();
+    let vault = Vault::open(dir.path()).unwrap();
+
+    // No `{:?}` on the outcome on purpose: it carries the master key, and
+    // UnlockOutcome deliberately does not derive Debug.
+    let primary = match vault.unlock("real pass").unwrap() {
+        UnlockOutcome::Primary(k) => k,
+        _ => panic!("expected Primary unlock outcome"),
+    };
+    let real = Db::open(&dir.path().join("data.db"), &primary).unwrap();
+    real.set_setting("display_name", b"real").unwrap();
+    drop(real);
+
+    let decoy_key = match vault.unlock("duress pass").unwrap() {
+        UnlockOutcome::Decoy(k) => k,
+        _ => panic!("expected Decoy unlock outcome"),
+    };
+
+    // The decoy key must not open the real database...
+    assert!(
+        Db::open(&dir.path().join("data.db"), &decoy_key).is_err(),
+        "decoy key opened the real database — the decoy would show real messages"
+    );
+
+    // ...and must open its own, which starts out empty.
+    let decoy = Db::open(&dir.path().join("decoy.db"), &decoy_key)
+        .expect("decoy database must open with the decoy key");
+    assert!(decoy.get_setting("display_name").unwrap().is_none());
+}
+
 /// The app's first-run recovery decision, replicated end to end:
 /// half-initialized profile (vault exists, no display_name) → resume;
 /// completed profile → occupied; wrong passphrase → occupied.

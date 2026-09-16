@@ -90,6 +90,16 @@ impl Updater {
         Self { node, onion: DEFAULT_UPDATE_ONION.to_string() }
     }
 
+    /// Whether an update server destination is known at all.
+    ///
+    /// Empty means auto-update is inert: there is nothing to dial, and dialing
+    /// anyway is not harmless — a failed dial counts against the shared relay
+    /// health counter in [`crate::net`] and can force a SAM session rebuild for
+    /// a subsystem that was never configured.
+    pub fn is_configured(&self) -> bool {
+        !self.onion.trim().is_empty()
+    }
+
     pub fn with_onion(node: Arc<TorNode>, onion: impl Into<String>) -> Self {
         Self { node, onion: onion.into() }
     }

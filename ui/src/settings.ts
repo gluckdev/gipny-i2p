@@ -59,9 +59,23 @@ export class SettingsModal {
       }
     };
 
-    Api.listApkArtifacts()
-      .then((info) => renderApk(info.version, info.artifacts))
-      .catch((e) => { apkInfo.textContent = ''; apkErr.textContent = `apk info failed: ${e}`; });
+    // Only ask when there is an update server to ask. With DEFAULT_UPDATE_ONION
+    // empty this fired on every Settings open and painted a raw SAM error, and
+    // each failed dial counted against the shared relay health counter.
+    const updateSection = h('div', { class: 'stack' });
+    const apkSection = h('div', { class: 'stack' });
+    Api.updateConfigured()
+      .then((configured) => {
+        if (!configured) {
+          updateSection.classList.add('hidden');
+          apkSection.classList.add('hidden');
+          return;
+        }
+        return Api.listApkArtifacts()
+          .then((info) => renderApk(info.version, info.artifacts))
+          .catch((e) => { apkInfo.textContent = ''; apkErr.textContent = `apk info failed: ${e}`; });
+      })
+      .catch(() => { updateSection.classList.add('hidden'); apkSection.classList.add('hidden'); });
 
     const unsubProg = store.updateProgress.subscribe((p) => {
       if (!p) return;
@@ -77,22 +91,27 @@ export class SettingsModal {
       h('div', { class: 'modal-body' },
         h('div', { class: 'card-label' }, 'version'),
         verSlot,
-        h('div', { class: 'row', style: { marginTop: '8px' } },
-          (() => {
-            const b = h('button', {
-              class: 'btn btn-ghost',
-              onClick: () => busy(b, async () => {
-                updErr.textContent = '';
-                try {
-                  const info = await Api.checkUpdate();
-                  if (!info) store.showToast('you are on the latest version');
-                } catch (e) { updErr.textContent = String(e); }
-              }),
-            }, '[ CHECK FOR UPDATES ]') as HTMLButtonElement;
-            return b;
-          })(),
-        ),
-        updErr,
+        (() => {
+          updateSection.append(
+            h('div', { class: 'row', style: { marginTop: '8px' } },
+              (() => {
+                const b = h('button', {
+                  class: 'btn btn-ghost',
+                  onClick: () => busy(b, async () => {
+                    updErr.textContent = '';
+                    try {
+                      const info = await Api.checkUpdate();
+                      if (!info) store.showToast('you are on the latest version');
+                    } catch (e) { updErr.textContent = String(e); }
+                  }),
+                }, '[ CHECK FOR UPDATES ]') as HTMLButtonElement;
+                return b;
+              })(),
+            ),
+            updErr,
+          );
+          return updateSection;
+        })(),
 
         h('div', { class: 'divider-text' }, 'relay'),
         (() => {
@@ -119,11 +138,16 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'mobile apk'),
-        apkInfo,
-        apkButtons,
-        apkProgress,
-        apkErr,
+        (() => {
+          apkSection.append(
+            h('div', { class: 'divider-text' }, 'mobile apk'),
+            apkInfo,
+            apkButtons,
+            apkProgress,
+            apkErr,
+          );
+          return apkSection;
+        })(),
 
         h('div', { class: 'divider-text' }, 'change passphrase'),
         h('div', { class: 'field' }, oldP),

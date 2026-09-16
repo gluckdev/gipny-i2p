@@ -1362,3 +1362,7 @@ a:hover { text-decoration: underline; }
 .relay-banner.hidden {
   display: none;
 }
+
+/* Generic escape hatch for sections the app hides when the feature behind them
+   is not configured (e.g. the update surface with no update server). */
+.hidden { display: none !important; }

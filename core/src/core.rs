@@ -1732,6 +1732,16 @@ impl Core {
     }
 
     fn spawn_update_loop(self: Arc<Self>) {
+        // Unlike the relay loop, this one used to dial unconditionally. With
+        // DEFAULT_UPDATE_ONION empty — which it is, and which no setting can
+        // change — every check dialed the empty destination, failed, and
+        // incremented the *shared* relay failure counter in libcore::net; five
+        // of those tear down and rebuild the SAM session for a subsystem that
+        // was never configured.
+        if !self.updater.is_configured() {
+            eprintln!("[update] no update server configured — auto-update disabled");
+            return;
+        }
         let this = self.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INITIAL_SECS)).await;
@@ -1741,6 +1751,11 @@ impl Core {
             }
         });
         self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// Whether auto-update can work at all (see [`Updater::is_configured`]).
+    pub fn update_configured(&self) -> bool {
+        self.updater.is_configured()
     }
 }
 
