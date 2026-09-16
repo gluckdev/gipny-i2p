@@ -18,6 +18,37 @@ run. What is proven on GitHub's runners, not just written:
 - **The router pin moves on delivery.** The bump job pinned i2pd 99eab7ac after
   run 35075367552; that revision builds on Linux (glibc and musl) and all three
   Android ABIs (i2pd-build run 35076553013).
+- **v0.4.0 is tagged and published** (16:55 MSK): desktop for Linux
+  x86_64/arm64, Windows, macOS arm64/x86_64, Android arm64/armv7, relay and
+  agent tarballs. Two of its parts shipped broken; 0.4.1 fixes them (next
+  section).
+
+AGENT MODE AND 0.4.1 (2026-09-16, later)
+
+The afternoon's agent work was done by another tool from the plan in
+docs/plans/2026-09-16-agent-mode.md; docs/plans/2026-09-16-inspection.md is
+the audit of it and the source of what follows.
+
+- Agent mode in the app and the headless `gipny-agent` exist and compile:
+  `WireConsole` on the wire, the runner in `libcore/src/agent.rs`, one
+  sequential worker in `Core`, a chat/console switch in the UI, tests for the
+  wire shape, the card codec and the runner. Not run over live i2p until the
+  e2e-i2pd dispatch on 4141448 — check that run before trusting delivery.
+- Shipped broken in 0.4.0, fixed on main for 0.4.1: the agent tarball had no
+  i2pd (the agent looks for it next to its own executable) — now bundled with
+  a systemd unit; the "start built-in relay" button wrote a per-launch
+  throwaway destination into the client's own relay setting — withdrawn.
+- Relay discovery (eb339bd) stays: every non-typing message carries the
+  sender's relay inside the ratchet envelope and the receiver updates the
+  contact. README's delivery section says so.
+- Still open from the agent plan: installers (install-agent.sh/.ps1, a
+  launchd plist), an e2e job that drives the real binary, macOS and Windows
+  agent tarballs.
+- Behaviour to keep in mind: a COMMAND from any contact is stored pending;
+  the moment that contact is made master, its backlog runs.
+- Parked on branch feat/attachment-privacy: an attachment metadata sanitizer
+  and a voice scrambler. Both are wanted; both are to be redone per the
+  inspection's section B, not merged as they are.
 
 WHAT CHANGED SINCE THE LAST BRIEF
 
@@ -69,15 +100,15 @@ WHAT IS STILL OPEN, IN ORDER
    a fresh install has none to start from. The testnet relay runs on GitHub
    Actions, which is for testing; a relay real users depend on belongs on a
    machine someone operates. This is the owner's call.
-2. **Discovery for in-process relays** (stage 3 of the relay plan). The server
-   exists and is proven, but nothing starts it in the app: a relay nobody can
-   find serves nobody.
-3. **First release on i2pd.** v0.3.4 and earlier ship go-i2p and deliver
-   nothing; the owner chose to leave them up. Tag only after the release
-   workflow's Windows and macOS legs have been green once.
-4. **macOS** builds were added today and have not completed a run yet: the
-   router script (`.github/scripts/build-i2pd-macos.sh`), the app compile in
-   build.yml, and the dmg legs in release.yml. Unsigned; floor is macOS 15.
+2. **A relay that survives a restart, started from the app.** The 0.4.0
+   button was withdrawn (above). `EphemeralRelay` would need a persisted
+   destination key, a restart in `Core::start`, restoring the previous relay
+   on stop, and advertising itself only once its tunnels are up.
+3. **0.4.1.** v0.4.0 is out (v0.3.4 and earlier ship go-i2p and deliver
+   nothing; the owner chose to leave them up). Tag 0.4.1 after e2e-i2pd is
+   green on main and the agent tarball has been started on a clean VPS.
+4. **macOS** legs ran green in the v0.4.0 release (dmg for both arches).
+   Unsigned; floor is macOS 15. Nobody has launched the dmg on a Mac yet.
 5. **Android on a real device.** The router is built and asserted to be in the
    APK; nothing has run on hardware.
 
@@ -86,8 +117,9 @@ KNOWN DEAD CODE, DELIBERATELY LEFT ALONE
 - The whole inbound/P2P surface of `libcore/src/net.rs` — `connect`, `accept`,
   `Frame` — is unused. It is also exactly what a relay-less design would build
   on, which is why it has not been deleted.
-- `libcore/src/relay_server.rs` is not called by the app, deliberately, until
-  discovery exists. The e2e job is its only caller.
+- `libcore/src/relay_server.rs` is not called by the app: it was wired to a
+  settings button in 0.4.0 and unwired again for 0.4.1 (inspection, 3B.2).
+  The e2e job is its only caller.
 - `libcore/src/session.rs` and `core/src/core.rs` are ~1500-line copy-paste
   siblings. Bots cannot create groups or send typing indicators, and every
   messaging fix has to be written twice.
@@ -103,6 +135,8 @@ USEFUL TO KNOW
   session; `cargo check` then tries to build OpenSSL for Android and fails
   confusingly. `unset CC CXX`.
 
-CONVENTIONS: commits are authored `gluckdev <dep_it@spbsot.kz>` with no AI
-attribution trailers. Do not commit router binaries or DEBUG logs — .gitignore
+CONVENTIONS: commits carry the repository owner's git identity and no AI
+attribution trailers. Other tools commit here under that same identity; before
+treating a change in the tree as your own, check its provenance
+(docs/plans/2026-09-16-inspection.md, "Контекст"). Do not commit router binaries or DEBUG logs — .gitignore
 covers them, including `core/resources/i2pd`, which it did not before.
