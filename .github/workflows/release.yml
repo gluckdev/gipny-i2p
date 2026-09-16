@@ -1,9 +1,9 @@
 name: release
 
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
-# Builds the bundled pure-Go i2p router and every desktop artifact (Linux
-# AppImage/deb + Windows NSIS/zip), plus Android (i2p router embedded
-# in-process via JNI; see i2p-router/android_export.go).
+# Builds the bundled i2pd router and every desktop artifact (Linux AppImage/deb
+# + Windows NSIS), plus Android (i2pd embedded in-process via JNI; see
+# android-router/jni).
 #
 # Trigger: push a tag `v*` (e.g. v0.3.0) or run manually.
 
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Bundled i2p router (pure Go, CGO off -> cross-compiles anywhere).
+  # 1. Bundled i2pd router, built from third_party/i2pd at the pinned commit.
   # ---------------------------------------------------------------------------
   router:
     name: router (i2pd, ${{ matrix.label }})
@@ -62,21 +62,42 @@ jobs:
               boost-dev boost-static openssl-dev openssl-libs-static zlib-dev zlib-static
             git config --global --add safe.directory "*"
             cd third_party/i2pd
-            make USE_UPNP=no LDFLAGS=-static -j"$(nproc)"
+            make USE_UPNP=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
             strip --strip-unneeded i2pd
           '
           ldd third_party/i2pd/i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked' \
             || { echo "router is not static — it would not run on other distros"; exit 1; }
           ls -lh third_party/i2pd/i2pd
 
+      # A release has to be able to say which source revision it shipped.
+      # USE_GIT_VERSION stamps the binary; this asserts the stamp matches the
+      # submodule, so the shipped router can be tied back to the revision the
+      # e2e job proved delivers.
+      - name: verify version stamp (linux)
+        if: runner.os == 'Linux'
+        run: |
+          EXPECTED="$(git -C third_party/i2pd describe --tags)"
+          ACTUAL="$(third_party/i2pd/i2pd --version | head -1)"
+          echo "expected: $EXPECTED"
+          echo "actual:   $ACTUAL"
+          case "$ACTUAL" in
+            *"${EXPECTED#v}"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — binary is not the pinned source"; exit 1 ;;
+          esac
+
       - name: build (windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           cd third_party/i2pd
-          make USE_UPNP=no -j"$(nproc)"
+          # USE_WIN32_APP=no: Makefile.mingw defaults it to yes, which builds the
+          # tray/GUI daemon with -mwindows. gipny's router is a background
+          # process driven over SAM; the installer must not drop a tray icon and
+          # a window on the user.
+          make USE_UPNP=no USE_WIN32_APP=no USE_GIT_VERSION=yes -j"$(nproc)"
           strip --strip-unneeded i2pd.exe
           ls -lh i2pd.exe
+          ./i2pd.exe --version
 
       # Shrink the bundled router. Linux only: UPX-packed Windows executables
       # routinely trip antivirus false positives.
@@ -84,7 +105,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y upx-ucl
-          upx --best --lzma "third_party/i2pd/${{ matrix.out }}"
+          # A static-pie binary is something UPX has historically refused; keep
+          # the unpacked one if packing fails rather than shipping nothing.
+          cp "third_party/i2pd/${{ matrix.out }}" /tmp/i2pd.unpacked
+          if upx --best --lzma "third_party/i2pd/${{ matrix.out }}"; then
+            # Packed binaries have to still run: an unrunnable router is a
+            # client that never connects, and nothing downstream would notice.
+            "third_party/i2pd/${{ matrix.out }}" --version \
+              || { echo "UPX-packed router does not run — shipping the unpacked one"
+                   cp /tmp/i2pd.unpacked "third_party/i2pd/${{ matrix.out }}"; }
+          else
+            echo "UPX declined this binary — shipping it unpacked"
+            cp /tmp/i2pd.unpacked "third_party/i2pd/${{ matrix.out }}"
+          fi
           ls -lh "third_party/i2pd/${{ matrix.out }}"
 
       - uses: actions/upload-artifact@v7
@@ -197,24 +230,126 @@ jobs:
           path: target/release/bundle/**/*.AppImage
 
   # ---------------------------------------------------------------------------
-  # 3. Android. Builds the APK with the go-i2p router embedded in-process via
-  #    JNI: i2p-router/android_export.go + jni_shim_android.c are cross-compiled
-  #    (cgo, buildmode=c-shared) into a per-ABI libgipnyi2p.so by the
-  #    `buildGoRouterJniLibs` Gradle task (core/gen/android/app/build.gradle.kts),
-  #    loaded and started by GipnyService.kt on service start.
+  # 2c. Android router: i2pd built as the JNI library GipnyService loads.
+  #     Cached on the i2pd pin + NDK + boost revision, because a cold build is
+  #     ~1h (boost and OpenSSL from source) and the pin rarely moves.
+  # ---------------------------------------------------------------------------
+  android-router:
+    name: router (i2pd, android arm64-v8a)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      NDK_VERSION: 27.3.13750724
+      # See i2pd-build.yml: the one build input this repo does not record.
+      BOOST_FOR_ANDROID_REV: master
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: check out the pinned vendored sources
+        run: |
+          git submodule update --init --recursive
+          echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: restore cached router
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: staged/libi2pd.so
+          key: i2pd-android-arm64-v8a-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}
+
+      - uses: actions/setup-java@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v4
+        if: steps.cache.outputs.cache-hit != 'true'
+
+      - name: resolve NDK
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          NDK_DIR="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [ ! -d "$NDK_DIR" ]; then
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" >/dev/null
+          fi
+          test -d "$NDK_DIR"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: align the vendored sources
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          # Build the i2pd revision this repo pins, not the one i2pd-android
+          # happens to point at, so desktop and Android ship the same code.
+          git -C i2pd fetch --tags --quiet origin
+          git -C i2pd checkout --quiet "$I2PD_REV"
+          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
+          git -C boost checkout FETCH_HEAD
+          # The dependency scripts hardcode API 16, dropped by NDK r26+.
+          sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh
+          echo "[i2pd] boost at $(git -C boost rev-parse HEAD)"
+
+      - name: build dependencies (boost, openssl)
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          ./build_boost.sh arm64
+          ./build_openssl.sh arm64
+          for lib in boost openssl; do
+            find "$lib" -name '*.a' | grep -q . || { echo "$lib built nothing"; exit 1; }
+          done
+
+      - name: build libi2pd.so
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          "$ANDROID_NDK_HOME/ndk-build" \
+            -C android-router/jni \
+            -j"$(nproc)" \
+            NDK_MODULE_PATH="$GITHUB_WORKSPACE/third_party/i2pd-android/binary/jni" \
+            NDK_PROJECT_PATH="$GITHUB_WORKSPACE/android-router" \
+            APP_ABI=arm64-v8a \
+            APP_PLATFORM=android-24
+
+          LIB="android-router/libs/arm64-v8a/libi2pd.so"
+          NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for sym in Java_app_gipny_GipnyService_nativeStartSam \
+                     Java_app_gipny_GipnyService_nativeStopSam; do
+            "$NM" --defined-only --extern-only "$LIB" | grep -q "$sym" \
+              || { echo "libi2pd.so does not export $sym"; exit 1; }
+          done
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            --strip-unneeded "$LIB"
+          mkdir -p staged && cp "$LIB" staged/libi2pd.so
+          ls -lh staged/libi2pd.so
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: router-android-arm64-v8a
+          path: staged/libi2pd.so
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3. Android. Builds the APK with i2pd embedded in-process via JNI: the
+  #    android-router job produces libi2pd.so (i2pd plus gipny's two JNI entry
+  #    points), the `stageI2pdJniLibs` Gradle task drops it into jniLibs, and
+  #    GipnyService.kt loads and starts it on service start.
   # ---------------------------------------------------------------------------
   android:
     name: android
+    needs: android-router
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: stage the embedded router
+        uses: actions/download-artifact@v8
+        with:
+          name: router-android-arm64-v8a
+          path: android-router/prebuilt/arm64-v8a
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v4
@@ -264,6 +399,14 @@ jobs:
           test "${#apks[@]}" -gt 0
           for apk in "${apks[@]}"; do
             "$APKSIGNER" verify --verbose "$apk"
+            # The router has to actually be in there. A release APK without
+            # libi2pd.so installs, starts, and never connects — the exact
+            # failure the i2pd migration exists to end, and one nothing
+            # downstream would catch.
+            unzip -l "$apk" | grep -F 'lib/arm64-v8a/libi2pd.so'
+            unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipny_lib.so'
+            unzip -l "$apk" | grep -qF 'assets/certificates/reseed/' \
+              || { echo "APK carries no reseed certificates — a fresh router cannot bootstrap"; exit 1; }
           done
       - uses: actions/upload-artifact@v7
         with:

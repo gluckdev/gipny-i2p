@@ -1,8 +1,13 @@
 name: build
 
-# Compile check for the i2p fork: builds the bundled go-i2p SAM router (pure Go)
-# and the Rust workspace on GitHub-hosted runners. Full release artifacts
-# (installers) are produced by release.yml on a tag. All builds are CI-only.
+# Compile check for the i2p fork: the Rust workspace, the frontend and the
+# Android APK on GitHub-hosted runners. Full release artifacts (installers) are
+# produced by release.yml on a tag. All builds are CI-only.
+#
+# The router is not built here. i2pd is C++ with boost and OpenSSL and takes
+# hours per Android ABI; it is built by i2pd-build.yml and by release.yml, which
+# caches it on the submodule pin. Everything in this workflow therefore checks
+# that *our* code compiles, not that the router does.
 
 on:
   push:
@@ -15,40 +20,6 @@ permissions:
   contents: read
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Bundled i2p router (github.com/go-i2p/go-sam-bridge embedded router + SAM).
-  # Pure Go, CGO disabled -> trivially cross-compiles for every target.
-  # ---------------------------------------------------------------------------
-  router:
-    name: i2p-router (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { goos: linux,   goarch: amd64,  out: gipny-i2p-router-linux-amd64 }
-          - { goos: linux,   goarch: arm64,  out: gipny-i2p-router-linux-arm64 }
-          - { goos: windows, goarch: amd64,  out: gipny-i2p-router-windows-amd64.exe }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
-      - name: build
-        working-directory: i2p-router
-        env:
-          CGO_ENABLED: '0'
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          go build -trimpath -ldflags "-s -w" -o "${{ matrix.out }}" .
-          ls -la "${{ matrix.out }}"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.out }}
-          path: i2p-router/${{ matrix.out }}
-
   # ---------------------------------------------------------------------------
   # Rust workspace: libcore + relay + the Tauri app (compile check).
   # ---------------------------------------------------------------------------
@@ -68,15 +39,15 @@ jobs:
             libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
-      - name: stage bundled router (tauri.conf resources glob needs it)
+      # tauri-build calls copy_resources() unconditionally and tauri-utils errors
+      # on a glob with no match, so "resources/i2pd*" must match something even
+      # for a compile check. A placeholder is deliberate: this job proves our code
+      # builds, and only release.yml ships a real router.
+      - name: stage router placeholder (tauri.conf resources glob needs a match)
         run: |
           mkdir -p core/resources
-          CGO_ENABLED=0 go build -C i2p-router -trimpath -ldflags "-s -w" \
-            -o "$GITHUB_WORKSPACE/core/resources/gipny-i2p-router" .
+          printf 'placeholder: build.yml is a compile check and ships nothing\n' \
+            > core/resources/i2pd
       - name: build libcore + relay
         run: |
           cargo build --release -p gipny-libcore
@@ -127,8 +98,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Android integration: build installable debug APKs for arm64-v8a (real
-  # devices) and x86_64 (emulator) and assert that the in-process go-i2p JNI
-  # library is actually packaged for each ABI.
+  # devices) and x86_64 (emulator) and assert the Rust cdylib is packaged for
+  # each ABI.
+  #
+  # Built with -PskipRouter, so these APKs carry no i2pd and cannot connect —
+  # they exist to prove the Kotlin/Rust/Tauri side compiles and packages. APKs
+  # that actually work come from release.yml, which stages a real libi2pd.so.
   # ---------------------------------------------------------------------------
   android:
     name: android APK
@@ -138,10 +113,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
       - uses: actions/setup-java@v5
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v4
@@ -171,42 +142,46 @@ jobs:
       # `--target` build overwrites the first APK. Build one ABI at a time,
       # verify + stash the APK, and wipe outputs/ before the next build.
       - name: build Android APK (aarch64)
-        run: cd core && cargo tauri android build --debug --apk --target aarch64
+        run: cd core && cargo tauri android build --debug --apk --target aarch64 -- -PskipRouter
       - name: verify + stash APK (aarch64)
         run: |
           apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
           test -n "$apk"
-          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipnyi2p.so'
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipny_lib.so'
           mkdir -p dist/arm64
           find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/arm64/ \;
           ls -la dist/arm64
           test -n "$(find dist/arm64 -type f -name '*.apk' -print -quit)"
           rm -rf core/gen/android/app/build/outputs
       - name: build Android APK (x86_64)
-        run: cd core && cargo tauri android build --debug --apk --target x86_64
+        run: cd core && cargo tauri android build --debug --apk --target x86_64 -- -PskipRouter
       - name: verify + stash APK (x86_64)
         run: |
           apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
           test -n "$apk"
-          unzip -l "$apk" | grep -F 'lib/x86_64/libgipnyi2p.so'
+          unzip -l "$apk" | grep -F 'lib/x86_64/libgipny_lib.so'
           mkdir -p dist/x86_64
           find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/x86_64/ \;
           ls -la dist/x86_64
           test -n "$(find dist/x86_64 -type f -name '*.apk' -print -quit)"
       - uses: actions/upload-artifact@v7
         with:
-          name: gipny-android-debug-apk
+          name: gipny-android-debug-apk-no-router
           path: dist/arm64/*.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
-          name: gipny-android-debug-apk-x86_64
+          name: gipny-android-debug-apk-x86_64-no-router
           path: dist/x86_64/*.apk
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # Android emulator smoke: install the x86_64 debug APK on a cold emulator,
-  # assert GipnyService + SAM bridge start, and report cold-start time and PSS.
+  # assert the app and GipnyService start, and report cold-start time and PSS.
+  #
+  # The APK is built with -PskipRouter, so there is no i2pd in it and nothing
+  # here can say anything about the transport — the service is expected to log
+  # that the library is missing. Delivery is measured by e2e-i2pd.yml.
   # continue-on-error: true so a flaky emulator never breaks the main build.
   # ---------------------------------------------------------------------------
   android-smoke:
@@ -227,7 +202,7 @@ jobs:
             --force
       - uses: actions/download-artifact@v8
         with:
-          name: gipny-android-debug-apk-x86_64
+          name: gipny-android-debug-apk-x86_64-no-router
           path: apk-x86_64
       - name: emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
@@ -257,9 +232,10 @@ jobs:
             # has continue-on-error: true, so it never blocks other jobs).
             timeout 15 adb logcat -s GipnyService | grep -m1 "GipnyService started"
 
-            # SAM bridge: wait up to 90 s (router bootstrap can take ~60 s).
-            # Best-effort only — mark non-fatal while the emulator path matures.
-            timeout 90 adb logcat -s GipnyService | grep -m1 "SAM bridge ready" || true
+            # No SAM assertion: this APK ships no router by construction. Record
+            # what the service said about it so a genuinely broken JNI path (as
+            # opposed to a deliberately absent library) is still visible.
+            timeout 10 adb logcat -d -s GipnyService | tail -20 || true
 
             # Memory snapshot.
             MEMINFO=$(adb shell dumpsys meminfo app.gipny.i2p 2>/dev/null || echo "")

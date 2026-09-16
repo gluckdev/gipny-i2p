@@ -1,20 +1,23 @@
 name: i2pd-build
 
-# Builds the i2pd router ourselves, for the platforms gipny ships on, so we can
-# bundle it the way we bundle gipny-i2p-router today.
+# Builds the i2pd router for the platforms gipny ships on, across more targets
+# than the release path itself covers.
 #
-# Why: go-i2p never finishes building client tunnels, so it delivers nothing
-# (#46, go-i2p#55). With i2pd underneath, the same relay, bots and harness
-# deliver 5/5 messages over live i2p — see docs/i2p-transport-evaluation.md.
-# Nothing in the Rust code changes: it speaks plain SAMv3 to whatever answers
-# on 127.0.0.1:7656.
-#
-# This is a spike. It answers "can we produce these binaries in CI at all",
-# not "are they ready to ship". Nothing here is wired into the app yet.
+# Why i2pd: go-i2p never finishes building client tunnels, so it delivers
+# nothing (#46, go-i2p#55). With i2pd underneath, the same relay, bots and
+# harness deliver 5/5 messages over live i2p — see
+# docs/i2p-transport-evaluation.md. Nothing in the Rust code changes: it speaks
+# plain SAMv3 to whatever answers on 127.0.0.1:7656.
 #
 # Desktop comes from the i2pd repo directly (static link, so the bundle has no
-# runtime dependencies). Android comes from i2pd-android's binary/ build, which
-# produces a standalone i2pd executable rather than their app.
+# runtime dependencies). Android builds android-router/jni — the same i2pd
+# sources plus gipny's two JNI entry points — into libi2pd.so, which is what
+# GipnyService loads. i2pd-android is here for its dependency build scripts
+# (boost, OpenSSL) and its DaemonAndroid wrapper, not for its own app.
+#
+# This workflow is the wide net: release.yml builds the router it actually ships
+# on the release path. What only lives here is musl, armeabi-v7a and the second
+# Android ABI, so upstream breakage surfaces before a tag needs it.
 
 on:
   workflow_dispatch:
@@ -32,15 +35,15 @@ on:
 permissions:
   contents: read
 
-# No version string is defined here on purpose. Every job builds the head of the branch
-# each submodule tracks (.gitmodules: i2pd -> openssl, i2pd-android -> master),
-# resolved fresh at build time, and prints the revision it resolved to.
+# Every job builds the submodule commits this repo pins, so a given commit of
+# this repo always produces the same router. Tracking branch heads was tried and
+# abandoned: it made the shipped router un-reproducible, and on 2026-07-20 it
+# broke outright, taking every Android leg and the Windows leg with it. The pin
+# moves deliberately, via e2e-i2pd.yml's bump job, and only after a run that
+# actually delivered messages.
 #
-# The trade-off is stated once: this always builds the newest upstream code,
-# so two runs of the same commit of *this* repo can produce different routers.
-# The version check in each job is what keeps that honest — the binary is
-# stamped with its own source revision and asserted against it, so a build is
-# always identifiable even when it is not repeatable.
+# One input is still unpinned: Boost-for-Android, a nested submodule this repo
+# does not record. See BOOST_FOR_ANDROID_REV in the android job.
 
 jobs:
   # --------------------------------------------------------------------------
@@ -69,17 +72,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: update vendored sources to branch heads
+      - name: check out the pinned vendored sources
         run: |
-          # Only our own two submodules follow a branch. --remote --recursive
-          # would also drag every nested dependency to its own branch head —
-          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
-          # inside i2pd-android, in conflicts that are none of our business.
-          # --checkout keeps it a plain checkout rather than a rebase or merge.
-          git submodule update --remote --checkout -- third_party/i2pd
-          git submodule update --remote --checkout -- third_party/i2pd-android
-
-          # Nested dependencies then come from whatever those heads pin.
+          # Pinned, not --remote. Tracking branch heads meant two runs of the
+          # same commit of *this* repo could produce different routers, and on
+          # 2026-07-20 it simply broke: every Android leg and the Windows leg
+          # died in these steps after upstream moved. The pin is advanced
+          # deliberately by e2e-i2pd.yml's bump job, and only on a run that
+          # actually delivered messages.
           git submodule update --init --recursive
 
           # actions/checkout clones submodules shallow, so `git describe` has no
@@ -163,14 +163,27 @@ jobs:
         with:
           submodules: recursive
 
-      - name: update vendored sources to branch heads
+      - name: check out the pinned vendored sources
         run: |
+          # Pinned, not --remote. Tracking branch heads meant two runs of the
+          # same commit of *this* repo could produce different routers, and on
+          # 2026-07-20 it simply broke: every Android leg and the Windows leg
+          # died in these steps after upstream moved. The pin is advanced
+          # deliberately by e2e-i2pd.yml's bump job, and only on a run that
+          # actually delivered messages.
+          # Inside the Alpine container the checkout is owned by another user.
           git config --global --add safe.directory '*'
-          git submodule update --remote --checkout -- third_party/i2pd
-          git submodule update --init --recursive -- third_party/i2pd
+
+          git submodule update --init --recursive
+
+          # actions/checkout clones submodules shallow, so `git describe` has no
+          # tags to describe against — run 29696503988 died on "No tags can
+          # describe". Both the version stamp and its check need them.
           git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
             git -C third_party/i2pd fetch --quiet --tags origin
-          echo "i2pd: $(git -C third_party/i2pd log --oneline -1)"
+
+          echo "i2pd:         $(git -C third_party/i2pd log --oneline -1)"
+          echo "i2pd-android: $(git -C third_party/i2pd-android log --oneline -1)"
 
       - name: build
         working-directory: third_party/i2pd
@@ -239,17 +252,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: update vendored sources to branch heads
+      - name: check out the pinned vendored sources
         run: |
-          # Only our own two submodules follow a branch. --remote --recursive
-          # would also drag every nested dependency to its own branch head —
-          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
-          # inside i2pd-android, in conflicts that are none of our business.
-          # --checkout keeps it a plain checkout rather than a rebase or merge.
-          git submodule update --remote --checkout -- third_party/i2pd
-          git submodule update --remote --checkout -- third_party/i2pd-android
-
-          # Nested dependencies then come from whatever those heads pin.
+          # Pinned, not --remote. Tracking branch heads meant two runs of the
+          # same commit of *this* repo could produce different routers, and on
+          # 2026-07-20 it simply broke: every Android leg and the Windows leg
+          # died in these steps after upstream moved. The pin is advanced
+          # deliberately by e2e-i2pd.yml's bump job, and only on a run that
+          # actually delivered messages.
           git submodule update --init --recursive
 
           # actions/checkout clones submodules shallow, so `git describe` has no
@@ -301,6 +311,11 @@ jobs:
     name: android ${{ matrix.abi }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    env:
+      # The one build input this repo does not record. Set it to a SHA to make
+      # the Android router reproducible; "master" is what it resolved to before
+      # anyone measured which revision works.
+      BOOST_FOR_ANDROID_REV: master
     strategy:
       fail-fast: false
       matrix:
@@ -325,17 +340,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: update vendored sources to branch heads
+      - name: check out the pinned vendored sources
         run: |
-          # Only our own two submodules follow a branch. --remote --recursive
-          # would also drag every nested dependency to its own branch head —
-          # run 29696338423 died trying to rebase gost-engine inside OpenSSL
-          # inside i2pd-android, in conflicts that are none of our business.
-          # --checkout keeps it a plain checkout rather than a rebase or merge.
-          git submodule update --remote --checkout -- third_party/i2pd
-          git submodule update --remote --checkout -- third_party/i2pd-android
-
-          # Nested dependencies then come from whatever those heads pin.
+          # Pinned, not --remote. Tracking branch heads meant two runs of the
+          # same commit of *this* repo could produce different routers, and on
+          # 2026-07-20 it simply broke: every Android leg and the Windows leg
+          # died in these steps after upstream moved. The pin is advanced
+          # deliberately by e2e-i2pd.yml's bump job, and only on a run that
+          # actually delivered messages.
           git submodule update --init --recursive
 
           # actions/checkout clones submodules shallow, so `git describe` has no
@@ -364,9 +376,12 @@ jobs:
           # revision accepts up to 28.2. Overriding it in our own build is
           # exactly why these are submodules of this repo.
           #
-          # Tracks master, like everything else here, and logs what it resolved
-          # to so a build can always be traced back to its sources.
-          git -C boost fetch --depth 1 origin master
+          # BOOST_FOR_ANDROID_REV pins it. It defaults to master because no
+          # known-good revision has been recorded yet; the resolved SHA is
+          # printed and must be pasted back here before the first Android
+          # release, since this is the one input to the router build that
+          # nothing in this repo records.
+          git -C boost fetch --depth 1 origin "${BOOST_FOR_ANDROID_REV:-master}"
           git -C boost checkout FETCH_HEAD
 
           # The dependency scripts hardcode API 16 for the 32-bit ABIs, which
@@ -399,51 +414,72 @@ jobs:
           echo "[i2pd] using NDK $NDK_DIR"
           cat "$NDK_DIR/source.properties" || true
 
-      - name: build dependencies (boost, openssl, miniupnpc)
+      # No miniupnpc: the JNI library is built without USE_UPNP, matching the
+      # desktop build and the flags libcore/src/router.rs passes.
+      - name: build dependencies (boost, openssl)
         working-directory: third_party/i2pd-android/binary/jni
         run: |
           ./build_boost.sh ${{ matrix.arch }}
           ./build_openssl.sh ${{ matrix.arch }}
-          ./build_miniupnpc.sh ${{ matrix.arch }}
 
           # The scripts exit 0 whether or not they built anything, so check the
           # outputs exist before spending half an hour on ndk-build.
-          for lib in boost openssl miniupnp; do
+          for lib in boost openssl; do
             if ! find "$lib" -name '*.a' | grep -q .; then
               echo "$lib produced no static libraries for ${{ matrix.arch }}"
               exit 1
             fi
           done
 
-      - name: build i2pd
-        working-directory: third_party/i2pd-android/binary/jni
+      # Our jni tree, not i2pd-android's: android-router/jni builds the same i2pd
+      # sources into a JNI library exporting Java_app_gipny_GipnyService_*,
+      # rather than the standalone executable binary/jni produces. That binary
+      # has no JNI symbols, so GipnyService could never have loaded it.
+      #
+      # NDK_MODULE_PATH still points at binary/jni: that is where the dependency
+      # scripts put boost and openssl, and where the i2pd sources sit.
+      - name: build libi2pd.so
         run: |
           # APP_ABI in Application.mk is "all"; narrow it to the one ABI this
           # matrix leg is for. APP_PLATFORM there is android-16, which modern
           # NDKs no longer support — 24 matches what the app targets.
           "$ANDROID_NDK_HOME/ndk-build" \
+            -C android-router/jni \
             -j"$(nproc)" \
-            NDK_MODULE_PATH="$PWD" \
+            NDK_MODULE_PATH="$GITHUB_WORKSPACE/third_party/i2pd-android/binary/jni" \
+            NDK_PROJECT_PATH="$GITHUB_WORKSPACE/android-router" \
             APP_ABI=${{ matrix.abi }} \
             APP_PLATFORM=android-24
 
       - name: verify and stage
-        working-directory: third_party/i2pd-android/binary
         run: |
-          BIN="libs/${{ matrix.abi }}/i2pd"
-          test -f "$BIN"
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" -s "$BIN"
-          file "$BIN"
-          ls -lh "$BIN"
+          LIB="android-router/libs/${{ matrix.abi }}/libi2pd.so"
+          test -f "$LIB"
+          NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
 
-          # Android refuses to execute binaries from the app's data directory,
-          # so an executable has to travel inside the APK as a lib*.so in
-          # jniLibs to land in nativeLibraryDir, which is executable.
+          # The whole point of this leg: the library must export the two symbols
+          # GipnyService binds to. A library that builds but exports neither
+          # produces an APK that installs and silently never connects, which is
+          # exactly the failure this migration is ending.
+          for sym in Java_app_gipny_GipnyService_nativeStartSam \
+                     Java_app_gipny_GipnyService_nativeStopSam; do
+            if ! "$NM" --defined-only --extern-only "$LIB" | grep -q "$sym"; then
+              echo "libi2pd.so does not export $sym"
+              "$NM" --defined-only --extern-only "$LIB" | grep -i gipny || true
+              exit 1
+            fi
+            echo "exports $sym"
+          done
+
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            --strip-unneeded "$LIB"
+          file "$LIB"
+          ls -lh "$LIB"
           mkdir -p staged
-          cp "$BIN" "staged/libi2pd.so"
+          cp "$LIB" "staged/libi2pd.so"
 
       - uses: actions/upload-artifact@v4
         with:
           name: i2pd-android-${{ matrix.abi }}
-          path: third_party/i2pd-android/binary/staged/libi2pd.so
+          path: staged/libi2pd.so
           if-no-files-found: error

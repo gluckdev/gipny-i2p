@@ -35,10 +35,6 @@ jobs:
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.x'
-          cache-dependency-path: i2p-router/go.sum
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -49,17 +45,26 @@ jobs:
           path: relay-state
           key: relay-testnet-state-${{ github.run_id }}
           restore-keys: relay-testnet-state-
-      - name: build router + relay
+      # i2pd from the distro rather than from third_party: this is throwaway test
+      # infrastructure, not something that ships, and building i2pd from source
+      # would cost most of the run's useful lifetime.
+      - name: install i2pd + build relay
         run: |
-          CGO_ENABLED=0 go build -C i2p-router -trimpath -ldflags "-s -w" \
-            -o "$GITHUB_WORKSPACE/gipny-i2p-router" .
+          sudo apt-get update
+          sudo apt-get install -y i2pd
+          i2pd --version
           cargo build --release --manifest-path core/relay/Cargo.toml
       # Split into start/serve/stop steps so the destination lands in the job
       # summary minutes after start, not when the 5.5h serve step ends.
       - name: start router + relay, print destination
         run: |
           mkdir -p relay-state/router relay-state/relay
-          nohup ./gipny-i2p-router --sam-listen 127.0.0.1:7656 --data relay-state/router \
+          nohup i2pd \
+            --datadir="$PWD/relay-state/router" \
+            --sam.enabled=true --sam.address=127.0.0.1 --sam.port=7656 \
+            --http.enabled=false --httpproxy.enabled=false \
+            --socksproxy.enabled=false --upnp.enabled=false \
+            --log=stdout \
             > router.log 2>&1 &
           echo $! > router.pid
           # SAM up? (bash /dev/tcp probe — nc is not guaranteed on runners)
