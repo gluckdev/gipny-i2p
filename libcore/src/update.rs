@@ -133,7 +133,7 @@ impl Updater {
     where F: FnMut(u64, u64) + Send,
     {
         if artifact.size > MAX_ARTIFACT_BYTES { return Err(UpdateError::TooLarge); }
-        let relay = self.node.connect_relay(&self.onion, UPDATE_PORT).await?;
+        let relay = self.node.connect_service(&self.onion, UPDATE_PORT).await?;
         let mut stream = relay.into_inner();
         write_frame(&mut stream, &bincode::serialize(&Req::GetArtifact {
             path: artifact.file.clone(),
@@ -192,7 +192,7 @@ impl Updater {
     }
 
     async fn fetch_manifest(&self) -> Result<Manifest> {
-        let relay = self.node.connect_relay(&self.onion, UPDATE_PORT).await?;
+        let relay = self.node.connect_service(&self.onion, UPDATE_PORT).await?;
         let mut stream = relay.into_inner();
         write_frame(&mut stream, &bincode::serialize(&Req::GetManifest)?).await?;
         let frame = read_frame(&mut stream, MAX_MANIFEST_BYTES).await?;

@@ -257,7 +257,37 @@ impl I2pNode {
         Err(last)
     }
 
+    /// Dial the relay. Failures here count toward SAM session health.
+    ///
+    /// Only the relay loop should use this. Repeated failures to reach the relay
+    /// are evidence the local SAM session has gone bad, which is what
+    /// [`Self::maybe_recreate`] acts on.
     pub async fn connect_relay(&self, onion: &str, port: u16) -> Result<RelayStream> {
+        match self.dial(onion, port).await {
+            Ok(stream) => {
+                self.relay_fail_count.store(0, Ordering::Relaxed);
+                Ok(stream)
+            }
+            Err(e) => {
+                let n = self.relay_fail_count.fetch_add(1, Ordering::Relaxed) + 1;
+                self.maybe_recreate(n).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Dial some other i2p service (the update server, for instance).
+    ///
+    /// Deliberately does not touch the relay failure counter. It used to: every
+    /// subsystem shared `connect_relay`, so an unreachable update server counted
+    /// as relay trouble, and five such failures tore down and rebuilt a SAM
+    /// session that was carrying live messages perfectly well. A destination
+    /// being down says nothing about our own session.
+    pub async fn connect_service(&self, dest: &str, port: u16) -> Result<RelayStream> {
+        self.dial(dest, port).await
+    }
+
+    async fn dial(&self, onion: &str, port: u16) -> Result<RelayStream> {
         let dest = onion.trim().to_string();
         // `port` maps to the SAM stream destination port. For a single-service
         // i2p destination the far end ignores it, so this is a harmless carry-over
@@ -268,15 +298,8 @@ impl I2pNode {
             s.connect_detached_with_options(&dest, opts)
         };
         match fut.await {
-            Ok(stream) => {
-                self.relay_fail_count.store(0, Ordering::Relaxed);
-                Ok(RelayStream { inner: Box::pin(stream) })
-            }
-            Err(e) => {
-                let n = self.relay_fail_count.fetch_add(1, Ordering::Relaxed) + 1;
-                self.maybe_recreate(n).await;
-                Err(NetError::I2p(e.to_string()))
-            }
+            Ok(stream) => Ok(RelayStream { inner: Box::pin(stream) }),
+            Err(e) => Err(NetError::I2p(e.to_string())),
         }
     }
 
