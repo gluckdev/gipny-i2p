@@ -302,24 +302,31 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2c. Headless agent: gipny-agent binary + README, packaged as a tar.gz for
-  #     Linux amd64 and arm64. The agent is a standalone daemon that accepts
-  #     shell commands over the encrypted I2P channel from a trusted master.
+  # 2c. Headless agent: gipny-agent + the i2pd it spawns + a systemd unit,
+  #     as a tar.gz for Linux amd64 and arm64. The router is in the tarball
+  #     because the agent looks for i2pd next to its own executable first
+  #     (libcore/src/router.rs); without it the daemon cannot start on a
+  #     clean host, which is exactly what v0.4.0 shipped.
   # ---------------------------------------------------------------------------
   agent:
     name: agent (linux ${{ matrix.arch }})
-    needs: version
+    needs: router
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, runs-on: ubuntu-22.04 }
-          - { arch: arm64, runs-on: ubuntu-22.04-arm }
+          - { arch: amd64, runs-on: ubuntu-22.04, router: router-linux-amd64 }
+          - { arch: arm64, runs-on: ubuntu-22.04-arm, router: router-linux-arm64 }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: fetch the router built above
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.router }}
+          path: router
       - name: build gipny-agent
         run: cargo build --release -p gipny-agent
       - name: package
@@ -328,22 +335,77 @@ jobs:
           name="gipny-agent_${VERSION}_linux-${{ matrix.arch }}"
           mkdir -p "dist/$name"
           install -m 0755 target/release/gipny-agent "dist/$name/"
+          install -m 0755 router/i2pd "dist/$name/"
+          install -m 0644 agent/gipny-agent.service "dist/$name/"
           cat > "dist/$name/README.txt" << 'EOF'
           gipny-agent — headless console agent for gipny-i2p
 
-          Usage:
-            gipny-agent --data <dir> --master <card> [options]
+          What is in this archive:
+            gipny-agent           the agent
+            i2pd                  the i2p router it starts (keep it next to gipny-agent)
+            gipny-agent.service   systemd unit
+
+          Run by hand:
+            ./gipny-agent --data <dir> --master <gipny:v2:... card of the master>
+          --master is needed once: the card is kept in <dir>/master.card and
+          later runs read it from there (pass it again to change the master).
+          --data can also come from the GIPNY_AGENT_DATA environment variable.
+
+          Install as a service (Linux, as root):
+            install -m 0755 gipny-agent i2pd /usr/local/bin/
+            install -m 0644 gipny-agent.service /etc/systemd/system/
+            mkdir -p /var/lib/gipny-agent
+            printf 'GIPNY_AGENT_ARGS=--master %s\n' 'gipny:v2:...' > /etc/gipny-agent.env
+            chmod 0600 /etc/gipny-agent.env
+            systemctl daemon-reload && systemctl enable --now gipny-agent
+            journalctl -u gipny-agent -f      # prints "agent card: ..." once the router is up
+
+          The master's app gains a contact for this agent by itself; the
+          chat with it has a chat/console switch. Switching the agent off
+          from the master's side stops the process (exit 0); with
+          Restart=on-failure the service then stays down until started again.
 
           Options:
-            --name <name>      Display name for this agent (default: hostname)
-            --relay <onion>    Relay to use (default: from master card or compiled-in)
-            --sam <port>       Attach to existing SAM bridge on this port
-            --cwd <dir>        Working directory for commands (default: home dir)
-            --timeout <secs>   Per-command timeout in seconds (default: 120)
+            --name <name>      display name for this agent (default: hostname)
+            --relay <dest>     relay to use (default: the master card's relay)
+            --sam <port>       attach to an already running SAM bridge instead of spawning i2pd
+            --cwd <dir>        working directory for commands (default: home directory)
+            --timeout <secs>   per-command timeout (default: 120)
           EOF
-          file "dist/$name/gipny-agent"
+          # Both binaries must run on the architecture this tarball is named for.
+          "dist/$name/i2pd" --version | head -1
+          file "dist/$name/gipny-agent" "dist/$name/i2pd"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
+      # The whole point of bundling i2pd: a clean host has none. Unpack the
+      # tarball somewhere fresh, make sure no i2pd is on PATH, start the agent
+      # with a syntactically valid throwaway master card and wait for it to
+      # print its own card — which it only does after it found and started
+      # the router next to itself. v0.4.0 would have failed here.
+      - name: smoke test — the tarball starts with no system i2pd
+        run: |
+          if command -v i2pd >/dev/null; then echo "an i2pd on PATH would mask this test"; exit 1; fi
+          smoke="$(mktemp -d)"
+          tar -C "$smoke" -xzf dist/*.tar.gz
+          cd "$smoke"/gipny-agent_*/
+          zeros="$(printf '0%.0s' $(seq 1 64))"
+          b32="$(printf 'a%.0s' $(seq 1 52)).b32.i2p"
+          setsid ./gipny-agent --data "$smoke/data" --master "gipny:v2:$b32:$zeros:$zeros:$b32" > "$smoke/agent.log" 2>&1 &
+          pid=$!
+          for i in $(seq 1 150); do
+            grep -q "agent card:" "$smoke/agent.log" && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 2
+          done
+          kill -TERM -- -"$pid" 2>/dev/null || true; sleep 2; kill -KILL -- -"$pid" 2>/dev/null || true
+          if grep -q "agent card:" "$smoke/agent.log"; then
+            echo "smoke: the agent started its router from the tarball and printed its card"
+            grep -E "i2p address|agent card" "$smoke/agent.log"
+          else
+            echo "smoke: the agent did not come up from the tarball"; cat "$smoke/agent.log"
+            echo "--- router log:"; tail -40 "$smoke"/data/i2p/router/i2pd.log 2>/dev/null || echo "(no router log)"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-agent-linux-${{ matrix.arch }}

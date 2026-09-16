@@ -448,6 +448,92 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
+  # The real gipny-agent binary as the far side. bot-a is the master; the agent
+  # is a separate process on the same router, started with bot-a's v2 card the
+  # way a server would be. Proves over live i2p: the agent's first message
+  # creates the contact on the master and carries GRANT; commands run one at a
+  # time in arrival order; a file sent with a command is saved before it runs;
+  # OFF is answered with REVOKE and exit 0. Not in bump's needs: it tests our
+  # agent code, not the router.
+  # ------------------------------------------------------------------
+  e2e-agent:
+    name: e2e (agent binary)
+    needs: router
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: fetch the router built above
+        uses: actions/download-artifact@v8
+        with:
+          name: i2pd-linux-amd64
+          path: router
+
+      - name: install router and check its version
+        run: |
+          chmod +x router/i2pd
+          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
+
+          # The artifact is not taken on trust. The router job reports which
+          # revision it built, the binary is stamped with its own source, and
+          # this asserts they agree — so a stale or foreign artifact cannot
+          # quietly become the thing under test. Comparing against the job
+          # output rather than the branch also survives upstream pushing
+          # between the two jobs.
+          EXPECTED="${{ needs.router.outputs.revision }}"
+          ACTUAL="$(i2pd --version | head -1)"
+          echo "router job built: $EXPECTED"
+          echo "artifact reports: $ACTUAL"
+          test -n "$EXPECTED"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
+          esac
+
+      - name: build e2e harness and gipny-agent
+        run: cargo build --release -p e2e-harness -p gipny-agent
+
+      - name: start router
+        run: tests/e2e-harness/start-router.sh
+
+      - name: run e2e harness against the agent binary
+        env:
+          E2E_AGENT_BIN: ./target/release/gipny-agent
+          E2E_IN_PROCESS_RELAYS: '1'
+          E2E_N_MESSAGES: '5'
+          E2E_TIMEOUT_SECS: '600'
+          E2E_WORK_DIR: e2e-state
+          GIPNY_SAM_PORT: '7656'
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
+
+      - name: router log (SAM / tunnel path)
+        if: always()
+        run: |
+          grep -aE 'SAM|LeaseSet|Session' e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
+
+      - name: stop router
+        if: always()
+        run: kill "$(cat relay-router.pid)" 2>/dev/null || true
+
+      - name: upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-agent-logs
+          path: e2e-logs/
+          retention-days: 7
+
+  # ------------------------------------------------------------------
   # Record the revision that actually delivered.
   #
   # The submodule follows upstream's branch, so a build alone proves only that

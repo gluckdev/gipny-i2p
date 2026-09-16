@@ -115,7 +115,6 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
-            start_hosted_relay, stop_hosted_relay, get_hosted_relay,
             update_configured,
             get_router_settings, set_router_settings,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
@@ -627,21 +626,6 @@ async fn set_relay_address(addr: String, ctx: State<'_, AppCtx>) -> Result<(), S
 }
 
 #[tauri::command]
-async fn start_hosted_relay(ctx: State<'_, AppCtx>) -> Result<String, String> {
-    core_of(&ctx).await?.start_hosted_relay().await.map_err(err)
-}
-
-#[tauri::command]
-async fn stop_hosted_relay(ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.stop_hosted_relay().await.map_err(err)
-}
-
-#[tauri::command]
-async fn get_hosted_relay(ctx: State<'_, AppCtx>) -> Result<Option<String>, String> {
-    Ok(core_of(&ctx).await?.hosted_relay_address().await)
-}
-
-#[tauri::command]
 async fn my_fingerprint(ctx: State<'_, AppCtx>) -> Result<String, String> {
     Ok(hex(&core_of(&ctx).await?.my_fingerprint()))
 }
@@ -878,11 +862,13 @@ fn read_one_attachment(p: &str) -> Result<PendingAttachment, String> {
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "file".into());
-
-    // White-hat sanitizer: strip EXIF/XMP/IPTC and anonymize filenames
+    // Privacy mode sanitizes metadata before the bytes are stored for send.
+    // The implementation is replaced below on this branch; this keeps the
+    // parked work connected while merging the 0.4.1 fixes from main.
     let (name, data) = sanitizer::sanitize_attachment_data(&original_name, &data);
 
-    // If file came from paste temp directory, securely shred and remove it
+    // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
+    // `paste_clipboard_image`). Once read it has no further use.
     if path.starts_with(std::env::temp_dir().join("gipny-i2p-paste")) {
         let _ = std::fs::remove_file(&path);
     }

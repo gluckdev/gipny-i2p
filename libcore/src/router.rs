@@ -230,9 +230,15 @@ impl RouterHandle {
             .arg(format!("--bandwidth={}", settings.transit.bandwidth()))
             .arg(format!("--share={}", settings.transit.share_percent()))
             .arg(format!("--limits.transittunnels={}", settings.transit.transit_tunnels()))
-            .arg(format!("--meshnets.yggdrasil={yggdrasil}"))
             .arg("--log=file")
             .arg(format!("--logfile={}", router_dir.join("i2pd.log").display()));
+        // i2pd declares meshnets.yggdrasil as a boost bool_switch: present means
+        // on, and a value after `=` is refused outright ("option does not take
+        // any arguments"), which exits the router before SAM ever opens. Off is
+        // its default and is not spelled out.
+        if yggdrasil {
+            cmd.arg("--meshnets.yggdrasil");
+        }
         // Without WIN32_APP the router is a console subsystem binary, so Windows
         // would flash a console window every time we spawn it. CREATE_NO_WINDOW
         // suppresses that; the router talks to us over SAM and has no console

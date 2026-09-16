@@ -14,6 +14,11 @@
 //! * `E2E_RELAY_DEST_A` / `E2E_RELAY_DEST_B` — a separate relay per bot.
 //! * `E2E_IN_PROCESS_RELAYS=1` — no standalone relay: each bot gets an
 //!   in-process `EphemeralRelay` on the router at `GIPNY_SAM_PORT`.
+//! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
+//!   far side is the real `gipny-agent` binary at that path, started with
+//!   bot-a's v2 card and attached to the shared router. Needs
+//!   `GIPNY_SAM_PORT`; uses one in-process relay (the master's, which the
+//!   agent collects from too). `E2E_N_MESSAGES` is the number of commands.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -25,12 +30,17 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use gipny_libcore::agent::BODY_OFF;
 use gipny_libcore::relay_server::{EphemeralRelay, MemStoreLimits};
-use gipny_libcore::{Db, IdentityCard, SessionEvent, SessionManager, TorNode};
+use gipny_libcore::{
+    ContactCard, Db, IdentityCard, SessionEvent, SessionManager, TorNode, WireConsole,
+    CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OFF, CONSOLE_OUTPUT, CONSOLE_REVOKE,
+};
 use tokio::sync::{Mutex, Notify};
 
 // ---------------------------------------------------------------------------
@@ -195,11 +205,330 @@ fn compute_latencies(
 }
 
 // ---------------------------------------------------------------------------
+// Agent mode: the real gipny-agent binary as the far side
+// ---------------------------------------------------------------------------
+
+/// Everything bot-a, as the master, has seen from the agent so far.
+#[derive(Default)]
+struct Seen {
+    connected_at: Option<Instant>,
+    /// The agent's contact id on bot-a — created by bot-a itself from the
+    /// agent's first message — and when its GRANT arrived.
+    agent: Option<(i64, Instant)>,
+    /// (body, exit code, arrival) of every CONSOLE_OUTPUT.
+    outputs: Vec<(String, Option<i32>, Instant)>,
+    revoked_at: Option<Instant>,
+}
+
+/// Waits until `f` yields on the shared state, or `budget` runs out.
+async fn wait_for<T, F>(seen: &Arc<Mutex<Seen>>, notify: &Arc<Notify>, budget: Duration, f: F) -> Result<T>
+where
+    F: Fn(&Seen) -> Option<T>,
+{
+    tokio::time::timeout(budget, async {
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        loop {
+            if let Some(v) = f(&*seen.lock().await) {
+                return v;
+            }
+            notified.as_mut().enable();
+            if let Some(v) = f(&*seen.lock().await) {
+                return v;
+            }
+            notified.as_mut().await;
+            notified.set(notify.notified());
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timeout after {}s", budget.as_secs()))
+}
+
+/// bot-a is the master; the far side is `agent_bin`, run as the separate
+/// process it is on a server, on the shared router (`--sam`). Proves, over
+/// live i2p: the agent's GRANT creates the contact on the master by itself;
+/// commands run one at a time in arrival order; a file sent with a command is
+/// there when the command runs; OFF is answered with REVOKE and exit 0.
+async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
+    let n_commands: usize = std::env::var("E2E_N_MESSAGES").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600);
+    let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
+    std::fs::create_dir_all(&work_dir).context("create work dir")?;
+    let port: u16 = std::env::var("GIPNY_SAM_PORT")
+        .context("E2E_AGENT_BIN needs GIPNY_SAM_PORT, the shared router's SAM port")?
+        .trim()
+        .parse()
+        .context("GIPNY_SAM_PORT is not a port")?;
+    let timeout = Duration::from_secs(timeout_secs);
+    let t_start = Instant::now();
+    let budget = |t_start: Instant| timeout.saturating_sub(t_start.elapsed());
+    eprintln!("[e2e] agent mode: {} · {n_commands} commands · timeout {timeout_secs}s", agent_bin.display());
+
+    // One relay: the agent collects from the master's, which its card names.
+    eprintln!("[e2e] starting the master's in-process relay on SAM port {port}...");
+    let t0 = Instant::now();
+    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(port, MemStoreLimits::default()))
+        .await
+        .context("timeout: in-process relay did not come up in 300s")?
+        .context("in-process relay")?;
+    let relay_dest = relay.address().to_string();
+    let relay_ms = t0.elapsed().as_millis() as u64;
+    eprintln!("[e2e] relay up in {relay_ms} ms ({}...)", &relay_dest[..20.min(relay_dest.len())]);
+
+    let (a, mut a_events) = start_bot("bot-a", &work_dir, &relay_dest).await.context("bot-a start")?;
+    let master_card = ContactCard {
+        onion: a.onion.clone(),
+        sign_pk: a.card.sign_pk,
+        dh_pk: a.card.dh_pk,
+        relay: Some(relay_dest.clone()),
+        name: Some("bot-a".into()),
+    }
+    .encode();
+
+    // The agent's data dir is fresh, so this is a first run: --master given,
+    // remembered in master.card. Its stdout/stderr are inherited so its own
+    // "[agent]" lines land in the job log next to ours.
+    let agent_data = work_dir.join("agent");
+    let agent_cwd = work_dir.join("agent-cwd");
+    std::fs::create_dir_all(&agent_cwd).context("create agent cwd")?;
+    eprintln!("[e2e] starting {}...", agent_bin.display());
+    let mut child = tokio::process::Command::new(&agent_bin)
+        .arg("--data").arg(&agent_data)
+        .arg("--master").arg(&master_card)
+        .arg("--name").arg("e2e-agent")
+        .arg("--sam").arg(port.to_string())
+        .arg("--timeout").arg("30")
+        .arg("--cwd").arg(&agent_cwd)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("spawn {}", agent_bin.display()))?;
+
+    let seen: Arc<Mutex<Seen>> = Default::default();
+    let notify = Arc::new(Notify::new());
+    {
+        let seen = seen.clone();
+        let notify = notify.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = a_events.recv().await {
+                match ev {
+                    SessionEvent::Connected => {
+                        eprintln!("[e2e] bot-a: relay connected");
+                        let mut s = seen.lock().await;
+                        if s.connected_at.is_none() {
+                            s.connected_at = Some(Instant::now());
+                        }
+                    }
+                    SessionEvent::Disconnected => eprintln!("[e2e] bot-a: relay disconnected"),
+                    SessionEvent::IncomingPayload { contact_id, payload, .. } => {
+                        let Some(c) = payload.console.as_ref() else {
+                            eprintln!("[e2e] bot-a: plain message {:?}", payload.body);
+                            continue;
+                        };
+                        let mut s = seen.lock().await;
+                        match c.kind {
+                            CONSOLE_GRANT => {
+                                eprintln!("[e2e] bot-a: console granted by contact {contact_id}");
+                                s.agent = Some((contact_id, Instant::now()));
+                            }
+                            CONSOLE_OUTPUT => {
+                                eprintln!("[e2e] bot-a: output exit={:?} {:?}", c.exit_code, payload.body);
+                                s.outputs.push((payload.body.clone(), c.exit_code, Instant::now()));
+                            }
+                            CONSOLE_REVOKE => {
+                                eprintln!("[e2e] bot-a: console revoked");
+                                s.revoked_at = Some(Instant::now());
+                            }
+                            other => eprintln!("[e2e] bot-a: console kind {other} {:?}", payload.body),
+                        }
+                    }
+                    _ => {}
+                }
+                notify.notify_one();
+            }
+        });
+    }
+
+    // 1. The agent writes first. bot-a never adds it: the contact must appear
+    //    from the agent's X3dhInit, and GRANT must ride on that first message.
+    eprintln!("[e2e] waiting for the agent's GRANT (budget: {}s)...", budget(t_start).as_secs());
+    let (agent_cid, granted_at) = wait_for(&seen, &notify, budget(t_start), |s| s.agent)
+        .await
+        .context("waiting for the agent's GRANT")?;
+    let grant_ms = granted_at.duration_since(t_start).as_millis() as u64;
+    eprintln!("[e2e] GRANT after {grant_ms} ms; the agent is contact {agent_cid} on bot-a");
+
+    // 2. Commands. Each one writes `start-k`, sleeps a second, writes `end-k`
+    //    and echoes its tag. A final `cat` of that file then shows whether the
+    //    agent ran them one at a time: sequential execution leaves every
+    //    `start-k` immediately followed by its own `end-k`; concurrent
+    //    execution interleaves starts. Messages sent milliseconds apart may
+    //    reach the agent in any order over the relay, so send order is not
+    //    asserted — only that each command ran, once, and none overlapped.
+    //    One command carries a file and runs it: the upload must be saved
+    //    before the shell starts.
+    let mut send_times: HashMap<String, Instant> = HashMap::new();
+    for i in 1..=n_commands {
+        let tag = format!("hello-{i}");
+        let body = format!("echo start-{i} >> e2e-order.txt; sleep 1; echo end-{i} >> e2e-order.txt; echo {tag}");
+        a.session
+            .send_console(agent_cid, body, WireConsole::new(CONSOLE_COMMAND), vec![])
+            .await
+            .with_context(|| format!("send command {tag}"))?;
+        send_times.insert(tag, Instant::now());
+    }
+    a.session
+        .send_console(
+            agent_cid,
+            "sh e2e-script.sh".into(),
+            WireConsole::new(CONSOLE_COMMAND),
+            vec![("e2e-script.sh".into(), b"echo from-script".to_vec())],
+        )
+        .await
+        .context("send script command")?;
+    a.session
+        .send_console(agent_cid, "cat e2e-order.txt".into(), WireConsole::new(CONSOLE_COMMAND), vec![])
+        .await
+        .context("send cat command")?;
+    let expected = n_commands + 2;
+    eprintln!("[e2e] sent {expected} commands, waiting for their outputs (budget: {}s)...", budget(t_start).as_secs());
+
+    // 3. Outputs.
+    let outputs = wait_for(&seen, &notify, budget(t_start), |s| {
+        (s.outputs.len() >= expected).then(|| s.outputs.clone())
+    })
+    .await
+    .context("waiting for command outputs")?;
+
+    // 4. Check them.
+    let mut failures: Vec<String> = Vec::new();
+    let mut latencies: Vec<u64> = Vec::new();
+    for i in 1..=n_commands {
+        let tag = format!("hello-{i}");
+        match outputs.iter().find(|(body, _, _)| body.trim() == tag) {
+            Some((_, code, at)) => {
+                if *code != Some(0) {
+                    failures.push(format!("{tag}: exit code {code:?}, expected 0"));
+                }
+                latencies.push(at.duration_since(send_times[&tag]).as_millis() as u64);
+            }
+            None => failures.push(format!("{tag}: no output")),
+        }
+    }
+    match outputs.iter().find(|(body, _, _)| body.contains("from-script")) {
+        Some((body, code, _)) => {
+            if *code != Some(0) || !body.contains("saved") {
+                failures.push(format!("script: exit {code:?}, body {body:?}"));
+            }
+        }
+        None => failures.push("script: its output never came back (upload not saved before the command ran?)".into()),
+    }
+    // The `cat`: 2N lines, start/end pairs, each tag exactly once.
+    match outputs.iter().find(|(body, _, _)| body.starts_with("start-") && body.lines().count() == 2 * n_commands) {
+        Some((body, _, _)) => {
+            let lines: Vec<&str> = body.lines().collect();
+            let mut seen: Vec<usize> = Vec::new();
+            for pair in lines.chunks(2) {
+                let k = pair[0].strip_prefix("start-").and_then(|k| k.parse::<usize>().ok());
+                match (k, pair.get(1)) {
+                    (Some(k), Some(end)) if *end == format!("end-{k}") => seen.push(k),
+                    _ => { failures.push(format!("sequential: commands overlapped or were cut: {body:?}")); break; }
+                }
+            }
+            seen.sort_unstable();
+            if seen != (1..=n_commands).collect::<Vec<_>>() {
+                failures.push(format!("sequential: not every command ran exactly once: {seen:?} in {body:?}"));
+            }
+            eprintln!("[e2e] the agent ran the commands one at a time, in this order: {}", lines.iter().step_by(2).map(|l| l.trim_start_matches("start-")).collect::<Vec<_>>().join(","));
+        }
+        None => failures.push(format!(
+            "sequential: no `cat e2e-order.txt` output with {} lines; multi-line outputs: {:?}",
+            2 * n_commands,
+            outputs.iter().filter(|(b, _, _)| b.lines().count() > 1).map(|(b, _, _)| b).collect::<Vec<_>>(),
+        )),
+    }
+    latencies.sort_unstable();
+    let (rtt_min, rtt_median, rtt_max) = if latencies.is_empty() {
+        (0, 0, 0)
+    } else {
+        (latencies[0], latencies[latencies.len() / 2], latencies[latencies.len() - 1])
+    };
+    eprintln!("[e2e] command RTT — min: {rtt_min} ms  median: {rtt_median} ms  max: {rtt_max} ms");
+
+    // 5. OFF: the agent answers REVOKE and exits 0 once that is delivered.
+    a.session
+        .send_console(agent_cid, BODY_OFF.into(), WireConsole::new(CONSOLE_OFF), vec![])
+        .await
+        .context("send OFF")?;
+    let t_off = Instant::now();
+    eprintln!("[e2e] sent OFF, waiting for REVOKE and the agent's exit (budget: {}s)...", budget(t_start).as_secs());
+    let status = tokio::time::timeout(budget(t_start), child.wait())
+        .await
+        .context("timeout: the agent did not exit after OFF")?
+        .context("wait for the agent")?;
+    let exit_ms = t_off.elapsed().as_millis() as u64;
+    eprintln!("[e2e] agent exited with {status} after {exit_ms} ms");
+    if !status.success() {
+        failures.push(format!("agent exit status {status}, expected 0"));
+    }
+    // The agent waits for the REVOKE's delivery ack before exiting, and the
+    // ack follows bot-a's event; a short wait covers the gap.
+    if wait_for(&seen, &notify, Duration::from_secs(15), |s| s.revoked_at).await.is_err() {
+        failures.push("REVOKE never arrived at the master".into());
+    }
+
+    // 6. Report.
+    let total_ms = t_start.elapsed().as_millis() as u64;
+    let table = format!(
+        "| metric | value |\n\
+         |---|---|\n\
+         | relay ready | {relay_ms} ms |\n\
+         | bot-a router ready | {} ms |\n\
+         | agent GRANT received | {grant_ms} ms |\n\
+         | commands sent | {expected} |\n\
+         | outputs received | {} |\n\
+         | command RTT min | {rtt_min} ms |\n\
+         | command RTT median | {rtt_median} ms |\n\
+         | command RTT max | {rtt_max} ms |\n\
+         | OFF → agent exit | {exit_ms} ms |\n\
+         | total elapsed | {total_ms} ms |\n",
+        a.router_ready_ms,
+        outputs.len(),
+    );
+    println!("[e2e-timing]\n{table}");
+    if let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") {
+        let outcome = if failures.is_empty() { "✅ PASS" } else { "❌ FAIL" };
+        let content = format!(
+            "### e2e agent binary — {outcome}\n\n{table}\n{}\n",
+            if failures.is_empty() { String::new() } else { format!("```\n{}\n```", failures.join("\n")) }
+        );
+        use std::io::Write;
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&summary_path)
+            .and_then(|mut f| f.write_all(content.as_bytes()))
+            .map_err(|e| eprintln!("[e2e] warning: could not write GITHUB_STEP_SUMMARY: {e}"));
+    }
+    a.session.shutdown();
+    drop(relay);
+    if !failures.is_empty() {
+        bail!("agent e2e failed:\n  {}", failures.join("\n  "));
+    }
+    eprintln!("[e2e] SUCCESS — the agent ran {n_commands} commands one at a time, ran the uploaded script, and left on OFF");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(bin) = std::env::var_os("E2E_AGENT_BIN") {
+        return run_agent_mode(PathBuf::from(bin)).await;
+    }
+
     // One relay or two. Two is the interesting case: each bot collects from its
     // own, and a message only arrives if the sender deposits on the *recipient's*
     // relay rather than its own. With a single destination this degenerates to

@@ -1,21 +1,50 @@
-# Security Policy
+# Безопасность / Security
 
-## Supported Versions
+*English summary at the end.*
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+## Куда сообщать об уязвимости
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+Не открывайте публичный issue с деталями. Используйте приватный отчёт GitHub:
+**Security → Report a vulnerability** —
+<https://github.com/gluckdev/gipny-i2p/security/advisories/new>.
+Если эта форма недоступна, откройте issue **без деталей** («есть уязвимость,
+нужен канал») — вам ответят, как передать описание.
 
-## Reporting a Vulnerability
+В отчёте полезно: версия (`Настройки → о программе` или имя файла со страницы
+релиза), платформа, шаги воспроизведения, что именно раскрывается или ломается.
 
-Use this section to tell people how to report a vulnerability.
+## Что ждать
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+- Подтверждение получения — в течение 7 дней.
+- Исправление выходит отдельным патч-релизом; в его заметках уязвимость
+  описывается после того, как обновление доступно на всех платформах.
+- Отчёт, который принят, упоминается в заметках релиза с указанием автора,
+  если автор этого хочет.
+
+## Поддерживаемые версии
+
+| Версия | Исправления безопасности |
+| ------ | ------------------------ |
+| 0.4.x  | да                       |
+| < 0.4  | нет — обновитесь         |
+
+## Что считается уязвимостью здесь
+
+В зоне ответственности проекта: криптография и протокол (`libcore`), релей
+(`core/relay`, `libcore/src/relay_server.rs`), режим агента и `gipny-agent`,
+приложение (`core`, `ui`, Android-обвязка). Особенно интересны: чтение или
+подмена сообщений третьей стороной, раскрытие отправителя релею или сети,
+выполнение команд агентом не от мастера, обход блокировки/удаления контакта.
+
+Не сюда: уязвимости самого `i2pd` (сообщайте в [PurpleI2P/i2pd](https://github.com/PurpleI2P/i2pd));
+атаки, требующие root или физического доступа к разблокированному устройству;
+деанонимизация свойствами сети I2P как таковой.
+
+---
+
+**English.** Report vulnerabilities privately via
+<https://github.com/gluckdev/gipny-i2p/security/advisories/new> (or an issue
+without details asking for a channel). Acknowledgement within 7 days; fixes
+ship as patch releases. Supported: 0.4.x. Out of scope: i2pd itself
+(upstream), attacks needing root or an unlocked device, I2P network-level
+deanonymisation.
