@@ -50,6 +50,17 @@ jobs:
         with:
           submodules: recursive
 
+      # USE_GIT_VERSION and the version check below both run `git describe
+      # --tags`, and actions/checkout clones submodules shallow with no tags —
+      # run 29696503988 died on exactly this ("No tags can describe"). Under
+      # `set -e` a failing describe aborts the step, so this is not optional.
+      - name: unshallow the router sources (git describe needs tags)
+        shell: bash
+        run: |
+          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+            git -C third_party/i2pd fetch --quiet --tags origin
+          git -C third_party/i2pd describe --tags
+
       # Built from third_party/i2pd, not downloaded: a release must be
       # reproducible from this repository, and an upstream binary would also be
       # a binary nobody here reviewed. See docs/i2p-transport-evaluation.md for
@@ -281,7 +292,10 @@ jobs:
         run: |
           # Build the i2pd revision this repo pins, not the one i2pd-android
           # happens to point at, so desktop and Android ship the same code.
-          git -C i2pd fetch --tags --quiet origin
+          # Fetch the SHA explicitly: the nested checkout is shallow and a
+          # --tags fetch does not necessarily reach a commit ~200 past the tag.
+          # Failing here costs an hour of boost that already ran.
+          git -C i2pd fetch --quiet origin "$I2PD_REV" || git -C i2pd fetch --quiet --tags origin
           git -C i2pd checkout --quiet "$I2PD_REV"
           git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
           git -C boost checkout FETCH_HEAD
@@ -389,6 +403,10 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        env:
+          # The APK ships aarch64 only, so stage that one ABI. Without this the
+          # Gradle task for x86_64 fails by design: no prebuilt library for it.
+          ORG_GRADLE_PROJECT_routerAbis: arm64-v8a
         run: cd core && cargo tauri android build --apk --target aarch64
       - name: verify signed APK
         run: |

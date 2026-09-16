@@ -142,7 +142,11 @@ jobs:
       # `--target` build overwrites the first APK. Build one ABI at a time,
       # verify + stash the APK, and wipe outputs/ before the next build.
       - name: build Android APK (aarch64)
-        run: cd core && cargo tauri android build --debug --apk --target aarch64 -- -PskipRouter
+        env:
+          # Not `-- -PskipRouter`: the tauri CLI does not forward trailing args
+          # to Gradle. ORG_GRADLE_PROJECT_* is read by project.hasProperty().
+          ORG_GRADLE_PROJECT_skipRouter: 'true'
+        run: cd core && cargo tauri android build --debug --apk --target aarch64
       - name: verify + stash APK (aarch64)
         run: |
           apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
@@ -154,7 +158,9 @@ jobs:
           test -n "$(find dist/arm64 -type f -name '*.apk' -print -quit)"
           rm -rf core/gen/android/app/build/outputs
       - name: build Android APK (x86_64)
-        run: cd core && cargo tauri android build --debug --apk --target x86_64 -- -PskipRouter
+        env:
+          ORG_GRADLE_PROJECT_skipRouter: 'true'
+        run: cd core && cargo tauri android build --debug --apk --target x86_64
       - name: verify + stash APK (x86_64)
         run: |
           apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"

@@ -52,6 +52,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y i2pd
+          # Debian policy starts the daemon on install; it would hold SAM 7656
+          # and its own datadir alongside the one this job manages.
+          sudo systemctl disable --now i2pd || true
           i2pd --version
           cargo build --release --manifest-path core/relay/Cargo.toml
       # Split into start/serve/stop steps so the destination lands in the job

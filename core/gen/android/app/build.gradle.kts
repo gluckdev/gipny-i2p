@@ -102,8 +102,17 @@ rust {
 // and OpenSSL and takes hours per ABI. See I2pdRouterTask for where it looks.
 // Skippable with -PskipRouter for iteration on non-router code — the resulting
 // APK starts but never connects.
+// -PskipRouter, or ORG_GRADLE_PROJECT_skipRouter=true in the environment — the
+// latter is what CI uses, because the tauri CLI does not forward -P flags to
+// Gradle. -ProuterAbis / ORG_GRADLE_PROJECT_routerAbis narrows which ABIs are
+// staged: the release APK is aarch64 only, and asking for an ABI with no
+// prebuilt library is a hard error by design.
 if (!project.hasProperty("skipRouter")) {
-    val routerAbis = listOf("arm64-v8a", "x86_64")
+    val routerAbis = (project.findProperty("routerAbis") as String?)
+        ?.split(",")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?: listOf("arm64-v8a", "x86_64")
     val certsTask = tasks.register("stageI2pdCertificates", I2pdCertificatesTask::class.java) {
         group = "router"
         description = "Copy i2pd reseed certificates into the APK assets"
