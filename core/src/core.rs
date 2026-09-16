@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
@@ -47,6 +47,29 @@ const TARGET_OPK: usize = 20;
 const PURGE_INTERVAL_SECS: u64 = 60;
 const RECONNECT_INITIAL_MS: u64 = 500;
 const RECONNECT_MAX_MS: u64 = 15_000;
+/// How long to wait for another person's relay to answer before giving up on
+/// this attempt. Nothing in the dial path has a timeout of its own, and opening
+/// an i2p destination means building tunnels, so an unreachable relay would
+/// otherwise hang its connection task forever.
+/// State of a connection to somebody else's relay.
+///
+/// `Connecting` and `Failed` exist so the send loop never dials: it checks this
+/// map, and either gets a live sender or moves on to the next contact.
+enum PeerRelay {
+    Ready(mpsc::Sender<ClientToRelay>),
+    Connecting,
+    Failed { until: Instant },
+}
+
+/// How long to wait for another person's relay to answer before giving up on
+/// this attempt. Nothing in the dial path has a timeout of its own, and opening
+/// an i2p destination means building tunnels, so an unreachable relay would
+/// otherwise hang its connection task forever.
+const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long to leave a peer relay alone after a failed dial. The send loop runs
+/// every few seconds; without this it would rebuild tunnels to a dead relay on
+/// every tick.
+const PEER_RELAY_RETRY_BACKOFF: Duration = Duration::from_secs(120);
 const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
@@ -138,7 +161,7 @@ pub struct Core {
     relay_out: Arc<RwLock<Option<mpsc::Sender<ClientToRelay>>>>,
     /// Connections to other people's relays, keyed by destination. A message
     /// goes to where its recipient collects it, which is usually not here.
-    peer_relays: Arc<Mutex<HashMap<String, mpsc::Sender<ClientToRelay>>>>,
+    peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<BundleWaiter>>>>,
     send_kick: Arc<tokio::sync::Notify>,
     tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
@@ -959,38 +982,70 @@ impl Core {
             return self.relay_out.read().await.clone();
         }
 
-        if let Some(tx) = self.peer_relays.lock().await.get(theirs) {
-            if !tx.is_closed() {
-                return Some(tx.clone());
+        // Never connect on this path. It runs inside the send loop, which walks
+        // contacts one at a time, and opening an i2p destination means building
+        // tunnels — seconds when it works and unbounded when the relay is gone,
+        // since nothing in the dial path has a timeout. Blocking here would stall
+        // delivery to *every other contact* behind one unreachable relay.
+        //
+        // So: hand back a connection if we have one, otherwise start one in the
+        // background and skip this contact for now. The send loop comes round
+        // every few seconds and the message is still queued.
+        {
+            let mut pool = self.peer_relays.lock().await;
+            match pool.get(theirs) {
+                Some(PeerRelay::Ready(tx)) if !tx.is_closed() => return Some(tx.clone()),
+                // A dead sender means the recv loop is on its way out; let it
+                // finish cleaning up rather than racing a second connection.
+                Some(PeerRelay::Ready(_)) | Some(PeerRelay::Connecting) => return None,
+                Some(PeerRelay::Failed { until }) if Instant::now() < *until => return None,
+                _ => {}
             }
+            pool.insert(theirs.to_string(), PeerRelay::Connecting);
         }
 
-        let client = match relay::connect(&self.node, theirs, &self.identity).await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[relay-client] cannot reach relay {} for contact {}: {:?}",
-                    &theirs[..16.min(theirs.len())], contact.id, e);
-                return None;
-            }
-        };
-        eprintln!("[relay-client] connected to peer relay {}", &theirs[..16.min(theirs.len())]);
-        let tx = client.out_tx.clone();
-        self.peer_relays.lock().await.insert(theirs.to_string(), tx.clone());
-
-        // Drain it like our own: a relay we deposit on may also be holding mail
-        // for us, and the frame handling is identical. On exit drop the cached
-        // sender so the next send reconnects rather than writing into a dead
-        // channel. No RelayConnected event — that state is about our own relay,
-        // and flipping it here would tell the user the wrong thing.
         let this = self.clone();
         let key = theirs.to_string();
         let handle = tokio::spawn(async move {
+            let short = &key[..16.min(key.len())];
+            let dial = tokio::time::timeout(
+                PEER_RELAY_CONNECT_TIMEOUT,
+                relay::connect(&this.node, &key, &this.identity),
+            ).await;
+            let client = match dial {
+                Ok(Ok(c)) => c,
+                other => {
+                    match other {
+                        Err(_) => eprintln!("[relay-client] peer relay {short} did not answer in {:?}",
+                            PEER_RELAY_CONNECT_TIMEOUT),
+                        Ok(Err(e)) => eprintln!("[relay-client] peer relay {short} unreachable: {e:?}"),
+                        Ok(Ok(_)) => unreachable!(),
+                    }
+                    // Back off rather than redialing on every send tick: a relay
+                    // that is down stays down for a while, and each attempt costs
+                    // tunnel building.
+                    this.peer_relays.lock().await.insert(
+                        key.clone(),
+                        PeerRelay::Failed { until: Instant::now() + PEER_RELAY_RETRY_BACKOFF },
+                    );
+                    return;
+                }
+            };
+            eprintln!("[relay-client] connected to peer relay {short}");
+            this.peer_relays.lock().await
+                .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
+            this.send_kick.notify_one();
+
+            // Drain it like our own: a relay we deposit on may also be holding
+            // mail for us, and the frame handling is identical. No
+            // RelayConnected event — that state is about our own relay, and
+            // flipping it here would tell the user the wrong thing.
             this.clone().run_recv_loop(client).await;
             this.peer_relays.lock().await.remove(&key);
-            eprintln!("[relay-client] peer relay {} disconnected", &key[..16.min(key.len())]);
+            eprintln!("[relay-client] peer relay {short} disconnected");
         });
         self.tasks.lock().unwrap().push(handle);
-        Some(tx)
+        None
         })
     }
 

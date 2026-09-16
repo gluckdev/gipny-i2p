@@ -31,6 +31,20 @@ pub enum SessionError {
 
 impl From<bincode::Error> for SessionError { fn from(_: bincode::Error) -> Self { Self::Codec } }
 
+/// State of a connection to somebody else's relay. Mirrors Core::PeerRelay —
+/// `Connecting` and `Failed` are what let the send loop check instead of dial.
+enum PeerRelay {
+    Ready(mpsc::Sender<ClientToRelay>),
+    Connecting,
+    Failed { until: std::time::Instant },
+}
+
+/// Give up on a peer relay's dial after this long: nothing below has a timeout,
+/// and opening an i2p destination means building tunnels.
+const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// Leave a failed peer relay alone this long instead of redialing every tick.
+const PEER_RELAY_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(120);
+
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
@@ -444,7 +458,7 @@ pub struct SessionManager {
     /// Connection to our own relay — where we receive and publish our bundle.
     relay_out: Arc<RwLock<Option<mpsc::Sender<ClientToRelay>>>>,
     /// Connections to other people's relays, keyed by destination.
-    peer_relays: Arc<Mutex<HashMap<String, mpsc::Sender<ClientToRelay>>>>,
+    peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<tokio::sync::oneshot::Sender<Option<Vec<u8>>>>>>>,
     tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
@@ -872,29 +886,55 @@ impl SessionManager {
             if theirs == self.relay_onion() {
                 return self.relay_out.read().await.clone();
             }
-            if let Some(tx) = self.peer_relays.lock().await.get(theirs) {
-                if !tx.is_closed() {
-                    return Some(tx.clone());
+            // Never dial on this path — see Core::relay_for. It runs inside the
+            // send loop, and an unreachable relay has no timeout of its own, so
+            // blocking here would stall delivery to every other contact.
+            {
+                let mut pool = self.peer_relays.lock().await;
+                match pool.get(theirs) {
+                    Some(PeerRelay::Ready(tx)) if !tx.is_closed() => return Some(tx.clone()),
+                    Some(PeerRelay::Ready(_)) | Some(PeerRelay::Connecting) => return None,
+                    Some(PeerRelay::Failed { until }) if std::time::Instant::now() < *until => return None,
+                    _ => {}
                 }
+                pool.insert(theirs.to_string(), PeerRelay::Connecting);
             }
-            let client = match crate::relay::connect(&self.node, theirs, &self.identity).await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("[session] cannot reach relay {} for contact {}: {:?}",
-                        &theirs[..16.min(theirs.len())], contact.id, e);
-                    return None;
-                }
-            };
-            let tx = client.out_tx.clone();
-            self.peer_relays.lock().await.insert(theirs.to_string(), tx.clone());
+
             let this = self.clone();
             let key = theirs.to_string();
             let handle = tokio::spawn(async move {
+                let short = &key[..16.min(key.len())];
+                let dial = tokio::time::timeout(
+                    PEER_RELAY_CONNECT_TIMEOUT,
+                    crate::relay::connect(&this.node, &key, &this.identity),
+                ).await;
+                let client = match dial {
+                    Ok(Ok(c)) => c,
+                    other => {
+                        match other {
+                            Err(_) => eprintln!("[session] peer relay {short} did not answer in {:?}",
+                                PEER_RELAY_CONNECT_TIMEOUT),
+                            Ok(Err(e)) => eprintln!("[session] peer relay {short} unreachable: {e:?}"),
+                            Ok(Ok(_)) => unreachable!(),
+                        }
+                        this.peer_relays.lock().await.insert(
+                            key.clone(),
+                            PeerRelay::Failed {
+                                until: std::time::Instant::now() + PEER_RELAY_RETRY_BACKOFF,
+                            },
+                        );
+                        return;
+                    }
+                };
+                eprintln!("[session] connected to peer relay {short}");
+                this.peer_relays.lock().await
+                    .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
+                this.send_kick.notify_one();
                 this.clone().run_recv_loop(client).await;
                 this.peer_relays.lock().await.remove(&key);
             });
             self.tasks.lock().unwrap().push(handle);
-            Some(tx)
+            None
         })
     }
 
