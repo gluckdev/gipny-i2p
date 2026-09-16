@@ -1,29 +1,123 @@
 :root {
-  --bg: #0a0d0b;
-  --surface: #121712;
-  --surface-2: #1a211a;
-  --surface-3: #232d23;
-  --border: #263026;
-  --border-bright: #3a8f3a;
-  --phosphor: #6ce86c;
-  --phosphor-dim: #46b846;
-  --phosphor-faint: #2c5f2c;
-  --phosphor-glow: rgba(16, 124, 16, 0.55);
-  --amber: #d7e8d7;
-  --amber-dim: #9fb79f;
-  --amber-soft: rgba(108, 232, 108, 0.12);
-  --danger: #ff5a52;
-  --danger-soft: rgba(255, 90, 82, 0.12);
-  --success: #6ce86c;
-  --text: #eaf3ea;
-  --text-dim: #a9bda9;
-  --text-faint: #6f826f;
+  --bg: #eef3f8;
+  --surface: #ffffff;
+  --surface-2: #f5f9fd;
+  --surface-3: #e8eff7;
+  --border: #d9e3ed;
+  --border-bright: #a9c8e6;
+  --phosphor: #2b7fd4;
+  --phosphor-dim: #4a95de;
+  --phosphor-faint: #bcd6ef;
+  --phosphor-glow: rgba(43, 127, 212, 0.18);
+  --amber: #5a6b7d;
+  --amber-dim: #8a99a8;
+  --amber-soft: rgba(43, 127, 212, 0.10);
+  --danger: #d94a45;
+  --danger-soft: rgba(217, 74, 69, 0.10);
+  --success: #2e9e5b;
+  --text: #1b2733;
+  --text-dim: #5a6b7d;
+  --text-faint: #93a3b3;
   --mono: "Segoe UI", "Segoe UI Variable", Inter, system-ui, -apple-system,
     "Helvetica Neue", Arial, sans-serif;
   --xbox-radius: 12px;
   --xbox-radius-sm: 8px;
 
+  /* Semantic tokens: what a colour is for, so light and dark can differ. */
+  --nexus: rgba(43, 127, 212, 0.09);
+  --vignette: transparent;
+  --shadow-card: 0 18px 50px rgba(27, 39, 51, 0.09), 0 0 0 1px rgba(169, 200, 230, 0.45);
+  --shadow-hover: 0 6px 18px rgba(27, 39, 51, 0.08);
+  --shadow-lift: 0 10px 24px rgba(27, 39, 51, 0.10);
+  --btn-bg: linear-gradient(180deg, #3d8fe0, #2b7fd4);
+  --btn-bg-hover: linear-gradient(180deg, #4d9be6, #3587dc);
+  --btn-border: #2b7fd4;
+  --btn-shadow: 0 4px 14px rgba(43, 127, 212, 0.26);
+  --btn-shadow-hover: 0 6px 20px rgba(43, 127, 212, 0.34);
+  --btn-danger-bg: linear-gradient(180deg, #e25a55, #d94a45);
+  --msg-out-bg: linear-gradient(180deg, #e3effb, #d8e8f8);
+  --msg-out-border: #bcd6ef;
+  --on-accent: #ffffff;
 }
+
+/* Theme. Light is the default because it is what was asked for; the person can
+   pick dark, or hand the choice to the operating system. The attribute lives on
+   <html> and is set before first paint by ui/src/theme.ts, from a preference
+   kept in localStorage — theme has to apply on the profile screen, before any
+   vault is unlocked, so it cannot live in the encrypted settings. */
+:root[data-theme="dark"] {
+    --bg: #0a0d0b;
+    --surface: #121712;
+    --surface-2: #1a211a;
+    --surface-3: #232d23;
+    --border: #263026;
+    --border-bright: #3a8f3a;
+    --phosphor: #6ce86c;
+    --phosphor-dim: #46b846;
+    --phosphor-faint: #2c5f2c;
+    --phosphor-glow: rgba(16, 124, 16, 0.55);
+    --amber: #d7e8d7;
+    --amber-dim: #9fb79f;
+    --amber-soft: rgba(108, 232, 108, 0.12);
+    --danger: #ff5a52;
+    --danger-soft: rgba(255, 90, 82, 0.12);
+    --success: #6ce86c;
+    --text: #eaf3ea;
+    --text-dim: #a9bda9;
+    --text-faint: #6f826f;
+    --nexus: rgba(16, 124, 16, 0.14);
+    --vignette: rgba(0, 0, 0, 0.55);
+    --shadow-card: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
+    --shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.4);
+    --shadow-lift: 0 10px 24px rgba(0, 0, 0, 0.45);
+    --btn-bg: linear-gradient(180deg, #14a014, #0e7a0e);
+    --btn-bg-hover: linear-gradient(180deg, #19c319, #12a012);
+    --btn-border: #1c8f1c;
+    --btn-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
+    --btn-shadow-hover: 0 6px 20px rgba(16, 124, 16, 0.5);
+    --btn-danger-bg: linear-gradient(180deg, #ff6a62, #e0433b);
+    --msg-out-bg: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
+    --msg-out-border: rgba(58, 143, 58, 0.4);
+    --on-accent: #06120a;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] {
+      --bg: #0a0d0b;
+      --surface: #121712;
+      --surface-2: #1a211a;
+      --surface-3: #232d23;
+      --border: #263026;
+      --border-bright: #3a8f3a;
+      --phosphor: #6ce86c;
+      --phosphor-dim: #46b846;
+      --phosphor-faint: #2c5f2c;
+      --phosphor-glow: rgba(16, 124, 16, 0.55);
+      --amber: #d7e8d7;
+      --amber-dim: #9fb79f;
+      --amber-soft: rgba(108, 232, 108, 0.12);
+      --danger: #ff5a52;
+      --danger-soft: rgba(255, 90, 82, 0.12);
+      --success: #6ce86c;
+      --text: #eaf3ea;
+      --text-dim: #a9bda9;
+      --text-faint: #6f826f;
+      --nexus: rgba(16, 124, 16, 0.14);
+      --vignette: rgba(0, 0, 0, 0.55);
+      --shadow-card: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
+      --shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.4);
+      --shadow-lift: 0 10px 24px rgba(0, 0, 0, 0.45);
+      --btn-bg: linear-gradient(180deg, #14a014, #0e7a0e);
+      --btn-bg-hover: linear-gradient(180deg, #19c319, #12a012);
+      --btn-border: #1c8f1c;
+      --btn-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
+      --btn-shadow-hover: 0 6px 20px rgba(16, 124, 16, 0.5);
+      --btn-danger-bg: linear-gradient(180deg, #ff6a62, #e0433b);
+      --msg-out-bg: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
+      --msg-out-border: rgba(58, 143, 58, 0.4);
+      --on-accent: #06120a;
+  }
+}
+
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
@@ -188,11 +282,11 @@ a:hover { text-decoration: underline; }
   white-space: pre;
 }
 .auth-title {
-  color: var(--amber);
-  font-size: 14px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
   margin-bottom: 4px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
+  letter-spacing: -0.005em;
 }
 .auth-sub {
   color: var(--text-dim);
@@ -291,13 +385,17 @@ a:hover { text-decoration: underline; }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
-  padding: 7px 16px;
+  padding: 8px 18px;
   background: var(--bg);
   color: var(--phosphor);
   border: 1px solid var(--phosphor-dim);
   font-family: var(--mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  /* Sentence case, normal tracking. The uppercase + 0.1em tracking was the
+     terminal theme shouting every label; on soft pill buttons it read as noise,
+     and it made the labels in source irrelevant since CSS overrode them. */
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   transition: all 0.1s;
 }
 .btn:hover {
@@ -1306,10 +1404,8 @@ a:hover { text-decoration: underline; }
 }
 
 .chat-typing {
-  font-size: 10px;
-  color: var(--amber);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--text-dim);
   margin-top: 2px;
   font-style: italic;
 }
@@ -1355,8 +1451,8 @@ body {
 }
 body::before {
   background:
-    radial-gradient(60% 55% at 50% 0%, rgba(16, 124, 16, 0.14), transparent 70%),
-    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+    radial-gradient(60% 55% at 50% 0%, var(--nexus), transparent 70%),
+    radial-gradient(ellipse at center, transparent 55%, var(--vignette) 100%);
 }
 
 
@@ -1373,7 +1469,7 @@ body::before {
   border-radius: var(--xbox-radius);
 }
 .modal, .modal-wide, .auth-card {
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
+  box-shadow: var(--shadow-card);
   background: linear-gradient(180deg, var(--surface-2), var(--surface));
 }
 .card-block {
@@ -1390,7 +1486,7 @@ body::before {
   transform: translateY(-1px);
   background: var(--surface-2);
   border-color: var(--border-bright);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--phosphor-glow);
+  box-shadow: var(--shadow-hover), 0 0 0 1px var(--phosphor-glow);
 }
 .contact.active, .contact[aria-selected="true"] {
   background: var(--surface-3);
@@ -1404,7 +1500,7 @@ body::before {
 .media-tile:hover {
   transform: translateY(-2px) scale(1.01);
   border-color: var(--phosphor-dim);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-lift);
 }
 
 /* --- Buttons --------------------------------------------------------------- */
@@ -1413,14 +1509,14 @@ body::before {
   transition: transform .1s ease, background .12s ease, box-shadow .12s ease, color .12s ease;
 }
 .btn:not(.btn-ghost):not(.btn-danger) {
-  background: linear-gradient(180deg, #14a014, #0e7a0e);
-  color: #f2fff2;
-  border: 1px solid #1c8f1c;
-  box-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
+  background: var(--btn-bg);
+  color: var(--on-accent);
+  border: 1px solid var(--btn-border);
+  box-shadow: var(--btn-shadow);
 }
 .btn:not(.btn-ghost):not(.btn-danger):hover {
-  background: linear-gradient(180deg, #19c319, #12a012);
-  box-shadow: 0 6px 20px rgba(16, 124, 16, 0.5);
+  background: var(--btn-bg-hover);
+  box-shadow: var(--btn-shadow-hover);
   transform: translateY(-1px);
 }
 .btn:active { transform: translateY(0) scale(.99); }
@@ -1432,8 +1528,8 @@ body::before {
 }
 .btn-ghost:hover { background: var(--surface-2); border-color: var(--phosphor-dim); }
 .btn-danger {
-  background: linear-gradient(180deg, #ff6a62, #e0433b);
-  color: #fff; border: 1px solid #e0433b; border-radius: 999px;
+  background: var(--btn-danger-bg);
+  color: #fff; border: 1px solid var(--danger); border-radius: 999px;
 }
 .btn-amber {                            /* was amber; make it a neutral outline */
   background: transparent;
@@ -1459,8 +1555,8 @@ body::before {
 /* --- Messages -------------------------------------------------------------- */
 .msg { border-radius: 14px; }
 .msg.out .msg-body {
-  background: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
-  border: 1px solid rgba(58, 143, 58, 0.4);
+  background: var(--msg-out-bg);
+  border: 1px solid var(--msg-out-border);
   border-radius: 14px 14px 4px 14px;
 }
 .msg.in .msg-body {
@@ -1472,7 +1568,7 @@ body::before {
   border-radius: 999px;
   border: 1px solid var(--border-bright);
 }
-.msg-button:hover { background: var(--phosphor); color: #06120a; }
+.msg-button:hover { background: var(--phosphor); color: var(--on-accent); }
 
 /* --- Chrome: header, sidebar footer, dividers ------------------------------ */
 .chat-header, .modal-header {
@@ -1495,7 +1591,7 @@ body::before {
 ::-webkit-scrollbar-thumb:hover { background: var(--phosphor-dim); }
 
 /* Selection + links in the accent. */
-::selection { background: var(--phosphor); color: #06120a; }
+::selection { background: var(--phosphor); color: var(--on-accent); }
 a { color: var(--phosphor); }
 
 /* --- Option rows (radio / checkbox with a label and an explanation) --------
@@ -1567,4 +1663,54 @@ a { color: var(--phosphor); }
   color: var(--text-dim);
   font-size: 11px;
   line-height: 1.45;
+}
+
+/* --- Logo -----------------------------------------------------------------
+   One lockup: mark and wordmark as the base, "i2P" as a layer in front of them.
+   Replaces box-drawing ASCII art, which needed a monospace font to hold its
+   shape and turned to noise once the app moved to a proportional sans. */
+.logo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  /* fit-content + auto margins centres the lockup as one unit. inline-flex
+     with auto margins does not, inside the card's block flow — the first
+     render sat flush left. */
+  width: fit-content;
+  margin: 0 auto 18px;
+  padding: 8px 18px;
+}
+.logo-mark {
+  width: 38px;
+  height: 38px;
+  color: var(--phosphor);
+  flex: none;
+}
+.logo-word {
+  position: relative;
+  z-index: 1;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+/* In front of the base (z-index above the wordmark), three times the wordmark's
+   26px, at a third of full strength: present as brand, never over the name. */
+.logo-net {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  font-size: 78px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--phosphor);
+  opacity: 0.34;
+  pointer-events: none;
+  user-select: none;
 }

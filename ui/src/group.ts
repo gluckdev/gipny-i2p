@@ -16,7 +16,7 @@ export class GroupModal {
     const list = h('div', { class: 'stack', style: { gap: '6px' } });
     const countLabel = h('div', { class: 'card-label', style: { marginTop: '12px' } }, 'members (0)');
     const picker = h('select', { class: 'input' }) as HTMLSelectElement;
-    const addBtn = h('button', { class: 'btn btn-amber' }, '[ + ADD ]') as HTMLButtonElement;
+    const addBtn = h('button', { class: 'btn btn-amber' }, '+ Add') as HTMLButtonElement;
     const addErr = h('div', { class: 'err' });
 
     const renderPicker = (): void => {
@@ -65,7 +65,7 @@ export class GroupModal {
       if (!Number.isFinite(cid)) { addErr.textContent = 'pick a contact'; return; }
       addBtn.disabled = true;
       const orig = addBtn.textContent;
-      addBtn.textContent = '[ ... ]';
+      addBtn.textContent = '...';
       try {
         await store.addGroupMember(groupId, cid);
         store.showToast('member added');
@@ -116,9 +116,9 @@ export class GroupModal {
             await store.deleteGroup(groupId);
             closeWrapped();
           },
-        }, '[ LEAVE (local) ]'),
+        }, 'Leave (local)'),
         h('div', { class: 'grow' }),
-        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, '[ close ]'),
+        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, 'Close'),
       ),
     );
   }
@@ -157,7 +157,7 @@ export class CreateGroupModal {
         err,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, '[ cancel ]'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
         (() => {
           const b = h('button', {
             class: 'btn',
@@ -171,7 +171,7 @@ export class CreateGroupModal {
                 close();
               } catch (e) { err.textContent = 'err: ' + String(e); }
             }),
-          }, '[ CREATE ]') as HTMLButtonElement;
+          }, 'Create') as HTMLButtonElement;
           return b;
         })(),
       ),

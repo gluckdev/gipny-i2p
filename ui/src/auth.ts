@@ -1,6 +1,6 @@
 import { Api } from './api';
 import type { Store, BootStage } from './state';
-import { View, h, busy, LOGO } from './view';
+import { View, h, busy, logo } from './view';
 
 export class AuthCreate extends View {
   el: HTMLElement;
@@ -32,8 +32,8 @@ export class AuthCreate extends View {
 
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
-        h('pre', { class: 'auth-logo' }, LOGO),
-        h('div', { class: 'auth-title' }, ':: NEW PROFILE ::'),
+        logo(),
+        h('div', { class: 'auth-title' }, 'New profile'),
         h('div', { class: 'auth-sub' }, 'у каждого профиля свой i2p-адрес, ключи, контакты'),
         h('div', { class: 'field' },
           h('label', null, 'profile name'), this.nameI,
@@ -57,13 +57,13 @@ export class AuthCreate extends View {
           hasProfiles && h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, '[ back ]'),
+          }, 'Back'),
           (() => {
             const b = h('button', {
               class: 'btn',
               style: { flex: '1' },
               onClick: () => busy(b, () => this.create()),
-            }, '[ INITIALIZE ]') as HTMLButtonElement;
+            }, 'Initialize') as HTMLButtonElement;
             this.confirmI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.create());
             });
@@ -118,8 +118,8 @@ export class AuthUnlock extends View {
     this.err = h('div', { class: 'err' });
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
-        h('pre', { class: 'auth-logo' }, LOGO),
-        h('div', { class: 'auth-title' }, `:: UNLOCK :: ${profile} ::`),
+        logo(),
+        h('div', { class: 'auth-title' }, `Unlock · ${profile}`),
         h('div', { class: 'auth-sub' }, h('span', { class: 'blink' }, '>'), ' awaiting key'),
         h('div', { class: 'field' }, h('label', null, 'passphrase'), this.passI),
         this.err,
@@ -127,12 +127,12 @@ export class AuthUnlock extends View {
           h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, '[ back ]'),
+          }, 'Back'),
           (() => {
             const b = h('button', {
               class: 'btn', style: { flex: '1' },
               onClick: () => busy(b, () => this.unlock()),
-            }, '[ UNLOCK ]') as HTMLButtonElement;
+            }, 'Unlock') as HTMLButtonElement;
             this.passI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.unlock());
             });
@@ -214,8 +214,8 @@ export class AuthBooting extends View {
 
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card', style: { maxWidth: '560px' } },
-        h('pre', { class: 'auth-logo' }, LOGO),
-        h('div', { class: 'auth-title' }, ':: BUILDING I2P TUNNELS ::'),
+        logo(),
+        h('div', { class: 'auth-title' }, 'Building i2p tunnels'),
         h('div', { class: 'auth-sub', style: { textAlign: 'center' } },
           'this may take ',
           h('span', { style: { color: '#ffb000' } }, '30 seconds to 10 minutes'),

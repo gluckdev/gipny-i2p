@@ -1,7 +1,7 @@
 import { open } from '@tauri-apps/plugin-dialog';
 import { Api } from './api';
 import type { Store } from './state';
-import { View, h, LOGO } from './view';
+import { View, h, logo } from './view';
 import type { App } from './app';
 
 export class ProfileSelect extends View {
@@ -15,20 +15,20 @@ export class ProfileSelect extends View {
     this.subTitle = h('div', { class: 'auth-sub' }, '');
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
-        h('pre', { class: 'auth-logo' }, LOGO),
-        h('div', { class: 'auth-title' }, ':: SELECT PROFILE ::'),
+        logo(),
+        h('div', { class: 'auth-title' }, 'Select profile'),
         this.subTitle,
         this.list,
         h('div', { class: 'divider-text' }, 'or'),
         h('button', {
           class: 'btn btn-block btn-amber',
           onClick: () => store.goToCreate(),
-        }, '[ + NEW PROFILE ]'),
+        }, '+ New profile'),
         h('button', {
           class: 'btn btn-block btn-ghost',
           style: { marginTop: '6px' },
           onClick: () => this.startImport(),
-        }, '[ IMPORT BACKUP ]'),
+        }, 'Import backup'),
       ),
     );
     this.sub(store.profiles, (p) => this.renderList(p));
@@ -76,8 +76,8 @@ export class ProfileSelect extends View {
         errEl,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, '[ cancel ]'),
-        h('button', { class: 'btn', onClick: () => submit(close) }, '[ IMPORT ]'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn', onClick: () => submit(close) }, 'Import'),
       ),
     ));
   }

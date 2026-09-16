@@ -3,9 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#020502" />
-    <meta name="color-scheme" content="dark" />
+    <!-- Light by default; theme-init.js switches data-theme before paint. -->
+    <meta name="theme-color" content="#eef3f8" />
+    <!-- Both schemes, so native controls and scrollbars follow the chosen theme
+         instead of being forced dark. -->
+    <meta name="color-scheme" content="light dark" />
     <title>gipny</title>
+    <script src="/theme-init.js"></script>
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>

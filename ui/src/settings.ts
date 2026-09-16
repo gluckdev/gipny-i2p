@@ -55,7 +55,7 @@ export class SettingsModal {
               apkProgress.textContent = '';
             }
           }),
-        }, `[ DOWNLOAD ${it.arch.toUpperCase()} · ${humanSize(it.size)} ]`) as HTMLButtonElement;
+        }, `Download ${it.arch.toUpperCase()} · ${humanSize(it.size)}`) as HTMLButtonElement;
         apkButtons.appendChild(btn);
       }
     };
@@ -105,7 +105,7 @@ export class SettingsModal {
                       if (!info) store.showToast('you are on the latest version');
                     } catch (e) { updErr.textContent = String(e); }
                   }),
-                }, '[ CHECK FOR UPDATES ]') as HTMLButtonElement;
+                }, 'Check for updates') as HTMLButtonElement;
                 return b;
               })(),
             ),
@@ -128,7 +128,7 @@ export class SettingsModal {
                 store.showToast('relay address saved — will reconnect shortly');
               } catch (e) { relayErr.textContent = String(e); }
             }),
-          }, '[ SAVE RELAY ADDRESS ]') as HTMLButtonElement;
+          }, 'Save relay address') as HTMLButtonElement;
           return h('div', null,
             h('div', { class: 'hint', style: { marginBottom: '6px' } },
               'i2p destination of the relay server. Overrides the built-in default. '
@@ -259,7 +259,7 @@ export class SettingsModal {
               oldP.value = newP.value = newP2.value = '';
             } catch (e) { passErr.textContent = String(e); }
           },
-        }, '[ CHANGE ]'),
+        }, 'Change'),
 
         h('div', { class: 'divider-text' }, 'duress'),
         h('div', { class: 'field' }, currP),
@@ -277,7 +277,7 @@ export class SettingsModal {
               currP.value = duP.value = '';
             } catch (e) { duErr.textContent = String(e); }
           },
-        }, '[ UPDATE DURESS ]'),
+        }, 'Update duress'),
 
         h('div', { class: 'divider-text' }, 'max attempts'),
         h('div', { class: 'field' }, attP),
@@ -293,7 +293,7 @@ export class SettingsModal {
               attP.value = '';
             } catch (e) { attErr.textContent = String(e); }
           },
-        }, '[ UPDATE ]'),
+        }, 'Update'),
 
 
         h('div', { class: 'divider-text' }, 'backup'),
@@ -320,7 +320,7 @@ export class SettingsModal {
                 errEl.textContent = String(e);
               }
             },
-          }, '[ EXPORT BACKUP ]');
+          }, 'Export backup');
           return h('div', null,
             h('div', { class: 'field' }, passI),
             errEl,
@@ -343,14 +343,14 @@ export class SettingsModal {
                 (out as HTMLElement).style.display = '';
               } catch (e) { out.textContent = String(e); (out as HTMLElement).style.display = ''; }
             }),
-          }, '[ SHOW DEBUG LOG ]') as HTMLButtonElement;
+          }, 'Show debug log') as HTMLButtonElement;
           const copyBtn = h('button', {
             class: 'btn btn-ghost',
             onClick: () => {
               navigator.clipboard.writeText(out.textContent ?? '').catch(() => store.showToast('copy failed', true));
               store.showToast('copied');
             },
-          }, '[ COPY ]');
+          }, 'Copy');
           return h('div', null,
             h('div', { class: 'row' }, refreshBtn, copyBtn),
             out,
@@ -366,10 +366,10 @@ export class SettingsModal {
             closeWrapped();
             await store.lock();
           },
-        }, '[ LOCK NOW ]'),
+        }, 'Lock now'),
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, '[ close ]'),
+        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, 'Close'),
       ),
     );
   }

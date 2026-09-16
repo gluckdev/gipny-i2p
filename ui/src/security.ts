@@ -328,7 +328,7 @@ export class SecurityModal {
         ),
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, '[ close ]'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Close'),
       ),
     );
   }

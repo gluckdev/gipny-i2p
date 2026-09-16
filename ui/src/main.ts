@@ -1,6 +1,10 @@
 import { Store } from './state';
 import { App } from './app';
 import { SearchModal } from './search';
+import { applyTheme } from './theme';
+
+// theme-init.js already set this before paint; re-apply in case it was blocked.
+applyTheme();
 
 const root = document.getElementById('app');
 if (!root) throw new Error('no #app');

@@ -71,7 +71,7 @@ export class IdentityModal {
                   store.showToast('name saved');
                 } catch (e) { store.showToast(String(e), true); }
               },
-            }, '[ save ]'),
+            }, 'Save'),
           ),
           h('div', { class: 'hint' }, 'embedded in shared card'),
         ),
@@ -90,13 +90,13 @@ export class IdentityModal {
               await navigator.clipboard.writeText(cardBlock.textContent ?? '');
               store.showToast('card copied');
             },
-          }, '[ COPY CARD ]'),
+          }, 'Copy card'),
         ),
         h('div', { class: 'divider-text' }, 'bundle'),
         bundleSlot,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, '[ close ]'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Close'),
       ),
     );
   }

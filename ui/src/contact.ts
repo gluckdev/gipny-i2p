@@ -52,7 +52,7 @@ export class ContactModal {
               store.showToast('reset failed: ' + String(e), true);
             }
           },
-        }, '[ RESET SESSION ]'),
+        }, 'Reset session'),
       ),
       h('div', { class: 'modal-footer' },
         h('button', {
@@ -66,9 +66,9 @@ export class ContactModal {
             if (sel?.kind === 'contact' && sel.id === c.id) store.selectedChat.set(null);
             close();
           },
-        }, '[ DELETE ]'),
+        }, 'Delete'),
         h('div', { class: 'grow' }),
-        h('button', { class: 'btn btn-ghost', onClick: close }, '[ cancel ]'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
         h('button', {
           class: 'btn',
           onClick: async () => {
@@ -79,7 +79,7 @@ export class ContactModal {
             store.showToast('saved');
             close();
           },
-        }, '[ SAVE ]'),
+        }, 'Save'),
       ),
     );
   }
@@ -138,7 +138,7 @@ export class AddContactModal {
         err,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, '[ cancel ]'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
         h('button', {
           class: 'btn',
           onClick: async () => {
@@ -164,7 +164,7 @@ export class AddContactModal {
               close();
             } catch (e) { err.textContent = 'err: ' + String(e); }
           },
-        }, '[ ADD ]'),
+        }, 'Add'),
       ),
     );
   }

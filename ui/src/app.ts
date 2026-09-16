@@ -71,11 +71,11 @@ export class App extends View {
         ),
         h('div', { class: 'modal-body' }, h('div', { class: 'fp' }, body)),
         h('div', { class: 'modal-footer' },
-          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, '[ cancel ]'),
+          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, 'Cancel'),
           h('button', {
             class: danger ? 'btn btn-danger' : 'btn',
             onClick: () => { close(); resolve(true); },
-          }, '[ confirm ]'),
+          }, 'Confirm'),
         ),
       ));
     });
@@ -107,7 +107,7 @@ export class App extends View {
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateReadyPath.set(null); },
-      }, '[ close ]'),
+      }, 'Close'),
     );
   }
 
@@ -118,7 +118,7 @@ export class App extends View {
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateError.set(null); },
-      }, '[ close ]'),
+      }, 'Close'),
     );
   }
 
@@ -153,7 +153,7 @@ export class App extends View {
           await this.store.dismissUpdate();
           this.closeUpdateModal();
         },
-      }, '[ LATER ]'),
+      }, 'Later'),
       (() => {
         const b = h('button', {
           class: 'btn btn-amber',
@@ -161,7 +161,7 @@ export class App extends View {
             (this.updateProgressEl as HTMLElement).style.display = 'block';
             await this.store.installUpdate();
           }),
-        }, '[ UPDATE NOW ]') as HTMLButtonElement;
+        }, 'Update now') as HTMLButtonElement;
         return b;
       })(),
     );

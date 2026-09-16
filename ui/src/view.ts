@@ -63,7 +63,7 @@ export async function busy(btn: HTMLButtonElement, fn: () => Promise<void>): Pro
   if (btn.disabled) return;
   const orig = btn.textContent ?? '';
   btn.disabled = true;
-  btn.textContent = '[ ... ]';
+  btn.textContent = '...';
   try { await fn(); }
   finally {
     btn.disabled = false;
@@ -108,10 +108,61 @@ export function mimeFromName(name: string): string {
   return map[ext] ?? 'application/octet-stream';
 }
 
-export const LOGO = String.raw`
- ┌─┐┬┌─┐┌┐┌┬ ┬
- │ ┬│├─┘│││└┬┘
- └─┘┴┴  ┘└┘ ┴ `;
+/**
+ * The app mark: the same chevron-and-cursor as the launcher icon
+ * (core/icons/icon.svg), so the thing a person clicks and the thing that greets
+ * them are recognisably one product.
+ *
+ * This replaced box-drawing ASCII art. That art needed a monospace font to hold
+ * its shape, and the app's font is now a proportional sans — the letters pulled
+ * apart into an unreadable smear. A drawn mark cannot break that way.
+ */
+export function logoMark(): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 512 512');
+  svg.setAttribute('class', 'logo-mark');
+  svg.setAttribute('aria-hidden', 'true');
+
+  const chevron = document.createElementNS(NS, 'path');
+  chevron.setAttribute('d', 'M168 148 L280 256 L168 364');
+  chevron.setAttribute('fill', 'none');
+  chevron.setAttribute('stroke', 'currentColor');
+  chevron.setAttribute('stroke-width', '46');
+  chevron.setAttribute('stroke-linecap', 'round');
+  chevron.setAttribute('stroke-linejoin', 'round');
+
+  const cursor = document.createElementNS(NS, 'rect');
+  cursor.setAttribute('x', '300');
+  cursor.setAttribute('y', '318');
+  cursor.setAttribute('width', '120');
+  cursor.setAttribute('height', '40');
+  cursor.setAttribute('rx', '20');
+  cursor.setAttribute('fill', 'var(--amber)');
+
+  svg.append(chevron, cursor);
+  return svg;
+}
+
+/**
+ * Mark plus wordmark, as shown on the auth screens.
+ *
+ * One lockup rather than a mark and a separate badge. "i2P" is part of the
+ * name — this is the i2p fork, installed beside the original as its own app —
+ * so it is drawn as a layer of the logo itself: in front, at three times the
+ * wordmark's size, at a third of full strength. Strong enough to read as the
+ * brand, faint enough that "gipny" stays the first thing the eye lands on.
+ *
+ * The overlay is aria-hidden and the lockup carries a label, so assistive tech
+ * reads the name once instead of reading "gipny" and then "i2P" as noise.
+ */
+export function logo(): HTMLElement {
+  return h('div', { class: 'logo', role: 'img', 'aria-label': 'gipny i2P' },
+    logoMark(),
+    h('span', { class: 'logo-word', 'aria-hidden': 'true' }, 'gipny'),
+    h('span', { class: 'logo-net', 'aria-hidden': 'true' }, 'i2P'),
+  );
+}
 
 export abstract class View {
   abstract el: HTMLElement;

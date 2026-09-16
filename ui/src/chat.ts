@@ -127,10 +127,10 @@ export class ChatView extends View {
     if (!isGroup) this.renderTtlPicker();
 
     const detailsBtn = isGroup
-      ? h('button', { class: 'btn btn-ghost', onClick: () => this.openGroupDetails() }, '[ members ]')
-      : h('button', { class: 'btn btn-ghost', onClick: () => this.openContactDetails() }, '[ details ]');
-    const searchBtn = h('button', { class: 'btn btn-ghost', title: 'search in this chat', onClick: () => this.openSearch() }, '[ ⌕ ]');
-    const mediaBtn = h('button', { class: 'btn btn-ghost', title: 'media in this chat', onClick: () => this.openMedia() }, '[ ◉ ]');
+      ? h('button', { class: 'btn btn-ghost', onClick: () => this.openGroupDetails() }, 'Members')
+      : h('button', { class: 'btn btn-ghost', onClick: () => this.openContactDetails() }, 'Details');
+    const searchBtn = h('button', { class: 'btn btn-ghost', title: 'search in this chat', onClick: () => this.openSearch() }, '⌕');
+    const mediaBtn = h('button', { class: 'btn btn-ghost', title: 'media in this chat', onClick: () => this.openMedia() }, '◉');
 
     const headerRight = isGroup
       ? h('div', { class: 'row' }, searchBtn, mediaBtn, detailsBtn)
@@ -154,7 +154,7 @@ export class ChatView extends View {
           class: 'chat-back icon-btn',
           title: 'back',
           onClick: () => store.selectedChat.set(null),
-        }, '[ ← ]'),
+        }, '←'),
         h('div', null,
           h('div', { class: 'chat-title' }, title),
           subEl,
@@ -172,7 +172,7 @@ export class ChatView extends View {
           h('div', { class: 'prompt' }, '>'),
           this.input,
           h('button', { class: 'btn btn-ghost', title: 'attach', onClick: () => this.pickFiles() }, '[+]'),
-          h('button', { class: 'btn', onClick: () => this.send() }, '[ SEND ]'),
+          h('button', { class: 'btn', onClick: () => this.send() }, 'Send'),
         ),
         h('div', { class: 'chat-input-meta' },
           h('span', null, 'ratchet: active · aead: xchacha20-poly1305'),
@@ -721,7 +721,7 @@ export class ChatView extends View {
         class: 'btn btn-ghost',
         style: { marginLeft: '12px' },
         onClick: () => { scale = 1; tx = 0; ty = 0; apply(); },
-      }, '[ RESET ]');
+      }, 'Reset');
       return h('div', {
         class: 'modal',
         style: { width: 'auto', maxWidth: '95vw', maxHeight: '95vh', padding: '0' },
