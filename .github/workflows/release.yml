@@ -328,27 +328,19 @@ jobs:
           name="gipny-agent_${VERSION}_linux-${{ matrix.arch }}"
           mkdir -p "dist/$name"
           install -m 0755 target/release/gipny-agent "dist/$name/"
-          # Include a brief usage README so the tarball is self-contained.
           cat > "dist/$name/README.txt" << 'EOF'
-gipny-agent — headless console agent for gipny-i2p
+          gipny-agent — headless console agent for gipny-i2p
 
-Usage:
-  gipny-agent --data <dir> --master <gipny:v2:…card…> [options]
+          Usage:
+            gipny-agent --data <dir> --master <card> [options]
 
-Options:
-  --name <name>      Display name for this agent (default: hostname)
-  --relay <onion>    Relay to use (default: from master card or compiled-in)
-  --sam <port>       Attach to existing SAM bridge on this port
-  --cwd <dir>        Working directory for commands (default: home dir)
-  --timeout <secs>   Per-command timeout in seconds (default: 120)
-
-On first run the agent prints its contact card to stdout.
-Add it as a contact in gipny, then open the chat with the agent
-and use the console/terminal view to send commands.
-
-The agent executes commands as the user it runs as.
-Run it in a restricted account or container for production use.
-EOF
+          Options:
+            --name <name>      Display name for this agent (default: hostname)
+            --relay <onion>    Relay to use (default: from master card or compiled-in)
+            --sam <port>       Attach to existing SAM bridge on this port
+            --cwd <dir>        Working directory for commands (default: home dir)
+            --timeout <secs>   Per-command timeout in seconds (default: 120)
+          EOF
           file "dist/$name/gipny-agent"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
