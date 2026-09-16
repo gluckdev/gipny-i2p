@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 8+: two layers the launcher masks and animates itself. Older
+     versions fall back to the full-tile PNGs in mipmap-*dpi. The monochrome
+     layer is what Android 13 themed icons tint; it keys off alpha, so the mark
+     comes out solid and i2P at a third, as in the colour icon. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

@@ -3,18 +3,27 @@
     Android adaptive-icon foreground layer.
 
     The canvas is 108dp but launchers may mask it to anything from a circle to a
-    squircle, and only the middle 72dp is guaranteed to survive. So the mark sits
-    inside that safe zone at two thirds scale, with no background of its own: the
-    system draws ic_launcher_background behind it and animates the two layers
-    apart on some launchers.
+    squircle, and only the middle 72dp is guaranteed to survive. So the art sits
+    inside that safe zone at two thirds scale, with no tile of its own: the
+    system draws drawable/ic_launcher_background behind it and animates the two
+    layers apart on some launchers.
 
-    Same gesture as icon.svg, no tile and no glow — a blur here would smear
-    against whatever background the launcher composites underneath.
+    Same lockup as icon.svg, without the tile and without the shadow, which
+    would smear against whatever the launcher composites underneath.
   -->
   <g transform="translate(256 256) scale(0.62) translate(-256 -256)">
-    <path d="M168 148 L280 256 L168 364"
-          fill="none" stroke="#6ce86c" stroke-width="46"
-          stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="300" y="318" width="120" height="40" rx="20" fill="#d7e8d7"/>
+    <g transform="translate(256 256) scale(0.55) translate(-294 -256)">
+      <path d="M168 148 L280 256 L168 364" fill="none" stroke="#1b2733" stroke-width="46"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="300" y="318" width="120" height="40" rx="20" fill="#5a6b7d"/>
+    </g>
+    <g opacity="0.34">
+      <g fill="none" stroke="#2b7fd4" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M96 238 L96 354"/>
+        <path d="M156 214 A 54 54 0 1 1 250 252 L 154 354 L 266 354"/>
+        <path d="M322 354 L322 170 L370 170 A 60 60 0 0 1 370 290 L322 290"/>
+      </g>
+      <circle cx="96" cy="168" r="27" fill="#2b7fd4"/>
+    </g>
   </g>
 </svg>

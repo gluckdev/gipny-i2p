@@ -57,9 +57,11 @@ for s in 16 24 32 48 64 128 256; do render "$SVG" "$s" "$TMP/ico-$s.png" >/dev/n
 magick "$TMP"/ico-*.png core/icons/icon.ico
 echo "  core/icons/icon.ico (16-256 multi-size)"
 
-# Android. ic_launcher/ic_launcher_round are the legacy full-bleed icons;
-# ic_launcher_foreground is the adaptive layer, drawn on a 108dp canvas where
-# only the middle 72dp is guaranteed visible — hence the separate SVG.
+# Android. ic_launcher/ic_launcher_round are the full-tile icons Android 7 and
+# older show; ic_launcher_foreground is the adaptive layer that
+# mipmap-anydpi-v26/*.xml puts over drawable/ic_launcher_background on 8+. It is
+# drawn on a 108dp canvas where only the middle 72dp is guaranteed visible, hence
+# the separate SVG. Those XML files are hand-written, not generated here.
 echo "android:"
 res="core/gen/android/app/src/main/res"
 for d in "mdpi 48 108" "hdpi 72 162" "xhdpi 96 216" "xxhdpi 144 324" "xxxhdpi 192 432"; do

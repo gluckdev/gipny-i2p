@@ -1,49 +1,58 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <!--
-    gipny app icon — source of truth. Every PNG/ICO in this directory and every
+    gipny app icon: source of truth. Every PNG/ICO in this directory and every
     Android mipmap is rasterised from this file by tools/gen-icons.sh.
 
-    The mark keeps the terminal prompt of the previous icon, because that is what
-    people recognise, but redrawn in the language the app now uses: the Xbox
-    dashboard palette from ui/src/styles.css — near-black neutral ground, a
-    single green accent, soft rounded geometry — instead of CRT green on black.
-    The cursor bar was amber; the theme replaced amber with a soft neutral, so it
-    follows.
+    It is the in-app logo (ui/src/view.ts logo()) redrawn for a square: the
+    prompt mark as the base, and "i2P" laid over it in front, large, at a third
+    of full strength. On the auth screen the base is the "gipny" wordmark; a
+    launcher tile has no room for a word, so the mark stands in for it.
+
+    Colours are the light theme's tokens from ui/src/styles.css: white to soft
+    blue ground, accent #2b7fd4 for the letters, the text colour #1b2733 for the
+    mark, slate #5a6b7d for the cursor. The mark is darker than in the app on
+    purpose: in the accent blue its lower arm lies exactly along the diagonal of
+    the "2", and the letters stop reading as i2P.
+
+    The letters are drawn strokes, not <text>. The UI font is a system font that
+    differs per machine, and an icon rasterised from whatever font the build box
+    has would change shape every time someone regenerated it.
   -->
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#151b15"/>
-      <stop offset="1" stop-color="#0a0d0b"/>
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dde9f6"/>
     </linearGradient>
-    <radialGradient id="nexus" cx="0.5" cy="0.06" r="0.72">
-      <stop offset="0" stop-color="#107C10" stop-opacity="0.34"/>
-      <stop offset="1" stop-color="#107C10" stop-opacity="0"/>
+    <radialGradient id="nexus" cx="0.5" cy="0.06" r="0.8">
+      <stop offset="0" stop-color="#2b7fd4" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#2b7fd4" stop-opacity="0"/>
     </radialGradient>
-    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="14" result="b"/>
-      <feMerge>
-        <feMergeNode in="b"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
+    <filter id="lift" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#2b7fd4" flood-opacity="0.28"/>
     </filter>
   </defs>
 
-  <!-- Tile. 96px corner radius is the squircle-ish curve the UI uses on cards,
-       scaled up from the 12px the UI uses on a ~64px control. -->
+  <!-- Tile. 96px corner radius is the card curve of the UI, scaled up. -->
   <rect width="512" height="512" rx="96" fill="url(#tile)"/>
   <rect width="512" height="512" rx="96" fill="url(#nexus)"/>
-  <!-- Hairline edge so the tile keeps an outline on a dark wallpaper. -->
+  <!-- Hairline edge so a white tile still has an outline on a white desktop. -->
   <rect x="1" y="1" width="510" height="510" rx="95" fill="none"
-        stroke="#2c5f2c" stroke-width="2" stroke-opacity="0.8"/>
+        stroke="#a9c8e6" stroke-width="2" stroke-opacity="0.9"/>
 
-  <g filter="url(#glow)">
-    <!-- The prompt. Round joins and caps: the old icon was stepped pixels, this
-         one is the same gesture drawn smoothly. -->
-    <path d="M168 148 L280 256 L168 364"
-          fill="none" stroke="#6ce86c" stroke-width="46"
+  <!-- Base: the prompt mark, centred on its own visual middle (x 294). -->
+  <g filter="url(#lift)" transform="translate(256 256) scale(0.55) translate(-294 -256)">
+    <path d="M168 148 L280 256 L168 364" fill="none" stroke="#1b2733" stroke-width="46"
           stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="300" y="318" width="120" height="40" rx="20" fill="#5a6b7d"/>
   </g>
-  <!-- Cursor. Neutral rather than the old amber, matching the theme's secondary
-       accent, which is now a soft near-white rather than amber. -->
-  <rect x="300" y="318" width="120" height="40" rx="20" fill="#d7e8d7"/>
+
+  <!-- In front: i2P at a third of full strength, as .logo-net in styles.css. -->
+  <g opacity="0.34">
+    <g fill="none" stroke="#2b7fd4" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M96 238 L96 354"/>
+      <path d="M156 214 A 54 54 0 1 1 250 252 L 154 354 L 266 354"/>
+      <path d="M322 354 L322 170 L370 170 A 60 60 0 0 1 370 290 L322 290"/>
+    </g>
+    <circle cx="96" cy="168" r="27" fill="#2b7fd4"/>
+  </g>
 </svg>
