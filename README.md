@@ -231,7 +231,9 @@ tar xzf gipny-agent_*_linux-amd64.tar.gz && cd gipny-agent_*/
   --name "prod-server-01"
 ```
 
-**Как служба** (Linux, от root): бинари в `/usr/local/bin`, юнит в `/etc/systemd/system`, карточка мастера в `/etc/gipny-agent.env` строкой `GIPNY_AGENT_ARGS=--master gipny:v2:…`, затем `systemctl enable --now gipny-agent`. Подробно — в `README.txt` архива.
+`--master` нужен один раз: карточка сохраняется в `<data>/master.card`, дальше агент читает её оттуда (передать снова — сменить мастера). Каталог `--data` можно задать переменной `GIPNY_AGENT_DATA`; в нём же `card.txt` с карточкой самого агента и `agent.db` без пароля — каталог создаётся с правами `0700`.
+
+**Как служба** (Linux, от root): бинари в `/usr/local/bin`, юнит в `/etc/systemd/system`, карточка мастера в `/etc/gipny-agent.env` строкой `GIPNY_AGENT_ARGS=--master gipny:v2:…`, затем `systemctl enable --now gipny-agent`. Подробно — в `README.txt` архива. Команды выполняются строго по одной, в порядке получения; «выключить агента» со стороны мастера завершает процесс.
 
 Когда роутер поднимется, агент напечатает свою карточку (`agent card: gipny:v2:...`) и первым напишет мастеру. **Вводить карточку в приложение не нужно**: контакт с консолью появится у мастера сам, как только агент до него достучится.
 

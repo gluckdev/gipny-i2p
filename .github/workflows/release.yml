@@ -347,6 +347,9 @@ jobs:
 
           Run by hand:
             ./gipny-agent --data <dir> --master <gipny:v2:... card of the master>
+          --master is needed once: the card is kept in <dir>/master.card and
+          later runs read it from there (pass it again to change the master).
+          --data can also come from the GIPNY_AGENT_DATA environment variable.
 
           Install as a service (Linux, as root):
             install -m 0755 gipny-agent i2pd /usr/local/bin/
@@ -358,7 +361,9 @@ jobs:
             journalctl -u gipny-agent -f      # prints "agent card: ..." once the router is up
 
           The master's app gains a contact for this agent by itself; the
-          chat with it has a chat/console switch.
+          chat with it has a chat/console switch. Switching the agent off
+          from the master's side stops the process (exit 0); with
+          Restart=on-failure the service then stays down until started again.
 
           Options:
             --name <name>      display name for this agent (default: hostname)
