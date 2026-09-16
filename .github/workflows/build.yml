@@ -113,7 +113,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v4
       - name: install NDK
@@ -196,7 +196,7 @@ jobs:
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       - uses: android-actions/setup-android@v4
       - name: install emulator system image
