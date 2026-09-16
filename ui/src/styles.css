@@ -1,24 +1,28 @@
 :root {
-  --bg: #020502;
-  --surface: #061006;
-  --surface-2: #0a1a0a;
-  --surface-3: #0f240f;
-  --border: #1a3a1a;
-  --border-bright: #2d6e2d;
-  --phosphor: #5cff5c;
-  --phosphor-dim: #4caf50;
-  --phosphor-faint: #2d6e2d;
-  --phosphor-glow: rgba(92, 255, 92, 0.35);
-  --amber: #ffb000;
-  --amber-dim: #c88800;
-  --amber-soft: rgba(255, 176, 0, 0.12);
-  --danger: #ff3333;
-  --danger-soft: rgba(255, 51, 51, 0.1);
-  --success: #5cff5c;
-  --text: #5cff5c;
-  --text-dim: #4caf50;
-  --text-faint: #2d6e2d;
-  --mono: "JetBrains Mono", "Fira Code", "IBM Plex Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace;
+  --bg: #0a0d0b;
+  --surface: #121712;
+  --surface-2: #1a211a;
+  --surface-3: #232d23;
+  --border: #263026;
+  --border-bright: #3a8f3a;
+  --phosphor: #6ce86c;
+  --phosphor-dim: #46b846;
+  --phosphor-faint: #2c5f2c;
+  --phosphor-glow: rgba(16, 124, 16, 0.55);
+  --amber: #d7e8d7;
+  --amber-dim: #9fb79f;
+  --amber-soft: rgba(108, 232, 108, 0.12);
+  --danger: #ff5a52;
+  --danger-soft: rgba(255, 90, 82, 0.12);
+  --success: #6ce86c;
+  --text: #eaf3ea;
+  --text-dim: #a9bda9;
+  --text-faint: #6f826f;
+  --mono: "Segoe UI", "Segoe UI Variable", Inter, system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  --xbox-radius: 12px;
+  --xbox-radius-sm: 8px;
+
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -43,30 +47,10 @@ body {
   --kbd-offset: 0px;
 }
 
-body::before {
-  content: '';
-  position: fixed; inset: 0;
-  background: radial-gradient(ellipse at center, transparent 40%, rgba(0, 0, 0, 0.5) 100%);
-  pointer-events: none; z-index: 9998;
-}
 
-body::after {
-  content: '';
-  position: fixed; inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    rgba(0, 0, 0, 0.18) 0px,
-    rgba(0, 0, 0, 0.18) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-  pointer-events: none; z-index: 9999;
-  opacity: 0.5;
-}
 
 @media (hover: none) and (pointer: coarse), (max-width: 600px) {
   body::before, body::after { display: none !important; }
-  .auth-logo { text-shadow: none !important; }
   * { backdrop-filter: none !important; }
   .modal-backdrop { backdrop-filter: none !important; }
 }
@@ -201,7 +185,6 @@ a:hover { text-decoration: underline; }
   font-size: 11px;
   line-height: 1.15;
   margin-bottom: 18px;
-  text-shadow: 0 0 8px var(--phosphor-glow);
   white-space: pre;
 }
 .auth-title {
@@ -280,7 +263,6 @@ a:hover { text-decoration: underline; }
   color: var(--amber);
   font-size: 12px;
   line-height: 1;
-  text-shadow: 0 0 4px rgba(255,176,0,0.6);
 }
 .cb-row span { color: inherit; }
 
@@ -447,7 +429,6 @@ a:hover { text-decoration: underline; }
   font-size: 11px;
   line-height: 12px;
   text-align: center;
-  text-shadow: 0 0 4px var(--amber);
   box-shadow: none;
 }
 .section-label {
@@ -483,7 +464,6 @@ a:hover { text-decoration: underline; }
 }
 .contact-pin {
   color: var(--amber);
-  text-shadow: 0 0 4px var(--amber);
   font-size: 11px;
   flex-shrink: 0;
 }
@@ -558,7 +538,6 @@ a:hover { text-decoration: underline; }
 .chat-title {
   color: var(--phosphor);
   font-size: 13px;
-  text-shadow: 0 0 6px var(--phosphor-glow);
 }
 .chat-sub {
   color: var(--text-faint);
@@ -575,7 +554,6 @@ a:hover { text-decoration: underline; }
 }
 .chat-status.online {
   color: var(--phosphor);
-  text-shadow: 0 0 5px var(--phosphor-glow);
 }
 
 .forward-list {
@@ -655,12 +633,10 @@ a:hover { text-decoration: underline; }
   color: var(--amber);
   margin-bottom: 2px;
   letter-spacing: 0.5px;
-  text-shadow: 0 0 3px rgba(255,176,0,0.4);
 }
 .msg.out .msg-sender {
   color: var(--phosphor);
   text-align: right;
-  text-shadow: 0 0 3px var(--phosphor-glow);
 }
 .msg.in {
   border-left-color: var(--amber);
@@ -682,11 +658,9 @@ a:hover { text-decoration: underline; }
 }
 .msg.in.bot .msg-body {
   color: #fff3d6;
-  text-shadow: none;
 }
 .msg.in.bot .msg-sender {
   color: var(--amber);
-  text-shadow: 0 0 4px rgba(255,176,0,0.5);
   border-bottom: 1px dashed rgba(255,176,0,0.25);
   padding-bottom: 4px;
   margin-bottom: 6px;
@@ -1029,7 +1003,6 @@ a:hover { text-decoration: underline; }
   font-size: 10px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  text-shadow: 0 0 3px rgba(255,176,0,0.4);
 }
 .pinned-toggle {
   color: var(--amber-dim);
@@ -1093,7 +1066,6 @@ a:hover { text-decoration: underline; }
   font-size: 10px;
   margin-left: 6px;
   padding-top: 2px;
-  text-shadow: 0 0 4px rgba(255,176,0,0.5);
 }
 
 .msg-flash {
@@ -1124,7 +1096,6 @@ a:hover { text-decoration: underline; }
 .ctx-menu-item:hover {
   background: var(--surface-3);
   color: var(--phosphor);
-  text-shadow: 0 0 4px var(--phosphor-glow);
 }
 .ctx-menu-item.danger { color: var(--danger); }
 .ctx-menu-item.danger:hover { background: var(--danger-soft); }
@@ -1366,3 +1337,163 @@ a:hover { text-decoration: underline; }
 /* Generic escape hatch for sections the app hides when the feature behind them
    is not configured (e.g. the update surface with no update server). */
 .hidden { display: none !important; }
+
+
+/* ===========================================================================
+   Xbox appearance — the app's look.
+   ---------------------------------------------------------------------------
+   Was a separate build variant layered over a classic terminal-green theme;
+   that variant is gone and this is simply how gipny looks now. Folded in rather
+   than kept as an override file so the bundle carries one set of declarations
+   instead of two. Palette lives in :root above.
+   =========================================================================== */
+
+/* Kill the CRT scanlines; replace the vignette with a quiet Xbox-green nexus glow. */
+body {
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  background:
+    radial-gradient(60% 55% at 50% 0%, rgba(16, 124, 16, 0.14), transparent 70%),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+
+/* --- Surfaces & tiles ------------------------------------------------------ */
+.modal,
+.modal-wide,
+.auth-card,
+.card-block,
+.contact,
+.media-tile,
+.ctx-menu,
+.forward-row,
+.chat-input {
+  border-radius: var(--xbox-radius);
+}
+.modal, .modal-wide, .auth-card {
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+}
+.card-block {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+/* Contact/list tiles: hover lift + green edge, like dashboard tiles. */
+.contact {
+  border: 1px solid transparent;
+  transition: transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+}
+.contact:hover {
+  transform: translateY(-1px);
+  background: var(--surface-2);
+  border-color: var(--border-bright);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--phosphor-glow);
+}
+.contact.active, .contact[aria-selected="true"] {
+  background: var(--surface-3);
+  border-color: var(--phosphor-dim);
+}
+
+.media-tile {
+  border: 1px solid var(--border);
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.media-tile:hover {
+  transform: translateY(-2px) scale(1.01);
+  border-color: var(--phosphor-dim);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* --- Buttons --------------------------------------------------------------- */
+.btn, .btn-sm, .btn-block, .icon-btn {
+  border-radius: 999px;                 /* pill buttons, Xbox-style */
+  transition: transform .1s ease, background .12s ease, box-shadow .12s ease, color .12s ease;
+}
+.btn:not(.btn-ghost):not(.btn-danger) {
+  background: linear-gradient(180deg, #14a014, #0e7a0e);
+  color: #f2fff2;
+  border: 1px solid #1c8f1c;
+  box-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
+}
+.btn:not(.btn-ghost):not(.btn-danger):hover {
+  background: linear-gradient(180deg, #19c319, #12a012);
+  box-shadow: 0 6px 20px rgba(16, 124, 16, 0.5);
+  transform: translateY(-1px);
+}
+.btn:active { transform: translateY(0) scale(.99); }
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  border-radius: 999px;
+}
+.btn-ghost:hover { background: var(--surface-2); border-color: var(--phosphor-dim); }
+.btn-danger {
+  background: linear-gradient(180deg, #ff6a62, #e0433b);
+  color: #fff; border: 1px solid #e0433b; border-radius: 999px;
+}
+.btn-amber {                            /* was amber; make it a neutral outline */
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+}
+.icon-btn { border-radius: 50%; }
+.icon-btn:hover { background: var(--surface-3); color: var(--phosphor); }
+
+/* --- Inputs ---------------------------------------------------------------- */
+.input, .chat-input, .edit-inline-textarea {
+  border-radius: var(--xbox-radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.input:focus, .chat-input:focus, .edit-inline-textarea:focus {
+  outline: none;
+  border-color: var(--phosphor-dim);
+  box-shadow: 0 0 0 3px var(--amber-soft);
+}
+
+/* --- Messages -------------------------------------------------------------- */
+.msg { border-radius: 14px; }
+.msg.out .msg-body {
+  background: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
+  border: 1px solid rgba(58, 143, 58, 0.4);
+  border-radius: 14px 14px 4px 14px;
+}
+.msg.in .msg-body {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px 14px 14px 4px;
+}
+.msg-button {
+  border-radius: 999px;
+  border: 1px solid var(--border-bright);
+}
+.msg-button:hover { background: var(--phosphor); color: #06120a; }
+
+/* --- Chrome: header, sidebar footer, dividers ------------------------------ */
+.chat-header, .modal-header {
+  border-bottom: 1px solid var(--border);
+}
+.divider-text { color: var(--phosphor-dim); letter-spacing: .12em; text-transform: uppercase; font-size: 10px; }
+.sidebar-footer .onion { color: var(--text-dim); }
+
+/* --- Auth / landing: a subtle nexus ring behind the logo ------------------- */
+.auth { position: relative; }
+.auth-logo {
+  color: var(--phosphor);
+  filter: drop-shadow(0 0 18px var(--phosphor-glow));
+}
+.auth-title { letter-spacing: .04em; }
+
+/* Scrollbars to match. */
+* { scrollbar-color: var(--border-bright) transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--phosphor-dim); }
+
+/* Selection + links in the accent. */
+::selection { background: var(--phosphor); color: #06120a; }
+a { color: var(--phosphor); }
