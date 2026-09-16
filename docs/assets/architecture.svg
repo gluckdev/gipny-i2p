@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="100%" height="auto">
+  <defs>
+    <linearGradient id="cardGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#182218"/>
+      <stop offset="100%" stop-color="#0f140f"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#107c10"/>
+      <stop offset="100%" stop-color="#26a226"/>
+    </linearGradient>
+    <linearGradient id="relayGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e2e1e"/>
+      <stop offset="100%" stop-color="#141c14"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#46b846"/>
+    </marker>
+  </defs>
+
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 15px; font-weight: 700; fill: #ffffff; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; fill: #9fb79f; }
+    .badge { font-family: "SFMono-Regular", Consolas, Menlo, monospace; font-size: 11px; fill: #6ce86c; }
+    .code { font-family: "SFMono-Regular", Consolas, Menlo, monospace; font-size: 11px; fill: #d7e8d7; }
+    .label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; fill: #6ce86c; font-weight: 600; }
+  </style>
+
+  <!-- Background Canvas -->
+  <rect width="880" height="340" rx="16" fill="#0a0d0b"/>
+  <rect width="878" height="338" x="1" y="1" rx="15" fill="none" stroke="#232d23" stroke-width="2"/>
+
+  <!-- Left: Client A (Alice) -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="40" width="230" height="250" rx="12" fill="url(#cardGrad)" stroke="#263026" stroke-width="1.5"/>
+    <rect x="30" y="40" width="230" height="4" rx="2" fill="url(#accentGrad)"/>
+    <text x="50" y="75" class="title">gipny Client (Alice)</text>
+    <text x="50" y="95" class="subtitle">Ephemeral I2P destination</text>
+
+    <rect x="45" y="115" width="200" height="40" rx="8" fill="#121712" stroke="#232d23"/>
+    <text x="55" y="133" class="badge">UI &amp; Core (Rust + Tauri)</text>
+    <text x="55" y="147" class="subtitle">X3DH · Ratchet · Sealed</text>
+
+    <rect x="45" y="165" width="200" height="40" rx="8" fill="#121712" stroke="#232d23"/>
+    <text x="55" y="183" class="badge">SQLCipher + Argon2id</text>
+    <text x="55" y="197" class="subtitle">Encrypted Vault on disk</text>
+
+    <rect x="45" y="215" width="200" height="55" rx="8" fill="#141c14" stroke="#26a226" stroke-dasharray="3 3"/>
+    <text x="55" y="235" class="badge">i2pd daemon (in-process)</text>
+    <text x="55" y="250" class="code">SAMv3 127.0.0.1:7656</text>
+  </g>
+
+  <!-- Middle: I2P Cloud & Blind Relay -->
+  <g filter="url(#shadow)">
+    <rect x="315" y="30" width="250" height="270" rx="16" fill="url(#relayGrad)" stroke="#3a8f3a" stroke-width="1.5"/>
+    <text x="345" y="65" class="title">I2P Garlic Network</text>
+    <text x="345" y="85" class="subtitle">Inbound / Outbound Tunnels</text>
+
+    <rect x="330" y="105" width="220" height="175" rx="10" fill="#0d140d" stroke="#26a226"/>
+    <text x="345" y="132" class="title" fill="#6ce86c">Blind I2P Relay</text>
+    <text x="345" y="150" class="badge">Ephemeral / Dedicated</text>
+
+    <path d="M 345 165 L 535 165" stroke="#232d23" stroke-width="1"/>
+
+    <text x="345" y="185" class="code">from: [0u8; 32] (Sealed)</text>
+    <text x="345" y="205" class="code">to:   recipient_dh_pk</text>
+    <text x="345" y="225" class="code">payload: encrypted blob</text>
+    <text x="345" y="255" class="subtitle">Holds blobs until polled</text>
+    <text x="345" y="270" class="subtitle">No LeaseSet publication</text>
+  </g>
+
+  <!-- Right: Client B (Bob) -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="40" width="230" height="250" rx="12" fill="url(#cardGrad)" stroke="#263026" stroke-width="1.5"/>
+    <rect x="620" y="40" width="230" height="4" rx="2" fill="url(#accentGrad)"/>
+    <text x="640" y="75" class="title">gipny Client (Bob)</text>
+    <text x="640" y="95" class="subtitle">Polls his assigned relay</text>
+
+    <rect x="635" y="115" width="200" height="40" rx="8" fill="#121712" stroke="#232d23"/>
+    <text x="645" y="133" class="badge">UI &amp; Core (Rust + Tauri)</text>
+    <text x="645" y="147" class="subtitle">Unwraps Double Ratchet</text>
+
+    <rect x="635" y="165" width="200" height="40" rx="8" fill="#121712" stroke="#232d23"/>
+    <text x="645" y="183" class="badge">SQLCipher + Argon2id</text>
+    <text x="645" y="197" class="subtitle">Decoy / Duress wipe</text>
+
+    <rect x="635" y="215" width="200" height="55" rx="8" fill="#141c14" stroke="#26a226" stroke-dasharray="3 3"/>
+    <text x="645" y="235" class="badge">i2pd daemon (in-process)</text>
+    <text x="645" y="250" class="code">SAMv3 127.0.0.1:7656</text>
+  </g>
+
+  <!-- Arrows -->
+  <path d="M 260 140 L 325 140" stroke="#46b846" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="268" y="130" class="label">Deposit</text>
+
+  <path d="M 620 160 L 555 160" stroke="#46b846" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="562" y="152" class="label">Poll / Push</text>
+
+  <text x="440" y="325" text-anchor="middle" class="subtitle">E2EE Double Ratchet · XChaCha20-Poly1305 · Fixed bucket padding (256B..16MB)</text>
+</svg>

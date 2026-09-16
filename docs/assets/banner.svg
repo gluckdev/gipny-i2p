@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="100%" height="auto">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0d0b"/>
+      <stop offset="50%" stop-color="#111812"/>
+      <stop offset="100%" stop-color="#070908"/>
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#a3d9a3"/>
+    </linearGradient>
+    <linearGradient id="neonGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#107c10"/>
+      <stop offset="100%" stop-color="#6ce86c"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="320" fill="url(#bgGrad)"/>
+  <rect width="1198" height="318" x="1" y="1" rx="12" fill="none" stroke="#232d23" stroke-width="2"/>
+
+  <!-- Glowing prompt symbol -->
+  <g transform="translate(100, 70)" filter="url(#glow)">
+    <path d="M 0 30 L 60 90 L 0 150" fill="none" stroke="#6ce86c" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="75" y="132" width="60" height="18" rx="9" fill="#107c10"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="280" y="145" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="900" font-size="78" letter-spacing="-1px" fill="url(#textGrad)">gipny</text>
+  <text x="500" y="145" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="400" font-size="44" fill="#6ce86c">.i2p</text>
+
+  <!-- Subtitle -->
+  <text x="285" y="195" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#9fb79f">Zero-metadata, ephemeral garlic routing, end-to-end encrypted messaging.</text>
+
+  <!-- Feature badges pill list -->
+  <g transform="translate(285, 230)">
+    <!-- Pill 1 -->
+    <rect x="0" y="0" width="130" height="32" rx="16" fill="#182218" stroke="#26a226"/>
+    <text x="65" y="21" font-family="sans-serif" font-size="12" font-weight="600" fill="#6ce86c" text-anchor="middle">i2pd Embedded</text>
+
+    <!-- Pill 2 -->
+    <rect x="142" y="0" width="150" height="32" rx="16" fill="#182218" stroke="#26a226"/>
+    <text x="217" y="21" font-family="sans-serif" font-size="12" font-weight="600" fill="#6ce86c" text-anchor="middle">X3DH + Ratchet</text>
+
+    <!-- Pill 3 -->
+    <rect x="304" y="0" width="140" height="32" rx="16" fill="#182218" stroke="#26a226"/>
+    <text x="374" y="21" font-family="sans-serif" font-size="12" font-weight="600" fill="#6ce86c" text-anchor="middle">Sealed Sender</text>
+
+    <!-- Pill 4 -->
+    <rect x="456" y="0" width="160" height="32" rx="16" fill="#182218" stroke="#26a226"/>
+    <text x="536" y="21" font-family="sans-serif" font-size="12" font-weight="600" fill="#6ce86c" text-anchor="middle">SQLCipher Vault</text>
+
+    <!-- Pill 5 -->
+    <rect x="628" y="0" width="145" height="32" rx="16" fill="#182218" stroke="#26a226"/>
+    <text x="700" y="21" font-family="sans-serif" font-size="12" font-weight="600" fill="#6ce86c" text-anchor="middle">Remote Agent</text>
+  </g>
+</svg>

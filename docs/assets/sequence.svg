@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="100%" height="auto">
+  <defs>
+    <marker id="seq-arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#46b846"/>
+    </marker>
+    <marker id="seq-arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#3d8fe0"/>
+    </marker>
+  </defs>
+
+  <style>
+    .seq-actor { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 700; fill: #ffffff; }
+    .seq-actor-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; fill: #9fb79f; }
+    .seq-msg { font-family: "SFMono-Regular", Consolas, Menlo, monospace; font-size: 11px; fill: #6ce86c; font-weight: 600; }
+    .seq-note { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; fill: #a0b2c6; }
+    .seq-note-bg { fill: #121a24; stroke: #2b7fd4; stroke-width: 1; }
+  </style>
+
+  <rect width="880" height="400" rx="14" fill="#0a0d0b" stroke="#232d23" stroke-width="2"/>
+
+  <!-- Actor Columns -->
+  <!-- Actor 1: Alice (Sender) -->
+  <g transform="translate(120, 25)">
+    <rect x="-80" y="0" width="160" height="50" rx="8" fill="#182218" stroke="#3a8f3a" stroke-width="1.5"/>
+    <text x="0" y="24" text-anchor="middle" class="seq-actor">Alice (Client)</text>
+    <text x="0" y="40" text-anchor="middle" class="seq-actor-sub">Ephemeral Dest</text>
+    <line x1="0" y1="50" x2="0" y2="350" stroke="#263026" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <!-- Actor 2: Bob's Relay -->
+  <g transform="translate(440, 25)">
+    <rect x="-90" y="0" width="180" height="50" rx="8" fill="#1b281b" stroke="#46b846" stroke-width="1.5"/>
+    <text x="0" y="24" text-anchor="middle" class="seq-actor">Bob's Blind Relay</text>
+    <text x="0" y="40" text-anchor="middle" class="seq-actor-sub">Published or In-Process</text>
+    <line x1="0" y1="50" x2="0" y2="350" stroke="#263026" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <!-- Actor 3: Bob (Recipient) -->
+  <g transform="translate(760, 25)">
+    <rect x="-80" y="0" width="160" height="50" rx="8" fill="#182218" stroke="#3a8f3a" stroke-width="1.5"/>
+    <text x="0" y="24" text-anchor="middle" class="seq-actor">Bob (Client)</text>
+    <text x="0" y="40" text-anchor="middle" class="seq-actor-sub">Offline → Connects</text>
+    <line x1="0" y1="50" x2="0" y2="350" stroke="#263026" stroke-width="2" stroke-dasharray="4 4"/>
+  </g>
+
+  <!-- Step 1: Alice contacts Relay -->
+  <line x1="120" y1="110" x2="435" y2="110" stroke="#46b846" stroke-width="2" marker-end="url(#seq-arrow)"/>
+  <text x="270" y="102" text-anchor="middle" class="seq-msg">SEND {to: Bob_DH, sealed_blob, padded_bucket}</text>
+
+  <!-- Step 1 note: Relay doesn't know sender -->
+  <g transform="translate(440, 130)">
+    <rect x="-140" y="0" width="280" height="32" rx="6" fill="#182218" stroke="#26a226"/>
+    <text x="0" y="20" text-anchor="middle" class="seq-note" fill="#9fb79f">Relay verifies proof, stores blob. from = 0x00</text>
+  </g>
+
+  <!-- Step 2: Bob comes online & authenticates -->
+  <line x1="760" y1="190" x2="445" y2="190" stroke="#3d8fe0" stroke-width="2" marker-end="url(#seq-arrow-blue)"/>
+  <text x="610" y="182" text-anchor="middle" class="seq-msg" fill="#64b5f6">AUTH {auth_challenge_sig, Bob_sign_pk}</text>
+
+  <!-- Step 3: Relay pushes/pulls pending blobs -->
+  <line x1="440" y1="240" x2="755" y2="240" stroke="#46b846" stroke-width="2" marker-end="url(#seq-arrow)"/>
+  <text x="610" y="232" text-anchor="middle" class="seq-msg">DELIVER {msg_id, sealed_blob}</text>
+
+  <!-- Step 4: Bob sends ACK -->
+  <line x1="760" y1="280" x2="445" y2="280" stroke="#3d8fe0" stroke-width="2" marker-end="url(#seq-arrow-blue)"/>
+  <text x="610" y="272" text-anchor="middle" class="seq-msg" fill="#64b5f6">ACK {msg_id} → Relay drops blob from RAM</text>
+
+  <!-- Step 5: Bob unwraps Double Ratchet payload & discovers Alice's relay -->
+  <g transform="translate(760, 310)">
+    <rect x="-170" y="0" width="280" height="42" rx="6" class="seq-note-bg"/>
+    <text x="-30" y="18" text-anchor="middle" class="seq-note" fill="#6ce86c">Ratchet unwrap &amp; AEAD check</text>
+    <text x="-30" y="32" text-anchor="middle" class="seq-note" fill="#bcd6ef">Discovers Alice's relay for replies</text>
+  </g>
+</svg>
