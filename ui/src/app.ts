@@ -205,6 +205,27 @@ class MainView extends View {
     const empty = h('div', { class: 'empty' }, '── select chat ──');
     chatSlot.appendChild(empty);
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
+
+    // Relay status. Nothing in the UI used to show it at all, so a client that
+    // could not send looked identical to one that could — and with no relay
+    // configured it cannot send to anyone. The banner says which of the two it
+    // is and where to fix it.
+    const banner = h('div', { class: 'relay-banner' });
+    const paintBanner = (): void => {
+      const unconfigured = store.relayUnconfigured.get();
+      const connected = store.relayConnected.get();
+      banner.classList.toggle('hidden', connected);
+      banner.classList.toggle('warn', unconfigured);
+      if (connected) return;
+      banner.replaceChildren(
+        unconfigured
+          ? 'релей не задан — отправка недоступна. Настройки → адрес релея'
+          : 'нет связи с релеем — сообщения уйдут, когда связь восстановится'
+      );
+    };
+    this.subs.push(store.relayConnected.subscribe(paintBanner, true));
+    this.subs.push(store.relayUnconfigured.subscribe(paintBanner, true));
+    main.insertBefore(banner, main.firstChild);
     this.subs.push(store.sidebarCollapsed.subscribe((c: boolean) => {
       main.classList.toggle('sidebar-collapsed', c);
     }));

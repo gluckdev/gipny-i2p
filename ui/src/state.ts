@@ -79,6 +79,13 @@ export class Store {
   private settledTimer: number | null = null;
   private windowVisible = true;
   private static readonly SETTLE_MS = 5_000;
+  /**
+   * How long to sit on the boot screen waiting for the relay before letting the
+   * user in anyway. Generous: a cold i2p profile reseeds and builds tunnels,
+   * and the relay's own destination has to be looked up. Past this, waiting
+   * longer tells the user nothing they cannot see from inside the app.
+   */
+  private static readonly BOOT_RELAY_TIMEOUT_MS = 120_000;
   private static readonly NOTIFY_MAX_AGE_MS = 60_000;
   updateAvailable = new Signal<UpdateInfo | null>(null);
   updateProgress = new Signal<UpdateProgress | null>(null);
@@ -109,6 +116,9 @@ export class Store {
   private readonly linuxDesktop: boolean = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
   private scrollNonce: number = 0;
   private watchdogTimer: number | null = null;
+  private bootTimer: number | null = null;
+  /** No relay configured: the app is usable, it just cannot send yet. */
+  relayUnconfigured = new Signal<boolean>(false);
   private lastSeenMs: Map<number, number> = new Map();
   private onlineTickTimer: number | null = null;
   private static readonly ONLINE_WINDOW_MS = 60_000;
@@ -275,6 +285,38 @@ export class Store {
     this.installVisibilityHook();
     this.startWatchdog();
     this.bootStage.set('relay');
+    await this.enterMainWhenReady();
+  }
+
+  /**
+   * Leave the boot screen even when the relay never answers.
+   *
+   * `RelayConnected` used to be the only transition to the main view, and with
+   * no relay destination configured the core skips dialing entirely — so a
+   * fresh install sat on the loading screen forever, and the relay field that
+   * would have fixed it lives in Settings, which is only reachable from the
+   * main view. The app was unusable out of the box in a way no amount of
+   * waiting resolved.
+   *
+   * Two ways in now: nothing to dial (go straight in), or the dial is taking
+   * too long (go in anyway and show it as offline). A relay that connects later
+   * still flips the banner through the normal event path.
+   */
+  private async enterMainWhenReady(): Promise<void> {
+    const configured = await Api.getRelayAddress().catch(() => '');
+    this.relayUnconfigured.set(configured.trim() === '');
+    if (this.relayUnconfigured.get()) {
+      this.bootStage.set('done');
+      if (this.view.get() === 'auth-booting') this.view.set('main');
+      return;
+    }
+    if (this.bootTimer != null) window.clearTimeout(this.bootTimer);
+    this.bootTimer = window.setTimeout(() => {
+      if (this.view.get() === 'auth-booting') {
+        this.bootStage.set('done');
+        this.view.set('main');
+      }
+    }, Store.BOOT_RELAY_TIMEOUT_MS);
   }
 
   private installVisibilityHook(): void {
@@ -648,6 +690,8 @@ export class Store {
       if (e === 'RelayConnected') {
         const wasOffline = !this.relayConnected.get();
         this.relayConnected.set(true);
+        this.relayUnconfigured.set(false);
+        if (this.bootTimer != null) { window.clearTimeout(this.bootTimer); this.bootTimer = null; }
         this.bootStage.set('done');
         if (this.view.get() === 'auth-booting') this.view.set('main');
         if (wasOffline) {

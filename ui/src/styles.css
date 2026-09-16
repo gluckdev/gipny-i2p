@@ -1342,3 +1342,23 @@ a:hover { text-decoration: underline; }
   margin-top: 2px;
   font-style: italic;
 }
+/* Relay status strip across the top of the main view. `.main` is a two-column
+   grid, so the banner has to span both tracks rather than land in the sidebar
+   cell. Hidden entirely while the relay is connected — the normal case should
+   cost no vertical space. */
+.relay-banner {
+  grid-column: 1 / -1;
+  padding: 6px 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-bright);
+  color: var(--text-dim);
+}
+.relay-banner.warn {
+  color: var(--amber);
+}
+.relay-banner.hidden {
+  display: none;
+}
