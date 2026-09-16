@@ -64,7 +64,7 @@ async fn start_bot(
     }
     let t0 = Instant::now();
     let node = Arc::new(
-        TorNode::start(&data_dir)
+        TorNode::start(&data_dir, Default::default())
             .await
             .with_context(|| format!("{name}: TorNode::start failed"))?,
     );

@@ -227,7 +227,7 @@ impl Bot {
         let db_path = self.data_dir.join("bot.db");
         let db = Arc::new(open_bot_db(&self.data_dir, &db_path, self.vault_passphrase.as_deref())?);
         // Ephemeral per-session i2p address (relay routes by key, not address).
-        let node = Arc::new(TorNode::start(&self.data_dir).await?);
+        let node = Arc::new(TorNode::start(&self.data_dir, Default::default()).await?);
         let (session, mut events) = SessionManager::start(self.data_dir.clone(), db, node).await?;
 
         if let Some(onion) = &self.relay_onion {
