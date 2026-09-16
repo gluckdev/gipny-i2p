@@ -254,42 +254,53 @@ jobs:
       # ------------------------------------------------------------------
       # Start the relay; wait for dest.pub
       # ------------------------------------------------------------------
-      - name: start relay, capture destination
+      - name: start two relays, capture destinations
         run: |
-          GIPNY_RELAY_DATA=e2e-state/relay \
-          nohup ./core/relay/target/release/gipny-relay \
-            > e2e-logs/relay.log 2>&1 &
-          echo $! > relay.pid
-          echo "[e2e-setup] relay pid=$(cat relay.pid)"
+          # Two relays, one per bot. This is what makes the run prove something
+          # new: each bot collects from its own, so a message only arrives if the
+          # sender deposited on the *recipient's* relay. With one shared relay
+          # that distinction is invisible and a broken router would still pass.
+          start_relay() {
+            name="$1"
+            mkdir -p "e2e-state/$name"
+            GIPNY_RELAY_DATA="e2e-state/$name" \
+            nohup ./core/relay/target/release/gipny-relay \
+              > "e2e-logs/$name.log" 2>&1 &
+            echo $! > "$name.pid"
+            echo "[e2e-setup] $name pid=$(cat "$name.pid")"
 
-          # dest.pub is written by the relay before its SAM session opens.
-          echo "[e2e-setup] waiting for dest.pub..."
-          for i in $(seq 1 120); do
-            [ -s e2e-state/relay/dest.pub ] && break
-            if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
-              echo "relay died during startup"
-              tail -50 e2e-logs/relay.log
-              exit 1
+            # dest.pub is written before the SAM session opens.
+            for i in $(seq 1 120); do
+              [ -s "e2e-state/$name/dest.pub" ] && break
+              if ! kill -0 "$(cat "$name.pid")" 2>/dev/null; then
+                echo "$name died during startup"; tail -50 "e2e-logs/$name.log"; exit 1
+              fi
+              sleep 2
+            done
+            if [ ! -s "e2e-state/$name/dest.pub" ]; then
+              echo "$name: dest.pub never appeared"; tail -50 "e2e-logs/$name.log"; exit 1
             fi
-            sleep 2
-          done
-          if [ ! -s e2e-state/relay/dest.pub ]; then
-            echo "dest.pub never appeared"; tail -50 e2e-logs/relay.log; exit 1
-          fi
 
-          # dest.pub is written before SESSION CREATE, so it appearing proves
-          # only that DEST GENERATE worked. In run 29685601054 the relay died
-          # on the SESSION CREATE right after and this step still reported
-          # success. Confirm the relay is actually alive before going on.
-          if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
-            echo "relay wrote dest.pub and then died (SAM session never opened)"
-            tail -50 e2e-logs/relay.log
-            exit 1
-          fi
+            # dest.pub appearing proves only that DEST GENERATE worked. In run
+            # 29685601054 the relay died on the SESSION CREATE right after and
+            # the step still reported success.
+            if ! kill -0 "$(cat "$name.pid")" 2>/dev/null; then
+              echo "$name wrote dest.pub and then died (SAM session never opened)"
+              tail -50 "e2e-logs/$name.log"; exit 1
+            fi
+          }
 
-          RELAY_DEST="$(cat e2e-state/relay/dest.pub)"
-          echo "RELAY_DEST=$RELAY_DEST" >> "$GITHUB_ENV"
-          echo "[e2e-setup] relay destination: ${RELAY_DEST:0:20}..."
+          start_relay relay-a
+          start_relay relay-b
+
+          RELAY_A="$(cat e2e-state/relay-a/dest.pub)"
+          RELAY_B="$(cat e2e-state/relay-b/dest.pub)"
+          {
+            echo "RELAY_DEST_A=$RELAY_A"
+            echo "RELAY_DEST_B=$RELAY_B"
+          } >> "$GITHUB_ENV"
+          echo "[e2e-setup] bot-a relay: ${RELAY_A:0:20}..."
+          echo "[e2e-setup] bot-b relay: ${RELAY_B:0:20}..."
 
       # ------------------------------------------------------------------
       # Run the end-to-end harness
@@ -297,7 +308,9 @@ jobs:
       - name: run e2e harness
         id: harness
         env:
-          E2E_RELAY_DEST: ${{ env.RELAY_DEST }}
+          E2E_RELAY_DEST: ${{ env.RELAY_DEST_A }}
+          E2E_RELAY_DEST_A: ${{ env.RELAY_DEST_A }}
+          E2E_RELAY_DEST_B: ${{ env.RELAY_DEST_B }}
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '600'
           E2E_WORK_DIR: e2e-state
@@ -370,14 +383,17 @@ jobs:
       # ------------------------------------------------------------------
       # Stop relay + router
       # ------------------------------------------------------------------
-      - name: stop relay and router
+      - name: stop relays and router
         if: always()
         run: |
-          kill "$(cat relay.pid)" 2>/dev/null || true
+          kill "$(cat relay-a.pid)" 2>/dev/null || true
+          kill "$(cat relay-b.pid)" 2>/dev/null || true
           sleep 2
           kill "$(cat relay-router.pid)" 2>/dev/null || true
-          echo '--- relay log (last 30 lines) ---'
-          tail -30 e2e-logs/relay.log || true
+          for r in relay-a relay-b; do
+            echo "--- $r log (last 30 lines) ---"
+            tail -30 "e2e-logs/$r.log" || true
+          done
 
       # ------------------------------------------------------------------
       # Upload logs as artifact on failure for post-mortem

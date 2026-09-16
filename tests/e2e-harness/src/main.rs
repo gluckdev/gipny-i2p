@@ -164,8 +164,15 @@ fn compute_latencies(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // One relay or two. Two is the interesting case: each bot collects from its
+    // own, and a message only arrives if the sender deposits on the *recipient's*
+    // relay rather than its own. With a single destination this degenerates to
+    // the old shared-relay run, which is still worth having.
     let relay_dest = std::env::var("E2E_RELAY_DEST")
         .context("E2E_RELAY_DEST env var is required (contents of dest.pub)")?;
+    let relay_a = std::env::var("E2E_RELAY_DEST_A").unwrap_or_else(|_| relay_dest.clone());
+    let relay_b = std::env::var("E2E_RELAY_DEST_B").unwrap_or_else(|_| relay_dest.clone());
+    let split_relays = relay_a != relay_b;
     let n_messages: usize = std::env::var("E2E_N_MESSAGES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -183,30 +190,40 @@ async fn main() -> Result<()> {
     let timeout = Duration::from_secs(timeout_secs);
     let t_start = Instant::now();
 
-    eprintln!(
-        "[e2e] starting (relay={}... n={n_messages} timeout={timeout_secs}s)",
-        &relay_dest[..20.min(relay_dest.len())]
-    );
+    if split_relays {
+        eprintln!(
+            "[e2e] starting (bot-a relay={}... bot-b relay={}... n={n_messages} timeout={timeout_secs}s)",
+            &relay_a[..20.min(relay_a.len())], &relay_b[..20.min(relay_b.len())]
+        );
+        eprintln!("[e2e] two relays: delivery proves messages follow the recipient's card");
+    } else {
+        eprintln!(
+            "[e2e] starting (shared relay={}... n={n_messages} timeout={timeout_secs}s)",
+            &relay_a[..20.min(relay_a.len())]
+        );
+    }
 
     // -----------------------------------------------------------------------
     // 1. Start both bots sequentially (sharing the same i2p router).
     // -----------------------------------------------------------------------
-    let a_result = start_bot("bot-a", &work_dir, &relay_dest).await;
-    let b_result = start_bot("bot-b", &work_dir, &relay_dest).await;
+    let a_result = start_bot("bot-a", &work_dir, &relay_a).await;
+    let b_result = start_bot("bot-b", &work_dir, &relay_b).await;
     let (a, mut a_events) = a_result.context("bot-a start")?;
     let (b, mut b_events) = b_result.context("bot-b start")?;
 
     // -----------------------------------------------------------------------
     // 2. Cross-add contacts (writes to DB; relay loop will handle the rest).
     // -----------------------------------------------------------------------
+    // Each side records where the *other* collects — exactly what a v2 contact
+    // card carries in the app.
     let contact_b_in_a = a
         .session
-        .add_contact(&b.card, &b.onion, "bot-b")
+        .add_contact_via(&b.card, &b.onion, "bot-b", Some(&relay_b))
         .await
         .context("bot-a: add_contact(bot-b)")?;
     let contact_a_in_b = b
         .session
-        .add_contact(&a.card, &a.onion, "bot-a")
+        .add_contact_via(&a.card, &a.onion, "bot-a", Some(&relay_a))
         .await
         .context("bot-b: add_contact(bot-a)")?;
     eprintln!(
