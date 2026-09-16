@@ -370,6 +370,23 @@ export function encodeCard(onion: string, signPk: string, dhPk: string, name?: s
   return name ? `${base}:${encodeURIComponent(name)}` : base;
 }
 
+/**
+ * Whether a string is a usable i2p address.
+ *
+ * Two shapes are valid: a `.b32.i2p` hostname, which is exactly 52 base32
+ * characters plus the suffix, or a full base64 destination, which is at least
+ * 516 characters in i2p's base64 alphabet (`-` and `~` replace `+` and `/`).
+ *
+ * The previous check was `!onion.endsWith('.i2p') && onion.length < 300`, which
+ * accepted "x.i2p" and any 300-character string — a typo became a contact that
+ * could never receive anything, with no error at the point of entry.
+ */
+export function isValidI2pAddress(addr: string): boolean {
+  const a = addr.trim();
+  if (/^[a-z2-7]{52}\.b32\.i2p$/i.test(a)) return true;
+  return /^[A-Za-z0-9~-]{516,}={0,2}$/.test(a);
+}
+
 export function decodeCard(input: string): { onion: string; signPk: string; dhPk: string; name?: string } | null {
   const m = input.trim().match(/^gipny:v1:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64})(?::(.+))?$/);
   if (!m) return null;

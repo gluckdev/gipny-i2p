@@ -1,4 +1,4 @@
-import { Api, decodeCard } from './api';
+import { Api, decodeCard, isValidI2pAddress } from './api';
 import type { Store } from './state';
 import { targetKey } from './state';
 import { h, fmtFp } from './view';
@@ -134,9 +134,8 @@ export class AddContactModal {
             const sign = signI.value.trim().toLowerCase();
             const dh = dhI.value.trim().toLowerCase();
             const name = cardName || `${sign.slice(0, 16)}`;
-            // i2p address: either a `.b32.i2p` hostname or a full base64 destination.
-            if (!onion.endsWith('.i2p') && onion.length < 300) {
-              err.textContent = 'expected a .b32.i2p address or a full i2p destination';
+            if (!isValidI2pAddress(onion)) {
+              err.textContent = 'expected a 52-character .b32.i2p address or a full base64 destination';
               return;
             }
             if (!/^[0-9a-f]{64}$/.test(sign)) { err.textContent = 'sign_pk must be 64 hex'; return; }
