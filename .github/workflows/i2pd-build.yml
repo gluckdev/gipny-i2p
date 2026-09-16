@@ -21,9 +21,6 @@ name: i2pd-build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - ci/i2pd-router-build
   # Weekly, not nightly. e2e-i2pd already builds the Linux router every night
   # as part of proving it delivers, so a nightly run here would build the same
   # binary twice for the same answer. What this job adds is the platforms that
