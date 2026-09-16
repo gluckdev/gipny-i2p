@@ -105,6 +105,24 @@ deserves its own write-up before anyone implements it.
 B is a different product. D is a research project, and this codebase should
 earn some test coverage over its existing crypto before it grows more.
 
+## Status (2026-09-16)
+
+C is built and proven. A v2 contact card carries its owner's relay, each
+contact's messages are deposited on that contact's relay, and the e2e job runs
+with a separate relay per bot, so delivery only succeeds if routing follows the
+card (e2e-i2pd run 35075367552, 5/5). The crypto core has tests now
+(`libcore/tests/crypto.rs`).
+
+The relay also runs inside a client: `libcore/src/relay_server.rs` serves the
+same protocol from memory only, on a destination generated per start and never
+stored. It carried 5/5 over live i2p with each bot served by one
+(run 35076520090). The app does not start it yet. That waits on discovery: a
+relay whose address changes every launch is only useful once contacts can learn
+the current one.
+
+Still open: no relay is baked in (`DEFAULT_RELAY` is empty), so a fresh install
+has nowhere to start until someone operates one.
+
 ## Prerequisites either way
 
 - `DEFAULT_RELAY` must stop being a compile-time constant (`libcore/src/relay.rs`).

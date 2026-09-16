@@ -5,13 +5,19 @@ Context handoff for whoever picks this up next — a person or another agent.
 Replaces the 2026-07-19 brief, which described a go-i2p router that no longer
 exists in this tree.
 
-STATE (2026-09-16).
+STATE (2026-09-16, evening).
 
-THE BLOCKER, AND IT IS NOT TECHNICAL: **the GitHub repository is archived.**
-Nothing has run since 2026-07-20 — no CI, no scheduled jobs, no testnet relay —
-and nothing can be pushed, released, or closed until the owner unarchives it
-(Settings → General → Danger Zone). Every workflow below is written and
-committed; none of it has executed.
+The repository is live again: unarchived, Actions unlocked, every workflow has
+run. What is proven on GitHub's runners, not just written:
+
+- **Delivery over live i2p** with a relay per bot, so a message only arrives if
+  the sender deposits on the *recipient's* relay: e2e-i2pd run 35075367552, 5/5.
+- **The in-process relay** (`libcore/src/relay_server.rs`): the same test with
+  no standalone relay, each bot served by an `EphemeralRelay` inside the harness
+  process — run 35076520090, 5/5.
+- **The router pin moves on delivery.** The bump job pinned i2pd 99eab7ac after
+  run 35075367552; that revision builds on Linux (glibc and musl) and all three
+  Android ABIs (i2pd-build run 35076553013).
 
 WHAT CHANGED SINCE THE LAST BRIEF
 
@@ -58,32 +64,30 @@ go-i2p is gone; it is not moot for v0.3.4 and earlier.
 
 WHAT IS STILL OPEN, IN ORDER
 
-1. **Unarchive the repository.** Everything below is blocked on it.
-2. **Run the pipelines once.** None of this work has been executed: not the
-   Android JNI build, not the release path, not the e2e. Expect the first
-   Android run to need fixing — it has never compiled.
-3. **Pin Boost-for-Android.** `BOOST_FOR_ANDROID_REV` still defaults to
-   `master`. It is the one build input this repo does not record, and the
-   Android router is not reproducible until a measured revision is pasted in.
-4. **Deal with the published releases.** v0.3.4 and earlier ship go-i2p and
-   deliver nothing. They are still the download link in the README's own words
-   until they are pulled or marked.
-5. **Deploy a relay, or decide not to need one.** `DEFAULT_RELAY` is empty and
-   there is no production relay. See docs/relay-independence.md — the
-   recommendation there is to make the relay address part of the contact card
-   before building anything else.
-6. **Test the crypto core.** `libcore/src/crypto.rs` — X3DH, Double Ratchet,
-   header encryption — has no tests. It is the largest coverage gap in the repo
-   by a wide margin.
-7. **Android on a real device.** i2pd will be built for it and the APK will be
-   asserted to contain it, but nothing has run on hardware.
+1. **A relay people can use.** `DEFAULT_RELAY` is still empty. Relays now travel
+   in the contact card (v2) and routing is per contact, so any relay works — but
+   a fresh install has none to start from. The testnet relay runs on GitHub
+   Actions, which is for testing; a relay real users depend on belongs on a
+   machine someone operates. This is the owner's call.
+2. **Discovery for in-process relays** (stage 3 of the relay plan). The server
+   exists and is proven, but nothing starts it in the app: a relay nobody can
+   find serves nobody.
+3. **First release on i2pd.** v0.3.4 and earlier ship go-i2p and deliver
+   nothing; the owner chose to leave them up. Tag only after the release
+   workflow's Windows and macOS legs have been green once.
+4. **macOS** builds were added today and have not completed a run yet: the
+   router script (`.github/scripts/build-i2pd-macos.sh`), the app compile in
+   build.yml, and the dmg legs in release.yml. Unsigned; floor is macOS 15.
+5. **Android on a real device.** The router is built and asserted to be in the
+   APK; nothing has run on hardware.
 
 KNOWN DEAD CODE, DELIBERATELY LEFT ALONE
 
-- `libcore/src/proxy.rs` (sing-box lifecycle) is exported and has no callers.
 - The whole inbound/P2P surface of `libcore/src/net.rs` — `connect`, `accept`,
   `Frame` — is unused. It is also exactly what a relay-less design would build
   on, which is why it has not been deleted.
+- `libcore/src/relay_server.rs` is not called by the app, deliberately, until
+  discovery exists. The e2e job is its only caller.
 - `libcore/src/session.rs` and `core/src/core.rs` are ~1500-line copy-paste
   siblings. Bots cannot create groups or send typing indicators, and every
   messaging fix has to be written twice.
