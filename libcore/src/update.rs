@@ -228,16 +228,28 @@ fn version_newer(candidate: &str, current: &str) -> bool {
     false
 }
 
+/// The artifact key this install should look for in the update manifest.
+///
+/// Only kinds the release pipeline actually produces appear here: AppImage and
+/// .deb on Linux, the NSIS installer on Windows (release.yml). A build running
+/// from anywhere else — a tarball unpack, a cargo run, macOS — reports
+/// "unsupported", so the updater fails with a clear message instead of hunting
+/// for a manifest entry that is never published.
 pub fn detect_target() -> String {
     let arch = std::env::consts::ARCH;
     let (os, kind) = if cfg!(target_os = "linux") {
-        let kind = if std::env::var("APPIMAGE").is_ok() { "appimage" }
-            else if Path::new("/var/lib/dpkg/info/gipny.list").exists() { "deb" }
-            else { "targz" };
-        ("linux", kind)
-    } else if cfg!(target_os = "windows") { ("windows", "exe") }
-    else if cfg!(target_os = "macos") { ("macos", "dmg") }
-    else { ("unknown", "unknown") };
+        if std::env::var("APPIMAGE").is_ok() {
+            ("linux", "appimage")
+        } else if Path::new("/var/lib/dpkg/info/gipny.list").exists() {
+            ("linux", "deb")
+        } else {
+            ("linux", "unsupported")
+        }
+    } else if cfg!(target_os = "windows") {
+        ("windows", "exe")
+    } else {
+        ("unsupported", "unsupported")
+    };
     format!("{}-{}-{}", os, kind, arch)
 }
 
@@ -301,8 +313,15 @@ fn install_appimage(_: &Path) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn install_windows(src: &Path) -> Result<()> {
+    // NSIS flags, because tauri.conf.json bundles `nsis`. The previous
+    // /SILENT /NORESTART /CLOSEAPPLICATIONS are Inno Setup's; NSIS does not
+    // recognise them, so an "automatic" update would have popped an interactive
+    // installer at the user instead of updating quietly.
+    //
+    // /S is silent; /NCRC skips the CRC check, which the signature verification
+    // in `install_and_respawn` has already covered more strongly.
     std::process::Command::new(src)
-        .args(["/SILENT", "/NORESTART", "/CLOSEAPPLICATIONS"])
+        .args(["/S", "/NCRC"])
         .spawn()?;
     std::process::exit(0);
 }

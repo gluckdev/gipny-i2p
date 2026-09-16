@@ -116,7 +116,13 @@ jobs:
           targets: aarch64-linux-android,x86_64-linux-android
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
+      # packages: the action's default is "tools platform-tools", and the
+      # obsolete `tools` package was removed from Google's SDK repository —
+      # sdkmanager exits 1 with "Failed to find package 'tools'" and the job dies
+      # before anything is built. Every NDK and system image this repo needs is
+      # installed explicitly below.
       - uses: android-actions/setup-android@v4
+        with: { packages: 'platform-tools' }
       - name: install NDK
         run: |
           sdkmanager --install "ndk;27.3.13750724"
@@ -199,7 +205,13 @@ jobs:
     steps:
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
+      # packages: the action's default is "tools platform-tools", and the
+      # obsolete `tools` package was removed from Google's SDK repository —
+      # sdkmanager exits 1 with "Failed to find package 'tools'" and the job dies
+      # before anything is built. Every NDK and system image this repo needs is
+      # installed explicitly below.
       - uses: android-actions/setup-android@v4
+        with: { packages: 'platform-tools' }
       - name: install emulator system image
         run: |
           sdkmanager --install "emulator" "system-images;android-33;google_apis;x86_64"
