@@ -2,6 +2,7 @@ pub mod crypto;
 pub mod db;
 pub mod net;
 pub mod relay;
+pub mod relay_server;
 pub mod router;
 pub mod security;
 pub mod session;

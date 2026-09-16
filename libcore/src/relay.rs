@@ -170,7 +170,7 @@ fn hex_short(b: &[u8]) -> String {
     s
 }
 
-async fn send<W, T>(w: &mut W, f: &T) -> Result<()>
+pub(crate) async fn send<W, T>(w: &mut W, f: &T) -> Result<()>
 where W: AsyncWrite + Unpin, T: serde::Serialize
 {
     let data = bincode::serialize(f)?;
@@ -181,7 +181,7 @@ where W: AsyncWrite + Unpin, T: serde::Serialize
     Ok(())
 }
 
-async fn recv<R, T>(r: &mut R) -> Result<T>
+pub(crate) async fn recv<R, T>(r: &mut R) -> Result<T>
 where R: AsyncRead + Unpin, T: serde::de::DeserializeOwned
 {
     let mut len_buf = [0u8; 4];
@@ -191,4 +191,121 @@ where R: AsyncRead + Unpin, T: serde::de::DeserializeOwned
     let mut buf = vec![0u8; len as usize];
     r.read_exact(&mut buf).await?;
     Ok(bincode::deserialize(&buf)?)
+}
+/// Wire-format pins, shared with core/relay.
+///
+/// core/relay encodes with bincode 2 in `legacy()` mode; this crate uses
+/// bincode 1. They must agree to the byte, and both the standalone relay and
+/// [`crate::relay_server`] must agree with the clients. These are the same
+/// golden bytes as core/relay/src/proto.rs, checked against bincode 1 here, so
+/// the enums in the two crates cannot drift apart without one side failing:
+///   - enum variant: u32 little-endian
+///   - integer fields: little-endian fixed-width
+///   - Vec<u8>: u64 LE length prefix + raw bytes
+///   - [u8; N]: raw N bytes (no length prefix)
+///   - Option<T>: u8 (0=None / 1=Some) then T if present
+///
+/// New variants go at the end of an enum, in both crates, with a test here.
+#[cfg(test)]
+mod wire_compat {
+    use super::*;
+
+    fn enc<T: Serialize>(v: &T) -> Vec<u8> {
+        bincode::serialize(v).expect("encode")
+    }
+
+    fn dec<T: serde::de::DeserializeOwned>(buf: &[u8]) -> T {
+        bincode::deserialize(buf).expect("decode")
+    }
+
+    #[test]
+    fn unit_variants() {
+        assert_eq!(enc(&ClientToRelay::Ping), [0x05, 0, 0, 0]);
+        assert_eq!(enc(&RelayToClient::AuthOk), [0x01, 0, 0, 0]);
+        assert_eq!(enc(&RelayToClient::AuthFail), [0x02, 0, 0, 0]);
+        assert_eq!(enc(&RelayToClient::Pong), [0x06, 0, 0, 0]);
+        assert!(matches!(dec::<ClientToRelay>(&[0x05, 0, 0, 0]), ClientToRelay::Ping));
+        assert!(matches!(dec::<RelayToClient>(&[0x06, 0, 0, 0]), RelayToClient::Pong));
+    }
+
+    #[test]
+    fn u64_fields() {
+        let id = 0x0102_0304_0506_0708;
+        #[rustfmt::skip]
+        let le = [0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01];
+        assert_eq!(enc(&ClientToRelay::Ack { id }), [&[0x04, 0, 0, 0][..], &le].concat());
+        assert_eq!(enc(&RelayToClient::Deposited { id }), [&[0x05, 0, 0, 0][..], &le].concat());
+    }
+
+    #[test]
+    fn fixed_arrays_have_no_length_prefix() {
+        let mut arr = [0u8; 32];
+        arr[0] = 0xAB;
+        arr[31] = 0xCD;
+        let e = enc(&RelayToClient::Challenge(arr));
+        assert_eq!(e.len(), 4 + 32);
+        assert_eq!(&e[..4], &[0, 0, 0, 0]);
+        assert_eq!((e[4], e[35]), (0xAB, 0xCD));
+
+        let e = enc(&ClientToRelay::Auth { sign_pk: [0xAA; 32], signature: [0xBB; 64] });
+        assert_eq!(e.len(), 4 + 32 + 64);
+        assert_eq!(&e[..4], &[0, 0, 0, 0]);
+        assert!(e[4..36].iter().all(|&b| b == 0xAA));
+        assert!(e[36..100].iter().all(|&b| b == 0xBB));
+    }
+
+    #[test]
+    fn send_layout() {
+        let e = enc(&ClientToRelay::Send { to: [0x11; 32], blob: vec![1, 2, 3] });
+        assert_eq!(e.len(), 4 + 32 + 8 + 3);
+        assert_eq!(&e[..4], &[0x03, 0, 0, 0]);
+        assert!(e[4..36].iter().all(|&b| b == 0x11));
+        assert_eq!(&e[36..44], &[3, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&e[44..], &[1, 2, 3]);
+    }
+
+    #[test]
+    fn bundle_option_layout() {
+        let none = enc(&RelayToClient::Bundle { pk: [0; 32], bundle: None });
+        assert_eq!(none.len(), 4 + 32 + 1);
+        assert_eq!(&none[..4], &[0x03, 0, 0, 0]);
+        assert_eq!(none[36], 0);
+
+        let some = enc(&RelayToClient::Bundle { pk: [0; 32], bundle: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]) });
+        assert_eq!(some.len(), 4 + 32 + 1 + 8 + 4);
+        assert_eq!(some[36], 1);
+        assert_eq!(&some[37..45], &[4, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&some[45..], &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn every_variant_round_trips() {
+        let client = vec![
+            ClientToRelay::Auth { sign_pk: [1; 32], signature: [2; 64] },
+            ClientToRelay::Publish { bundle: vec![9, 8, 7] },
+            ClientToRelay::GetBundle { pk: [3; 32] },
+            ClientToRelay::Send { to: [4; 32], blob: vec![5, 6] },
+            ClientToRelay::Ack { id: 42 },
+            ClientToRelay::Ping,
+        ];
+        for m in client {
+            let e = enc(&m);
+            assert_eq!(e, enc(&dec::<ClientToRelay>(&e)));
+        }
+        let relay = vec![
+            RelayToClient::Challenge([7; 32]),
+            RelayToClient::AuthOk,
+            RelayToClient::AuthFail,
+            RelayToClient::Bundle { pk: [1; 32], bundle: None },
+            RelayToClient::Bundle { pk: [2; 32], bundle: Some(vec![3, 4]) },
+            RelayToClient::Incoming { id: 99, from: [5; 32], blob: vec![6, 7, 8] },
+            RelayToClient::Deposited { id: 123 },
+            RelayToClient::Pong,
+            RelayToClient::Error("oops".into()),
+        ];
+        for m in relay {
+            let e = enc(&m);
+            assert_eq!(e, enc(&dec::<RelayToClient>(&e)));
+        }
+    }
 }

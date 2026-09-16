@@ -55,7 +55,7 @@ const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
 
 /// Monotonic counter making each SAM session nickname unique, so a rebuilt
 /// session never collides (`DUPLICATED_ID`) with one the router hasn't dropped.
-static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
+pub(crate) static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
