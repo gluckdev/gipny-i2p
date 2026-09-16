@@ -877,6 +877,12 @@ fn read_one_attachment(p: &str) -> Result<PendingAttachment, String> {
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "file".into());
+    // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
+    // `paste_clipboard_image`). Once read it has no further use; before this
+    // the copies piled up in the temp dir for the life of the machine.
+    if path.starts_with(std::env::temp_dir().join("gipny-i2p-paste")) {
+        let _ = std::fs::remove_file(&path);
+    }
     Ok(PendingAttachment { name, data })
 }
 
