@@ -1,6 +1,8 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { Api } from './api';
 import type { RouterSettings, TransitProfile, YggdrasilMode } from './api';
+import { getTheme, setTheme } from './theme';
+import type { Theme } from './theme';
 import type { Store } from './state';
 import { h, busy, humanSize } from './view';
 import type { App } from './app';
@@ -137,6 +139,32 @@ export class SettingsModal {
             relayErr,
             saveBtn,
           );
+        })(),
+
+        h('div', { class: 'divider-text' }, 'appearance'),
+        (() => {
+          // Applied the moment it is picked — unlike the router settings there is
+          // nothing to restart, so there is no "takes effect later" to explain.
+          const choices: { id: Theme; title: string; blurb: string }[] = [
+            { id: 'light', title: 'светлая', blurb: 'светлая и воздушная' },
+            { id: 'dark', title: 'тёмная', blurb: 'тёмная, для работы вечером' },
+            { id: 'system', title: 'как в системе', blurb: 'следовать настройке операционной системы' },
+          ];
+          const current = getTheme();
+          const rows = choices.map(({ id, title, blurb }) => {
+            const r = h('input', {
+              type: 'radio', name: 'theme', id: `opt-theme-${id}`,
+            }) as HTMLInputElement;
+            r.checked = id === current;
+            r.addEventListener('change', () => { if (r.checked) setTheme(id); });
+            return h('label', { class: 'opt', for: `opt-theme-${id}` },
+              r,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, title),
+                h('span', { class: 'opt-blurb' }, blurb)),
+            );
+          });
+          return h('div', { class: 'opt-group' }, ...rows);
         })(),
 
         h('div', { class: 'divider-text' }, 'i2p router'),
