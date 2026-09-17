@@ -1,0 +1,27 @@
+[package]
+name = "gipny-dht"
+version = "0.1.0"
+edition = "2021"
+
+# Versions are spelled out rather than inherited from the workspace: the
+# standalone relay (core/relay, its own workspace) depends on this crate by
+# path. No rusqlite here, for the same reason — its `links = "sqlite3"` would
+# clash with the relay's; storage is a trait.
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde-big-array = "0.5"
+bincode = "1.3"
+thiserror = "2"
+rand = "0.10"
+zeroize = "1"
+ed25519-dalek = "3"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+chacha20poly1305 = "0.11"
+hkdf = "0.13"
+hmac = "0.13"
+sha2 = "0.11"
+futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

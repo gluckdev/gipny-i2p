@@ -6,6 +6,7 @@ members = [
     "agent",
     "bot-sdk",
     "tests/e2e-harness",
+    "dht",
 ]
 
 [workspace.dependencies]
