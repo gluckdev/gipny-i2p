@@ -12,6 +12,9 @@ use crate::security::MasterKey;
 
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
+/// How long an undelivered outgoing message keeps being retried.
+pub const RETRY_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
+
 const MIGRATE_TABLES: &[&str] = &["messages", "contacts", "groups"];
 
 trait CollectRows<T> {
@@ -885,16 +888,18 @@ impl Db {
             .query_map(params![contact_id, limit], Self::map_message)?.collect_rows())
     }
 
+    /// Bounded by age, not by attempts: a recipient who closed the app right
+    /// after its relay took the message has to get it once they are back, and
+    /// eight attempts over a quarter of an hour gave up long before that.
     pub fn list_unacked_outgoing(
         &self, contact_id: i64, now_ms: i64, base_backoff_ms: i64, max_backoff_ms: i64, limit: i64,
     ) -> Result<Vec<Message>> {
-        const MAX_SEND_ATTEMPTS: i64 = 8;
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
             " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0
-               AND send_attempts < ?6
+               AND sent_at > ?2 - ?6
                AND (last_attempt_at IS NULL OR (?2 - last_attempt_at) >= MIN(?4, ?3 * (1 << MIN(send_attempts, 16))))
              ORDER BY id ASC LIMIT ?5"))?
-            .query_map(params![contact_id, now_ms, base_backoff_ms, max_backoff_ms, limit, MAX_SEND_ATTEMPTS], Self::map_message)?
+            .query_map(params![contact_id, now_ms, base_backoff_ms, max_backoff_ms, limit, RETRY_TTL_MS], Self::map_message)?
             .collect_rows())
     }
 
@@ -945,14 +950,13 @@ impl Db {
     pub fn pending_outbound_for_recipient(
         &self, recipient_contact_id: i64, now_ms: i64, base_backoff_ms: i64, max_backoff_ms: i64, limit: i64,
     ) -> Result<Vec<i64>> {
-        const MAX_ATTEMPTS: i64 = 8;
         self.with_conn(|c| c.prepare_cached(
             "SELECT msg_id FROM pending_outbound
              WHERE recipient_contact_id = ?1
-               AND send_attempts < ?5
+               AND created_at > ?2 - ?5
                AND (last_attempt_at IS NULL OR (?2 - last_attempt_at) >= MIN(?4, ?3 * (1 << MIN(send_attempts, 16))))
              ORDER BY msg_id ASC LIMIT ?6")?
-            .query_map(params![recipient_contact_id, now_ms, base_backoff_ms, max_backoff_ms, MAX_ATTEMPTS, limit], |r| r.get(0))?
+            .query_map(params![recipient_contact_id, now_ms, base_backoff_ms, max_backoff_ms, RETRY_TTL_MS, limit], |r| r.get(0))?
             .collect_rows())
     }
 
@@ -1571,4 +1575,33 @@ fn hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
+}
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn undelivered_mail_is_retried_until_it_is_a_week_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("t.db")).unwrap();
+        let contact = db.add_contact(&[1; 32], &[2; 32], "", "bob", None).unwrap();
+        let now = now_ms();
+        let recent = db.insert_message(contact, Direction::Out, "recent", now, None, &[]).unwrap();
+        let stale = db.insert_message(contact, Direction::Out, "stale", now - RETRY_TTL_MS - 1, None, &[]).unwrap();
+        for _ in 0..20 {
+            db.mark_sent(recent).unwrap();
+            db.mark_sent(stale).unwrap();
+        }
+        // Far enough ahead that the backoff is satisfied.
+        let later = now + 3_600_000;
+        let ids: Vec<i64> = db.list_unacked_outgoing(contact, later, 5_000, 300_000, 50).unwrap()
+            .into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![recent]);
+
+        db.pending_outbound_add(recent, contact).unwrap();
+        for _ in 0..20 {
+            db.pending_outbound_record_attempt(recent, contact).unwrap();
+        }
+        assert_eq!(db.pending_outbound_for_recipient(contact, later, 5_000, 300_000, 50).unwrap(), vec![recent]);
+    }
 }

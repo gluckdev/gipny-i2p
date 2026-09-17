@@ -1554,6 +1554,13 @@ impl Core {
                 frame = async { in_rx.lock().await.recv().await } => {
                     let Some(frame) = frame else { break; };
                     last_activity = std::time::Instant::now();
+                    // Logged in with plain Auth after an AuthV2 attempt fell
+                    // through: this relay would take our deposits and never
+                    // hand us our mail. Reconnect, which tries AuthV2 again.
+                    if own.is_some() && matches!(&frame, RelayToClient::Error(e) if e == relay::ERR_NEEDS_AUTH_V2) {
+                        eprintln!("[relay-client] our relay wants AuthV2, reconnecting");
+                        break;
+                    }
                     if let Err(e) = self.handle_relay_frame(frame, &out_tx).await {
                         eprintln!("[relay-client] handle err: {:?}", e);
                     }
@@ -2136,13 +2143,10 @@ impl Core {
                 let mut payload = self.build_payload_from_db(&msg)?;
                 eprintln!("[relay-client] retry unacked msg {} to contact {} (attempt {})",
                     msg.id, contact.id, msg.send_attempts + 1);
-                // Record before sending, like the group path below. Nothing used
-                // to record it at all, which disabled both halves of
-                // list_unacked_outgoing's guard: send_attempts stayed 0 so the
-                // eight-attempt cap never engaged, and last_attempt_at stayed
-                // NULL so the exponential backoff was always satisfied. Every
-                // undelivered direct message was therefore retried on every tick
-                // of the relay loop, forever.
+                // Record before sending, like the group path below: without it
+                // last_attempt_at stays NULL, the backoff in
+                // list_unacked_outgoing is always satisfied, and every
+                // undelivered message goes out on every tick of the relay loop.
                 self.db.record_send_attempt(msg.id)?;
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
                     eprintln!("[relay-client] retry err to contact {}: {:?}", contact.id, e);
@@ -2287,6 +2291,12 @@ impl Core {
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
         let mut empty_payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
         empty_payload.sender_name = self.outgoing_sender_name();
+        // A contact created from this init would otherwise have no relay to
+        // answer to until a later message brings one.
+        let relay = self.relay_onion();
+        if !relay.is_empty() {
+            empty_payload.relay_address = Some(relay);
+        }
         let pt = pad_payload(&encode_payload(&empty_payload)?);
         let (state, init) = crypto::x3dh_initiate(&self.identity, &bundle, &pt, &ad)?;
         self.db.put_session(contact.id, &state.to_bytes()?)?;

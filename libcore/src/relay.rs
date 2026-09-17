@@ -20,6 +20,78 @@ pub enum ClientToRelay {
     Send { to: [u8; 32], blob: Vec<u8> },
     Ack { id: u64 },
     Ping,
+    /// Like `Auth`, but the signature covers [`auth_v2_message`]: bound to
+    /// this relay's destination, so a relay cannot pass on a challenge from
+    /// another one and log in there as its client. Only this grants
+    /// collecting and publishing; plain `Auth` is kept for depositing into
+    /// relays older clients reach.
+    AuthV2 {
+        sign_pk: [u8; 32],
+        #[serde(with = "BigArray")]
+        signature: [u8; 64],
+    },
+}
+
+const AUTH_V2_CONTEXT: &[u8] = b"gipny-relay-auth-v2";
+
+/// What an `AuthV2` signature covers.
+pub fn auth_v2_message(destination_hash: &[u8; 32], challenge: &[u8; 32]) -> Vec<u8> {
+    [AUTH_V2_CONTEXT, destination_hash, challenge].concat()
+}
+
+/// SHA-256 of a destination's binary form — the value its `.b32.i2p` name
+/// encodes — from either spelling of the address. Both sides of `AuthV2`
+/// derive it, so they have to agree whichever one a client was given.
+pub fn destination_hash(address: &str) -> Option<[u8; 32]> {
+    let a = address.trim();
+    if let Some(host) = a.strip_suffix(".b32.i2p").or_else(|| a.strip_suffix(".B32.I2P")) {
+        return base32_decode(host)?.try_into().ok();
+    }
+    let raw = i2p_base64_decode(a)?;
+    use sha2::Digest;
+    Some(sha2::Sha256::digest(&raw).into())
+}
+
+fn i2p_base64_decode(s: &str) -> Option<Vec<u8>> {
+    let body = s.trim_end_matches('=');
+    let mut out = Vec::with_capacity(body.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in body.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'~' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+fn base32_decode(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 5 / 8);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in s.bytes() {
+        let v = match c.to_ascii_lowercase() {
+            c @ b'a'..=b'z' => c - b'a',
+            c @ b'2'..=b'7' => c - b'2' + 26,
+            _ => return None,
+        };
+        acc = (acc << 5) | v as u32;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 /// What a relay answers, in an `Error` frame, to a publish or a deposit for a
@@ -27,6 +99,9 @@ pub enum ClientToRelay {
 /// its owner and nobody else. A client reads it to tell "wrong relay" from a
 /// passing fault.
 pub const ERR_NOT_SERVED: &str = "this relay does not serve that recipient";
+
+/// The answer to publishing or acking after a plain `Auth` login.
+pub const ERR_NEEDS_AUTH_V2: &str = "log in with AuthV2 to collect or publish";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum RelayToClient {
@@ -63,6 +138,8 @@ pub enum RelayError {
     #[error("auth failed")] AuthFailed,
     #[error("protocol: {0}")] Proto(String),
     #[error("closed")] Closed,
+    /// The relay hung up on `AuthV2` — what a relay from before it does.
+    #[error("relay predates AuthV2")] AuthV2Unsupported,
 }
 
 impl From<bincode::Error> for RelayError { fn from(_: bincode::Error) -> Self { Self::Codec } }
@@ -78,8 +155,18 @@ pub async fn connect(
     onion: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
+    let Some(hash) = destination_hash(onion) else {
+        let stream = node.connect_relay(onion, RELAY_PORT).await?;
+        return handshake(stream.into_inner(), identity, None).await;
+    };
     let stream = node.connect_relay(onion, RELAY_PORT).await?;
-    handshake(stream.into_inner(), identity).await
+    match handshake(stream.into_inner(), identity, Some(&hash)).await {
+        Err(e) if predates_auth_v2(&e) => {
+            let stream = node.connect_relay(onion, RELAY_PORT).await?;
+            handshake(stream.into_inner(), identity, None).await
+        }
+        r => r,
+    }
 }
 
 /// Connect to a contact's relay, to deposit a message where they collect.
@@ -94,23 +181,49 @@ pub async fn connect_peer(
     onion: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
+    let Some(hash) = destination_hash(onion) else {
+        let stream = node.connect_service(onion, RELAY_PORT).await?;
+        return handshake(stream.into_inner(), identity, None).await;
+    };
     let stream = node.connect_service(onion, RELAY_PORT).await?;
-    handshake(stream.into_inner(), identity).await
+    match handshake(stream.into_inner(), identity, Some(&hash)).await {
+        Err(e) if predates_auth_v2(&e) => {
+            let stream = node.connect_service(onion, RELAY_PORT).await?;
+            handshake(stream.into_inner(), identity, None).await
+        }
+        r => r,
+    }
+}
+
+/// Retrying with plain `Auth` is safe to allow: a current relay grants that
+/// nothing but depositing, so a relay that fakes being old gains nothing.
+fn predates_auth_v2(e: &RelayError) -> bool {
+    matches!(e, RelayError::AuthV2Unsupported)
 }
 
 async fn handshake(
     mut stream: std::pin::Pin<Box<dyn crate::net::DuplexStream>>,
     identity: &Arc<Identity>,
+    destination_hash: Option<&[u8; 32]>,
 ) -> Result<RelayClient> {
     let challenge = match recv::<_, RelayToClient>(&mut stream).await? {
         RelayToClient::Challenge(c) => c,
         _ => return Err(RelayError::Proto("expected Challenge".into())),
     };
-    let signature = identity.sign(&challenge);
     let sign_pk = identity.card().sign_pk;
-    send(&mut stream, &ClientToRelay::Auth { sign_pk, signature }).await?;
+    let auth = match destination_hash {
+        Some(hash) => ClientToRelay::AuthV2 { sign_pk, signature: identity.sign(&auth_v2_message(hash, &challenge)) },
+        None => ClientToRelay::Auth { sign_pk, signature: identity.sign(&challenge) },
+    };
+    send(&mut stream, &auth).await?;
 
-    match recv::<_, RelayToClient>(&mut stream).await? {
+    let answer = match recv::<_, RelayToClient>(&mut stream).await {
+        Err(RelayError::Io(_) | RelayError::Codec) if destination_hash.is_some() => {
+            return Err(RelayError::AuthV2Unsupported);
+        }
+        r => r?,
+    };
+    match answer {
         RelayToClient::AuthOk => {}
         RelayToClient::AuthFail => return Err(RelayError::AuthFailed),
         _ => return Err(RelayError::Proto("expected AuthOk".into())),
@@ -154,6 +267,7 @@ fn out_kind(f: &ClientToRelay) -> String {
         ClientToRelay::Send { to, blob } => format!("Send(to={}, {}B)", hex_short(to), blob.len()),
         ClientToRelay::Ack { id } => format!("Ack({})", id),
         ClientToRelay::Ping => "Ping".into(),
+        ClientToRelay::AuthV2 { .. } => "AuthV2".into(),
     }
 }
 
@@ -261,6 +375,15 @@ mod wire_compat {
     }
 
     #[test]
+    fn auth_v2_is_the_seventh_variant() {
+        let e = enc(&ClientToRelay::AuthV2 { sign_pk: [0xAA; 32], signature: [0xBB; 64] });
+        assert_eq!(e.len(), 4 + 32 + 64);
+        assert_eq!(&e[..4], &[0x06, 0, 0, 0]);
+        assert!(e[4..36].iter().all(|&b| b == 0xAA));
+        assert!(e[36..100].iter().all(|&b| b == 0xBB));
+    }
+
+    #[test]
     fn send_layout() {
         let e = enc(&ClientToRelay::Send { to: [0x11; 32], blob: vec![1, 2, 3] });
         assert_eq!(e.len(), 4 + 32 + 8 + 3);
@@ -293,6 +416,7 @@ mod wire_compat {
             ClientToRelay::Send { to: [4; 32], blob: vec![5, 6] },
             ClientToRelay::Ack { id: 42 },
             ClientToRelay::Ping,
+            ClientToRelay::AuthV2 { sign_pk: [3; 32], signature: [4; 64] },
         ];
         for m in client {
             let e = enc(&m);
@@ -313,5 +437,41 @@ mod wire_compat {
             let e = enc(&m);
             assert_eq!(e, enc(&dec::<RelayToClient>(&e)));
         }
+    }
+}
+
+#[cfg(test)]
+mod destination {
+    use super::*;
+
+    // Generated with Python's base64/hashlib from 391 bytes (i*37+11)%256,
+    // in I2P's alphabet ('-' and '~' for '+' and '/').
+    const DEST: &str = "CzBVep~E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY~SJHbJG22wAlSm-Uud4DKE1yl7zhBitQdZq~5AkuU3idwucMMVZ7oMXqDzRZfqPI7RI3XIGmy~AVOl-Eqc7zGD1ih6zR9htAZYqv1PkeQ2iNstf8IUZrkLXa~yRJbpO43QInTHGWu-AFKk90mb7jCC1Sd5zB5gswVXqfxOkOM1h9osfsETZbgKXK7xQ5XoOozfIXPGGGq9D1Gj9kia7T-B1CZ4yx1vsgRWqPtNn-I0htkrfcASZLcJW63wQpTnOYveIHLFF2m8DlCi9UeZ7D6A0yV3yhxusQNVp~pMnuEzhdgqfM8RY7YIWqz~QZPmOIrdL3HEFmi7DV-h9EaQ==";
+    const B32: &str = "pltnfwacxdinhnpdnjmzn4royewu6dcbphanacvztwcx4vjfqg6a.b32.i2p";
+    const SHA256_HEX: &str = "7ae6d2d802b8d0d3b5e36a5996f22ec12d4f0c4179c0d00ab99d857e552581bc";
+
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    #[test]
+    fn both_spellings_give_the_same_hash() {
+        assert_eq!(hex(&destination_hash(DEST).unwrap()), SHA256_HEX);
+        assert_eq!(hex(&destination_hash(B32).unwrap()), SHA256_HEX);
+        assert_eq!(destination_hash(&B32.to_uppercase().replace(".B32.I2P", ".b32.i2p")), destination_hash(DEST));
+    }
+
+    #[test]
+    fn garbage_is_not_a_destination() {
+        assert!(destination_hash("not/base64").is_none());
+        assert!(destination_hash("abc.b32.i2p").is_none());
+    }
+
+    #[test]
+    fn the_signed_message_names_the_relay() {
+        let a = auth_v2_message(&[1; 32], &[9; 32]);
+        let b = auth_v2_message(&[2; 32], &[9; 32]);
+        assert_ne!(a, b);
+        assert!(a.starts_with(b"gipny-relay-auth-v2"));
     }
 }

@@ -33,7 +33,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
 use crate::net::{NetError, SESSION_SEQ};
-use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient};
+use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
 /// Live connections by the signing key they authenticated as.
 pub type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
@@ -283,10 +283,16 @@ impl MemStore {
 /// message sent the instant a recipient authenticates is pushed rather than
 /// waiting for the next refresh; on exit it unregisters only itself, not a newer
 /// connection from the same key; and acks are checked against the recipient.
+///
+/// `destination_hash` is this relay's own ([`crate::relay::destination_hash`]),
+/// which an `AuthV2` signature must cover. A client that logs in with plain
+/// `Auth` may deposit and fetch bundles and nothing else: its signature could
+/// have been lifted from a login to some other relay.
 pub async fn handle_client<S>(
     mut stream: S,
     store: Arc<MemStore>,
     connections: Connections,
+    destination_hash: [u8; 32],
 ) -> Result<(), RelayError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -295,12 +301,15 @@ where
     crate::crypto::fill_random(&mut challenge);
     send(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
-    let (sign_pk, signature) = match recv::<_, ClientToRelay>(&mut stream).await? {
-        ClientToRelay::Auth { sign_pk, signature } => (sign_pk, signature),
+    let (sign_pk, signature, signed, owner) = match recv::<_, ClientToRelay>(&mut stream).await? {
+        ClientToRelay::AuthV2 { sign_pk, signature } => {
+            (sign_pk, signature, crate::relay::auth_v2_message(&destination_hash, &challenge), true)
+        }
+        ClientToRelay::Auth { sign_pk, signature } => (sign_pk, signature, challenge.to_vec(), false),
         _ => return Err(RelayError::Proto("expected Auth first".into())),
     };
     let verified = VerifyingKey::from_bytes(&sign_pk)
-        .map(|vk| vk.verify(&challenge, &Signature::from_bytes(&signature)).is_ok())
+        .map(|vk| vk.verify(&signed, &Signature::from_bytes(&signature)).is_ok())
         .unwrap_or(false);
     if !verified {
         send(&mut stream, &RelayToClient::AuthFail).await?;
@@ -308,8 +317,15 @@ where
     }
 
     let (push_tx, mut push_rx) = mpsc::channel::<RelayToClient>(PUSH_CAPACITY);
-    connections.write().await.insert(sign_pk, push_tx.clone());
     let cursor = Arc::new(Mutex::new(0u64));
+    if !owner {
+        let result = match send(&mut stream, &RelayToClient::AuthOk).await {
+            Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &store, &connections, &cursor).await,
+            Err(e) => Err(e),
+        };
+        return result;
+    }
+    connections.write().await.insert(sign_pk, push_tx.clone());
 
     let initial = tokio::spawn({
         let (store, push_tx, cursor) = (store.clone(), push_tx.clone(), cursor.clone());
@@ -344,7 +360,7 @@ where
     });
 
     let result = match send(&mut stream, &RelayToClient::AuthOk).await {
-        Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, &store, &connections, &cursor).await,
+        Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &store, &connections, &cursor).await,
         Err(e) => Err(e),
     };
 
@@ -362,6 +378,7 @@ async fn client_loop<S>(
     push_rx: &mut mpsc::Receiver<RelayToClient>,
     push_tx: &mpsc::Sender<RelayToClient>,
     sign_pk: [u8; 32],
+    owner: bool,
     store: &Arc<MemStore>,
     connections: &Connections,
     cursor: &Arc<Mutex<u64>>,
@@ -373,6 +390,9 @@ where
         tokio::select! {
             frame = recv::<_, ClientToRelay>(stream) => {
                 match frame? {
+                    ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
+                        send(stream, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
+                    }
                     ClientToRelay::Publish { bundle } => {
                         if let Err(e) = store.store_bundle(&sign_pk, &bundle) {
                             send(stream, &RelayToClient::Error(e.to_string())).await?;
@@ -409,7 +429,7 @@ where
                         }
                     }
                     ClientToRelay::Ping => send(stream, &RelayToClient::Pong).await?,
-                    ClientToRelay::Auth { .. } => {}
+                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } => {}
                 }
             }
             push = push_rx.recv() => {
@@ -460,6 +480,8 @@ impl EphemeralRelay {
         // its await, so sharing it would stall everything else behind a wait for
         // the next caller. Client tasks live in the JoinSet, so aborting this
         // task drops them with it.
+        let destination_hash = crate::relay::destination_hash(&address)
+            .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
         let accept = tokio::spawn({
             let store = store.clone();
             async move {
@@ -484,7 +506,7 @@ impl EphemeralRelay {
                                 failures = 0;
                                 let (store, connections) = (store.clone(), connections.clone());
                                 clients.spawn(async move {
-                                    if let Err(e) = handle_client(stream, store, connections).await {
+                                    if let Err(e) = handle_client(stream, store, connections, destination_hash).await {
                                         eprintln!("[relay-server] client gone: {e}");
                                     }
                                 });
@@ -678,6 +700,8 @@ mod tests {
 
     // ── the server over an in-memory pipe ────────────────────────────────────
 
+    const RIG_DESTINATION: [u8; 32] = [0x5A; 32];
+
     struct Rig {
         store: Arc<MemStore>,
         connections: Connections,
@@ -690,14 +714,15 @@ mod tests {
 
         fn open(&self) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
             let (client, server) = tokio::io::duplex(1 << 20);
-            let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone()));
+            let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone(), RIG_DESTINATION));
             (client, task)
         }
 
         async fn login(&self, who: &Identity) -> DuplexStream {
             let (mut c, _task) = self.open();
             let RelayToClient::Challenge(ch) = recv(&mut c).await.unwrap() else { panic!("no challenge") };
-            let auth = ClientToRelay::Auth { sign_pk: who.card().sign_pk, signature: who.sign(&ch) };
+            let signature = who.sign(&crate::relay::auth_v2_message(&RIG_DESTINATION, &ch));
+            let auth = ClientToRelay::AuthV2 { sign_pk: who.card().sign_pk, signature };
             send(&mut c, &auth).await.unwrap();
             assert!(matches!(recv::<_, RelayToClient>(&mut c).await.unwrap(), RelayToClient::AuthOk));
             c
@@ -752,6 +777,46 @@ mod tests {
         send(&mut b, &ClientToRelay::Ping).await.unwrap();
         assert!(matches!(next(&mut b).await, RelayToClient::Pong));
         assert_eq!(rig.store.stats().messages, 0);
+    }
+
+    #[tokio::test]
+    async fn a_login_signed_for_another_relay_is_refused() {
+        let rig = Rig::new();
+        let (mut c, task) = rig.open();
+        let RelayToClient::Challenge(ch) = recv(&mut c).await.unwrap() else { panic!() };
+        let bob = Identity::generate();
+        // A relay that passed us its challenge gets a signature naming itself.
+        let signature = bob.sign(&crate::relay::auth_v2_message(&[0x77; 32], &ch));
+        send(&mut c, &ClientToRelay::AuthV2 { sign_pk: bob.card().sign_pk, signature }).await.unwrap();
+        assert!(matches!(next(&mut c).await, RelayToClient::AuthFail));
+        assert!(matches!(task.await.unwrap(), Err(RelayError::AuthFailed)));
+    }
+
+    #[tokio::test]
+    async fn a_plain_auth_login_may_deposit_but_not_collect() {
+        let rig = Rig::new();
+        let (alice, bob) = (Identity::generate(), Identity::generate());
+        let mut a = rig.login(&alice).await;
+        send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: b"for bob".to_vec() }).await.unwrap();
+        let RelayToClient::Deposited { id } = next(&mut a).await else { panic!() };
+
+        // Bob's signature over a bare challenge, as a relay in the middle
+        // would hold it after passing this relay's challenge on.
+        let (mut b, _task) = rig.open();
+        let RelayToClient::Challenge(ch) = recv(&mut b).await.unwrap() else { panic!() };
+        send(&mut b, &ClientToRelay::Auth { sign_pk: bob.card().sign_pk, signature: bob.sign(&ch) }).await.unwrap();
+        assert!(matches!(next(&mut b).await, RelayToClient::AuthOk));
+
+        send(&mut b, &ClientToRelay::Ack { id }).await.unwrap();
+        assert!(matches!(next(&mut b).await, RelayToClient::Error(e) if e == ERR_NEEDS_AUTH_V2));
+        send(&mut b, &ClientToRelay::Publish { bundle: b"forged".to_vec() }).await.unwrap();
+        assert!(matches!(next(&mut b).await, RelayToClient::Error(e) if e == ERR_NEEDS_AUTH_V2));
+        // Nothing was pushed to it, the mail is still there, and depositing works.
+        send(&mut b, &ClientToRelay::Send { to: alice.card().sign_pk, blob: b"hi".to_vec() }).await.unwrap();
+        assert!(matches!(next(&mut b).await, RelayToClient::Deposited { .. }));
+        assert_eq!(rig.store.stats().messages, 2);
+        assert_eq!(rig.store.stats().bundles, 0);
+        assert!(!rig.connections.read().await.contains_key(&bob.card().sign_pk));
     }
 
     #[test]
