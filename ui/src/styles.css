@@ -143,103 +143,8 @@ body {
 
 
 
-@media (hover: none) and (pointer: coarse), (max-width: 600px) {
-  body::before, body::after { display: none !important; }
-  * { backdrop-filter: none !important; }
-  .modal-backdrop { backdrop-filter: none !important; }
-}
-
-@media (hover: none) and (pointer: coarse) {
-  .btn { padding: 10px 16px; min-height: 44px; }
-  .icon-btn { min-width: 44px; min-height: 44px; }
-  .ttl-chip { padding: 6px 10px; min-height: 32px; }
-  .msg-button { padding: 10px 14px; min-height: 44px; }
-  .ctx-menu-item { padding: 12px 16px; font-size: 13px; }
-  .contact { padding: 14px 16px; min-height: 56px; }
-  .pin-item { padding: 10px 12px; min-height: 40px; }
-  .attachment { padding: 8px 12px; min-height: 36px; }
-  .chat-input textarea { font-size: 16px; }
-  .input, .textarea, .edit-inline-textarea { font-size: 16px; }
-  .msg-body { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
-  .pin-item-body { user-select: text; -webkit-user-select: text; }
-  .card-block { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
-}
-
-@media (min-width: 601px) and (max-width: 1024px) {
-  .main { grid-template-columns: 240px 1fr; }
-  .sidebar-header { flex-wrap: wrap; gap: 6px; row-gap: 8px; }
-  .sidebar-title { font-size: 10px; letter-spacing: 0.15em; }
-  .icon-btn { padding: 3px 6px; font-size: 13px; }
-  .chat-header { padding: 10px 14px; gap: 8px; flex-wrap: wrap; }
-  .chat-header > div:nth-of-type(2) { flex: 1; min-width: 0; }
-  .chat-log { padding: 12px 14px; }
-  .chat-input { padding: 10px 14px; }
-  .msg { max-width: 88%; }
-  .contact { padding: 10px 12px; }
-  .contact-name { font-size: 12px; }
-  .contact-sub { font-size: 10px; }
-}
-
-@media (max-width: 600px) {
-  html, body { overflow: auto !important; height: auto !important; }
-  #app { min-height: 100vh; }
-  .auth {
-    align-items: flex-start !important;
-    padding: calc(env(safe-area-inset-top, 0px) + 8px) calc(env(safe-area-inset-right, 0px) + 8px) calc(env(safe-area-inset-bottom, 0px) + 8px) calc(env(safe-area-inset-left, 0px) + 8px) !important;
-  }
-  .auth-card { width: 100% !important; max-width: 100% !important; padding: 14px !important; box-sizing: border-box; }
-
-  html, body, #app, .main { height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
-  .main { grid-template-columns: 1fr !important; }
-  .main > .sidebar { grid-column: 1; grid-row: 1; }
-  .main > .stack.grow { grid-column: 1; grid-row: 1; }
-  .main:not(.has-chat) > .stack.grow { display: none !important; }
-  .main.has-chat > .sidebar { display: none !important; }
-  .sidebar { border-right: none; }
-
-  .chat-back { display: inline-flex !important; }
-  .chat-header {
-    padding: calc(env(safe-area-inset-top, 0px) + 10px) calc(env(safe-area-inset-right, 0px) + 12px) 10px calc(env(safe-area-inset-left, 0px) + 12px);
-    gap: 8px; flex-wrap: wrap;
-  }
-  .chat-header > div:nth-of-type(1) { flex: 1; min-width: 0; }
-  .chat-title, .contact-name { font-size: 12px; }
-  .chat-sub, .contact-sub { font-size: 10px; }
-  .chat-log {
-    padding: 10px calc(env(safe-area-inset-right, 0px) + 12px) 10px calc(env(safe-area-inset-left, 0px) + 12px);
-  }
-  .msg { max-width: 92%; }
-  .chat-input {
-    padding: 8px calc(env(safe-area-inset-right, 0px) + 10px) calc(env(safe-area-inset-bottom, 0px) + 8px) calc(env(safe-area-inset-left, 0px) + 10px);
-  }
-  .chat-input-row { flex-wrap: wrap; gap: 6px; }
-  .chat-input-row .btn { padding: 8px 14px; font-size: 12px; min-height: 40px; }
-  .chat-input textarea { font-size: 16px; min-height: 40px; }
-  .chat-input-meta { flex-wrap: wrap; gap: 6px; font-size: 10px; }
-
-  .sidebar-header {
-    padding: calc(env(safe-area-inset-top, 0px) + 10px) calc(env(safe-area-inset-right, 0px) + 12px) 10px calc(env(safe-area-inset-left, 0px) + 12px);
-  }
-  .contact {
-    padding: 12px calc(env(safe-area-inset-right, 0px) + 12px) 12px calc(env(safe-area-inset-left, 0px) + 12px);
-  }
-  .sidebar-footer {
-    padding: 8px calc(env(safe-area-inset-right, 0px) + 12px) calc(env(safe-area-inset-bottom, 0px) + 8px) calc(env(safe-area-inset-left, 0px) + 12px);
-    flex-wrap: wrap;
-  }
-
-  .modal {
-    width: 100% !important; max-width: 100vw !important;
-    max-height: 100dvh !important;
-    border: none !important;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-  .modal-header {
-    padding-top: calc(env(safe-area-inset-top, 0px) + 14px);
-  }
-
-  .toast { left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); }
-}
+/* The responsive rules live at the end of this file: they have to come after
+   the rules they override. */
 
 .chat-back { display: inline-flex; }
 
@@ -462,7 +367,9 @@ a:hover { text-decoration: underline; }
 .main {
   flex: 1;
   display: grid;
-  grid-template-columns: 320px 1fr;
+  /* `1fr` alone is `minmax(auto, 1fr)`: the track could never be narrower than
+     the longest unbreakable string inside it. */
+  grid-template-columns: clamp(256px, 29vw, 340px) minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -568,7 +475,7 @@ a:hover { text-decoration: underline; }
 .contact.pinned { background: rgba(255, 176, 0, 0.04); }
 .contact.pinned:hover { background: rgba(255, 176, 0, 0.08); }
 
-.main.sidebar-collapsed { grid-template-columns: 56px 1fr; }
+.main.sidebar-collapsed { grid-template-columns: 56px minmax(0, 1fr); }
 .main.sidebar-collapsed .sidebar-title,
 .main.sidebar-collapsed .contact-info,
 .main.sidebar-collapsed .contact-pin,
@@ -1784,217 +1691,248 @@ a { color: var(--phosphor); }
   user-select: none;
 }
 
-/* --------------------------------------------------------------------------
- * Modern & User-Friendly Additions: Attachments, Voice & Privacy UI
- * -------------------------------------------------------------------------- */
+/* ==========================================================================
+   Containment and responsive layout
 
-.attach-btn, .voice-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 1px solid var(--border-bright);
-  background: var(--surface);
-  color: var(--text-dim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 16px;
-  transition: all 0.15s ease;
-  flex-shrink: 0;
+   Last in the file on purpose. These rules used to sit above the rules they
+   were meant to override, so everything in them without `!important` lost to
+   the base rule of equal specificity further down — the safe-area paddings
+   among them, which is how the chat header ended up under the status bar of
+   an edge-to-edge Android window.
+
+   Check changes here in `npm run dev` → /dev/preview.html, which renders the
+   app at phone, tablet and desktop widths against deliberately hostile data
+   and reports anything that sticks out of the viewport.
+   ========================================================================== */
+
+/* --- 1. Nothing may make the page wider than the viewport ---------------- */
+
+/* The text this app shows is full of strings with no break opportunity: host
+   names, b32 addresses, 516-character i2p destinations, hashes, contact cards.
+   A flex or grid child defaults to `min-width: auto`, so one such string sets
+   the floor for every ancestor up to the page. Zero the floor on the way down,
+   then decide per element whether it wraps or is cut. */
+html, body { overflow-x: hidden; }
+.main > *, .sidebar > *, .chat > *, .chat-log > *, .modal > * { min-width: 0; }
+.chat-heading, .contact-info, .chat-input-row > textarea { min-width: 0; }
+
+/* Multi-line text wraps anywhere. `anywhere` rather than `break-word`: only
+   `anywhere` lowers the element's min-content size, which is what lets the
+   ancestors actually shrink. */
+.msg-body, .console-body, .card-block, .hint, .err, .toast, .pin-item-body,
+.modal-body, .auth-sub, .opt-blurb, .forward-row, .relay-banner, .agent-banner {
+  overflow-wrap: anywhere;
 }
 
-.attach-btn:hover, .voice-btn:hover {
-  background: var(--surface-2);
-  color: var(--phosphor);
-  border-color: var(--phosphor);
-  transform: scale(1.04);
-}
-
-.voice-btn.recording {
-  background: var(--danger);
-  color: #ffffff;
-  border-color: var(--danger);
-  animation: pulse-danger 1.2s infinite;
-}
-
-@keyframes pulse-danger {
-  0% { box-shadow: 0 0 0 0 rgba(217, 74, 69, 0.5); }
-  70% { box-shadow: 0 0 0 8px rgba(217, 74, 69, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(217, 74, 69, 0); }
-}
-
-.pending-chips-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 6px 0;
-}
-
-.pending-file-card {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-bright);
-  border-radius: var(--xbox-radius-sm);
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--text);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-}
-
-.pending-file-badge {
-  background: rgba(43, 127, 212, 0.12);
-  color: var(--phosphor);
-  font-size: 9px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.pending-file-del {
-  cursor: pointer;
-  color: var(--text-faint);
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
-
-.pending-file-del:hover {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-
-.audio-player-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--border-bright);
-  border-radius: var(--xbox-radius-sm);
-  padding: 6px 12px;
-  min-width: 200px;
-  max-width: 320px;
-  margin-top: 4px;
-}
-
-.audio-play-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: none;
-  background: var(--btn-bg);
-  color: var(--on-accent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.audio-play-btn:hover {
-  background: var(--btn-bg-hover);
-}
-
-.audio-wave {
-  flex: 1;
-  height: 16px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.audio-bar {
-  flex: 1;
-  background: var(--border-bright);
-  border-radius: 1px;
-  transition: background 0.1s ease;
-}
-
-.audio-bar.active {
-  background: var(--phosphor);
-}
-
-.audio-duration {
-  font-size: 10px;
-  color: var(--text-faint);
-  min-width: 28px;
-  text-align: right;
-}
-
-.voice-recording-overlay {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex: 1;
-  background: var(--surface-2);
-  border: 1px solid var(--danger);
-  border-radius: var(--xbox-radius-sm);
-  padding: 6px 14px;
-}
-
-.voice-recording-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--danger);
-  font-weight: 500;
-  font-size: 13px;
-}
-
-.voice-privacy-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: rgba(43, 127, 212, 0.12);
-  color: var(--phosphor);
-  border: 1px solid var(--phosphor-faint);
-  border-radius: 12px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.voice-privacy-pill.active {
-  background: var(--phosphor);
-  color: var(--on-accent);
-}
-
-.security-lock-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--success);
-  font-size: 11px;
-  cursor: default;
-}
-
-.photo-preview-tile {
-  position: relative;
-  display: inline-block;
-  cursor: pointer;
-  border-radius: var(--xbox-radius-sm);
+/* One-line labels are cut with an ellipsis; the full text is in `title`. */
+.chat-title, .chat-sub, .chat-status, .sidebar-title, .modal-title {
   overflow: hidden;
-  border: 1px solid var(--border-bright);
-  margin-top: 4px;
-  transition: transform 0.15s, border-color 0.15s;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.photo-preview-tile:hover {
-  transform: translateY(-2px);
-  border-color: var(--phosphor);
-  box-shadow: 0 4px 12px var(--phosphor-glow);
+/* A <select> is as wide as its longest option unless told otherwise, and the
+   options here are contact names — which are host names for agents. */
+.input, .textarea { max-width: 100%; min-width: 0; }
+select.input { width: 100%; text-overflow: ellipsis; }
+.attachment { max-width: 100%; overflow-wrap: anywhere; }
+.msg-image { max-width: min(320px, 100%); height: auto; }
+
+.agent-banner { flex-wrap: wrap; row-gap: 4px; }
+.agent-banner > span { min-width: 0; }
+
+/* The list header: a title and seven actions. With the generic `.row` gap the
+   actions alone were 235px and broke into two ragged lines even in a 320px
+   sidebar. They are one tight group that never breaks; when the title and the
+   group do not fit side by side, the group takes the second line whole. */
+.sidebar-header { flex-wrap: wrap; gap: 6px 8px; }
+.sidebar-title { flex: 1 1 auto; min-width: 0; }
+.sidebar-header .row { flex: 0 0 auto; flex-wrap: nowrap; gap: 2px; margin-left: auto; }
+/* Glyphs of seven different widths (the padlock is an emoji) made a ragged
+   row; equal squares make it a toolbar. Touch sizes below still win through
+   `min-width` / `min-height`. */
+.sidebar-header .icon-btn {
+  width: 26px; height: 26px; padding: 0;
+  display: inline-grid; place-items: center;
+  line-height: 1;
 }
 
-.photo-preview-tile img {
-  display: block;
-  max-width: 280px;
-  max-height: 200px;
-  object-fit: cover;
-  border-radius: calc(var(--xbox-radius-sm) - 1px);
+/* --- 2. Sizes follow the space, not three hard-coded screens ------------- */
+
+/* The chat pane is a size container: what its header and log can afford
+   depends on the pane, which is narrow on a phone *and* on a desktop window
+   with the sidebar open, not on the screen. Overlays (menus, modals, toasts)
+   are mounted on <body>, so the containment does not capture them. */
+.chat { container: chat / inline-size; }
+
+/* The chat pane fills its slot. It used to be as tall as its content, so in a
+   short conversation the composer floated somewhere above the bottom edge. */
+.chat { flex: 1 1 auto; }
+
+/* The header wraps when it has to, and only then: the heading asks for a
+   readable minimum, the actions for their own width, and if both do not fit
+   the actions move to a second row instead of pushing the pane wider. */
+.chat-header { gap: 6px 10px; flex-wrap: wrap; }
+.chat-heading { flex: 1 1 140px; }
+.chat-actions { flex: 0 1 auto; justify-content: flex-end; row-gap: 6px; margin-left: auto; }
+.chat-details-icon { display: none; }
+
+.chat-log { padding: 14px 20px; padding: clamp(10px, 2.2cqi, 18px) clamp(12px, 3cqi, 24px); }
+.chat-input { padding-inline: clamp(10px, 3cqi, 20px); }
+.msg { max-width: min(78%, 46rem); }
+.msg:has(.msg-buttons) { max-width: min(92%, 46rem); }
+
+@container chat (max-width: 640px) {
+  .msg { max-width: 92%; }
+  .msg:has(.msg-buttons) { max-width: 100%; min-width: 0; }
+  .msg-buttons .msg-button { flex: 1 1 auto; }
+}
+
+@container chat (max-width: 480px) {
+  /* A phone-width pane: everything in the header becomes a glyph so that the
+     name, which is what the header is for, keeps the row. The address goes —
+     it is one tap away in the details — and the state line stays. */
+  .chat-sub { display: none; }
+  .chat-details-icon { display: inline; }
+  .chat-details-label { display: none; }
+  .chat-actions { gap: 2px; flex-wrap: nowrap; }
+  .chat-actions .btn { padding-inline: 8px; }
+  /* The badge keeps its text for assistive tech and its colour for the eye,
+     and shows one character instead of a word. */
+  .chat-actions .trust-badge {
+    font-size: 0; padding: 0; border: none; flex: 0 0 auto;
+  }
+  .chat-actions .trust-badge::before { font-size: 14px; letter-spacing: 0; padding: 0 4px; }
+  .chat-actions .trust-0::before { content: '?'; }
+  .chat-actions .trust-1::before { content: '✓'; }
+  .chat-actions .trust-2::before { content: '⛔'; }
+  .agent-controls .btn { padding-inline: 8px; }
+}
+
+.modal { width: min(520px, calc(100vw - 24px)); }
+.modal-wide { width: min(720px, calc(100vw - 24px)); }
+
+/* --- 3. Touch ------------------------------------------------------------ */
+
+@media (hover: none) and (pointer: coarse), (max-width: 600px) {
+  body::before, body::after { display: none !important; }
+  * { backdrop-filter: none !important; }
+  .modal-backdrop { backdrop-filter: none !important; }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .btn { padding: 10px 16px; min-height: 44px; }
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .ttl-chip { padding: 6px 10px; min-height: 32px; }
+  .msg-button { padding: 10px 14px; min-height: 44px; }
+  .ctx-menu-item { padding: 12px 16px; font-size: 14px; }
+  .contact { padding: 14px 16px; min-height: 56px; }
+  .pin-item { padding: 10px 12px; min-height: 40px; }
+  .attachment { padding: 8px 12px; min-height: 36px; }
+  /* 16px is the floor below which mobile browsers zoom the page on focus. */
+  .chat-input textarea, .input, .textarea, .edit-inline-textarea { font-size: 16px; }
+  .msg-body { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
+  .pin-item-body { user-select: text; -webkit-user-select: text; }
+  .card-block { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
+}
+
+/* --- 4. Between a phone and a desktop ------------------------------------ */
+
+@media (min-width: 601px) and (max-width: 1024px) {
+  .sidebar-header { flex-wrap: wrap; gap: 6px; row-gap: 8px; }
+  .sidebar-title { font-size: 10px; letter-spacing: 0.15em; }
+  .icon-btn { padding: 3px 6px; font-size: 13px; }
+  .chat-header { padding: 10px 14px; }
+  .contact { padding: 10px 12px; }
+}
+
+/* --- 5. Phone: one pane at a time ---------------------------------------- */
+
+@media (max-width: 600px) {
+  html, body { overflow-y: auto !important; height: auto !important; }
+  #app { min-height: 100vh; }
+  .auth {
+    align-items: flex-start !important;
+    padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 8px) !important;
+  }
+  .auth-card { width: 100% !important; max-width: 100% !important; padding: 16px !important; }
+
+  html, body, #app, .main { height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
+  .main { grid-template-columns: minmax(0, 1fr) !important; }
+  .main > .sidebar { grid-column: 1; grid-row: 1; border-right: none; }
+  .main > .stack.grow { grid-column: 1; grid-row: 1; }
+  .main:not(.has-chat) > .stack.grow { display: none !important; }
+  .main.has-chat > .sidebar { display: none !important; }
+
+  /* Type. The desktop ramp (13 / 11 / 10 px) is a terminal's; at arm's length
+     on a phone the two small steps are below what is comfortable to read. */
+  body { font-size: 15px; }
+  .contact-name, .chat-title { font-size: 15px; }
+  .contact-sub, .chat-sub, .chat-status { font-size: 12px; }
+  .msg-body { font-size: 15px; line-height: 1.45; }
+  .console-msg { font-size: 13px; }
+  .msg-meta, .console-msg.out .console-meta { font-size: 11px; }
+  .section-label, .sidebar-title, .divider-text { font-size: 11px; }
+  .hint, .opt-blurb, .field label { font-size: 12.5px; }
+  .modal-title { font-size: 13px; letter-spacing: 0.12em; }
+  .card-block { font-size: 12px; }
+
+  /* List pane. There is nothing to collapse when the list is the whole
+     screen; the freed slot lets the actions stay on one row at 360px. */
+  .sidebar-collapse { display: none; }
+  .sidebar-header {
+    flex-wrap: wrap; row-gap: 4px;
+    padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 8px) 8px calc(var(--safe-left) + 14px);
+  }
+  .sidebar-title { flex: 1 1 auto; }
+  .sidebar-header .row { flex: 0 0 auto; gap: 0; flex-wrap: nowrap; margin-left: auto; }
+  .contact { padding: 12px calc(var(--safe-right) + 14px) 12px calc(var(--safe-left) + 14px); }
+  .section-label { padding-inline: calc(var(--safe-left) + 14px) calc(var(--safe-right) + 14px); }
+  .sidebar-footer {
+    padding: 8px calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 14px);
+  }
+
+  /* Chat pane. */
+  .chat-header {
+    padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + 8px) 6px calc(var(--safe-left) + 4px);
+    gap: 4px 6px;
+  }
+  .chat-actions { gap: 2px; padding-left: 4px; }
+  .chat-log { padding-left: calc(var(--safe-left) + 12px); padding-right: calc(var(--safe-right) + 12px); }
+  .chat-input {
+    padding: 8px calc(var(--safe-right) + 10px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 10px);
+  }
+  /* The textarea keeps the row to itself as long as it can; the buttons stay
+     beside it rather than wrapping under it and eating a line of the log. */
+  .chat-input-row { flex-wrap: nowrap; gap: 6px; align-items: flex-end; }
+  .chat-input-row .btn { padding: 8px 12px; min-height: 44px; flex: 0 0 auto; }
+  .chat-input-row .prompt { display: none; }
+  .chat-input textarea { min-height: 44px; }
+  .chat-input-meta { flex-wrap: wrap; gap: 6px; font-size: 11px; }
+  .chat-input-meta > span:first-child { display: none; }
+
+  /* Modals become sheets: the full screen, their own scroll. */
+  .modal-backdrop { align-items: stretch; }
+  .modal, .modal-wide {
+    width: 100% !important; max-width: 100vw !important;
+    height: 100dvh; max-height: 100dvh !important;
+    border: none !important; border-radius: 0 !important;
+    padding-bottom: var(--safe-bottom);
+  }
+  .modal-header {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface);
+    padding: calc(var(--safe-top) + 10px) calc(var(--safe-right) + 10px) 10px calc(var(--safe-left) + 16px);
+  }
+  .modal-body { padding: 16px calc(var(--safe-right) + 16px) 16px calc(var(--safe-left) + 16px); }
+  .modal-footer { padding-inline: calc(var(--safe-left) + 16px) calc(var(--safe-right) + 16px); flex-wrap: wrap; }
+  .modal-footer .btn { flex: 1 1 auto; }
+
+  .toast { left: 12px; right: 12px; bottom: calc(var(--safe-bottom) + 14px); }
+}
+
+/* A phone on its side: height is what is scarce. */
+@media (max-height: 480px) and (orientation: landscape) {
+  .chat-header, .sidebar-header { padding-top: calc(var(--safe-top) + 4px); padding-bottom: 4px; }
+  .chat-input-meta { display: none; }
 }
