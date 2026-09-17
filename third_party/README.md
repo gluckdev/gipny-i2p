@@ -1,74 +1,77 @@
-# third_party
+# third_party — исходники роутера, которые gipny собирает и кладёт в сборки
 
-Router sources gipny builds and bundles, pinned as submodules so a build is
-reproducible from this repository alone rather than from whatever happened to be
-on a developer's disk.
+Сабмодули закреплены на конкретных коммитах, чтобы сборка воспроизводилась из
+одного этого репозитория, а не из того, что случайно оказалось на диске
+разработчика.
 
-| Submodule | Pinned at | Used for |
+| Сабмодуль | Закреплён на | Для чего |
 |---|---|---|
-| `i2pd` | `2.60.0-190-g62bf51cd` (a commit, not the tag) | the router itself — desktop builds link it statically, and Android builds the same sources into a JNI library |
-| `i2pd-android` | a commit on upstream `master` | its `binary/jni` dependency scripts (boost, OpenSSL) and its `DaemonAndroid` wrapper; i2pd itself carries no Android build |
+| `i2pd` | `2.60.0-190-g62bf51cd` (коммит, не тег) | сам роутер: десктопные сборки линкуют его статически, Android собирает те же исходники в JNI-библиотеку |
+| `i2pd-android` | коммит в upstream `master` | его скрипты зависимостей `binary/jni` (boost, OpenSSL) и обёртка `DaemonAndroid`; в самом i2pd сборки под Android нет |
 
-The i2pd pin runs well past the `2.60.0` tag it started at; `git submodule
-status` is the authority, and `git describe --tags` in CI stamps the binary with
-it. The pin is advanced only by `e2e-i2pd.yml`'s bump job, and only after a run
-that actually delivered messages over live i2p — compiling is not the bar.
+Пин i2pd ушёл далеко вперёд от тега `2.60.0`, с которого начинался; истина —
+`git submodule status`, а `git describe --tags` в CI штампует этой строкой
+бинарь. Двигает пин только джоба `bump` в `e2e-i2pd.yml` и только после прогона,
+который реально доставил сообщения по живой i2p: «компилируется» — не критерий.
 
-Both are upstream, unmodified. Anything we need to change on top lives in this
-repository — as a patch under `docs/patches/`, or as a step in the workflow — so
-it is visible in review instead of hiding in a fork nobody can see.
+Оба сабмодуля — upstream без изменений. Всё, что нужно менять поверх, живёт в
+этом репозитории: патчем в `docs/patches/` или шагом в workflow, — чтобы это
+было видно на ревью, а не спрятано в форке, которого никто не видит.
 
-**These point at upstream, not at forks of ours, and that is deliberate.** A
-submodule pins which revision we build; it does not make the code ours. We
-cannot commit to it, which is why the one change we need — moving
-Boost-for-Android past an NDK whitelist older than any NDK the runners ship — is
-a command in the Android build rather than a commit.
+**Они указывают на upstream, а не на наши форки, и это сознательно.** Сабмодуль
+закрепляет, какую ревизию мы собираем, но не делает код нашим. Коммитить в него
+мы не можем — поэтому единственное нужное нам изменение (сдвинуть
+Boost-for-Android дальше NDK-белого списка, который старше любого NDK на
+раннерах) сделано командой в сборке Android, а не коммитом.
 
-Forking (into `gluckdev/`) would turn such changes into reviewable commits and
-cut the dependency on upstream not rewriting tags. It also means keeping two
-repositories in sync with an actively developed codebase, and falling behind on
-a cryptographic router is worse than the workaround. Revisit when there is a
-second or third change upstream will not take; one line does not justify it.
+Форк (в `gluckdev/`) превратил бы такие правки в коммиты, которые можно
+отревьюить, и снял бы зависимость от того, что upstream не перепишет теги. Он же
+означает поддержку двух репозиториев в синхронизации с активно развивающимся
+проектом, а отставать в криптографическом роутере хуже, чем обходной путь.
+Вернуться к вопросу стоит, когда появится второе или третье изменение, которое
+upstream не возьмёт; одна строка этого не оправдывает.
 
-Clone with submodules:
+Клонирование с сабмодулями:
 
 ```
 git clone --recurse-submodules …
-# or, in an existing checkout:
+# либо в уже склонированном репозитории:
 git submodule update --init --recursive
 ```
 
-`release.yml` builds the router it ships from these pins.
-`i2pd-build.yml` covers the wider matrix (musl, armeabi-v7a, the second Android
-ABI). `e2e-i2pd.yml` deliberately runs ahead of the `i2pd` pin — that is how the
-pin earns its way forward.
+`release.yml` собирает роутер, который попадает в релиз, ровно из этих пинов.
+`i2pd-build.yml` покрывает более широкую матрицу (musl, armeabi-v7a, второй ABI
+для Android). `e2e-i2pd.yml` сознательно работает впереди пина `i2pd` — именно
+так пин и зарабатывает право сдвинуться.
 
-The Android library is *not* built from `i2pd-android`'s own `app/jni`: that
-exports `Java_org_purplei2p_*` symbols for their app. `android-router/jni` in
-this repository compiles the same i2pd sources plus gipny's two JNI entry
-points, reusing only `DaemonAndroid.cpp` from upstream.
+Android-библиотека собирается **не** из `app/jni` самого `i2pd-android`: там
+экспортируются символы `Java_org_purplei2p_*` для их приложения.
+`android-router/jni` в этом репозитории компилирует те же исходники i2pd плюс две
+точки входа JNI для gipny, переиспользуя из upstream только `DaemonAndroid.cpp`.
 
-## Why these are here and go-i2p is not
+## Почему здесь эти, а не go-i2p
 
-go-i2p was the original transport and never finished building client tunnels,
-so it delivered nothing — see `docs/i2p-transport-evaluation.md`. With i2pd
-underneath, the same relay, bots and harness deliver messages over live i2p.
+go-i2p был первым транспортом и так и не научился достраивать клиентские
+туннели, поэтому не доставлял ничего — см. `docs/i2p-transport-evaluation.md`. С
+i2pd под низом тот же релей, боты и харнесс доставляют сообщения по живой i2p.
 
-An experimental go-i2p patch (first hop taken from already-connected peers,
-i2pd-style) is kept as `docs/patches/go-i2p-first-hop-selection.patch` because
-the measurements around it are worth keeping. It is a record, not a dependency:
-it improved tunnel building without making the network reachable, and it is not
-built here.
+Экспериментальный патч к go-i2p (первый хоп берётся из уже подключённых пиров,
+как в i2pd) сохранён как `docs/patches/go-i2p-first-hop-selection.patch`, потому
+что измерения вокруг него стоит сохранить. Это запись, а не зависимость: патч
+улучшил построение туннелей, но не сделал сеть достижимой, и здесь он не
+собирается.
 
-## Android note
+## Замечание про Android
 
-`i2pd-android` pins Boost-for-Android to a commit whose NDK whitelist is older
-than the NDKs the CI runners ship, so the Android build overrides that pin at
-build time. Details are in the workflow next to where it happens.
+`i2pd-android` закрепляет Boost-for-Android на коммите, чей белый список NDK
+старше тех NDK, что поставляются на раннерах CI, — поэтому сборка Android
+переопределяет этот пин во время сборки. Подробности в workflow, рядом с тем
+местом, где это происходит.
 
-Boost-for-Android is a nested submodule of `i2pd-android`, so this repository
-cannot pin it with a gitlink; the override is the `BOOST_FOR_ANDROID_REV` env in
-`i2pd-build.yml` and `release.yml`, and the two must match. It is pinned at
-`7943955c4d11a5bd61381a8b200c28619323eb0f` — the revision that produced the
-first `libi2pd.so` to build and export the JNI entry points on all three ABIs
-(run 35061210535). Every Android build prints the revision it resolved.
+Boost-for-Android — вложенный сабмодуль внутри `i2pd-android`, поэтому этот
+репозиторий не может закрепить его gitlink'ом; переопределение — переменная
+`BOOST_FOR_ANDROID_REV` в `i2pd-build.yml` и `release.yml`, и они обязаны
+совпадать. Закреплена ревизия `7943955c4d11a5bd61381a8b200c28619323eb0f` — та,
+на которой впервые собрался `libi2pd.so` с экспортом точек входа JNI на всех
+трёх ABI (прогон 35061210535). Каждая сборка Android печатает ревизию, которую
+она использовала.

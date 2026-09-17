@@ -1,16 +1,18 @@
-# go-i2p as a transport: what works, what does not, and what it costs
+# go-i2p как транспорт: что работает, что нет и чего это стоит
 
-Written 2026-07-19 after a full day of debugging why no message ever reached its
-destination. Records what was measured, so none of it has to be rediscovered.
+Написано 2026-07-19 после целого дня отладки того, почему ни одно сообщение не
+дошло до адресата. Здесь зафиксировано, что именно было измерено, чтобы это не
+пришлось выяснять заново.
 
-**Verdict: go-i2p cannot currently carry gipny traffic, and the rest of the
-stack is fine.** Four defects sat on top of each other. Three were ours and are
-fixed. The fourth is upstream, is not a single bug, and blocks everything:
-client tunnels never finish building, so there is no anonymous transport at all.
+**Вывод: go-i2p в текущем виде не может нести трафик gipny, а остальной стек в
+порядке.** Друг на друге лежали четыре дефекта. Три — наши, они исправлены.
+Четвёртый — в upstream, это не одна ошибка, и он блокирует всё: клиентские
+туннели никогда не достраиваются, то есть анонимного транспорта нет вовсе.
 
-This is no longer an inference. Swapping only the router — same relay, same
-bots, same harness, same code — the end-to-end test **delivers 5 of 5 messages
-over live i2p in 49 seconds** (run 29693889188, `.github/workflows/e2e-i2pd.yml`):
+Это больше не вывод по косвенным признакам. При замене одного только роутера —
+тот же релей, те же боты, тот же харнесс, тот же код — сквозной тест **доставляет
+5 сообщений из 5 по живой i2p за 49 секунд** (прогон 29693889188,
+`.github/workflows/e2e-i2pd.yml`):
 
 ```
 | messages sent   | 5       |
@@ -20,100 +22,103 @@ over live i2p in 49 seconds** (run 29693889188, `.github/workflows/e2e-i2pd.yml`
 [e2e] SUCCESS — all 5 messages delivered and echoed
 ```
 
-Against go-i2p the same harness has never delivered a single message.
+На go-i2p тот же харнесс не доставил ни одного сообщения ни разу.
 
-## The four layers
+## Четыре слоя
 
-### 1. The SAM bridge had no I2CP transport — ours, fixed
+### 1. У моста SAM не было транспорта I2CP — наше, исправлено
 
-`embedding.New` starts the embedded router's I2CP *server* but never connects an
-I2CP *client*, so `createStreamManagerCallback` bails and no StreamManager is
-registered per session. `SESSION CREATE` returned OK while every
-`STREAM CONNECT`/`ACCEPT` failed with a generic `CANT_REACH_PEER`.
+`embedding.New` запускает I2CP-*сервер* встроенного роутера, но никогда не
+подключает I2CP-*клиента*, поэтому `createStreamManagerCallback` сдаётся и
+StreamManager не регистрируется ни для одной сессии. `SESSION CREATE` отвечал OK,
+а каждый `STREAM CONNECT`/`ACCEPT` падал с общим `CANT_REACH_PEER`.
 
-Fixed in `i2p-router/wiring.go` (`97788e6`) by mirroring go-sam-bridge's own
-reference wiring: start router → wait for I2CP port → connect client → build the
-bridge with `WithI2CPProvider` and a registrar that registers a StreamManager per
-STREAM session.
+Исправлено в `i2p-router/wiring.go` (`97788e6`) повторением референсной обвязки
+самого go-sam-bridge: запустить роутер → дождаться порта I2CP → подключить
+клиента → собрать мост с `WithI2CPProvider` и регистратором, который регистрирует
+StreamManager для каждой STREAM-сессии.
 
-### 2. The router kills idle I2CP connections after 30 s — upstream, worked around
+### 2. Роутер убивает простаивающие соединения I2CP через 30 с — upstream, обойдено
 
-The I2CP server arms a 30 s read deadline *before* the header read
-(`go-i2p lib/i2cp/protocol.go:175,400`), so it also bounds the idle gap between
-messages, and treats the timeout as a fatal read error. go-i2cp sends no
-keepalives. The client connected at startup is therefore always dead by the time
-the first SAM session is created — which is every real case.
+Сервер I2CP ставит дедлайн чтения в 30 с *до* чтения заголовка
+(`go-i2p lib/i2cp/protocol.go:175,400`), поэтому он ограничивает и паузу между
+сообщениями, а таймаут считает фатальной ошибкой чтения. go-i2cp keepalive не
+отправляет. Значит, клиент, подключённый при старте, всегда мёртв к моменту
+создания первой SAM-сессии — то есть в любом реальном сценарии.
 
-Worse, the failure is invisible: the `CreateSession` write fails, the SAM handler
-returns an error, and go-sam-bridge closes the SAM control socket **without a
-`SESSION STATUS`**. The Rust side sees a bare EOF, reported by `yosemite` as
-`invalid message from router` — a message that says nothing about the cause and
-cost hours to trace.
+Хуже, что отказ невидим: запись `CreateSession` падает, обработчик SAM
+возвращает ошибку, и go-sam-bridge закрывает управляющий сокет SAM **без
+`SESSION STATUS`**. Rust-сторона видит голый EOF, который `yosemite` сообщает как
+`invalid message from router` — сообщение, которое не говорит ничего о причине и
+стоило часов поиска.
 
-Reported as [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54). Worked
-around in `e0a3826`, then made obsolete by layer 3: per-session clients connect
-milliseconds before use, so the deadline cannot fire in between.
+Отправлено как [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54). Обойдено
+в `e0a3826`, затем стало неактуальным из-за слоя 3: клиенты на каждую сессию
+подключаются за миллисекунды до использования, поэтому дедлайн не успевает
+сработать.
 
-Note `IsConnected()` cannot be used to detect this. The client's read loop never
-observes the close and keeps reporting the link as up while every write fails.
+Учтите, что `IsConnected()` для обнаружения этого не годится: цикл чтения у
+клиента не замечает закрытия и продолжает сообщать, что связь есть, пока каждая
+запись падает.
 
-### 3. One I2CP client can only ever have one working session — ours, fixed
+### 3. Один клиент I2CP может иметь только одну работающую сессию — наше, исправлено
 
-go-sam-bridge's reference wiring shares one I2CP client across all sessions.
-Against this router that caps the bridge at a single working SAM session. Run
-29687964736 caught it exactly: the router wrote `SessionStatus` for both sessions
-to the same socket and go-i2cp logged reading only the first — and the line it
-omits is emitted *before* dispatch, so the message was never read at all.
+Референсная обвязка go-sam-bridge делит одного клиента I2CP между всеми
+сессиями. С этим роутером это ограничивает мост одной работающей SAM-сессией.
+Прогон 29687964736 поймал это в точности: роутер записал `SessionStatus` для обеих
+сессий в один и тот же сокет, а go-i2cp записал в лог чтение только первой — а
+пропущенная строка печатается *до* диспетчеризации, то есть сообщение вообще не
+было прочитано.
 
-Without that status the second session's `tunnelReady` is never signalled,
-`WaitForTunnels` blocks, and the bridge's 60 s command deadline closes the SAM
-socket before any reply. The relay always worked; every bot always failed.
+Без этого статуса `tunnelReady` второй сессии никогда не срабатывает,
+`WaitForTunnels` блокируется, и 60-секундный дедлайн команды у моста закрывает
+сокет SAM до любого ответа. Релей работал всегда; каждый бот падал всегда.
 
-Fixed in `18edc66`: each SAM session gets its own I2CP client. All dial
-127.0.0.1:7654 (go-i2cp permits nothing else), so this stays inside the
-one-router-per-host constraint. Verified locally (2/2 sessions) and in CI (7
-sessions, relay + both bots).
+Исправлено в `18edc66`: у каждой SAM-сессии свой клиент I2CP. Все они звонят на
+127.0.0.1:7654 (go-i2cp другого не позволяет), поэтому ограничение «один роутер
+на хост» сохраняется. Проверено локально (2 из 2 сессий) и в CI (7 сессий: релей
+и оба бота).
 
-Known gap: session clients are closed on shutdown via `CloseAll`, but not on
-`SESSION REMOVE` — the bridge exposes no hook. A long-lived router churning
-sessions will accumulate them.
+Известный пробел: клиенты сессий закрываются при остановке через `CloseAll`, но
+не на `SESSION REMOVE` — мост не даёт такой точки подключения. Долгоживущий
+роутер, через который проходит много сессий, будет их накапливать.
 
-### 4. Client tunnels never build — upstream, unresolved, blocks everything
+### 4. Клиентские туннели не строятся — upstream, не решено, блокирует всё
 
-Reported as [go-i2p#55](https://github.com/go-i2p/go-i2p/issues/55).
+Отправлено как [go-i2p#55](https://github.com/go-i2p/go-i2p/issues/55).
 
-Over ~13 minutes with `DEBUG_I2P=debug`:
+За ~13 минут с `DEBUG_I2P=debug`:
 
 | | |
 |---|---|
-| NTCP2 Noise handshakes completed | 124 |
-| netdb peers available after filtering | 63 |
-| tunnel builds failing `no transports available` | 29 |
+| завершённых рукопожатий Noise NTCP2 | 124 |
+| пиров в netdb после фильтрации | 63 |
+| построений туннелей с `no transports available` | 29 |
 | `Tunnel build retry failed` | 8 |
-| `timeout_waiting_for_tunnels` | one per session |
-| **LeaseSets published** | **0** |
+| `timeout_waiting_for_tunnels` | по одному на сессию |
+| **опубликованных LeaseSet** | **0** |
 
-The router is otherwise healthy — it reseeds, keeps a populated netdb, and talks
-to dozens of peers. But peer selection picks tunnel hops purely from netdb
-RouterInfo (`lib/netdb/std_peer_selection.go` — advertised addresses, caps,
-staleness, PeerTracker score) and never asks the transport layer whether a
-session exists. The gateway is dialled only when the build request is sent
-(`lib/i2np/tunnel_manager_build.go:800,853`); when that fails,
-`lib/tunnel/pool.go:903` string-matches the error, marks the peers failed, and
-retries with the same blind criteria.
+В остальном роутер здоров: делает reseed, держит наполненную netdb и общается с
+десятками пиров. Но выбор пиров берёт хопы туннеля исключительно из RouterInfo в
+netdb (`lib/netdb/std_peer_selection.go` — объявленные адреса, флаги, давность,
+оценка PeerTracker) и никогда не спрашивает транспортный слой, есть ли с этим
+пиром сессия. Шлюз набирается только в момент отправки запроса на построение
+(`lib/i2np/tunnel_manager_build.go:800,853`); когда это падает,
+`lib/tunnel/pool.go:903` сопоставляет строку ошибки, помечает пиров
+неудачными и повторяет по тем же слепым критериям.
 
-i2pd avoids this by taking the first hop from its transport peer set
-(`TunnelPool.cpp:598-620`, including an explicit "Can't select first hop for a
-tunnel. Trying already connected" fallback). `Transports::GetRandomPeer`
-(`Transports.cpp:1215`) draws from `m_Peers` — routers with an established
-session.
+i2pd этого избегает, беря первый хоп из своего набора транспортных пиров
+(`TunnelPool.cpp:598-620`, включая явный запасной путь «Can't select first hop
+for a tunnel. Trying already connected»). `Transports::GetRandomPeer`
+(`Transports.cpp:1215`) выбирает из `m_Peers` — роутеров, с которыми установлена
+сессия.
 
-## Control experiment: i2pd, same machine, same minute
+## Контрольный опыт: i2pd, та же машина, та же минута
 
-i2pd 2.60.0, SAM on the same port, driven by the same script (`tools/`):
+i2pd 2.60.0, SAM на том же порту, тот же управляющий скрипт (`tools/`):
 
 ```
-20:38:59 Tunnel: Outbound tunnel 61550957 has been created     # ~4 s after start
+20:38:59 Tunnel: Outbound tunnel 61550957 has been created     # ~4 с после старта
 20:39:00 Tunnel: Inbound tunnel 3107694909 has been created
 
 >>> SESSION CREATE STYLE=STREAM ID=eeptest DESTINATION=<priv>
@@ -125,132 +130,131 @@ i2pd 2.60.0, SAM on the same port, driven by the same script (`tools/`):
     nginx/1.24.0 (Ubuntu)
 ```
 
-20 tunnels in its first two minutes. Same uplink, same script. The go-i2p
-behaviour also reproduces on a GitHub Actions runner, so it is not specific to
-one network.
+20 туннелей за первые две минуты. Тот же канал, тот же скрипт. Поведение go-i2p
+воспроизводится и на раннере GitHub Actions, то есть дело не в одной конкретной
+сети.
 
-## Control experiment 2: the whole product over i2pd
+## Контрольный опыт 2: весь продукт на i2pd
 
-`.github/workflows/e2e-i2pd.yml` is `e2e.yml` with the router swapped and
-nothing else changed — same relay binary, same bots, same harness, same
-`GIPNY_SAM_PORT=7656` shared-router arrangement.
+`.github/workflows/e2e-i2pd.yml` — это `e2e.yml` с заменённым роутером и без
+единого другого изменения: тот же бинарь релея, те же боты, тот же харнесс, то же
+устройство с общим роутером через `GIPNY_SAM_PORT=7656`.
 
 | | go-i2p | i2pd 2.60.0 |
 |---|---|---|
-| tunnels | never ready | seconds |
-| real eepsite | unreachable | fetched |
-| **e2e messages delivered** | **0 of 5, ever** | **5 of 5** |
+| туннели | никогда не готовы | секунды |
+| настоящий eepsite | недостижим | получен |
+| **доставлено сообщений e2e** | **0 из 5, всегда** | **5 из 5** |
 
-Bot startup ~15 s, relay connect 13–19 s, RTT ~5.8 s median. Those are ordinary
-i2p numbers.
+Старт бота ~15 с, подключение к релею 13–19 с, медианный RTT ~5,8 с. Это обычные
+для i2p числа.
 
-This also confirms the three fixes above were necessary rather than incidental:
-both bots attach to one shared router here too, which only works because each
-SAM session gets its own I2CP client.
+Это же подтверждает, что три исправления выше были необходимы, а не случайны:
+здесь оба бота тоже подключаются к одному общему роутеру, и работает это только
+потому, что у каждой SAM-сессии свой клиент I2CP.
 
-Setup notes worth keeping: install the `.deb` with `apt-get install -y ./file`
-rather than unpacking it — the runtime dependency list (boost, miniupnpc, …) is
-whatever that build links against and does not converge if fetched by hand. Pick
-the build matching the runner's Ubuntu codename so apt can satisfy it; the
-binary is at `usr/bin/i2pd`.
+Заметки по установке, которые стоит сохранить: ставьте `.deb` через
+`apt-get install -y ./файл`, а не распаковывайте — список зависимостей времени
+выполнения (boost, miniupnpc, …) определяется тем, с чем слинкована сборка, и
+руками не сходится. Берите сборку под кодовое имя Ubuntu раннера, чтобы apt смог
+её удовлетворить; бинарь лежит в `usr/bin/i2pd`.
 
-## The first-hop patch experiment (not shipped)
+## Опыт с патчем первого хопа (не поставляется)
 
-`docs/patches/go-i2p-first-hop-selection.patch` applies i2pd's idea to go-i2p:
-transports gain `ConnectedPeers()`, the muxer aggregates it, and
-`StdNetDB.SelectPeers` promotes or substitutes an already-connected peer into the
-gateway slot.
+`docs/patches/go-i2p-first-hop-selection.patch` применяет идею i2pd к go-i2p: у
+транспортов появляется `ConnectedPeers()`, мультиплексор их агрегирует, а
+`StdNetDB.SelectPeers` продвигает или подставляет уже подключённого пира в слот
+шлюза.
 
-Measured against v0.1.59999:
+Измерено на v0.1.59999:
 
-| | before | after |
+| | до | после |
 |---|---|---|
-| `timeout_waiting_for_tunnels` | 2 of 2 sessions | 0 |
+| `timeout_waiting_for_tunnels` | 2 из 2 сессий | 0 |
 | `Tunnel build retry failed` | 8 | 0 |
 | `no transports available` | 29 | 2 |
 
-But the eepsite still did not load, and the layers underneath surfaced:
+Но eepsite всё равно не открылся, и наружу вылезли слои под этим:
 
 - `i2p-projekt.i2p` → `CANT_REACH_PEER "invalid destination format"`. go-i2p
-  supports ECIES destinations only; ElGamal is unimplemented, and that
-  destination is of the older form (516 chars vs 524).
-- `stats.i2p` → `TIMEOUT "wait for SYN-ACK"` after 60 s. Real progress — the SYN
-  went out through tunnels — but nothing came back.
-- All six client tunnel builds still expired (`Cleaned up expired tunnel build
-  via timeout`, 90 s each). The only tunnels that completed were **zero-hop
-  exploratory** ones (`is_client_tunnel=false`), which is normal at startup.
+  поддерживает только ECIES-destination; ElGamal не реализован, а этот адрес
+  старой формы (516 символов против 524).
+- `stats.i2p` → `TIMEOUT "wait for SYN-ACK"` через 60 с. Это настоящий прогресс —
+  SYN ушёл через туннели, — но ответа не пришло.
+- Все шесть построений клиентских туннелей всё равно истекли (`Cleaned up expired
+  tunnel build via timeout`, по 90 с). Достроились только **исследовательские
+  туннели с нулём хопов** (`is_client_tunnel=false`), что при старте нормально.
 
-**Do not ship this patch as written.** i2pd gates the same behaviour on having
-more than 100 connected peers (25 for inbound). This version has no threshold,
-and in the test run only 4 peers were connected — so every tunnel was pinned to
-the same 4 gateways, chosen by accident of connection order. See the security
-section.
+**Не поставляйте этот патч в таком виде.** i2pd включает то же поведение только
+при более чем 100 подключённых пирах (25 для входящих). В этой версии порога нет,
+а в тестовом прогоне подключённых пиров было 4 — то есть все туннели были
+привязаны к одним и тем же 4 шлюзам, выбранным случайностью порядка подключений.
+См. раздел про безопасность.
 
-## Security implications
+## Что это значит для безопасности
 
-Stated plainly, because this is a messenger that promises privacy.
+Скажем прямо, потому что это мессенджер, который обещает приватность.
 
-**Likely ruled out: the published LeaseSet does not appear to expose our IP.**
-The suspicion was that with the patch, `timeout_waiting_for_tunnels` stopped
-firing and `Publishing all LeaseSets` appeared in the log while the only
-completed tunnels were zero-hop — and a LeaseSet lists the gateways of inbound
-tunnels, which for a zero-hop tunnel is *us*.
+**Скорее исключено: публикуемый LeaseSet, судя по всему, не раскрывает наш IP.**
+Подозрение было такое: с патчем `timeout_waiting_for_tunnels` перестал
+срабатывать, а в логе появилось `Publishing all LeaseSets`, притом что
+достроились только туннели с нулём хопов, — а LeaseSet перечисляет шлюзы входящих
+туннелей, которым для туннеля с нулём хопов являемся *мы сами*.
 
-Reading the source (docs/go-i2p-leaseset-analysis.md, #49) says otherwise on
-both halves: go-i2p drops zero-hop tunnels before it forms any lease
-(`lib/i2cp/session.go:861-864`) and fails lease creation outright when none
-remain, and `Publishing all LeaseSets` is logged at the top of the publisher
-sweep before it checks whether any LeaseSet exists — so the log line never meant
-what it was read to mean.
+Чтение исходников (docs/go-i2p-leaseset-analysis.md, #49) говорит обратное по
+обеим половинам: go-i2p отбрасывает туннели с нулём хопов до формирования любого
+lease (`lib/i2cp/session.go:861-864`) и вовсе валит создание lease, когда не
+осталось ни одного, а `Publishing all LeaseSets` печатается в начале прохода
+публикатора, до проверки, существует ли хоть один LeaseSet, — то есть эта строка
+никогда не означала того, что в ней прочитали.
 
-Caveat kept deliberately: that is a source reading, not an inspection of a
-LeaseSet fetched from a floodfill, and it has not been re-checked by hand. It is
-moot for anything gipny ships today, since go-i2p is gone from the tree, but it
-is not moot for releases up to v0.3.4, which were built on it.
+Оговорка оставлена сознательно: это чтение исходников, а не осмотр LeaseSet,
+полученного с floodfill, и оно не перепроверено руками. Для всего, что gipny
+выпускает сегодня, вопрос неактуален, поскольку go-i2p из дерева убран; для
+релизов до v0.3.4 — актуален.
 
-**The first-hop patch collapses gateway diversity.** Pinning the first hop is
-not wrong in itself — I2P deliberately limits how many routers learn your IP —
-but it must be a deliberate set of adequate size, which is why i2pd gates it on
-peer count. With 4 connected peers, a single hostile one among them sees
-essentially all our traffic, indefinitely.
+**Патч первого хопа уничтожает разнообразие шлюзов.** Привязывать первый хоп само
+по себе не ошибка — I2P сознательно ограничивает, сколько роутеров узнают ваш
+IP, — но это должен быть осознанный набор достаточного размера, поэтому i2pd и
+включает такое поведение по числу пиров. При 4 подключённых пирах один
+недоброжелательный среди них видит практически весь наш трафик, и бесконечно.
 
-**go-i2p is fingerprintable by its own admission.** The project README says it
-"is probably very distinct on the network". In an anonymity network, being
-distinguishable is itself a deanonymisation risk, and no fix of ours changes it —
-anonymity is a property of the crowd you blend into.
+**go-i2p определяем по собственному признанию.** В README проекта написано, что он
+«вероятно, очень заметен в сети». В сети анонимности отличимость сама по себе
+риск деанонимизации, и никакие наши исправления этого не меняют: анонимность —
+свойство толпы, в которой вы растворяетесь.
 
-**Unimplemented crypto narrows the network.** No ElGamal (ECIES only), and
-`messageReliability=Guaranteed` silently degrades to BestEffort.
+**Нереализованная криптография сужает сеть.** ElGamal нет (только ECIES), а
+`messageReliability=Guaranteed` молча деградирует до BestEffort.
 
-None of gipny's own fixes from today touch anonymity: I2CP wiring, reconnect and
-per-session clients are plumbing about whether bytes arrive, not about who can
-see them.
+Ни одно наше сегодняшнее исправление анонимности не касается: обвязка I2CP,
+переподключение и клиенты на сессию — это водопровод про то, доходят ли байты, а
+не про то, кто их видит.
 
-## Reproduction
+## Воспроизведение
 
-`tools/sam-probe.py` — two SAM sessions on one router; catches layer 3.
-`tools/sam-eepsite.py` — fetch a real eepsite by base64 destination; catches
-layer 4 and is the decisive test, because it removes gipny entirely from the
-question.
+`tools/sam-probe.py` — две SAM-сессии на одном роутере; ловит слой 3.
+`tools/sam-eepsite.py` — получить настоящий eepsite по base64-destination; ловит
+слой 4 и является решающей проверкой, потому что убирает gipny из вопроса
+целиком.
 
-Both need a router with SAM on 127.0.0.1:7656 and, for the eepsite test, an
-`hosts.txt` (the official one ships in the I2P source tree at
-`installer/resources/hosts.txt`).
+Обоим нужен роутер с SAM на 127.0.0.1:7656, а тесту eepsite — ещё и `hosts.txt`
+(официальный лежит в дереве исходников I2P: `installer/resources/hosts.txt`).
 
-Run the router with `DEBUG_I2P=debug` — the `--debug` flag only reaches
-go-sam-bridge's embedding options and leaves go-i2p's logger at `io.Discard`.
-Expect ~300 MB of log for a few minutes of runtime.
+Запускайте роутер с `DEBUG_I2P=debug`: флаг `--debug` доходит только до опций
+встраивания go-sam-bridge и оставляет логгер go-i2p на `io.Discard`. Ожидайте
+около 300 МБ логов за несколько минут работы.
 
-`NAMING LOOKUP` for a `.b32.i2p` address returns `KEY_NOT_FOUND` in 0.0 s — no
-netdb lookup is attempted — which is why the reproduction scripts carry base64
-destinations instead of names.
+`NAMING LOOKUP` для адреса `.b32.i2p` возвращает `KEY_NOT_FOUND` за 0,0 с —
+запрос в netdb даже не делается, — поэтому скрипты воспроизведения носят с собой
+base64-destination, а не имена.
 
-## Open decisions
+## Открытые решения
 
-1. Confirm or rule out the LeaseSet exposure above.
-2. Evaluate i2pd as the shipped transport. Desktop is a binary swap — the Rust
-   side speaks plain SAMv3 and does not change. Android is the real cost: i2pd is
-   C++ with boost and OpenSSL across four ABIs, against a Go router that
-   cross-compiles trivially today.
-3. Until a transport actually delivers, README and release notes should not imply
-   working anonymous messaging.
+1. Подтвердить или исключить раскрытие через LeaseSet, описанное выше.
+2. Оценить i2pd как поставляемый транспорт. На десктопе это замена бинаря —
+   Rust-сторона говорит на обычном SAMv3 и не меняется. Настоящая цена — Android:
+   i2pd это C++ с boost и OpenSSL на четыре ABI против Go-роутера, который
+   кросс-компилируется тривиально.
+3. Пока транспорт реально не доставляет, README и заметки к релизам не должны
+   намекать на работающую анонимную переписку.

@@ -1,52 +1,79 @@
-# Does go-i2p publish a LeaseSet exposing our IP? (#49)
+# Публикует ли go-i2p LeaseSet, раскрывающий наш IP? (#49)
 
-> **Provenance and standing.** This is a source-only reading of go-i2p
-> v0.1.59999, produced by an automated agent (PR #56) and landed here rather
-> than left unmerged, because it is the only answer #49 ever got. Nobody has
-> inspected a LeaseSet actually published on the network, and the citations
-> below have not been re-checked against the source by a human. It is strong
-> enough to stop treating IP exposure as a live suspicion, and not strong
-> enough to be called settled.
+> **Происхождение и вес.** Это разбор только по исходникам go-i2p v0.1.59999,
+> сделанный автоматическим агентом (PR #56) и оставленный здесь, а не выброшенный
+> невлитым, потому что это единственный ответ, который вопрос #49 вообще получил.
+> Никто не рассматривал LeaseSet, реально опубликованный в сети, и ссылки ниже не
+> перепроверялись человеком по исходникам. Этого достаточно, чтобы перестать
+> считать раскрытие IP живым подозрением, и недостаточно, чтобы назвать вопрос
+> закрытым.
 >
-> Its practical weight is also limited now: go-i2p was removed from this repo
-> entirely, so no build ships it. The question mattered because releases up to
-> and including v0.3.4 were built on it — see README.
+> Практический вес разбора сейчас тоже ограничен: go-i2p удалён из репозитория
+> целиком, ни одна сборка его не содержит. Вопрос был важен потому, что релизы до
+> v0.3.4 включительно собирались на нём — см. README.
 
-Ruled out for go-i2p v0.1.59999: in the built-in I2CP session path, go-i2p does **not** publish a LeaseSet whose leases point at zero-hop tunnels.
+Для go-i2p v0.1.59999 исключено: в пути сессии I2CP, встроенной в него, go-i2p
+**не** публикует LeaseSet, чьи lease указывали бы на туннели с нулём хопов.
 
-## Scope
+## Границы разбора
 
-This is a source-only analysis of go-i2p `v0.1.59999` (`/tmp/go-i2p`), per the task.
+Это анализ только по исходникам go-i2p `v0.1.59999` (`/tmp/go-i2p`), как и было
+поставлено в задаче.
 
-## Evidence
+## Доказательства
 
-1. Session tunnel readiness does **not** require `hop_count > 0`; it only checks that inbound and outbound session pools each have at least one active tunnel (`lib/i2cp/server_tunnels.go:277-284`, `"if len(result.inboundTunnels) == 0 || len(result.outboundTunnels) == 0 { ... }"`).
+1. Готовность туннелей сессии **не** требует `hop_count > 0`: проверяется только
+   то, что во входящем и исходящем пулах сессии есть хотя бы по одному активному
+   туннелю (`lib/i2cp/server_tunnels.go:277-284`,
+   `"if len(result.inboundTunnels) == 0 || len(result.outboundTunnels) == 0 { ... }"`).
+2. Монитор готовности читает пулы **сессии** (`session.InboundPool()` /
+   `session.OutboundPool()`), а не исследовательские пулы роутера
+   (`lib/i2cp/server_tunnels.go:270-272`).
+3. Эти пулы сессии в настройке I2CP явно клиентские (`IsClientPool: true`,
+   `lib/i2cp/server_tunnels.go:111-122`).
+4. Исследовательские пулы роутера — отдельные, и `IsClientPool` у них по
+   умолчанию false (`lib/tunnel/pool.go:102-104`, `lib/tunnel/pool.go:108-119`),
+   поэтому успех исследовательского туннеля сам по себе не даёт готовности к
+   публикации клиентской сессии.
+5. Входящие туннели с нулём хопов регистрируются активными без хопов
+   (`Hops: nil`, `lib/i2np/tunnel_manager_build.go:188-191`).
+6. Сборка lease для публикации сессии пропускает любой туннель с нулём хопов
+   (`lib/i2cp/session.go:861-864`, `"if len(tun.Hops) == 0 { ... continue }"`) и
+   возвращает ошибку, если валидных не осталось (`lib/i2cp/session.go:891-893`,
+   `"has no valid leases to publish"`).
+7. Шлюзы lease берутся из первого хопа каждого оставшегося туннеля
+   (`lib/i2cp/session.go:901-905`, `"gatewayBytes := tun.Hops[0]"`), поэтому
+   туннель с нулём хопов не может дать шлюз.
+8. Путь payload `RequestVariableLeaseSet` тоже вырезает туннели с нулём хопов
+   (`lib/i2cp/server_tunnels.go:389-400`, `"removes nil and zero-hop tunnels"`,
+   `"if tun != nil && len(tun.Hops) > 0"`).
+9. Если готовность достигнута, но все входящие туннели с нулём хопов, отправка
+   запроса LeaseSet падает (валидных туннелей нет) и обслуживание не стартует
+   (`lib/i2cp/server_tunnels.go:291-296`, `:310-318`, `:399-401`).
+10. Строка лога `"Publishing all LeaseSets"` печатается в начале периодического
+    прохода публикатора, ещё до проверки, существует ли вообще хоть один LeaseSet
+    (`lib/netdb/publisher.go:239-246`), — то есть сама эта строка не доказывает,
+    что LeaseSet с lease действительно был опубликован.
 
-2. The readiness monitor reads **session** pools (`session.InboundPool()` / `session.OutboundPool()`), not exploratory router pools (`lib/i2cp/server_tunnels.go:270-272`).
+## Какие условия из этого кода следуют
 
-3. Those session pools are explicitly client pools (`IsClientPool: true`) in I2CP setup (`lib/i2cp/server_tunnels.go:111-122`, `"IsClientPool: true"`).
+- Туннель с нулём хопов может пройти только проверку готовности **по количеству**,
+  если он попал в пул сессии (`lib/i2cp/server_tunnels.go:277-284`).
+- Но до формирования записей lease туннели с нулём хопов отбрасываются
+  (`lib/i2cp/session.go:861-864`, `lib/i2cp/server_tunnels.go:395-397`).
+- Значит, в этом пути роутер не публикует записи lease, полученные из туннелей с
+  нулём хопов; если входящих туннелей с хопами нет вовсе, создание и запрос lease
+  падают (`lib/i2cp/session.go:891-893`,
+  `lib/i2cp/server_tunnels.go:399-401`).
 
-4. Exploratory/router pools are separate and default `IsClientPool` to false (`lib/tunnel/pool.go:102-104`, `lib/tunnel/pool.go:108-119`), so exploratory tunnel success does not by itself satisfy client-session publication readiness.
+## Чего установить не удалось
 
-5. Zero-hop inbound tunnels are represented with no hops (`Hops: nil`) when registered active (`lib/i2np/tunnel_manager_build.go:188-191`, `"Hops:      nil"`).
-
-6. Lease construction for session publication skips any tunnel with zero hops (`lib/i2cp/session.go:861-864`, `"if len(tun.Hops) == 0 { ... continue }"`) and errors if nothing valid remains (`lib/i2cp/session.go:891-893`, `"has no valid leases to publish"`).
-
-7. Lease gateways are taken from the first hop of each retained tunnel (`lib/i2cp/session.go:901-905`, `"gatewayBytes := tun.Hops[0]"`), so zero-hop tunnels cannot contribute a gateway.
-
-8. The RequestVariableLeaseSet payload path also strips zero-hop tunnels (`lib/i2cp/server_tunnels.go:389-400`, `"removes nil and zero-hop tunnels"`, `"if tun != nil && len(tun.Hops) > 0"`).
-
-9. If readiness is met but all inbound tunnels are zero-hop, sending the LeaseSet request fails (no valid tunnels) and maintenance is not started (`lib/i2cp/server_tunnels.go:291-296`, `lib/i2cp/server_tunnels.go:310-318`, `lib/i2cp/server_tunnels.go:399-401`).
-
-10. The log line `"Publishing all LeaseSets"` is emitted at the start of periodic publisher sweep even before checking whether any LeaseSets exist (`lib/netdb/publisher.go:239-246`), so that line alone is not proof that a LeaseSet with leases was actually published.
-
-## Exact conditions implied by this code
-
-- A zero-hop tunnel can satisfy only the **count-based** readiness gate if it appears in the session pool (`lib/i2cp/server_tunnels.go:277-284`).
-- But zero-hop tunnels are excluded before lease entries are formed (`lib/i2cp/session.go:861-864`, `lib/i2cp/server_tunnels.go:395-397`).
-- Therefore, the router does not publish lease entries sourced from zero-hop tunnels in this path; if no non-zero-hop inbound tunnels exist, lease creation/request fails instead (`lib/i2cp/session.go:891-893`, `lib/i2cp/server_tunnels.go:399-401`).
-
-## What I could not determine
-
-1. I did not fully trace external `common/lease_set2` validation internals to prove whether a custom external I2CP client could submit a hand-crafted LeaseSet2 containing arbitrary lease gateways via `CreateLeaseSet2`; this analysis is about go-i2p’s own tunnel-derived LeaseSet path (`lib/i2cp/server_dispatch.go:391-421`, `lib/i2cp/session.go:344-371`).
-2. I did not establish, from source alone, why your observed run logged `Publishing all LeaseSets` while client tunnels timed out; I only established that this log line is emitted before the zero/empty check (`lib/netdb/publisher.go:239-246`).
+1. Внутренности внешней валидации `common/lease_set2` полностью не прослежены,
+   поэтому не доказано, может ли сторонний клиент I2CP подсунуть собственноручно
+   собранный LeaseSet2 с произвольными шлюзами через `CreateLeaseSet2`; этот
+   разбор — про собственный путь go-i2p, где LeaseSet выводится из туннелей
+   (`lib/i2cp/server_dispatch.go:391-421`, `lib/i2cp/session.go:344-371`).
+2. По одним исходникам не удалось установить, почему в наблюдавшемся прогоне в
+   логе была строка `Publishing all LeaseSets`, пока клиентские туннели падали по
+   таймауту; установлено только то, что эта строка печатается до проверки на
+   ноль/пустоту (`lib/netdb/publisher.go:239-246`).

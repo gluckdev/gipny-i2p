@@ -1,316 +1,432 @@
-Repo: gluckdev/gipny-i2p — a Rust messenger (Tauri desktop + Android) that runs
-over I2P. Rust speaks SAMv3 (`yosemite` crate) to a bundled router.
+Репозиторий: gluckdev/gipny-i2p — мессенджер на Rust (Tauri для десктопа +
+Android), работающий поверх I2P. Rust общается по SAMv3 (крейт `yosemite`) со
+встроенным роутером.
 
-Context handoff for whoever picks this up next — a person or another agent.
-Replaces the 2026-07-19 brief, which described a go-i2p router that no longer
-exists in this tree.
+Передача контекста тому, кто возьмёт проект дальше — человеку или другому
+агенту. Заменяет бриф от 2026-07-19, который описывал роутер go-i2p, которого в
+этом дереве больше нет.
 
-STATE (2026-09-16, evening).
+СОСТОЯНИЕ (2026-09-16, вечер).
 
-The repository is live again: unarchived, Actions unlocked, every workflow has
-run. What is proven on GitHub's runners, not just written:
+Репозиторий снова живой: разархивирован, Actions разблокированы, все workflow
+прогнаны. Что доказано на раннерах GitHub, а не только написано:
 
-- **Delivery over live i2p** with a relay per bot, so a message only arrives if
-  the sender deposits on the *recipient's* relay: e2e-i2pd run 35075367552, 5/5.
-- **The in-process relay** (`libcore/src/relay_server.rs`): the same test with
-  no standalone relay, each bot served by an `EphemeralRelay` inside the harness
-  process — run 35076520090, 5/5.
-- **The router pin moves on delivery.** The bump job pinned i2pd 99eab7ac after
-  run 35075367552; that revision builds on Linux (glibc and musl) and all three
-  Android ABIs (i2pd-build run 35076553013).
-- **v0.4.0 is tagged and published** (16:55 MSK): desktop for Linux
-  x86_64/arm64, Windows, macOS arm64/x86_64, Android arm64/armv7, relay and
-  agent tarballs. Two of its parts shipped broken; 0.4.1 fixes them (next
-  section).
+- **Доставка по живой i2p** с релеем на каждого бота, то есть сообщение доходит
+  только если отправитель кладёт его на релей *получателя*: прогон e2e-i2pd
+  35075367552, 5/5.
+- **Релей внутри процесса** (`libcore/src/relay_server.rs`): тот же тест без
+  отдельного релея, каждого бота обслуживает `EphemeralRelay` внутри процесса
+  харнесса — прогон 35076520090, 5/5.
+- **Пин роутера двигается по доставке.** Джоба `bump` закрепила i2pd 99eab7ac
+  после прогона 35075367552; эта ревизия собирается на Linux (glibc и musl) и на
+  всех трёх ABI Android (прогон i2pd-build 35076553013).
+- **v0.4.0 отмечена тегом и опубликована** (16:55 МСК): десктоп для Linux
+  x86_64/arm64, Windows, macOS arm64/x86_64, Android arm64/armv7, архивы релея и
+  агента. Две её части ушли сломанными; 0.4.1 их исправляет (следующий раздел).
 
-AGENT MODE AND 0.4.1 (2026-09-16, later)
+РЕЖИМ АГЕНТА И 0.4.1 (2026-09-16, позже)
 
-The afternoon's agent work was done by another tool from the plan in
-docs/plans/2026-09-16-agent-mode.md; docs/plans/2026-09-16-inspection.md is
-the audit of it and the source of what follows.
+Дневную работу над агентом сделал другой инструмент по плану из
+docs/plans/2026-09-16-agent-mode.md; docs/plans/2026-09-16-inspection.md — аудит
+этой работы и источник того, что ниже.
 
-- Agent mode in the app and the headless `gipny-agent` exist and are proven
-  over live i2p: e2e-i2pd run 35182927011, job "e2e (agent binary)". The
-  harness is the master, the real binary is a separate process started with
-  the master's v2 card; GRANT creates the contact on the master by itself,
-  commands run one at a time (start/end pairs never interleave), an uploaded
-  script is on disk when its command runs, OFF is answered with REVOKE and
-  exit 0. Command RTT over the relay was 4–5 s on the first run.
-- **The desktop app could not start its router at all in 0.4.0.** 5e9e337
-  passed `--meshnets.yggdrasil=false`; i2pd declares that option as a boost
-  bool_switch and refuses a value, exiting before SAM opens. Nothing in CI
-  spawned the router through libcore — the e2e jobs attach to one their own
-  script starts — until the agent tarball smoke test in release.yml did. That
-  smoke step is now the only CI check of `RouterHandle::spawn`; keep it.
-- Shipped broken in 0.4.0, fixed on main for 0.4.1: the agent tarball had no
-  i2pd (the agent looks for it next to its own executable) — now bundled with
-  a systemd unit; the "start built-in relay" button wrote a per-launch
-  throwaway destination into the client's own relay setting — withdrawn.
-- Relay discovery (eb339bd) stays: every non-typing message carries the
-  sender's relay inside the ratchet envelope and the receiver updates the
-  contact. README's delivery section says so.
-- Still open from the agent plan: installers (install-agent.sh/.ps1, a
-  launchd plist), macOS and Windows agent tarballs.
-- Behaviour to keep in mind: a COMMAND from any contact is stored pending;
-  the moment that contact is made master, its backlog runs.
-- **v0.4.1 is tagged and published** (2026-09-17, on c6b7c57): the router
-  fix above, the agent tarball with i2pd, the phone layout that cannot grow
-  wider than the screen (`ui/dev/preview.html` is the rig it was built on).
-- Merged after 0.4.1: PR #66, the attachment metadata sanitizer redone per the
-  inspection's section B1 (JPEG/PNG/WebP/PDF by content, fail closed on what
-  cannot be cleaned, never on console uploads), with its tests; PR #65
-  (issue #31), the crypto/serde stack on current majors with compatibility
-  fixtures generated on the old stack. The voice messages (B2) are not
-  started: the first step is a microphone spike per webview, and the parked
-  first attempt is in 86c757a.
+- Режим агента в приложении и headless `gipny-agent` существуют и доказаны по
+  живой i2p: прогон e2e-i2pd 35182927011, джоба «e2e (agent binary)». Харнесс
+  играет мастера, настоящий бинарь — отдельный процесс, запущенный с карточкой
+  мастера версии v2; GRANT сам создаёт контакт у мастера, команды выполняются по
+  одной (пары «начало/конец» не перемешиваются), загруженный скрипт лежит на
+  диске к моменту выполнения своей команды, на OFF приходит REVOKE и выход с
+  кодом 0. RTT команды через релей на первом прогоне — 4–5 с.
+- **В 0.4.0 десктопное приложение вообще не могло запустить роутер.** Коммит
+  5e9e337 передавал `--meshnets.yggdrasil=false`; i2pd объявляет эту опцию как
+  boost bool_switch и значения не принимает, выходя до открытия SAM. Ничто в CI
+  не запускало роутер через libcore — джобы e2e подключаются к роутеру, который
+  стартует их собственный скрипт, — пока этого не сделал smoke-тест архива
+  агента в release.yml. Этот шаг теперь единственная проверка
+  `RouterHandle::spawn` в CI; не удаляйте его.
+- Ушло сломанным в 0.4.0 и исправлено на main к 0.4.1: в архиве агента не было
+  i2pd (агент ищет его рядом со своим исполняемым файлом) — теперь он там вместе
+  с юнитом systemd; кнопка «запустить встроенный релей» записывала одноразовый
+  адрес текущего запуска в настройку релея клиента — убрана.
+- Обнаружение релея (eb339bd) остаётся: каждое сообщение, кроме индикаторов
+  набора, несёт релей отправителя внутри конверта ratchet, и получатель обновляет
+  адрес у контакта. Раздел про доставку в README это описывает.
+- Осталось открытым из плана агента: установщики (install-agent.sh/.ps1, plist
+  для launchd), архивы агента для macOS и Windows.
+- Поведение, которое стоит помнить: COMMAND от любого контакта сохраняется как
+  отложенная; в момент, когда этот контакт делают мастером, его накопленная
+  очередь выполняется.
+- **v0.4.1 отмечена тегом и опубликована** (2026-09-17, на c6b7c57): исправление
+  роутера выше, архив агента с i2pd, раскладка для телефона, которая не может
+  стать шире экрана (`ui/dev/preview.html` — стенд, на котором её делали).
+- Влито после 0.4.1: PR #66 — переделанная по разделу B1 инспекции очистка
+  метаданных вложений (JPEG/PNG/WebP/PDF по содержимому, отказ вместо отправки
+  того, что не удалось очистить, и никогда не применяется к загрузкам через
+  консоль) вместе с тестами; PR #65 (issue #31) — стек crypto/serde на текущих
+  мажорных версиях с фикстурами совместимости, сгенерированными на старом стеке.
+  Голосовые сообщения (B2) не начаты: первый шаг — проверка микрофона в каждом
+  webview, отложенная первая попытка лежит в 86c757a.
 
-THE BUILT-IN RELAY (2026-09-17, for 0.4.2)
+ВСТРОЕННЫЙ РЕЛЕЙ (2026-09-17, к 0.4.2)
 
-The owner opened 0.4.1, was told there is no relay, and said what the design
-had always been: a relay under the hood of every app. It is there now, and on
-by default. `docs/relay-independence.md`, "Status (2026-09-17)", is the
-description; the decisions behind it:
+Владелец открыл 0.4.1, увидел «релей не настроен» и сказал то, чем замысел был
+всегда: релей под капотом каждого приложения. Теперь он там и включён по
+умолчанию. Описание — в `docs/relay-independence.md`, раздел «Состояние
+(2026-09-17)»; решения за ним:
 
-- **A new address at every launch, never stored** — the owner's choice between
-  that and a persisted destination. The cost is delivery only while both apps
-  run, and two people who both restart without overlapping have to exchange
-  cards again. Do not "fix" this by persisting the key without asking.
-- The relay is personal (`MemStoreLimits::personal`): an app holds nobody
-  else's mail.
-- A profile that already names a relay stays external. Profiles that pressed
-  the 0.4.0 button hold a dead address and are not rescued automatically —
-  there is no way to tell it from a live one; the release notes say how.
-- Not proven by CI: `Core`'s own wiring (auto-start, announcements, the
-  reachability notice). The e2e job proves the personal relay and the start
-  order over live i2p through `SessionManager`; the rest is unit tests and
-  the owner's check on a CI build.
+- **Новый адрес при каждом запуске, никогда не сохраняется** — выбор владельца
+  между этим и постоянным destination. Цена: доставка идёт, только пока работают
+  оба приложения, а двое, перезапустившиеся без пересечения, должны обменяться
+  карточками заново. Не «исправляйте» это сохранением ключа, не спросив.
+- Релей личный (`MemStoreLimits::personal`): приложение не держит чужую почту.
+- Профиль, в котором релей уже указан, остаётся внешним. Профили, где нажимали
+  кнопку из 0.4.0, держат мёртвый адрес и автоматически не спасаются — отличить
+  его от живого невозможно; в заметках к релизу написано, что делать.
+- Не доказано CI: обвязка самого `Core` (автозапуск, объявления, пометка
+  недоступности). Джоба e2e доказывает личный релей и порядок запуска по живой
+  i2p через `SessionManager`; остальное — юнит-тесты и проверка владельца на
+  CI-сборке.
 
-RELAY IN THE AGENT TOO (2026-09-17, same day)
+РЕЛЕЙ И В АГЕНТЕ (2026-09-17, тот же день)
 
-The owner's next ask: the relay had to be everywhere, agents included.
-`gipny-agent` now hosts a personal relay for itself the same way — see
-`docs/relay-independence.md`. It reused the app's design outright rather than
-inventing a second one: `--relay` changed meaning from "the relay to collect
-from, defaulting to the master's" to "an external override instead of the
-agent's own built-in one." The agent already re-sends its GRANT message to
-the master unconditionally on every restart, and every outgoing payload
-already carries the sender's current relay address
-(`session.rs::build_payload_from_db`) — so a fresh relay address at every
-agent restart needed no new announcement mechanism, just setting the relay
-before that first send. Do not read this as an oversight to "improve" later;
-it was free because the pieces were already there.
+Следующая просьба владельца: релей должен быть везде, включая агентов.
+`gipny-agent` теперь поднимает личный релей себе тем же способом — см.
+`docs/relay-independence.md`. Он переиспользовал схему приложения целиком, а не
+придумал вторую: `--relay` сменил смысл с «релей, с которого забирать почту, по
+умолчанию релей мастера» на «внешнее переопределение вместо собственного
+встроенного». Агент и так безусловно переотправляет мастеру GRANT при каждом
+перезапуске, а каждый исходящий payload и так несёт текущий адрес релея
+отправителя (`session.rs::build_payload_from_db`) — поэтому новый адрес релея при
+каждом старте агента не потребовал нового механизма объявлений, достаточно было
+задать релей до этой первой отправки. Не читайте это как недоделку, которую надо
+«улучшить»: так вышло бесплатно, потому что детали уже были на месте.
 
-AUTO-UPDATE FOR THE APP AND THE AGENT (2026-09-17, same day again)
+АВТООБНОВЛЕНИЕ ПРИЛОЖЕНИЯ И АГЕНТА (2026-09-17, снова тот же день)
 
-The owner's ask: check for a new release at every launch, download and
-install it in the background, and let the *next* launch be the one that runs
-it — never disrupt the session in progress. Two decisions, made with the
-owner before writing anything:
+Просьба владельца: проверять новый релиз при каждом запуске, скачивать и ставить
+в фоне, а запускать новую версию только *следующим* запуском — никогда не рвать
+текущую сессию. Два решения, принятые с владельцем до написания кода:
 
-- **Transport is GitHub Releases through the local i2pd HTTP proxy with an
-  outproxy** (`exit.stormycloud.i2p`), not raw clearnet (would leak "this IP
-  runs gipny" to GitHub on every check) and not the old signed-manifest
-  protocol in `libcore/src/update.rs` (nothing was ever built server-side for
-  it — `DEFAULT_UPDATE_ONION` was empty and stayed that way). That old
-  protocol, its wire format, and `UPDATE_VERIFY_KEY` are gone; TLS to GitHub
-  through the outproxy already gives end-to-end authenticity, and
-  `SHA256SUMS.txt` (already produced by the release pipeline) is a cheap
-  defense-in-depth check on top of it, not the source of trust.
-- `libcore::router` now enables i2pd's `httpproxy` (was hard off) with that
-  outproxy configured, on its own free local port
-  (`RouterHandle::http_proxy_port`, threaded through `I2pNode`). `None` on
-  Android or when attached to a router we don't own (`GIPNY_SAM_PORT`) — the
-  updater treats that as "unavailable this run", not an error.
-- Real release asset names (`gh release view`, not a guess) drive matching:
-  `gipny-i2p_<ver>_amd64.AppImage`, `_x64-setup.exe` for the app,
-  `gipny-agent_<ver>_linux-<arch>.tar.gz` for the agent. `.deb`/macOS/Android
-  stay "downloaded, cannot self-install" — same honesty the old
-  `InstallStrategy` had, just against real filenames now.
-- "Next launch, not now" per platform: Linux (AppImage, and the agent's own
-  binary) renames the verified download over the running file's path
-  immediately — safe because this process keeps executing what it already
-  loaded, and only the *next* exec of that path sees the new bytes. Windows
-  cannot overwrite a running exe, so it stages the installer and
-  `apply_staged_windows_installer` runs it as `installer.exe /S /UPDATE /R
-  /NCRC` and exits, at the very start of the *next* launch (`boot()` in
-  `core/src/lib.rs`, before the vault is unlocked). Tauri's NSIS template
-  honours `/R` in silent mode and starts the app again itself; `/UPDATE` skips
-  re-creating shortcuts. This is the one piece of the change that is **not
-  verified beyond a compile check** — it needs a real Windows machine.
-- Auto-install is on by default (`Core::auto_update_enabled`, Settings →
-  "обновляться автоматически", same default-on convention as
-  `attachment_privacy`). Off, the old manual modal (`ui/src/app.ts`,
-  `openUpdateModal`) still shows the version/notes/size and installs on a
-  click — unchanged flow, `target_key` just no longer exists on `UpdateInfo`.
-  On, `check_and_emit_update` downloads and installs in the same call,
-  silently, and emits `UpdateStaged { version }` — a toast, not a modal.
-- `gipny-agent` gets the same checker (`Updater::new(node, Component::Agent)`,
-  new — the agent had no updater at all before), on the same cadence
-  (`UPDATE_CHECK_INITIAL_SECS`/`UPDATE_CHECK_INTERVAL_SECS`, now shared
-  constants in `libcore::update` instead of duplicated in `core.rs`), logged
-  with `eprintln!` since it has no UI.
-- Per-version "already handled" dedup (`dismissed_update_version`, both the
-  app's DB setting and the agent's) matters more than it did: without it, a
-  process that auto-installed but was not restarted would redownload and
-  reinstall the same version every `UPDATE_CHECK_INTERVAL_SECS` forever,
-  because `env!("CARGO_PKG_VERSION")` cannot change until the process
-  actually restarts.
+- **Транспорт — GitHub Releases через локальный HTTP-прокси i2pd с выходным
+  узлом** (`exit.stormycloud.i2p`), а не чистый clearnet (это сообщало бы GitHub
+  «с этого IP работает gipny» при каждой проверке) и не старый протокол
+  подписанного манифеста в `libcore/src/update.rs` (серверной части для него
+  никто не сделал — `DEFAULT_UPDATE_ONION` был пуст и таким остался). Тот старый
+  протокол, его формат на проводе и `UPDATE_VERIFY_KEY` удалены; TLS до GitHub
+  через outproxy уже даёт сквозную подлинность, а `SHA256SUMS.txt` (его и так
+  делает релизный конвейер) — дешёвая дополнительная проверка сверху, а не
+  источник доверия.
+- `libcore::router` теперь включает у i2pd `httpproxy` (раньше был жёстко
+  выключен) с настроенным outproxy, на своём свободном локальном порту
+  (`RouterHandle::http_proxy_port`, протянут через `I2pNode`). `None` на Android
+  и когда мы подключены к чужому роутеру (`GIPNY_SAM_PORT`) — обновлятор считает
+  это «недоступно в этом запуске», а не ошибкой.
+- Сопоставление идёт по настоящим именам файлов релиза (`gh release view`, а не
+  догадка): `gipny-i2p_<версия>_amd64.AppImage`, `_x64-setup.exe` для
+  приложения, `gipny-agent_<версия>_linux-<arch>.tar.gz` для агента. `.deb`,
+  macOS и Android остаются «скачано, поставить сам не могу» — та же честность,
+  что была у старого `InstallStrategy`, только против реальных имён.
+- «Следующим запуском, а не сейчас», по платформам: Linux (AppImage и
+  собственный бинарь агента) сразу переименовывает проверенную загрузку поверх
+  пути работающего файла — это безопасно, потому что процесс продолжает
+  исполнять уже загруженное, а новые байты увидит только *следующий* запуск по
+  этому пути. Windows не может перезаписать работающий exe, поэтому установщик
+  складывается рядом, а `apply_staged_windows_installer` запускает его как
+  `installer.exe /S /UPDATE /R /NCRC` и выходит — в самом начале *следующего*
+  запуска (`boot()` в `core/src/lib.rs`, до разблокировки хранилища). Шаблон
+  NSIS у Tauri понимает `/R` в тихом режиме и сам запускает приложение снова;
+  `/UPDATE` пропускает пересоздание ярлыков. Это единственная часть изменения,
+  **не проверенная ничем, кроме компиляции**: нужна настоящая машина с Windows.
+- Автоустановка включена по умолчанию (`Core::auto_update_enabled`, *Настройки →
+  «обновляться автоматически»*, то же соглашение «по умолчанию включено», что у
+  `attachment_privacy`). Если выключить, остаётся прежняя ручная модалка
+  (`ui/src/app.ts`, `openUpdateModal`) с версией, заметками и размером, которая
+  ставит обновление по нажатию, — поток не менялся, только у `UpdateInfo` больше
+  нет `target_key`. Если включена, `check_and_emit_update` в том же вызове
+  скачивает и ставит молча и отдаёт `UpdateStaged { version }` — это тост, а не
+  модалка.
+- `gipny-agent` получил такой же проверяльщик (`Updater::new(node,
+  Component::Agent)` — раньше у агента обновлятора не было вообще), с той же
+  периодичностью (`UPDATE_CHECK_INITIAL_SECS`/`UPDATE_CHECK_INTERVAL_SECS`,
+  теперь общие константы в `libcore::update`, а не дубли в `core.rs`), с выводом
+  через `eprintln!`, поскольку интерфейса у него нет.
+- Дедупликация «эту версию уже обработали» (`dismissed_update_version`, и
+  настройка в базе приложения, и у агента) теперь важнее, чем раньше: без неё
+  процесс, который автоматически поставил обновление, но не был перезапущен,
+  качал и ставил бы ту же версию каждые `UPDATE_CHECK_INTERVAL_SECS` вечно,
+  потому что `env!("CARGO_PKG_VERSION")` не может измениться, пока процесс
+  действительно не перезапустится.
 
-DELIVERY HOLES, BEFORE THE RELAY NETWORK (2026-09-17, phase 1 of 5)
+ДЫРКИ ДОСТАВКИ, ДО СЕТИ РЕЛЕЕВ (2026-09-17, фаза 1 из 5)
 
-The owner wants closing a client never to lose mail, and chose a network of
-relays that store sealed mail for each other, with addresses that stay
-ephemeral (plan and decisions: docs/relay-independence.md once phase 3 lands;
-until then the phase list lives in the PR descriptions). Phase 1 fixes what
-lost mail with no new protocol at all:
+Владелец хочет, чтобы закрытие клиента никогда не теряло почту, и выбрал сеть
+релеев, которые хранят запечатанную почту друг для друга, с адресами, остающимися
+эфемерными (план и решения — `docs/relay-independence.md`). Фаза 1 закрывает то,
+что теряло почту вообще без нового протокола:
 
-- An undelivered message used to be retried eight times over about fifteen
-  minutes and then abandoned. `list_unacked_outgoing` and
-  `pending_outbound_for_recipient` now retry until the message is
-  `RETRY_TTL_MS` (7 days) old, with the same capped backoff.
-- The X3DH init payload now carries the sender's relay, in core and in
-  `session.rs`. A contact created from an init had no relay to answer to.
-- `session.rs` caught up with core: every payload is stamped with our relay
-  (was only messages built from the DB), the connection to our own relay
-  drops when that relay changes (was: after the 75 s dead threshold), and
-  callbacks, edits, pins and delivery acks go to the contact's relay instead
-  of our own, where nobody would ever collect them.
-- Relay login: plain `Auth` signed the bare challenge, so a relay a client
-  connected to could pass on another relay's challenge and log in there as
-  that client. `ClientToRelay::AuthV2` signs `"gipny-relay-auth-v2" ||
-  SHA-256(relay destination) || challenge`; the hash is computed from either
-  spelling of the address (base64 or `.b32.i2p`). Relays grant collecting,
-  acking and publishing only to `AuthV2`; plain `Auth` may still deposit and
-  fetch bundles, so 0.4.2 clients can keep writing to new relays. Clients try
-  `AuthV2` and fall back to `Auth` only when the relay hangs up on it, which
-  is what a relay from before it does; a relay faking that gains nothing but
-  deposit rights. If that fallback ever happens against a current relay (a
-  stream dropped at the wrong moment), the relay answers the bundle publish
-  with `ERR_NEEDS_AUTH_V2` and the client reconnects. The other direction has
-  no fix: a 0.4.2 client whose *own* relay is an upgraded standalone
-  `gipny-relay` can deposit but no longer collects — in practice that is only
-  relay-testnet, and the auto-updater moves such clients on. **Remove plain
-  `Auth` once 0.4.2 is no longer in use.** The new-client → old-relay fallback
-  has no automated test: one crate cannot hold both enum versions.
+- Недоставленное сообщение раньше переотправлялось восемь раз примерно за
+  пятнадцать минут и бросалось. `list_unacked_outgoing` и
+  `pending_outbound_for_recipient` теперь повторяют, пока сообщению меньше
+  `RETRY_TTL_MS` (7 дней), с тем же ограниченным бэкоффом.
+- Payload X3DH-инициализации теперь несёт релей отправителя, и в core, и в
+  `session.rs`. Контакту, созданному из такой инициализации, было некуда
+  отвечать.
+- `session.rs` догнал core: каждый payload штампуется нашим релеем (раньше
+  только сообщения, собранные из базы), соединение со своим релеем рвётся при
+  смене его адреса (раньше — через 75 с по порогу «мёртв»), а коллбеки, правки,
+  закрепления и подтверждения доставки уходят на релей контакта, а не на свой,
+  где их никто никогда не забрал бы.
+- Вход на релей: обычный `Auth` подписывал голый challenge, поэтому релей, к
+  которому подключился клиент, мог переслать challenge другого релея и войти туда
+  от имени этого клиента. `ClientToRelay::AuthV2` подписывает
+  `"gipny-relay-auth-v2" || SHA-256(destination релея) || challenge`; хэш
+  считается из любого написания адреса (base64 или `.b32.i2p`). Релеи дают
+  забирать почту, подтверждать и публиковать только по `AuthV2`; обычный `Auth`
+  по-прежнему может положить письмо и запросить бандл, поэтому клиенты 0.4.2
+  могут писать на новые релеи. Клиенты пробуют `AuthV2` и откатываются на `Auth`
+  только когда релей на этом обрывает соединение — так делает релей, выпущенный
+  до него; релей, притворившийся старым, не получает ничего, кроме права
+  положить письмо. Если такой откат всё же случился против современного релея
+  (поток оборвался в неудачный момент), релей отвечает на публикацию бандла
+  `ERR_NEEDS_AUTH_V2`, и клиент переподключается. В обратную сторону лечения нет:
+  клиент 0.4.2, чей *собственный* релей — обновлённый standalone `gipny-relay`,
+  может класть письма, но больше не забирает свои; на практике это только
+  relay-testnet, и автообновление такие клиенты уводит вперёд. **Уберите обычный
+  `Auth`, когда 0.4.2 выйдет из обращения.** Откат «новый клиент → старый релей»
+  автоматического теста не имеет: один крейт не может держать обе версии enum.
 
-CONTACT REQUESTS (2026-09-17, phase 2 of 5)
+ЗАПРОСЫ В КОНТАКТЫ (2026-09-17, фаза 2 из 5)
 
-Adding someone's card now introduces us to them right away, and on their side
-we show up as a request, not as a contact. `contacts.request_state`
-(`RequestState` in `libcore/src/db.rs`) is a column of its own rather than a
-fourth `TrustLevel`, because the `Blocked` checks are spread over both
-copy-paste siblings and a new trust value would have to be taught to each.
+Добавление чьей-то карточки теперь сразу представляет нас этому человеку, и у
+него мы появляемся как запрос, а не как контакт. `contacts.request_state`
+(`RequestState` в `libcore/src/db.rs`) — отдельная колонка, а не четвёртое
+значение `TrustLevel`, потому что проверки на `Blocked` разбросаны по обоим
+копипастным близнецам, и новому значению доверия пришлось бы учить каждую.
 
-- Adding a card marks the contact `Outgoing` and makes `flush_all_pending`
-  open a session with no message queued. The tiebreaker wait is skipped, since
-  nobody on the other side knows us yet. The X3DH init carries identity,
-  name and (since phase 1) relay, which is the whole card. No wire change: an
-  init from an unknown key *is* the request.
-- An init from an unknown key creates the contact as `Incoming` and emits
-  `CoreEvent::ContactRequest`. At most 50 are kept; the oldest go first.
-  `persist_from_requester` applies the sender's relay and name, keeps plain
-  messages, and does not show, notify or acknowledge them. The sender sees
-  them as undelivered and retries (phase 1: until a week old); duplicates are
-  deduplicated by origin. Nothing at all is sent to an `Incoming` contact.
-- Accept: back to `None`, ack every held message, queue a relay announcement.
-  Adding the card of someone who asked does the same. Decline deletes the
-  contact and what it sent; block is the ordinary trust change.
-- Anything arriving from an `Outgoing` contact means they accepted.
-- The sidebar has a "requests" section with accept, decline and block. The
-  group picker, forwarding and the agent-master picker leave requests out.
-- `SessionManager` (agent, bots) keeps accepting everyone, as before.
-- Known cost: a stranger with our card can make us spend X3DH work and
-  one-time prekeys.
+- Добавление карточки помечает контакт `Outgoing` и заставляет
+  `flush_all_pending` открыть сессию, когда в очереди нет ни одного сообщения.
+  Ожидание тайбрейкера пропускается: на другой стороне нас пока никто не знает.
+  X3DH-инициализация несёт личность, имя и (с фазы 1) релей — это и есть вся
+  карточка. Изменений на проводе нет: инициализация от неизвестного ключа *и
+  есть* запрос.
+- Инициализация от неизвестного ключа создаёт контакт как `Incoming` и отдаёт
+  `CoreEvent::ContactRequest`. Держится не больше 50; старейшие вытесняются.
+  `persist_from_requester` применяет релей и имя отправителя, сохраняет обычные
+  сообщения и не показывает их, не уведомляет о них и не подтверждает их.
+  Отправитель видит их недоставленными и повторяет (фаза 1: пока им меньше
+  недели); дубли гасятся по origin. `Incoming`-контакту не уходит ничего вообще.
+- Принять: обратно в `None`, подтвердить все удержанные сообщения, поставить в
+  очередь объявление релея. Добавление карточки того, кто уже попросился, делает
+  то же самое. Отклонить — удалить контакт и всё, что он прислал; заблокировать —
+  обычная смена доверия.
+- Что угодно, пришедшее от `Outgoing`-контакта, означает, что он принял запрос.
+- В списке чатов есть секция «Запросы» с кнопками «принять», «отклонить»,
+  «заблокировать». Пикеры групп, пересылки и выбора мастера агента запросы не
+  показывают.
+- `SessionManager` (агент, боты) принимает всех, как и раньше.
+- Известная цена: незнакомец с нашей карточкой может заставить нас потратить
+  работу X3DH и одноразовые prekey-и.
 
-WHAT CHANGED SINCE THE LAST BRIEF
+КРЕЙТ `gipny-dht` (2026-09-17, фаза 3 из 5)
 
-go-i2p is gone from the repository. It never finished building client tunnels
-and delivered nothing (docs/i2p-transport-evaluation.md); i2pd carried 5/5
-messages over live i2p on the same harness. The switch had been made for desktop
-only, in 769d6ae, and everything else was left behind. Now:
+Протокол сети релеев отдельным крейтом `dht/`, пока без интеграции (#72). Без
+rusqlite (его `links = "sqlite3"` конфликтовал бы с `core/relay`): хранилище и
+дозвон — трейты `Storage` и `Transport`, поэтому крейт можно подключить и в
+standalone-релей по пути, и гонять десятки узлов в памяти. Внутри: вывод ключей
+по суткам, запечатывание с паддингом до степени двойки, ECIES для первых писем,
+подписанные записи адреса и бандла внутри шифротекста, токен удаления внутри
+запечатанного значения, hashcash, привязанный к challenge соединения, плоская
+таблица узлов (k=8, α=3) и республикация. Уверенность даёт симуляция в памяти
+(`dht/tests/sim.rs`): 45 узлов, отправитель и получатель офлайн в разное время,
+узлы умирают и возвращаются с новыми идентификаторами, письмо доживает и
+доставляется. Проверено мутацией: без республикации тест падает.
 
-- `i2p-router/` deleted. No Go anywhere in the build.
-- Android runs i2pd in-process via JNI. `android-router/jni` builds the same
-  i2pd sources plus two entry points (`Java_app_gipny_GipnyService_nativeStart/
-  StopSam`) into `libi2pd.so`. The standalone binary the old workflow produced
-  could never have worked: it exports no JNI symbols.
-- Relay systemd units, the testnet relay workflow and `run-e2e.sh` all run i2pd.
-  `run-e2e.sh` lost its mock-SAM mode entirely — it ran in seconds and proved
-  nothing, which is how a dead transport stayed hidden.
-- Submodules are pinned again instead of tracking branch heads.
+СЕТЬ РЕЛЕЕВ В ПРИЛОЖЕНИИ И АГЕНТЕ (2026-09-17, фаза 4)
 
-THINGS THAT WERE BROKEN AND ARE NOW FIXED — worth knowing because each one hid
-in plain sight:
+Фаза 4a (#76, вошла в 0.4.4) — узлы находят друг друга:
 
-- `core/tauri.conf.json` carried two resource globs while only one could ever
-  match. tauri-build errors on a glob with no match, so **no fresh clone could
-  build at all**, and both release.yml and build.yml were failing on it.
-- A fresh install never left the boot screen. `RelayConnected` was the only
-  transition into the main view, `DEFAULT_RELAY` is empty so the core never
-  dials, and the relay field that would fix it lives in Settings — inside the
-  view it could not reach.
-- Duress decoy returned "bad key" instead of a decoy profile, because the decoy
-  master key is random and cannot open `data.db`. It now opens `decoy.db`. The
-  existing test passed the whole time: it stopped at the vault.
-- The update loop dialed an empty destination forever, and each failure counted
-  against the *shared* relay health counter, forcing SAM session rebuilds.
-- The e2e job was `continue-on-error`, so its check was green at 0/5 delivered;
-  and a `set -e` interaction meant a failed harness never even recorded
+- На проводе релея появились `ClientToRelay::Dht(байты)` и
+  `RelayToClient::Dht(байты)` последними вариантами, с golden-тестами в обоих
+  крейтах. Соединение, начавшееся с `Dht`, обслуживается «запрос — ответ»
+  (не больше 64 запросов, простой не дольше 60 с) и **никогда не может войти в
+  систему** или тронуть почтовый ящик — на это есть тест на риге.
+- `libcore/src/dht_client.rs` — узел над базой приложения (таблицы `dht_items`,
+  `dht_peers`) и над сервисными дозвонами i2p. `join` при готовности релея:
+  bootstrap по сидам (`GIPNY_DHT_SEEDS`), сохранённым узлам и релеям контактов,
+  публикация записи адреса для каждого принятого контакта, республикация того,
+  что мы храним. `maintain` — раз в 45 минут.
+- Android узлом-хранилищем не становится (`stores=false`): система усыпляет
+  приложение, а узел, который спит, теряет доверенное ему.
+- Команда `get_dht_status` и блок «Сеть релеев» в настройках.
+
+Фаза 4b (#80) — доставка через сеть:
+
+- `route_for` выбирает `Route::Relay` (релей контакта отвечает) или `Route::Dht`.
+  На сетевом пути письмо запечатывается в intro-ящик (для того, кто нас, возможно,
+  ещё не знает) или в парный ящик, prekey-бандл собеседника берётся из сети,
+  поэтому сессию можно открыть, пока он офлайн; единственное место, где
+  используется любой из путей, — `deliver`.
+- `collect_from_dht` при входе в сеть и каждые 10 минут: неделя назад на первом
+  проходе, затем сегодня и вчера. Письма идут через обычный
+  `handle_incoming_envelope`, поэтому незнакомец становится запросом в контакты
+  так же, как через релей. `dht_seen` не даёт расшифровать ratchet-конверт
+  дважды (иначе это выглядит как сломанная сессия); обработанное письмо удаляется
+  из сети.
+- **Требование владельца:** объявление адреса больше не отправляется один раз и
+  не забывается, а контакт не выбрасывается из списка за то, что его нет. Оно
+  повторяется (через релей или через сеть, при необходимости открывая сессию) не
+  чаще раза в 20 минут, пока от этого контакта что-нибудь не придёт, — только это
+  доказывает, что адрес дошёл. Подтверждения идут тем же путём, поэтому ответ
+  доходит и до отправителя, которого нет в сети.
+- Адрес контакта, сменившего релей, ищется в сети в фоне, не чаще раза в 10 минут
+  на контакт, и никогда на пути цикла отправки.
+- Не сделано в этой фазе: те же пути в `libcore/src/session.rs` для агента и
+  ботов и e2e по живой i2p — это фаза 5.
+
+ИНТЕРФЕЙС И ДОКУМЕНТАЦИЯ В ПРИЛОЖЕНИИ (2026-09-17, к 0.4.4)
+
+Владелец попросил вид как у коммерческих мессенджеров, папки для контактов и
+корректное описание внутри приложения.
+
+- Список чатов: аватарки, имя и статус, время и счётчик непрочитанного;
+  сворачиваемые секции; поиск по контактам; папки контактов, которые хранятся в
+  хранилище профиля через `get_ui_data`/`set_ui_data` (ключи `contact_folders` и
+  `avatars` — белый список в `core.rs`).
+- Аватарки — фрагменты гравюр XIX века (Куниёси, Хиросигэ) из общественного
+  достояния: один спрайт WebP 6×4 по 96 px, ≈47 КБ (`ui/public/avatars.webp`,
+  список и источники — в `ui/src/avatars.ts`). Каждому ключу достаётся персонаж
+  по хэшу, выбор человека хранится в профиле и виден только ему. **Не берите
+  картинки героев советских мультфильмов:** права принадлежат «Союзмультфильму»
+  и авторам, а приложение раздаётся публично.
+- `ui/src/about.ts` заменил `security.ts`: каждое утверждение сверено с кодом. В
+  прежнем тексте были неверные обещания («подписанные обновления, сервер не
+  развёрнут», «один канонический релей»), а сравнение с конкурентами убрано.
+  Меняя поведение, правьте эту страницу в том же коммите.
+- Иконки и иллюстрации — SVG в `ui/src/icons.ts`, без внешних зависимостей.
+
+CI: ЧТО БЫЛО ПОЧИНЕНО ПО ХОДУ (2026-09-17)
+
+- **`android emulator smoke` не проходил никогда.** `android-emulator-runner`
+  выполняет каждую строку встроенного `script` отдельной `sh -c`, поэтому
+  `APK=$(find …)` терялся до `adb install`. Скрипт вынесен в
+  `.github/scripts/android-smoke.sh`, джобе добавлен `actions/checkout`, а класс
+  активности — `app.gipny.i2p/app.gipny.MainActivity` (идентификатор приложения и
+  пространство имён Kotlin разные). Теперь джоба зелёная (PR #75).
+- **Публикация релиза 0.4.4 дважды повисла** на загрузке одного файла
+  (`aarch64.dmg`, 11 МБ) в `softprops/action-gh-release` с «Headers Timeout
+  Error», а перезапуск не мог пройти мимо ассета, застрявшего наполовину.
+  Публикация переписана на `gh`: черновик, затем каждый файл с ограничением в 5
+  минут, пятью попытками и `--clobber`, затем снятие черновика (PR #78).
+- Локально `gh` у владельца почти всё пишущее получает 403 (см. память сессии):
+  PR и merge — через GitHub MCP, ручные запуски и перезапуски джоб — через Chrome.
+
+РОУТЕР, ОСТАВШИЙСЯ ОТ ПРОШЛОГО ЗАПУСКА (2026-09-17, после 0.4.4)
+
+На установленной 0.4.4 экран разблокировки показал `i2p: router exited early:
+exit status: 1`, и профиль не открывался. Причина: i2pd от прошлой сессии остался
+жив (приложение умерло, не забрав с собой дочерний процесс), а i2pd держит
+блокировку на `i2pd.pid` в каталоге профиля, поэтому каждый следующий выходил
+сразу с «Could not lock pid file». Лечилось только убийством процесса руками.
+Исправление (#79): при старте читаем этот pid-файл — если процесс жив и его SAM
+отвечает (порты пишем рядом в `gipny-router.txt`), мы его переиспользуем
+(туннели уже построены); если жив, но молчит — SIGTERM, ожидание до 5 с, SIGKILL
+и новый запуск. Если такое повторится, смотрите сюда: хранить pid и порты
+рядом — единственный способ отличить «наш осиротевший роутер» от чужого.
+
+ЧТО ИЗМЕНИЛОСЬ С ПРОШЛОГО БРИФА
+
+go-i2p убран из репозитория. Он так и не научился достраивать клиентские туннели
+и не доставил ничего (docs/i2p-transport-evaluation.md); i2pd на том же харнессе
+провёл 5/5 сообщений по живой i2p. Переход тогда сделали только для десктопа, в
+769d6ae, а остальное осталось позади. Теперь:
+
+- `i2p-router/` удалён. Go в сборке нет нигде.
+- Android запускает i2pd внутри процесса через JNI. `android-router/jni`
+  собирает те же исходники i2pd плюс две точки входа
+  (`Java_app_gipny_GipnyService_nativeStart/StopSam`) в `libi2pd.so`. Отдельный
+  бинарь, который делал старый workflow, работать не мог: он не экспортирует
+  символов JNI.
+- Юниты systemd для релея, workflow тестового релея и `run-e2e.sh` — все на
+  i2pd. `run-e2e.sh` лишился мок-режима SAM целиком: он проходил за секунды и не
+  доказывал ничего, именно так мёртвый транспорт и оставался незамеченным.
+- Сабмодули снова закреплены на коммитах, а не следуют за головами ветвей.
+
+ЧТО БЫЛО СЛОМАНО И ПОЧИНЕНО — каждое стоит знать, потому что всё это лежало на
+виду:
+
+- В `core/tauri.conf.json` было два glob-шаблона ресурсов, а совпасть мог только
+  один. tauri-build падает на шаблоне без совпадений, поэтому **свежий клон
+  вообще не собирался**, и на этом падали и release.yml, и build.yml.
+- Свежая установка никогда не уходила с экрана загрузки. Единственным переходом в
+  основной вид был `RelayConnected`, `DEFAULT_RELAY` пуст, поэтому ядро никуда не
+  звонило, а поле релея, которое это лечит, живёт в настройках — внутри вида,
+  до которого было не добраться.
+- Профиль-обманка под принуждением возвращал «bad key» вместо профиля, потому что
+  мастер-ключ обманки случайный и не может открыть `data.db`. Теперь он открывает
+  `decoy.db`. Существующий тест всё это время проходил: он останавливался на
+  хранилище.
+- Цикл обновления вечно звонил на пустой destination, и каждый провал засчитывался
+  в *общий* счётчик здоровья релея, вызывая пересоздание сессий SAM.
+- Джоба e2e была `continue-on-error`, поэтому её проверка была зелёной при 0 из 5
+  доставленных; а из-за особенности `set -e` упавший харнесс даже не записывал
   `delivered=false`.
-- The Windows router was built as the tray/GUI daemon (`USE_WIN32_APP` defaults
-  to yes in Makefile.mingw), and the release binary carried no version stamp.
+- Роутер для Windows собирался как демон с треем и GUI (`USE_WIN32_APP` в
+  Makefile.mingw по умолчанию «да»), а в релизном бинаре не было штампа версии.
 
-#49 (LeaseSet exposure) is answered and closed out in
-docs/go-i2p-leaseset-analysis.md: ruled out by source reading, with the limits
-of that evidence stated. It is moot for anything shipped from here, since
-go-i2p is gone; it is not moot for v0.3.4 and earlier.
+Вопрос #49 (раскрытие через LeaseSet) отвечен и закрыт в
+docs/go-i2p-leaseset-analysis.md: исключено по чтению исходников, с оговоркой о
+границах такого доказательства. Для всего, что выпускается отсюда, он неактуален,
+поскольку go-i2p больше нет; для v0.3.4 и раньше — актуален.
 
-WHAT IS STILL OPEN, IN ORDER
+ЧТО ЕЩЁ ОТКРЫТО, ПО ПОРЯДКУ
 
-1. **0.4.2 on real devices.** The built-in relay has not run inside the app
-   anywhere but the owner's machine. Two installs, fresh profiles: the banner
-   goes away in a minute or two, "my card" fills in, the second device can
-   write to the first, a restart of one is followed by the other.
-2. **An offline mailbox for people who want one.** Built-in delivers only
-   while both apps run. External mode and the `gipny-relay` tarball cover it
-   for those who operate a relay; nothing is baked in (`DEFAULT_RELAY` is
-   empty) and whether to operate a public one is the owner's call.
-3. **Voice messages** (inspection, B2), agent installers and macOS/Windows
-   agent tarballs (agent plan §5–§6).
-4. **macOS** legs ran green in the v0.4.0 release (dmg for both arches).
-   Unsigned; floor is macOS 15. Nobody has launched the dmg on a Mac yet.
-5. **Android on a real device.** The router is built and asserted to be in the
-   APK; nothing has run on hardware.
+1. **Фаза 5 сети релеев.** `core/relay` как сид-узел, его состояние на GitHub,
+   зашифрованное `age` (владельцу нужно создать пару ключей: публичный — в
+   переменную репозитория, приватный — в секрет `DHT_SEED_AGE_KEY`), вшивание
+   `GIPNY_DHT_SEEDS` в релизы и e2e по живой i2p: оба офлайн по очереди,
+   доставка через сеть, затем смена адресов.
+2. **Паритет `session.rs`** с core по сети релеев: агент и боты пока умеют
+   только прямой путь.
+3. **0.4.4 на настоящих устройствах.** Сеть релеев и новый интерфейс проверены
+   на машине владельца и в превью; Android и macOS на железе никто не гонял.
+4. **Голосовые сообщения** (инспекция, B2), установщики агента и архивы агента
+   для macOS и Windows (план агента, §5–§6).
+5. **Yggdrasil под капотом.** Просьба владельца (2026-09-17): тянуть его внутрь
+   приложения так же, как i2pd. Сейчас в настройках только режим «использовать,
+   если он уже установлен в системе». Это отдельная работа по транспорту, план
+   не написан.
 
-KNOWN DEAD CODE, DELIBERATELY LEFT ALONE
+ИЗВЕСТНЫЙ МЁРТВЫЙ КОД, ОСТАВЛЕННЫЙ СОЗНАТЕЛЬНО
 
-- The whole inbound/P2P surface of `libcore/src/net.rs` — `connect`, `accept`,
-  `Frame` — is unused. It is also exactly what a relay-less design would build
-  on, which is why it has not been deleted.
-- `libcore/src/session.rs` and `core/src/core.rs` are ~1500-line copy-paste
-  siblings. Bots cannot create groups or send typing indicators, and every
-  messaging fix has to be written twice.
+- Вся входящая/P2P-поверхность `libcore/src/net.rs` — `connect`, `accept`,
+  `Frame` — не используется. Это же именно то, на чём строилась бы схема без
+  релея, поэтому её не удаляют.
+- `libcore/src/session.rs` и `core/src/core.rs` — копипастные близнецы по ~1500
+  строк. Боты не умеют создавать группы и отправлять индикатор набора, а каждое
+  исправление доставки приходится писать дважды.
 
-USEFUL TO KNOW
+ПОЛЕЗНО ЗНАТЬ
 
-- The UI can be looked at without a backend or an APK: `cd ui && npm run dev`,
-  then http://127.0.0.1:5173/dev/preview.html. It boots the real app against a
-  mocked Tauri IPC (`ui/dev/mock.ts`) at phone, tablet and desktop widths, with
-  fixtures that are hostile on purpose (host names, b32 addresses and
-  516-character destinations with no break opportunity), and a button that
-  lists every element sticking out of its viewport. The phone layout was eight
-  screens wide for want of exactly this.
-- `tools/sam-eepsite.py` fetches a real eepsite through whatever router is on
-  SAM 7656. It is the fastest way to tell "the router works" from "our code is
-  wrong", and it is what ended a day of guessing last time.
-- The e2e job's real signal is the `[e2e] SUCCESS` line and the echo count in
-  `[e2e-timing]`. That is still true even now that the job fails honestly.
-- Local shell may carry `CC`/`CXX` pointing at an Android NDK from a previous
-  session; `cargo check` then tries to build OpenSSL for Android and fails
-  confusingly. `unset CC CXX`.
+- Интерфейс можно смотреть без бэкенда и без APK: `cd ui && npm run dev`, затем
+  http://127.0.0.1:5173/dev/preview.html. Там запускается настоящее приложение
+  против замоканного IPC Tauri (`ui/dev/mock.ts`) на ширинах телефона, планшета и
+  десктопа, с нарочно неудобными фикстурами (имена хостов, адреса b32 и
+  516-символьные destination без возможности переноса) и кнопкой, которая
+  перечисляет всё, что вылезло за пределы окна. Раскладка телефона была шириной в
+  восемь экранов именно из-за отсутствия такой проверки.
+- `tools/sam-eepsite.py` тянет настоящий eepsite через тот роутер, что слушает
+  SAM на 7656. Это самый быстрый способ отличить «роутер работает» от «наш код
+  неправильный», и именно он в прошлый раз закончил день догадок.
+- Настоящий сигнал джобы e2e — строка `[e2e] SUCCESS` и число эхо-ответов в
+  блоке `[e2e-timing]`. Это по-прежнему так, даже теперь, когда джоба падает
+  честно.
+- В локальной оболочке могут остаться `CC`/`CXX`, указывающие на Android NDK из
+  прошлой сессии; `cargo check` тогда пытается собрать OpenSSL для Android и
+  падает непонятно. Лечится `unset CC CXX` (или `env -u CC -u CXX cargo …`).
 
-CONVENTIONS: commits carry the repository owner's git identity and no AI
-attribution trailers. Other tools commit here under that same identity; before
-treating a change in the tree as your own, check its provenance
-(docs/plans/2026-09-16-inspection.md, "Контекст"). Do not commit router binaries or DEBUG logs — .gitignore
-covers them, including `core/resources/i2pd`, which it did not before.
+СОГЛАШЕНИЯ: коммиты идут от git-личности владельца репозитория, без трейлеров
+ИИ-соавторства. Другие инструменты коммитят здесь под той же личностью; прежде
+чем считать изменение в дереве своим, проверьте его происхождение
+(docs/plans/2026-09-16-inspection.md, «Контекст»). Не коммитьте бинари роутера и
+DEBUG-логи — .gitignore их покрывает, включая `core/resources/i2pd`, которого
+раньше в нём не было.
