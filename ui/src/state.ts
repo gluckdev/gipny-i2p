@@ -105,6 +105,8 @@ export class Store {
   updateAvailable = new Signal<UpdateInfo | null>(null);
   updateProgress = new Signal<UpdateProgress | null>(null);
   updateReadyPath = new Signal<string | null>(null);
+  /// A version installed and waiting for a restart to take effect.
+  updateStaged = new Signal<string | null>(null);
   updateError = new Signal<string | null>(null);
   scrollToMessage = new Signal<{ target: ChatTarget; messageId: number; nonce: number } | null>(null);
   sidebarCollapsed = new Signal<boolean>(typeof localStorage !== 'undefined' && localStorage.getItem('gipny:sidebar-collapsed') === '1');
@@ -999,7 +1001,7 @@ export class Store {
       // left to show a modal for, so close it if one is open.
       this.updateAvailable.set(null);
       this.updateProgress.set(null);
-      this.showToast(`update v${e.UpdateStaged.version} installed — restart gipny to use it`);
+      this.updateStaged.set(e.UpdateStaged.version);
     } else if ('UpdateReady' in e) {
       this.updateReadyPath.set(e.UpdateReady.path);
       this.updateProgress.set(null);

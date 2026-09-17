@@ -1226,10 +1226,20 @@ impl Core {
         Ok(())
     }
 
-    /// Whether auto-update should install silently once it finds something,
-    /// or just notify and leave it to the UI's manual prompt.
+    /// Whether a found update installs by itself.
+    ///
+    /// Always yes, by the owner's decision (2026-09-17): a messenger whose
+    /// security fixes wait for someone to press a button is only as safe as
+    /// the least attentive install, and the old switch made "I turned it off
+    /// once" a permanent state. `GIPNY_NO_AUTO_UPDATE=1` is the developer's
+    /// escape hatch — an environment variable, not a setting, so it cannot be
+    /// left behind in a profile.
     pub fn auto_update_enabled(&self) -> bool {
-        !matches!(self.db.get_setting(SETTING_AUTO_UPDATE).ok().flatten().as_deref(), Some(b"0"))
+        if std::env::var_os("GIPNY_NO_AUTO_UPDATE").is_some() {
+            return false;
+        }
+        let _ = SETTING_AUTO_UPDATE; // kept for older profiles; no longer read
+        true
     }
 
     /// The interface's own data under `key` (see `UI_DATA_KEYS`), kept in the
@@ -1252,6 +1262,7 @@ impl Core {
         Ok(())
     }
 
+    /// Kept so an older interface does not fail; updates install either way.
     pub fn set_auto_update(&self, enabled: bool) -> Result<()> {
         self.db.set_setting(SETTING_AUTO_UPDATE, if enabled { b"1" } else { b"0" })?;
         Ok(())

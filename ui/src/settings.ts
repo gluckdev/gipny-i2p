@@ -151,28 +151,10 @@ export class SettingsModal {
             pending,
             installRow,
             updErr,
-            (() => {
-              const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
-              const err = h('div', { class: 'err' });
-              Api.getAutoUpdate().then((v) => { cb.checked = v; }).catch(() => { cb.checked = true; });
-              cb.addEventListener('change', () => {
-                err.textContent = '';
-                Api.setAutoUpdate(cb.checked).catch((e) => {
-                  err.textContent = String(e);
-                  cb.checked = !cb.checked;
-                });
-              });
-              return h('div', { style: { marginTop: '8px' } },
-                h('label', { class: 'opt', style: { alignItems: 'center' } },
-                  cb,
-                  h('span', { class: 'opt-text' },
-                    h('span', { class: 'opt-title' }, 'обновляться автоматически'),
-                    h('span', { class: 'opt-blurb' },
-                      'скачивается и ставится в фоне без вопросов; новая версия запустится '
-                      + 'при следующем запуске gipny. Выключено — только уведомление, ставить вручную.'))),
-                err,
-              );
-            })(),
+            h('div', { class: 'hint', style: { marginTop: '8px' } },
+              'Обновления ставятся сами: проверка при запуске и раз в несколько часов, '
+              + 'загрузка через сеть i2p, установка в фоне. Новая версия начинает работать '
+              + 'после перезапуска — приложение предложит его сразу, как только обновление готово.'),
           );
           return updateSection;
         })(),
