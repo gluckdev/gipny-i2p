@@ -93,11 +93,19 @@ export class ChatView extends View {
       this.updateJumpBtn();
       this.maybeLoadMore();
     });
+    const isTouch = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+    // On a touch keyboard Enter is a newline and there is no Shift+Enter to
+    // explain; the long hint also wraps to a second line at phone width.
+    const placeholderFor = (consoleMode: boolean): string => {
+      if (isTouch) return consoleMode ? 'command…' : 'message…';
+      return consoleMode
+        ? 'command... (enter to run, shift+enter newline)'
+        : 'type message... (enter to send, shift+enter newline)';
+    };
     this.input = h('textarea', {
-      placeholder: 'type message... (enter to send, shift+enter newline)',
+      placeholder: placeholderFor(false),
       rows: '1',
     }) as HTMLTextAreaElement;
-    const isTouch = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
     this.input.addEventListener('keydown', (e) => {
       const ke = e as KeyboardEvent;
       if (isTouch) return;
@@ -129,9 +137,16 @@ export class ChatView extends View {
     this.ttlPicker = h('div', { class: 'ttl-picker' });
     if (!isGroup) this.renderTtlPicker();
 
-    const detailsBtn = isGroup
-      ? h('button', { class: 'btn btn-ghost', onClick: () => this.openGroupDetails() }, 'Members')
-      : h('button', { class: 'btn btn-ghost', onClick: () => this.openContactDetails() }, 'Details');
+    // Icon and label both; the stylesheet shows the label where the chat pane
+    // has room for it and the icon alone where it does not.
+    const detailsBtn = h('button', {
+      class: 'btn btn-ghost chat-details',
+      title: isGroup ? 'members' : 'contact details',
+      onClick: () => (isGroup ? this.openGroupDetails() : this.openContactDetails()),
+    },
+      h('span', { class: 'chat-details-icon', 'aria-hidden': 'true' }, 'ⓘ'),
+      h('span', { class: 'chat-details-label' }, isGroup ? 'Members' : 'Details'),
+    );
     const searchBtn = h('button', { class: 'btn btn-ghost', title: 'search in this chat', onClick: () => this.openSearch() }, '⌕');
     const mediaBtn = h('button', { class: 'btn btn-ghost', title: 'media in this chat', onClick: () => this.openMedia() }, '◉');
 
@@ -166,21 +181,20 @@ export class ChatView extends View {
       const consoleMode = !isGroup && store.isConsoleMode(target);
       this.el?.classList.toggle('console', consoleMode);
       this.promptEl.textContent = consoleMode ? '$' : '>';
-      this.input.placeholder = consoleMode
-        ? 'command... (enter to run, shift+enter newline)'
-        : 'type message... (enter to send, shift+enter newline)';
+      this.input.placeholder = placeholderFor(consoleMode);
       this.ttlPicker.classList.toggle('hidden', consoleMode);
       this.replyChip.classList.toggle('hidden', consoleMode);
     };
     renderAgentControls();
 
     const headerRight = isGroup
-      ? h('div', { class: 'row' }, searchBtn, mediaBtn, detailsBtn)
+      ? h('div', { class: 'row chat-actions' }, searchBtn, mediaBtn, detailsBtn)
       : (() => {
           const c = store.contacts.get().find((x) => x.id === (target.id as number));
-          return h('div', { class: 'row' },
+          return h('div', { class: 'row chat-actions' },
             h('span', {
               class: 'trust-badge trust-' + (c?.trust ?? 0),
+              title: trustLabel(c?.trust ?? 0),
             }, trustLabel(c?.trust ?? 0)),
             agentControls,
             searchBtn,
@@ -198,8 +212,8 @@ export class ChatView extends View {
           title: 'back',
           onClick: () => store.selectedChat.set(null),
         }, '←'),
-        h('div', null,
-          h('div', { class: 'chat-title' }, title),
+        h('div', { class: 'chat-heading' },
+          h('div', { class: 'chat-title', title }, title),
           subEl,
           statusEl,
           this.typingHeader,

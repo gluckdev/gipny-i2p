@@ -402,7 +402,9 @@ jobs:
             echo "smoke: the agent started its router from the tarball and printed its card"
             grep -E "i2p address|agent card" "$smoke/agent.log"
           else
-            echo "smoke: the agent did not come up from the tarball"; cat "$smoke/agent.log"; exit 1
+            echo "smoke: the agent did not come up from the tarball"; cat "$smoke/agent.log"
+            echo "--- router log:"; tail -40 "$smoke"/data/i2p/router/i2pd.log 2>/dev/null || echo "(no router log)"
+            exit 1
           fi
       - uses: actions/upload-artifact@v7
         with:

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>gipny · layout preview</title>
+    <style>
+      :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+      body { margin: 0; padding: 16px; background: #1b1f24; color: #d7dde4; }
+      header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+      header h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+      select, button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #3a424c; background: #262c33; color: inherit; }
+      button { cursor: pointer; }
+      #report { white-space: pre-wrap; font: 12px/1.5 ui-monospace, monospace; margin: 0 0 14px; padding: 10px 12px; border-radius: 8px; background: #11151a; border: 1px solid #2c333b; min-height: 1.5em; }
+      #report.ok { border-color: #2f7d4a; } #report.bad { border-color: #b3403a; }
+      .frames { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+      figure { margin: 0; }
+      figcaption { margin-bottom: 6px; color: #9aa5b1; }
+      iframe { display: block; border: 1px solid #3a424c; border-radius: 10px; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>gipny · layout preview</h1>
+      <label>scene
+        <select id="scene">
+          <option>list</option><option>chat</option><option>console</option><option>agent</option>
+          <option>settings</option><option>identity</option><option>auth</option>
+        </select>
+      </label>
+      <label>theme
+        <select id="theme"><option>light</option><option>dark</option></select>
+      </label>
+      <button id="check">check horizontal overflow</button>
+    </header>
+    <pre id="report">frames are loading…</pre>
+    <div class="frames" id="frames"></div>
+
+    <script type="module">
+      // Widths people actually hold: a small Android, a current iPhone, a
+      // tablet in portrait, and the desktop window's default size.
+      const SIZES = [
+        { label: 'phone 360 × 740', w: 360, h: 740 },
+        { label: 'phone 412 × 892', w: 412, h: 892 },
+        { label: 'tablet 768 × 1024', w: 768, h: 1024 },
+        { label: 'desktop 1100 × 720', w: 1100, h: 720 },
+      ];
+      // ?only=phone narrows the set by label; ?h=640 caps the frame height so
+      // several fit in one screenshot.
+      const q = new URLSearchParams(location.search);
+      const only = q.get('only');
+      const capH = Number(q.get('h')) || Infinity;
+      if (only) SIZES.splice(0, SIZES.length, ...SIZES.filter((s) => s.label.includes(only)));
+      for (const s of SIZES) s.h = Math.min(s.h, capH);
+      const sceneSel = document.getElementById('scene');
+      const themeSel = document.getElementById('theme');
+      sceneSel.value = q.get('scene') ?? 'list';
+      themeSel.value = q.get('theme') ?? 'light';
+      const frames = document.getElementById('frames');
+      const report = document.getElementById('report');
+
+      function render() {
+        frames.replaceChildren();
+        for (const s of SIZES) {
+          const fig = document.createElement('figure');
+          const cap = document.createElement('figcaption');
+          cap.textContent = s.label;
+          const f = document.createElement('iframe');
+          f.width = s.w; f.height = s.h; f.dataset.label = s.label;
+          f.src = `/dev/frame.html?scene=${sceneSel.value}&theme=${themeSel.value}`;
+          fig.append(cap, f);
+          frames.append(fig);
+        }
+        report.className = ''; report.textContent = 'frames are loading…';
+        setTimeout(check, 2500);
+      }
+
+      // An element is an offender when it sticks out of the viewport to the
+      // right and nothing between it and the root clips it. Elements inside a
+      // horizontally scrollable or clipping ancestor are that ancestor's
+      // business, not the page's.
+      function offenders(doc) {
+        const vw = doc.documentElement.clientWidth;
+        const out = [];
+        for (const el of doc.body.querySelectorAll('*')) {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.right <= vw + 1) continue;
+          let clipped = false;
+          for (let p = el.parentElement; p && p !== doc.body; p = p.parentElement) {
+            const ox = doc.defaultView.getComputedStyle(p).overflowX;
+            if (ox !== 'visible') { clipped = true; break; }
+          }
+          if (clipped) continue;
+          const cls = el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : '';
+          out.push(`${el.tagName.toLowerCase()}${cls} → right ${Math.round(r.right)}px (viewport ${vw}px)`);
+        }
+        return out;
+      }
+
+      function check() {
+        const lines = []; let bad = false;
+        for (const f of frames.querySelectorAll('iframe')) {
+          const doc = f.contentDocument;
+          if (!doc || !doc.body) { lines.push(`${f.dataset.label}: not loaded`); bad = true; continue; }
+          const root = doc.documentElement;
+          const overflow = Math.max(root.scrollWidth, doc.body.scrollWidth) - root.clientWidth;
+          const off = offenders(doc);
+          if (overflow > 1 || off.length) {
+            bad = true;
+            lines.push(`${f.dataset.label}: page is ${overflow}px wider than the viewport`);
+            for (const o of off.slice(0, 12)) lines.push('    ' + o);
+            if (off.length > 12) lines.push(`    … and ${off.length - 12} more`);
+          } else {
+            lines.push(`${f.dataset.label}: ok`);
+          }
+        }
+        report.className = bad ? 'bad' : 'ok';
+        report.textContent = lines.join('\n');
+        return { bad, lines };
+      }
+      window.checkOverflow = check;
+
+      sceneSel.onchange = themeSel.onchange = () => {
+        q.set('scene', sceneSel.value); q.set('theme', themeSel.value);
+        history.replaceState(null, '', '?' + q.toString());
+        render();
+      };
+      document.getElementById('check').onclick = check;
+      render();
+    </script>
+  </body>
+</html>

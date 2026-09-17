@@ -358,14 +358,19 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let grant_ms = granted_at.duration_since(t_start).as_millis() as u64;
     eprintln!("[e2e] GRANT after {grant_ms} ms; the agent is contact {agent_cid} on bot-a");
 
-    // 2. Commands. Each one appends its tag to a file and echoes it; a final
-    //    `cat` of that file shows the order the agent actually ran them in,
-    //    whatever order the outputs travel back in. One command carries a
-    //    file and runs it: the upload must be saved before the shell starts.
+    // 2. Commands. Each one writes `start-k`, sleeps a second, writes `end-k`
+    //    and echoes its tag. A final `cat` of that file then shows whether the
+    //    agent ran them one at a time: sequential execution leaves every
+    //    `start-k` immediately followed by its own `end-k`; concurrent
+    //    execution interleaves starts. Messages sent milliseconds apart may
+    //    reach the agent in any order over the relay, so send order is not
+    //    asserted — only that each command ran, once, and none overlapped.
+    //    One command carries a file and runs it: the upload must be saved
+    //    before the shell starts.
     let mut send_times: HashMap<String, Instant> = HashMap::new();
     for i in 1..=n_commands {
         let tag = format!("hello-{i}");
-        let body = format!("echo {tag} >> e2e-order.txt; echo {tag}");
+        let body = format!("echo start-{i} >> e2e-order.txt; sleep 1; echo end-{i} >> e2e-order.txt; echo {tag}");
         a.session
             .send_console(agent_cid, body, WireConsole::new(CONSOLE_COMMAND), vec![])
             .await
@@ -418,10 +423,29 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
         }
         None => failures.push("script: its output never came back (upload not saved before the command ran?)".into()),
     }
-    let expected_order: String = (1..=n_commands).map(|i| format!("hello-{i}\n")).collect();
-    if !outputs.iter().any(|(body, code, _)| *body == expected_order && *code == Some(0)) {
-        let cats: Vec<&String> = outputs.iter().filter(|(b, _, _)| b.lines().count() > 1).map(|(b, _, _)| b).collect();
-        failures.push(format!("order: the agent did not run the commands in arrival order; multi-line outputs: {cats:?}"));
+    // The `cat`: 2N lines, start/end pairs, each tag exactly once.
+    match outputs.iter().find(|(body, _, _)| body.starts_with("start-") && body.lines().count() == 2 * n_commands) {
+        Some((body, _, _)) => {
+            let lines: Vec<&str> = body.lines().collect();
+            let mut seen: Vec<usize> = Vec::new();
+            for pair in lines.chunks(2) {
+                let k = pair[0].strip_prefix("start-").and_then(|k| k.parse::<usize>().ok());
+                match (k, pair.get(1)) {
+                    (Some(k), Some(end)) if *end == format!("end-{k}") => seen.push(k),
+                    _ => { failures.push(format!("sequential: commands overlapped or were cut: {body:?}")); break; }
+                }
+            }
+            seen.sort_unstable();
+            if seen != (1..=n_commands).collect::<Vec<_>>() {
+                failures.push(format!("sequential: not every command ran exactly once: {seen:?} in {body:?}"));
+            }
+            eprintln!("[e2e] the agent ran the commands one at a time, in this order: {}", lines.iter().step_by(2).map(|l| l.trim_start_matches("start-")).collect::<Vec<_>>().join(","));
+        }
+        None => failures.push(format!(
+            "sequential: no `cat e2e-order.txt` output with {} lines; multi-line outputs: {:?}",
+            2 * n_commands,
+            outputs.iter().filter(|(b, _, _)| b.lines().count() > 1).map(|(b, _, _)| b).collect::<Vec<_>>(),
+        )),
     }
     latencies.sort_unstable();
     let (rtt_min, rtt_median, rtt_max) = if latencies.is_empty() {
@@ -491,7 +515,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     if !failures.is_empty() {
         bail!("agent e2e failed:\n  {}", failures.join("\n  "));
     }
-    eprintln!("[e2e] SUCCESS — the agent ran {n_commands} commands in order, ran the uploaded script, and left on OFF");
+    eprintln!("[e2e] SUCCESS — the agent ran {n_commands} commands one at a time, ran the uploaded script, and left on OFF");
     Ok(())
 }
 
