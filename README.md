@@ -109,6 +109,31 @@
 
 ---
 
+## 🗺️ Карта проекта: куда вносить правки
+
+В каждом каталоге лежит свой `README.md`: что там за файлы, какая задача каким файлом решается, что надо менять вместе и как проверить. Начинайте с него, а не с поиска по всему проекту.
+
+| Каталог | Что это | Путеводитель |
+|---|---|---|
+| `libcore/` | Общее ядро: криптография, сессии Double Ratchet, база, протокол релея, встроенный релей, роутер i2pd, автообновление | [libcore/README.md](libcore/README.md) |
+| `core/` | Приложение на Tauri (десктоп и Android): `Core`, команды для интерфейса, запуск профиля | [core/README.md](core/README.md) |
+| `core/gen/android/` | Android-обёртка: сервис, манифест, ресурсы | [core/gen/android/README.md](core/gen/android/README.md) |
+| `android-router/` | Сборка i2pd для Android (JNI) | [android-router/README.md](android-router/README.md) |
+| `core/relay/` | Выделенный релей `gipny-relay` (отдельный workspace) | [core/relay/README.md](core/relay/README.md) |
+| `dht/` | Сеть релеев: ключи, запечатывание, протокол узлов, хранилище | [dht/README.md](dht/README.md) |
+| `ui/` | Интерфейс (TypeScript без фреймворка), dev-превью с моками | [ui/README.md](ui/README.md) |
+| `agent/` | `gipny-agent` — headless-агент с удалённой консолью | [agent/README.md](agent/README.md) |
+| `bot-sdk/` | Bot SDK | [bot-sdk/README.md](bot-sdk/README.md) |
+| `tests/e2e-harness/` | Сквозные тесты по живой сети i2p | [tests/e2e-harness/README.md](tests/e2e-harness/README.md) |
+| `.github/workflows/` | CI, релизы, e2e, тестовый релей, скрипты заметок к релизу | [.github/workflows/README.md](.github/workflows/README.md) |
+| `tools/` | Утилиты для отладки роутера и SAM | [tools/README.md](tools/README.md) |
+| `docs/` | Документы: решения, планы, заметки к релизам, передача дел | [docs/README.md](docs/README.md) |
+| `third_party/` | Сабмодули `i2pd` и `i2pd-android` — не править руками, пин двигает CI | — |
+
+Правило: поменяли структуру каталога, добавили файл или перенесли ответственность — поправьте его `README.md` в том же коммите.
+
+---
+
 ## 📦 Сборка и запуск
 
 Все бинарные сборки и тесты автоматически собираются в [GitHub Actions CI](https://github.com/gluckdev/gipny-i2p/actions).
