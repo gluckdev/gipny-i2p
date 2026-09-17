@@ -217,3 +217,17 @@ fn attachment_key_round_trips_and_is_unique() {
     let other = AttachmentCipher::generate();
     assert!(other.decrypt_chunk(0, b"aad", &ct).is_err());
 }
+
+#[test]
+fn random_arrays_are_random() {
+    use gipny_libcore::crypto::random_array;
+    // Not a statistical test — a guard against a constant or a repeated value,
+    // which is how an RNG wired wrong shows up.
+    let a: [u8; 32] = random_array();
+    let b: [u8; 32] = random_array();
+    assert_ne!(a, b);
+    assert_ne!(a, [0u8; 32]);
+    assert!(a.iter().collect::<std::collections::HashSet<_>>().len() > 8, "{a:?}");
+    let n: [u8; 24] = random_array();
+    assert_ne!(n, [0u8; 24]);
+}

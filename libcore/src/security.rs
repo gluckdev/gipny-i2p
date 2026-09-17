@@ -8,7 +8,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
-use rand::{rngs::OsRng, RngCore};
+use crate::crypto::fill_random;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use thiserror::Error;
@@ -126,7 +126,7 @@ impl Vault {
         let nonce_primary = random24();
 
         let mut master = Zeroizing::new([0u8; MK_LEN]);
-        OsRng.fill_bytes(master.as_mut_slice());
+        fill_random(master.as_mut_slice());
         let kek_p = derive_kek(pass, &salt_primary, &argon, &device)?;
         let ct_primary = seal(&kek_p, &nonce_primary, master.as_slice())?;
 
@@ -135,7 +135,7 @@ impl Vault {
                 let n = random24();
                 let kek_d = derive_kek(dp, &salt_duress, &argon, &device)?;
                 let mut mkd = Zeroizing::new([0u8; MK_LEN]);
-                OsRng.fill_bytes(mkd.as_mut_slice());
+                fill_random(mkd.as_mut_slice());
                 (seal(&kek_d, &n, mkd.as_slice())?, n)
             }
             _ => (Vec::new(), random24()),
@@ -232,7 +232,7 @@ impl Vault {
                 let nonce = random24();
                 let kek = derive_kek(dp, &salt, &st.header.argon, &device)?;
                 let mut mkd = Zeroizing::new([0u8; MK_LEN]);
-                OsRng.fill_bytes(mkd.as_mut_slice());
+                fill_random(mkd.as_mut_slice());
                 let ct = seal(&kek, &nonce, mkd.as_slice())?;
                 st.header.salt_duress = salt;
                 st.header.nonce_duress = nonce;
@@ -270,8 +270,8 @@ impl Vault {
     }
 }
 
-fn random32() -> [u8; 32] { let mut s = [0u8; 32]; OsRng.fill_bytes(&mut s); s }
-fn random24() -> [u8; 24] { let mut s = [0u8; 24]; OsRng.fill_bytes(&mut s); s }
+fn random32() -> [u8; 32] { crate::crypto::random_array() }
+fn random24() -> [u8; 24] { crate::crypto::random_array() }
 
 fn derive_kek(pass: &str, salt: &[u8; 32], p: &ArgonParams, device: &[u8; 32]) -> Result<[u8; 32]> {
     let params = Params::new(p.m, p.t, p.p, Some(32)).map_err(|_| SecurityError::Crypto)?;
@@ -286,7 +286,7 @@ fn derive_kek(pass: &str, salt: &[u8; 32], p: &ArgonParams, device: &[u8; 32]) -
 
 fn seal(key: &[u8; 32], nonce: &[u8; 24], plain: &[u8]) -> Result<Vec<u8>> {
     XChaCha20Poly1305::new(key.into())
-        .encrypt(XNonce::from_slice(nonce), plain)
+        .encrypt(&XNonce::from(*nonce), plain)
         .map_err(|_| SecurityError::Crypto)
 }
 
@@ -329,13 +329,13 @@ pub fn backup_open(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
 
 fn open_seal(key: &[u8; 32], nonce: &[u8; 24], ct: &[u8]) -> Result<Vec<u8>> {
     XChaCha20Poly1305::new(key.into())
-        .decrypt(XNonce::from_slice(nonce), ct)
+        .decrypt(&XNonce::from(*nonce), ct)
         .map_err(|_| SecurityError::Crypto)
 }
 
 fn hmac_of(header: &Header, device: &[u8; 32]) -> Result<[u8; 32]> {
     let bytes = bincode::serialize(header)?;
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(device).map_err(|_| SecurityError::Crypto)?;
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(device).map_err(|_| SecurityError::Crypto)?;
     mac.update(&bytes);
     Ok(mac.finalize().into_bytes().into())
 }
@@ -410,9 +410,8 @@ impl DeviceBind {
             let mut s = String::new();
             f.read_to_string(&mut s)?;
             let bytes = hex_decode(s.trim()).ok_or(SecurityError::Keystore)?;
-            if bytes.len() != 32 { return Err(SecurityError::Keystore); }
-            let mut out = [0u8; 32]; out.copy_from_slice(&bytes);
-            Ok(out)
+            // Wrong length is a corrupt keystore, not something to pad.
+            <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| SecurityError::Keystore)
         } else {
             fs::create_dir_all(dir)?;
             let s = random32();

@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
@@ -268,7 +267,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut challenge = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut challenge);
+    crate::crypto::fill_random(&mut challenge);
     send(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
     let (sign_pk, signature) = match recv::<_, ClientToRelay>(&mut stream).await? {
