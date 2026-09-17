@@ -7,6 +7,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # WirePayload versioning relies on bincode 1 ignoring trailing bytes, so a
+      # major bump is a protocol change, not a dependency update. And 3.0.0 is a
+      # tombstone release that is only a compile_error!.
+      - dependency-name: bincode
+        update-types: ["version-update:semver-major"]
     groups:
       rust-deps:
         patterns: ["*"]
@@ -16,6 +22,10 @@ updates:
     directory: "/core/relay"
     schedule:
       interval: weekly
+    ignore:
+      # bincode 3.0.0 is a tombstone release that is only a compile_error!.
+      - dependency-name: bincode
+        versions: [">= 3"]
     groups:
       relay-deps:
         patterns: ["*"]
