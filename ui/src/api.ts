@@ -476,6 +476,9 @@ export class Api {
   static updateInstallsItself(): Promise<boolean> {
     return invoke('update_installs_itself');
   }
+  static restartApp(): Promise<void> {
+    return invoke('restart_app');
+  }
   static installUpdate(): Promise<void> {
     return invoke('install_update');
   }

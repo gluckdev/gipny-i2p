@@ -173,6 +173,7 @@ mockIPC((cmd, payload) => {
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };
     case 'check_update': return null;
     case 'update_installs_itself': return false;
+    case 'restart_app': return null;
     case 'list_contacts': return contacts;
     case 'get_ui_data': return (a ?? {}).key === 'contact_folders' ? folders : (a ?? {}).key === 'avatars' ? avatars : null;
     case 'set_ui_data':

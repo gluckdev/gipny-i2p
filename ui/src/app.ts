@@ -24,6 +24,7 @@ export class App extends View {
     this.sub(store.updateProgress, (p) => this.onUpdateProgress(p));
     this.sub(store.updateReadyPath, (path) => this.onUpdateReady(path));
     this.sub(store.updateError, (err) => this.onUpdateError(err));
+    this.sub(store.updateStaged, (version) => this.onUpdateStaged(version));
   }
 
   private render(view: string): void {
@@ -131,14 +132,43 @@ export class App extends View {
 
   private onUpdateReady(path: string | null): void {
     if (!path || !this.updateStatusEl || !this.updateActionsEl) return;
-    this.updateStatusEl.textContent = `downloaded to ${path}`;
+    this.updateStatusEl.textContent = `Скачано: ${path}`;
     this.updateActionsEl.replaceChildren(
-      h('div', { class: 'hint' }, 'install manually, then restart gipny'),
+      h('div', { class: 'hint' }, 'Установите файл сами, затем перезапустите gipny'),
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateReadyPath.set(null); },
-      }, 'Close'),
+      }, 'Закрыть'),
     );
+  }
+
+  /// An update is installed and takes effect on the next start. The person is
+  /// asked once, and can keep working — the running version still functions.
+  private onUpdateStaged(version: string | null): void {
+    if (!version) return;
+    this.closeUpdateModal();
+    this.store.updateProgress.set(null);
+    this.store.updateAvailable.set(null);
+    this.openModal((close) => h('div', { class: 'modal modal-sm' },
+      h('div', { class: 'modal-header' },
+        h('div', { class: 'modal-title' }, 'Обновление готово'),
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'about-p' },
+          `Версия ${version} установлена и заработает после перезапуска. `
+          + 'Можно перезапустить сейчас или продолжить — тогда она включится при следующем запуске.'),
+      ),
+      h('div', { class: 'modal-footer' },
+        h('button', {
+          class: 'btn btn-ghost',
+          onClick: () => { this.store.updateStaged.set(null); close(); },
+        }, 'Позже'),
+        h('button', {
+          class: 'btn',
+          onClick: () => { this.store.updateStaged.set(null); Api.restartApp().catch(() => close()); },
+        }, 'Перезапустить'),
+      ),
+    ));
   }
 
   private onUpdateError(errMsg: string | null): void {
