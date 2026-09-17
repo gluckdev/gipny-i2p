@@ -1554,6 +1554,13 @@ impl Core {
                 frame = async { in_rx.lock().await.recv().await } => {
                     let Some(frame) = frame else { break; };
                     last_activity = std::time::Instant::now();
+                    // Logged in with plain Auth after an AuthV2 attempt fell
+                    // through: this relay would take our deposits and never
+                    // hand us our mail. Reconnect, which tries AuthV2 again.
+                    if own.is_some() && matches!(&frame, RelayToClient::Error(e) if e == relay::ERR_NEEDS_AUTH_V2) {
+                        eprintln!("[relay-client] our relay wants AuthV2, reconnecting");
+                        break;
+                    }
                     if let Err(e) = self.handle_relay_frame(frame, &out_tx).await {
                         eprintln!("[relay-client] handle err: {:?}", e);
                     }

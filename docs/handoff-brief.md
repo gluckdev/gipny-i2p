@@ -184,7 +184,14 @@ lost mail with no new protocol at all:
   fetch bundles, so 0.4.2 clients can keep writing to new relays. Clients try
   `AuthV2` and fall back to `Auth` only when the relay hangs up on it, which
   is what a relay from before it does; a relay faking that gains nothing but
-  deposit rights. **Remove plain `Auth` once 0.4.2 is no longer in use.**
+  deposit rights. If that fallback ever happens against a current relay (a
+  stream dropped at the wrong moment), the relay answers the bundle publish
+  with `ERR_NEEDS_AUTH_V2` and the client reconnects. The other direction has
+  no fix: a 0.4.2 client whose *own* relay is an upgraded standalone
+  `gipny-relay` can deposit but no longer collects — in practice that is only
+  relay-testnet, and the auto-updater moves such clients on. **Remove plain
+  `Auth` once 0.4.2 is no longer in use.** The new-client → old-relay fallback
+  has no automated test: one crate cannot hold both enum versions.
 
 WHAT CHANGED SINCE THE LAST BRIEF
 
