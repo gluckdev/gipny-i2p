@@ -1,4 +1,4 @@
-import type { UpdateInfo } from './api';
+import { Api, type UpdateInfo } from './api';
 import { emptyChatArt, icon } from './icons';
 import type { Store, UpdateProgress, ChatTarget } from './state';
 import { View, h, busy, humanSize } from './view';
@@ -183,15 +183,25 @@ export class App extends View {
           await this.store.dismissUpdate();
           this.closeUpdateModal();
         },
-      }, 'Later'),
+      }, 'Позже'),
       (() => {
         const b = h('button', {
-          class: 'btn btn-amber',
+          class: 'btn',
           onClick: () => busy(b, async () => {
             (this.updateProgressEl as HTMLElement).style.display = 'block';
             await this.store.installUpdate();
           }),
-        }, 'Update now') as HTMLButtonElement;
+        }, 'Обновить сейчас') as HTMLButtonElement;
+        // Android and unmanaged packages cannot install themselves; offering
+        // the button would download into a directory nobody can reach.
+        Api.updateInstallsItself().then((can: boolean) => {
+          if (can) return;
+          b.remove();
+          if (this.updateStatusEl) {
+            this.updateStatusEl.textContent +=
+              ' · установка вручную: Настройки → Android-приложение (или страница релизов)';
+          }
+        }).catch(() => {});
         return b;
       })(),
     );

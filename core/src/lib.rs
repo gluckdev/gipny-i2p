@@ -137,7 +137,7 @@ pub fn run() {
             pin_contact_message, unpin_contact_message, list_pinned_contact,
             pin_group_message, unpin_group_message, list_pinned_group,
             pin_chat, unpin_chat,
-            check_update, install_update, dismiss_update, get_auto_update, set_auto_update, current_version,
+            check_update, install_update, update_installs_itself, dismiss_update, get_auto_update, set_auto_update, current_version,
             list_apk_artifacts, download_apk,
             read_debug_log,
             export_identity, import_identity_to_profile,
@@ -1390,6 +1390,14 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<Option<serde_json::Value
         "notes": i.notes,
         "size": i.asset.size,
     })))
+}
+
+/// Whether this build can put an update in place itself. False on Android
+/// (the system installer owns that) and on packages we do not manage (.deb,
+/// macOS) — the interface then offers the file instead of a button that lies.
+#[tauri::command]
+fn update_installs_itself() -> bool {
+    cfg!(target_os = "windows") || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
 }
 
 #[tauri::command]

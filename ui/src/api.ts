@@ -473,6 +473,9 @@ export class Api {
   static checkUpdate(): Promise<UpdateInfo | null> {
     return invoke('check_update');
   }
+  static updateInstallsItself(): Promise<boolean> {
+    return invoke('update_installs_itself');
+  }
   static installUpdate(): Promise<void> {
     return invoke('install_update');
   }
