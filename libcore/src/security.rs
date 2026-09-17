@@ -410,9 +410,8 @@ impl DeviceBind {
             let mut s = String::new();
             f.read_to_string(&mut s)?;
             let bytes = hex_decode(s.trim()).ok_or(SecurityError::Keystore)?;
-            if bytes.len() != 32 { return Err(SecurityError::Keystore); }
-            let mut out = [0u8; 32]; out.copy_from_slice(&bytes);
-            Ok(out)
+            // Wrong length is a corrupt keystore, not something to pad.
+            <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| SecurityError::Keystore)
         } else {
             fs::create_dir_all(dir)?;
             let s = random32();

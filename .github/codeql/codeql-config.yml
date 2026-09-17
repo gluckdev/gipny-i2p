@@ -1,0 +1,8 @@
+name: gipny
+
+# Test code is not scanned. The compatibility and crypto tests use fixed keys,
+# seeds and passphrases on purpose — a fixture that has to decrypt the same
+# bytes on every run cannot have a random key — and the hard-coded-value query
+# reports each of them as a critical finding.
+paths-ignore:
+  - '**/tests/**'

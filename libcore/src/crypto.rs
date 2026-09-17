@@ -410,8 +410,10 @@ fn kdf_rk(rk: &[u8; 32], dh_out: &[u8]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(rk), dh_out);
     let mut out = [0u8; 64];
     hk.expand(RK_INFO, &mut out).expect("hkdf");
-    let mut new_rk = [0u8; 32]; new_rk.copy_from_slice(&out[..32]);
-    let mut ck = [0u8; 32]; ck.copy_from_slice(&out[32..]);
+    // Arrays taken from the HKDF output rather than zeroed and copied over:
+    // the zeroed placeholders read, to a reviewer and to static analysis alike,
+    // as constants that reach a key.
+    let (new_rk, ck) = split_32(&out);
     out.zeroize();
     (new_rk, ck)
 }
@@ -430,10 +432,22 @@ fn aead_from_mk(mk: &[u8; 32]) -> ([u8; 32], [u8; 24]) {
     let hk = Hkdf::<Sha256>::new(Some(&[0u8; 32]), mk);
     let mut out = [0u8; 56];
     hk.expand(MSG_INFO, &mut out).expect("hkdf");
-    let mut key = [0u8; 32]; key.copy_from_slice(&out[..32]);
-    let mut nonce = [0u8; 24]; nonce.copy_from_slice(&out[32..]);
+    let (key, nonce) = out.split_at(32);
+    let pair = (
+        <[u8; 32]>::try_from(key).expect("hkdf output is 56 bytes"),
+        <[u8; 24]>::try_from(nonce).expect("hkdf output is 56 bytes"),
+    );
     out.zeroize();
-    (key, nonce)
+    pair
+}
+
+/// The two 32-byte halves of a 64-byte KDF output.
+fn split_32(out: &[u8; 64]) -> ([u8; 32], [u8; 32]) {
+    let (a, b) = out.split_at(32);
+    (
+        <[u8; 32]>::try_from(a).expect("first half of 64 bytes"),
+        <[u8; 32]>::try_from(b).expect("second half of 64 bytes"),
+    )
 }
 
 fn build_aad(ad: &[u8], header: &RatchetHeader) -> Vec<u8> {
