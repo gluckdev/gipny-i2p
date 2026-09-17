@@ -76,9 +76,7 @@ impl MasterKey {
     fn from_slice(s: &[u8]) -> Result<Self> {
         if s.len() != MK_LEN { return Err(SecurityError::Crypto); }
         let mut a = [0u8; MK_LEN]; a.copy_from_slice(s);
-        let key = Self(Zeroizing::new(a));
-        mlock_region(key.0.as_ptr(), MK_LEN);
-        Ok(key)
+        Ok(Self(Zeroizing::new(a)))
     }
 }
 

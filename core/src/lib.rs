@@ -115,6 +115,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
+            get_attachment_privacy, set_attachment_privacy,
             update_configured,
             get_router_settings, set_router_settings,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
@@ -625,6 +626,28 @@ async fn set_relay_address(addr: String, ctx: State<'_, AppCtx>) -> Result<(), S
     core_of(&ctx).await?.set_relay_address(&addr).map_err(err)
 }
 
+const SETTING_ATTACHMENT_PRIVACY: &str = "attachment_privacy";
+
+fn attachment_privacy_enabled(db: &gipny_libcore::db::Db) -> Result<bool, String> {
+    Ok(!matches!(
+        db.get_setting(SETTING_ATTACHMENT_PRIVACY).map_err(err)?.as_deref(),
+        Some(b"0"),
+    ))
+}
+
+#[tauri::command]
+async fn get_attachment_privacy(ctx: State<'_, AppCtx>) -> Result<bool, String> {
+    let core = core_of(&ctx).await?;
+    attachment_privacy_enabled(core.db())
+}
+
+#[tauri::command]
+async fn set_attachment_privacy(enabled: bool, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.db()
+        .set_setting(SETTING_ATTACHMENT_PRIVACY, if enabled { b"1" } else { b"0" })
+        .map_err(err)
+}
+
 #[tauri::command]
 async fn my_fingerprint(ctx: State<'_, AppCtx>) -> Result<String, String> {
     Ok(hex(&core_of(&ctx).await?.my_fingerprint()))
@@ -707,7 +730,7 @@ async fn send_console_command(
     let core = core_of(&ctx).await?;
     let mut atts = Vec::with_capacity(paths.len());
     for p in &paths {
-        atts.push(read_one_attachment(p)?);
+        atts.push(read_one_attachment(p, false)?);
     }
     core.send_console(contact_id, body, WireConsole::new(CONSOLE_COMMAND), atts).await.map_err(err)
 }
@@ -836,9 +859,10 @@ async fn send_message_paths(
     if paths.is_empty() {
         return core.send_message(contact_id, body, vec![], ttl, reply_to).await.map_err(err);
     }
+    let sanitize = attachment_privacy_enabled(core.db())?;
     let mut last_id = 0;
     for (i, p) in paths.iter().enumerate() {
-        let pa = read_one_attachment(p)?;
+        let pa = read_one_attachment(p, sanitize)?;
         let msg_body = if i == 0 { body.clone() } else { String::new() };
         let rt = if i == 0 { reply_to } else { None };
         last_id = core.send_message(contact_id, msg_body, vec![pa], ttl, rt).await.map_err(err)?;
@@ -848,7 +872,18 @@ async fn send_message_paths(
 
 const MAX_ATTACHMENT_BYTES: u64 = 12 * 1024 * 1024;
 
-fn read_one_attachment(p: &str) -> Result<PendingAttachment, String> {
+fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<PendingAttachment, String> {
+    if sanitize {
+        let (name, data) = sanitizer::sanitize_attachment_data(&name, &data)?;
+        Ok(PendingAttachment { name, data })
+    } else {
+        // Console uploads are operational files: scripts, configs and command
+        // arguments rely on the original name and exact bytes.
+        Ok(PendingAttachment { name, data })
+    }
+}
+
+fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, String> {
     let path = std::path::PathBuf::from(p);
     let meta = std::fs::metadata(&path).map_err(err)?;
     if meta.len() > MAX_ATTACHMENT_BYTES {
@@ -858,23 +893,34 @@ fn read_one_attachment(p: &str) -> Result<PendingAttachment, String> {
         ));
     }
     let data = std::fs::read(&path).map_err(err)?;
-    let original_name = path.file_name()
+    let name = path.file_name()
         .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
+        .map(str::to_owned)
         .unwrap_or_else(|| "file".into());
-    // Privacy mode sanitizes metadata before the bytes are stored for send.
-    // The implementation is replaced below on this branch; this keeps the
-    // parked work connected while merging the 0.4.1 fixes from main.
-    let (name, data) = sanitizer::sanitize_attachment_data(&original_name, &data);
+    let attachment = prepare_attachment(name, data, sanitize)?;
 
     // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
-    // `paste_clipboard_image`). Once read it has no further use.
+    // `paste_clipboard_image`). Remove it only after preparation succeeded: a
+    // rejected format can then be retried after privacy mode is switched off.
     if path.starts_with(std::env::temp_dir().join("gipny-i2p-paste")) {
         let _ = std::fs::remove_file(&path);
     }
-
-    Ok(PendingAttachment { name, data })
+    Ok(attachment)
 }
+
+#[cfg(test)]
+mod attachment_path_tests {
+    use super::prepare_attachment;
+
+    #[test]
+    fn console_attachment_keeps_the_original_name_and_bytes() {
+        let bytes = b"#!/bin/sh\necho hello\n".to_vec();
+        let a = prepare_attachment("deploy.sh".into(), bytes.clone(), false).unwrap();
+        assert_eq!(a.name, "deploy.sh");
+        assert_eq!(a.data, bytes);
+    }
+}
+
 
 #[tauri::command]
 async fn send_edit(
@@ -1139,9 +1185,10 @@ async fn send_group_message_paths(
     if paths.is_empty() {
         return core.send_to_group(&gid, body, vec![], ttl, reply_to).await.map_err(err);
     }
+    let sanitize = attachment_privacy_enabled(core.db())?;
     let mut last_id = 0;
     for (i, p) in paths.iter().enumerate() {
-        let pa = read_one_attachment(p)?;
+        let pa = read_one_attachment(p, sanitize)?;
         let msg_body = if i == 0 { body.clone() } else { String::new() };
         let rt = if i == 0 { reply_to } else { None };
         last_id = core.send_to_group(&gid, msg_body, vec![pa], ttl, rt).await.map_err(err)?;
