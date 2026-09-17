@@ -115,7 +115,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
-            get_relay_info, get_dht_status, set_relay_mode, get_contact_folders, set_contact_folders, list_unreachable_contacts,
+            get_relay_info, get_dht_status, set_relay_mode, get_ui_data, set_ui_data, list_unreachable_contacts,
             get_attachment_privacy, set_attachment_privacy,
             update_configured,
             get_router_settings, set_router_settings,
@@ -1408,14 +1408,15 @@ async fn get_auto_update(ctx: State<'_, AppCtx>) -> Result<bool, String> {
     Ok(core_of(&ctx).await?.auto_update_enabled())
 }
 
+/// Interface data kept in the vault: `contact_folders`, `avatars`.
 #[tauri::command]
-async fn get_contact_folders(ctx: State<'_, AppCtx>) -> Result<String, String> {
-    Ok(core_of(&ctx).await?.contact_folders())
+async fn get_ui_data(key: String, ctx: State<'_, AppCtx>) -> Result<Option<String>, String> {
+    core_of(&ctx).await?.ui_data(&key).map_err(err)
 }
 
 #[tauri::command]
-async fn set_contact_folders(json: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.set_contact_folders(&json).map_err(err)
+async fn set_ui_data(key: String, json: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.set_ui_data(&key, &json).map_err(err)
 }
 
 #[tauri::command]

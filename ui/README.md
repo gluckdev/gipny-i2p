@@ -21,6 +21,7 @@
 | `src/identity.ts` | `IdentityModal` — «моя карточка» |
 | `src/settings.ts` | `SettingsModal`: релей, роутер, приватность вложений, автообновление, агент, бэкап, отладочный лог |
 | `src/about.ts` | `AboutModal` — «О gipny и безопасности». Каждое утверждение должно совпадать с кодом (ссылки в комментарии к классу) |
+| `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `AVATARS` |
 | `src/icons.ts` | SVG-иконки `icon(name)` и иллюстрации (`emptyChatArt`, `networkArt`) |
 | `src/search.ts`, `src/media.ts`, `src/forward.ts` | Поиск, галерея вложений, пересылка |
 | `src/theme.ts` | Тема: `getTheme`, `setTheme`, `applyTheme` |

@@ -1,4 +1,5 @@
 import type { Signal } from './state';
+import { avatarIndex, paintAvatar } from './avatars';
 
 export type Child = Node | string | number | null | undefined | false | Child[];
 
@@ -39,9 +40,15 @@ export function appendAll(parent: Node, children: Child[]): void {
   }
 }
 
-/** A round picture made of a name's initials, in a colour that stays the same
- * for the same `seed` (a key, an id). */
-export function avatar(name: string, seed: string, extra = ''): HTMLElement {
+/** A round avatar. For a person (`seed` = their signing key) it is their
+ * character from the avatar sprite; with `picture` false (groups) it is the
+ * name's initials in a colour that stays the same for the same `seed`. */
+export function avatar(name: string, seed: string, extra = '', picture = true): HTMLElement {
+  if (picture) {
+    const pic = h('div', { class: 'avatar' + (extra ? ' ' + extra : ''), role: 'img', 'aria-label': name });
+    paintAvatar(pic, avatarIndex(seed));
+    return pic;
+  }
   const words = name.trim().split(/[\s._@-]+/).filter(Boolean);
   const [a, b] = words;
   const initials = (a && b ? a.charAt(0) + b.charAt(0) : (a ?? '?').slice(0, 2)).toUpperCase();

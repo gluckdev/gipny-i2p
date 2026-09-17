@@ -481,14 +481,26 @@ export class Api {
   }
   static async getContactFolders(): Promise<ContactFolder[]> {
     try {
-      const parsed: unknown = JSON.parse(await invoke<string>('get_contact_folders'));
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'contact_folders' })) ?? '[]');
       return Array.isArray(parsed) ? parsed as ContactFolder[] : [];
     } catch {
       return [];
     }
   }
   static setContactFolders(folders: ContactFolder[]): Promise<void> {
-    return invoke('set_contact_folders', { json: JSON.stringify(folders) });
+    return invoke('set_ui_data', { key: 'contact_folders', json: JSON.stringify(folders) });
+  }
+  /** Avatar picked per key (sign_pk hex → avatar id); unpicked keys get a default. */
+  static async getAvatarChoices(): Promise<Record<string, string>> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'avatars' })) ?? '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+    } catch {
+      return {};
+    }
+  }
+  static setAvatarChoices(choices: Record<string, string>): Promise<void> {
+    return invoke('set_ui_data', { key: 'avatars', json: JSON.stringify(choices) });
   }
   static getDhtStatus(): Promise<DhtStatus> {
     return invoke('get_dht_status');

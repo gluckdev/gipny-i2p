@@ -145,6 +145,8 @@ let folders = JSON.stringify([
   { id: 'f-empty', name: 'Пустая папка с очень длинным названием, которое не помещается', collapsed: true, contacts: [] },
 ]);
 
+let avatars = '{}';
+
 mockWindows('main');
 mockIPC((cmd, payload) => {
   const a = payload as Args;
@@ -171,8 +173,11 @@ mockIPC((cmd, payload) => {
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };
     case 'check_update': return null;
     case 'list_contacts': return contacts;
-    case 'get_contact_folders': return folders;
-    case 'set_contact_folders': folders = String((a ?? {}).json ?? '[]'); return null;
+    case 'get_ui_data': return (a ?? {}).key === 'contact_folders' ? folders : (a ?? {}).key === 'avatars' ? avatars : null;
+    case 'set_ui_data':
+      if ((a ?? {}).key === 'contact_folders') folders = String((a ?? {}).json ?? '[]');
+      if ((a ?? {}).key === 'avatars') avatars = String((a ?? {}).json ?? '{}');
+      return null;
     case 'get_dht_status': return { peers: 14, items: 37, bytes: 912_384, joined: !relayStarting, stores: true, seeds: 1 };
     case 'get_contact': return contacts.find((c) => c.id === num(a, 'id')) ?? null;
     case 'list_groups': return groups;

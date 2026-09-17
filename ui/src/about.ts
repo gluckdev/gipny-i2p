@@ -113,6 +113,7 @@ export class AboutModal {
               ['Транспорт', 'i2p, встроенный i2pd через SAMv3'],
               ['Сеть релеев', 'Kademlia, записи зашифрованы и подписаны'],
               ['Язык', 'Rust'],
+              ['Аватарки', 'Фрагменты гравюр Утагавы Куниёси и Утагавы Хиросигэ (XIX век, общественное достояние; Wikimedia Commons, Rijksmuseum, Brooklyn Museum)'],
             ] as const).flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)]),
           ),
         ),

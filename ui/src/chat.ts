@@ -4,6 +4,7 @@ import type { Message } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
 import { icon } from './icons';
+import { onAvatarsChanged } from './avatars';
 import { View, h, avatar, fmtTime, fmtDate, fmtAgo, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
 import { PinnedBanner, EditInline, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
@@ -207,6 +208,12 @@ export class ChatView extends View {
 
     this.pinnedBanner = new PinnedBanner(store, target);
 
+    const avatarSeed = isGroup ? String(target.id) : (store.contacts.get().find((x) => x.id === target.id)?.sign_pk ?? title);
+    const headerAvatar = h('div', { class: 'chat-avatar-slot' }, avatar(title, avatarSeed, (isGroup ? 'avatar-group ' : '') + 'chat-avatar', !isGroup));
+    this.subs.push(onAvatarsChanged(() => {
+      headerAvatar.replaceChildren(avatar(title, avatarSeed, (isGroup ? 'avatar-group ' : '') + 'chat-avatar', !isGroup));
+    }));
+
     // With built-in relays a contact's address lasts until they restart. If it
     // has been silent for a while with mail queued, say so and say what helps —
     // the alternative is messages that wait forever with no explanation.
@@ -225,9 +232,7 @@ export class ChatView extends View {
           title: 'back',
           onClick: () => store.selectedChat.set(null),
         }, icon('back')),
-        isGroup
-          ? avatar(title, String(target.id), 'avatar-group chat-avatar')
-          : avatar(title, store.contacts.get().find((x) => x.id === target.id)?.sign_pk ?? title, 'chat-avatar'),
+        headerAvatar,
         h('div', { class: 'chat-heading' },
           h('div', { class: 'chat-title', title }, title),
           subEl,

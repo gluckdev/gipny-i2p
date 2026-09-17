@@ -4,6 +4,8 @@ import { targetKey } from './state';
 import { h, fmtFp } from './view';
 import type { App } from './app';
 
+import { avatarPicker } from './avatar-picker';
+import { icon } from './icons';
 export class ContactModal {
   el: HTMLElement;
   constructor(store: Store, app: App, contactId: number, close: () => void) {
@@ -12,9 +14,9 @@ export class ContactModal {
 
     const nameI = h('input', { class: 'input', value: c.name });
     const trustSel = h('select', { class: 'input' },
-      h('option', { value: '0', selected: c.trust === 0 }, 'unverified'),
-      h('option', { value: '1', selected: c.trust === 1 }, 'verified'),
-      h('option', { value: '2', selected: c.trust === 2 }, 'blocked'),
+      h('option', { value: '0', selected: c.trust === 0 }, 'не проверен'),
+      h('option', { value: '1', selected: c.trust === 1 }, 'проверен'),
+      h('option', { value: '2', selected: c.trust === 2 }, 'заблокирован'),
     );
     const botCb = h('input', { type: 'checkbox', class: 'cb', checked: !!c.is_bot }) as HTMLInputElement;
     const isMutedNow = store.muted.get().has(targetKey({ kind: 'contact', id: c.id }));
@@ -23,42 +25,43 @@ export class ContactModal {
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, 'Контакт'),
-        h('button', { class: 'icon-btn', onClick: close }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'field' }, h('label', null, 'name'), nameI),
-        h('div', { class: 'field' }, h('label', null, 'trust'), trustSel),
-        h('label', { class: 'cb-row' }, botCb, h('span', null, 'mark as bot (amber bubbles in chat)')),
-        h('label', { class: 'cb-row' }, muteCb, h('span', null, 'mute notifications')),
-        h('div', { class: 'card-label', style: { marginTop: '10px' } }, 'onion'),
+        avatarPicker(c.sign_pk, 'Аватарку видите только вы', (e) => store.showToast(String(e), true)),
+        h('div', { class: 'field' }, h('label', null, 'Имя'), nameI),
+        h('div', { class: 'field' }, h('label', null, 'Доверие'), trustSel),
+        h('label', { class: 'cb-row' }, botCb, h('span', null, 'Это бот')),
+        h('label', { class: 'cb-row' }, muteCb, h('span', null, 'Без уведомлений')),
+        h('div', { class: 'card-label', style: { marginTop: '10px' } }, 'Адрес i2p'),
         h('div', { class: 'card-block' }, c.onion),
-        h('div', { class: 'card-label', style: { marginTop: '10px' } }, 'fingerprint'),
+        h('div', { class: 'card-label', style: { marginTop: '10px' } }, 'Отпечаток ключа'),
         h('div', { class: 'card-block fp' }, fmtFp(c.dh_pk)),
-        h('div', { class: 'hint', style: { marginTop: '8px' } }, 'verify fingerprint out-of-band before marking verified'),
-        h('div', { class: 'divider-text' }, 'troubleshoot'),
+        h('div', { class: 'hint', style: { marginTop: '8px' } }, 'Сверьте отпечаток с собеседником при встрече или по другому каналу, прежде чем отмечать контакт проверенным.'),
+        h('div', { class: 'divider-text' }, 'Если сообщения не доходят'),
         h('button', {
           class: 'btn btn-amber',
           style: { width: '100%' },
           onClick: async () => {
             const ok = await app.confirm(
-              'reset session',
-              'force a fresh X3DH handshake with this contact? next message you both send will re-establish the ratchet. use this if messages are not arriving.',
+              'Сбросить сессию',
+              'Начать шифрованную сессию с контактом заново? Следующее сообщение любого из вас создаст её снова.',
             );
             if (!ok) return;
             try {
               await Api.resetContactSession(c.id);
-              store.showToast('session reset; ratchet will rebuild on next exchange');
+              store.showToast('Сессия сброшена — пересоздастся при следующем сообщении');
             } catch (e) {
-              store.showToast('reset failed: ' + String(e), true);
+              store.showToast('Не удалось сбросить: ' + String(e), true);
             }
           },
-        }, 'Reset session'),
+        }, 'Сбросить сессию'),
       ),
       h('div', { class: 'modal-footer' },
         h('button', {
           class: 'btn btn-danger',
           onClick: async () => {
-            const ok = await app.confirm('delete contact', `delete "${c.name}"?`, true);
+            const ok = await app.confirm('Удалить контакт', `Удалить «${c.name}» и переписку с ним?`, true);
             if (!ok) return;
             await Api.deleteContact(c.id);
             await store.refreshContacts();
@@ -66,9 +69,9 @@ export class ContactModal {
             if (sel?.kind === 'contact' && sel.id === c.id) store.selectedChat.set(null);
             close();
           },
-        }, 'Delete'),
+        }, 'Удалить'),
         h('div', { class: 'grow' }),
-        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Отмена'),
         h('button', {
           class: 'btn',
           onClick: async () => {
@@ -76,10 +79,10 @@ export class ContactModal {
             if (botCb.checked !== !!c.is_bot) await Api.setContactBot(c.id, botCb.checked);
             if (muteCb.checked !== isMutedNow) await store.toggleMute({ kind: 'contact', id: c.id }, muteCb.checked);
             await store.refreshContacts();
-            store.showToast('saved');
+            store.showToast('Сохранено');
             close();
           },
-        }, 'Save'),
+        }, 'Сохранить'),
       ),
     );
   }

@@ -11,6 +11,7 @@ import { SettingsModal } from './settings';
 import { AboutModal } from './about';
 import { SearchModal } from './search';
 import { icon } from './icons';
+import { loadAvatarChoices, onAvatarsChanged } from './avatars';
 
 /** Built-in sections that can be folded, remembered per device. */
 type Section = 'groups' | 'requests' | 'contacts';
@@ -101,6 +102,8 @@ export class Sidebar extends View {
     this.sub(store.peerOnline, () => this.renderList(), false);
     this.sub(store.unread, () => this.renderList(), false);
     void Api.getContactFolders().then((f) => { this.folders = f; this.renderList(); });
+    this.subs.push(onAvatarsChanged(() => { renderMe(); this.renderList(); }));
+    void loadAvatarChoices();
   }
 
   // ── list ────────────────────────────────────────────────────────────────
@@ -220,7 +223,7 @@ export class Sidebar extends View {
   private groupRow(g: Group): HTMLElement {
     const target: ChatTarget = { kind: 'group', id: g.id };
     const pinned = g.pinned_at != null;
-    const row = this.rowShell(target, pinned, avatar(g.name, g.id, 'avatar-group'), g.name, 'Группа', g.last_message_at ?? null);
+    const row = this.rowShell(target, pinned, avatar(g.name, g.id, 'avatar-group', false), g.name, 'Группа', g.last_message_at ?? null);
     attachContextMenu(row, () => this.chatMenu(target, pinned));
     return row;
   }

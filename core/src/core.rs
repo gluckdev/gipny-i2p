@@ -51,9 +51,10 @@ const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// Default on: absent or anything but `"0"` means auto-update stays on,
 /// matching `attachment_privacy`'s convention.
 const SETTING_AUTO_UPDATE: &str = "auto_update";
-/// The person's contact folders, as the interface saved them (JSON).
-const SETTING_CONTACT_FOLDERS: &str = "ui_contact_folders";
-const MAX_CONTACT_FOLDERS_BYTES: usize = 64 * 1024;
+/// What the interface keeps in the vault for itself (JSON it does not
+/// interpret here): contact folders, chosen avatars. Only these keys.
+const UI_DATA_KEYS: &[&str] = &["contact_folders", "avatars"];
+const MAX_UI_DATA_BYTES: usize = 64 * 1024;
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;
 const PURGE_INTERVAL_SECS: u64 = 60;
@@ -1185,19 +1186,23 @@ impl Core {
         !matches!(self.db.get_setting(SETTING_AUTO_UPDATE).ok().flatten().as_deref(), Some(b"0"))
     }
 
-    /// Contact folders are the interface's own data: kept in the vault so they
-    /// come back with the profile, but not interpreted here.
-    pub fn contact_folders(&self) -> String {
-        self.db.get_setting(SETTING_CONTACT_FOLDERS).ok().flatten()
-            .and_then(|v| String::from_utf8(v).ok())
-            .unwrap_or_else(|| "[]".into())
+    /// The interface's own data under `key` (see `UI_DATA_KEYS`), kept in the
+    /// vault so it comes back with the profile. `None` when never saved.
+    pub fn ui_data(&self, key: &str) -> Result<Option<String>> {
+        if !UI_DATA_KEYS.contains(&key) {
+            return Err(CoreError::NotFound);
+        }
+        Ok(self.db.get_setting(&format!("ui_{key}"))?.and_then(|v| String::from_utf8(v).ok()))
     }
 
-    pub fn set_contact_folders(&self, json: &str) -> Result<()> {
-        if json.len() > MAX_CONTACT_FOLDERS_BYTES {
+    pub fn set_ui_data(&self, key: &str, json: &str) -> Result<()> {
+        if !UI_DATA_KEYS.contains(&key) {
+            return Err(CoreError::NotFound);
+        }
+        if json.len() > MAX_UI_DATA_BYTES {
             return Err(CoreError::Db(gipny_libcore::db::DbError::TooLarge));
         }
-        self.db.set_setting(SETTING_CONTACT_FOLDERS, json.as_bytes())?;
+        self.db.set_setting(&format!("ui_{key}"), json.as_bytes())?;
         Ok(())
     }
 

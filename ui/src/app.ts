@@ -97,15 +97,15 @@ export class App extends View {
       this.openModal((close) => h('div', { class: 'modal' },
         h('div', { class: 'modal-header' },
           h('div', { class: 'modal-title' }, title),
-          h('button', { class: 'icon-btn', onClick: () => { close(); resolve(false); } }, 'x'),
+          h('button', { class: 'icon-btn', title: 'Закрыть', onClick: () => { close(); resolve(false); } }, icon('close')),
         ),
         h('div', { class: 'modal-body' }, h('div', { class: 'fp' }, body)),
         h('div', { class: 'modal-footer' },
-          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, 'Cancel'),
+          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, 'Отмена'),
           h('button', {
             class: danger ? 'btn btn-danger' : 'btn',
             onClick: () => { close(); resolve(true); },
-          }, 'Confirm'),
+          }, 'Подтвердить'),
         ),
       ));
     });
