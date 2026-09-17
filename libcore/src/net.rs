@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 use crate::crypto::{IdentityCard, PreKeyBundle, RatchetHeader, X3dhInitial};
 use crate::router::RouterHandle;
 #[cfg(target_os = "android")]
-use crate::router::DEFAULT_SAM_PORT;
+use crate::router::{DEFAULT_HTTP_PROXY_PORT, DEFAULT_SAM_PORT};
 
 pub type Result<T> = std::result::Result<T, NetError>;
 
@@ -155,7 +155,10 @@ impl I2pNode {
         #[cfg(target_os = "android")]
         let router = {
             let _ = settings; // the foreground service owns the router's config
-            RouterHandle::attach(DEFAULT_SAM_PORT).await?
+            // The service configures i2pd's HTTP proxy on the default port so
+            // update checks go out over i2p here too; `attach_with_proxy`
+            // verifies it is actually listening.
+            RouterHandle::attach_with_proxy(DEFAULT_SAM_PORT, Some(DEFAULT_HTTP_PROXY_PORT)).await?
         };
         // GIPNY_SAM_PORT attaches to a router someone else already started
         // instead of spawning our own — the e2e harness uses it to put every
@@ -222,8 +225,8 @@ impl I2pNode {
     pub fn sam_port(&self) -> u16 { self.sam_port }
 
     /// Local HTTP proxy port for the update checker, if this router has one
-    /// open — `None` on Android or when attached to a router we don't own
-    /// (`GIPNY_SAM_PORT`), where auto-update is simply unavailable this run.
+    /// open — `None` when attached to a router we don't own (`GIPNY_SAM_PORT`)
+    /// and it has no proxy, where auto-update is unavailable this run.
     pub fn http_proxy_port(&self) -> Option<u16> { self.http_proxy_port }
 
     /// Short `.b32.i2p` address derived from the destination.

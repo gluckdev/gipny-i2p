@@ -1277,7 +1277,11 @@ impl Core {
             }
         }
         *self.pending_update.lock().await = Some(info.clone());
-        if self.auto_update_enabled() {
+        // Android never installs by itself: putting an APK in place is the
+        // system installer's job, and a file in our private directory is not
+        // something the person can even tap. So there it is always a notice,
+        // and Settings → «Android-приложение» saves the APK where they choose.
+        if self.auto_update_enabled() && !cfg!(target_os = "android") {
             let this = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = this.install_update().await {

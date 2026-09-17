@@ -295,8 +295,8 @@ impl Updater {
 /// Which release assets belong to this component's platform: assets are named
 /// `<prefix><version><suffix>` (e.g. `gipny-i2p_0.4.2_amd64.AppImage`), so
 /// matching on prefix+suffix does not need to know the version. `None` means
-/// this platform has no applicable asset at all (macOS, .deb, Android, a dev
-/// run) — auto-update quietly does nothing rather than guessing.
+/// this platform has no applicable asset at all (macOS, .deb, a dev run) —
+/// auto-update quietly does nothing rather than guessing.
 fn target_suffix(component: Component) -> Option<(&'static str, &'static str)> {
     let arch = std::env::consts::ARCH;
     match component {
@@ -304,6 +304,11 @@ fn target_suffix(component: Component) -> Option<(&'static str, &'static str)> {
             Some(("gipny-i2p_", if arch == "aarch64" { "_aarch64.AppImage" } else { "_amd64.AppImage" }))
         }
         Component::App if cfg!(target_os = "windows") => Some(("gipny-i2p_", "_x64-setup.exe")),
+        // Android can check and download over i2p, but installing an APK is
+        // the system installer's business, not ours — see `install`.
+        Component::App if cfg!(target_os = "android") => {
+            Some(("gipny-i2p_", if arch == "aarch64" { "_android-arm64.apk" } else { "_android-armv7.apk" }))
+        }
         Component::Agent if cfg!(target_os = "linux") => {
             Some(("gipny-agent_", if arch == "aarch64" { "_linux-arm64.tar.gz" } else { "_linux-amd64.tar.gz" }))
         }

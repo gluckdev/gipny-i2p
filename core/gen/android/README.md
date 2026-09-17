@@ -7,7 +7,7 @@
 | Путь | За что отвечает |
 |---|---|
 | `app/src/main/java/app/gipny/MainActivity.kt` | Активити Tauri; один раз просит исключить приложение из оптимизации батареи (`maybeRequestBatteryWhitelist`) |
-| `app/src/main/java/app/gipny/GipnyService.kt` | Foreground-сервис: запускает встроенный роутер (`startEmbeddedRouter` → `nativeStartSam`), готовит каталог и конфиг i2pd с сертификатами reseed (`prepareDataDir`, `copyAssetDir`), останавливает (`stopEmbeddedRouter`). SAM слушает 7656 |
+| `app/src/main/java/app/gipny/GipnyService.kt` | Foreground-сервис: запускает встроенный роутер (`startEmbeddedRouter` → `nativeStartSam`), готовит каталог и конфиг i2pd с сертификатами reseed (`prepareDataDir`, `copyAssetDir`), останавливает (`stopEmbeddedRouter`). SAM слушает 7656, HTTP-прокси с выходным узлом — 4444 (через него идёт проверка обновлений; порт и outproxy обязаны совпадать с `libcore::router::DEFAULT_HTTP_PROXY_PORT` и `DEFAULT_OUTPROXY`) |
 | `app/src/main/AndroidManifest.xml` | Разрешения, сервис, провайдер файлов |
 | `app/src/main/res/` | Строки, темы, иконки (mipmap генерирует `tools/gen-icons.sh`), `xml/file_paths.xml` |
 | `app/build.gradle.kts` | Сборка приложения; подкладка роутера (свойства `skipRouter`, `routerAbis`) |

@@ -24,7 +24,9 @@ pub const DEFAULT_SAM_PORT: u16 = 7656;
 
 /// i2pd's conventional local HTTP proxy port, tried first before falling back
 /// to a free one (same policy as the SAM port).
-const DEFAULT_HTTP_PROXY_PORT: u16 = 4444;
+/// Also what the Android foreground service writes into `i2pd.conf`
+/// (`GipnyService.kt`), which is how the updater reaches GitHub there.
+pub const DEFAULT_HTTP_PROXY_PORT: u16 = 4444;
 
 /// Where the local HTTP proxy sends anything outside i2p: the update checker
 /// is the only thing that uses it (`libcore::update`), to reach GitHub without
@@ -319,7 +321,24 @@ impl RouterHandle {
     /// JNI; or a developer-managed router). Does not own the process, and does
     /// not know whether that router has an HTTP proxy open.
     pub async fn attach(sam_port: u16) -> Result<Self> {
-        let mut handle = Self { child: None, sam_port, http_proxy_port: None, router_dir: None };
+        Self::attach_with_proxy(sam_port, None).await
+    }
+
+    /// Attach, and use `http_proxy_port` for anything that needs plain HTTP
+    /// out of i2p (the updater). The port is *checked*, not trusted: an older
+    /// foreground service, or a router somebody else configured, may not have
+    /// a proxy at all, and the updater must see "unavailable" rather than
+    /// failed requests.
+    pub async fn attach_with_proxy(sam_port: u16, http_proxy_port: Option<u16>) -> Result<Self> {
+        let http_proxy_port = match http_proxy_port {
+            Some(port) if TcpStream::connect(("127.0.0.1", port)).await.is_ok() => Some(port),
+            Some(port) => {
+                eprintln!("[i2p] no HTTP proxy on {port}; updates are unavailable this run");
+                None
+            }
+            None => None,
+        };
+        let mut handle = Self { child: None, sam_port, http_proxy_port, router_dir: None };
         handle.await_ready().await?;
         Ok(handle)
     }
