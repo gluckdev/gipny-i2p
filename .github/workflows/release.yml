@@ -720,14 +720,33 @@ jobs:
           path: |
             notes.md
             dist/SHA256SUMS.txt
+      # gh rather than softprops/action-gh-release: in 0.4.4 its upload of one
+      # 11 MB asset hung until "Headers Timeout Error" on two attempts in a row,
+      # and a rerun cannot get past an asset stuck half-uploaded under the same
+      # name. Here every file gets a time limit, retries, and --clobber, which
+      # replaces whatever a previous attempt left. The release stays a draft
+      # until every asset is in, so clients never see a half-published one.
       - name: publish
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v3
-        with:
-          name: gipny-i2p ${{ env.TAG }}
-          body_path: notes.md
-          files: dist/*
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "gipny-i2p $TAG" --notes-file notes.md
+          fi
+          for f in dist/*; do
+            ok=
+            for attempt in 1 2 3 4 5; do
+              if timeout 300 gh release upload "$TAG" "$f" --clobber; then ok=1; break; fi
+              echo "upload of $f failed (attempt $attempt), retrying"
+              sleep $((attempt * 15))
+            done
+            [ -n "$ok" ] || { echo "could not upload $f"; exit 1; }
+          done
           # v1.2.3-rc1 and the like are pre-releases and never "Latest".
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ !contains(github.ref_name, '-') }}
+          if [[ "$TAG" == *-* ]]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false --title "gipny-i2p $TAG" --notes-file notes.md
+          else
+            gh release edit "$TAG" --draft=false --latest --title "gipny-i2p $TAG" --notes-file notes.md
+          fi
