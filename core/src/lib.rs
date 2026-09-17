@@ -115,7 +115,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
-            get_relay_info, set_relay_mode, list_unreachable_contacts,
+            get_relay_info, get_dht_status, set_relay_mode, list_unreachable_contacts,
             get_attachment_privacy, set_attachment_privacy,
             update_configured,
             get_router_settings, set_router_settings,
@@ -645,6 +645,12 @@ async fn set_relay_address(addr: String, ctx: State<'_, AppCtx>) -> Result<(), S
 #[tauri::command]
 async fn get_relay_info(ctx: State<'_, AppCtx>) -> Result<crate::core::RelayInfo, String> {
     Ok(core_of(&ctx).await?.relay_info())
+}
+
+/// The relay network as this node sees it (Settings → Сеть).
+#[tauri::command]
+async fn get_dht_status(ctx: State<'_, AppCtx>) -> Result<gipny_libcore::dht_client::DhtStatus, String> {
+    Ok(core_of(&ctx).await?.dht_status())
 }
 
 #[tauri::command]

@@ -11,7 +11,8 @@
 | `db.rs` | SQLCipher-база: контакты, сообщения, группы, сессии, prekeys, настройки, очереди отправки | `Db::open` / `open_plain`, `migrate` + `ensure_column`, `Contact`, `TrustLevel`, `RequestState`, `list_unacked_outgoing`, `RETRY_TTL_MS` |
 | `session.rs` | Мессенджер без UI для агента и ботов (`SessionManager`); здесь же формат сообщения | `SessionManager`, `SessionEvent`, `WirePayload` и снимки `WireV0..WireV7`, `encode_payload`/`decode_payload`, `pad_payload` |
 | `relay.rs` | Клиент протокола релея и сам протокол | `ClientToRelay`/`RelayToClient`, `EnvelopeBlob`, `connect`/`connect_peer`, `AuthV2` + `auth_v2_message` + `destination_hash`, `ERR_NOT_SERVED`, `ERR_NEEDS_AUTH_V2` |
-| `relay_server.rs` | Встроенный релей в процессе | `EphemeralRelay::start`, `MemStore`, `MemStoreLimits` (`personal`), `handle_client` |
+| `relay_server.rs` | Встроенный релей в процессе | `EphemeralRelay::start`, `MemStore`, `MemStoreLimits` (`personal`), `handle_client`; первый кадр `Dht` — анонимный запрос к узлу сети (`serve_dht`, `DhtHandler`) |
+| `dht_client.rs` | Узел сети релеев (`gipny-dht`) в приложении и агенте | `new_node`, `handler` (для релея), `join` (релей поднялся), `maintain` (раз в 45 мин), `DbStorage` (таблицы `dht_items`, `dht_peers`), `I2pTransport`, `status`, сиды из `GIPNY_DHT_SEEDS` |
 | `net.rs` | SAM-сессия клиента через `yosemite` | `I2pNode` (он же `TorNode`), `connect_relay`/`connect_service`, `sam_port`, `http_proxy_port` |
 | `router.rs` | Запуск и настройка процесса i2pd | `RouterHandle` (`spawn`/`attach`), `RouterSettings`, `TransitProfile`, `Yggdrasil`, `DEFAULT_OUTPROXY` |
 | `update.rs` | Автообновление через GitHub Releases по i2p-outproxy | `Updater` (`check`/`download`/`install`), `Component`, `InstallOutcome`, `target_suffix`, `apply_staged_windows_installer` |

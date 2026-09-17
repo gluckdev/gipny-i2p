@@ -170,6 +170,10 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
             (sign_pk, signature, auth_v2_message(&destination_hash, &challenge), true)
         }
         ClientToRelay::Auth { sign_pk, signature } => (sign_pk, signature, challenge.to_vec(), false),
+        ClientToRelay::Dht(_) => {
+            send_frame(&mut stream, &RelayToClient::Error("not a relay-network node".into())).await?;
+            return Ok(());
+        }
         _ => anyhow::bail!("expected Auth first"),
     };
 
@@ -306,7 +310,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     ClientToRelay::Ping => {
                         send_frame(stream, &RelayToClient::Pong).await?;
                     }
-                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } => {}
+                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
                 }
             }
             push = push_rx.recv() => {

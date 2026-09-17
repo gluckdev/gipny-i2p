@@ -447,6 +447,26 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_pending_outbound_recipient ON pending_outbound(recipient_contact_id);
 
+            -- Relay network (gipny-dht): items held for others, opaque
+            -- ciphertext under opaque keys, and nodes that answered us.
+            CREATE TABLE IF NOT EXISTS dht_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                k BLOB NOT NULL,
+                v BLOB NOT NULL,
+                v_hash BLOB NOT NULL,
+                delete_hash BLOB,
+                expires_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dht_items_k ON dht_items(k);
+            CREATE INDEX IF NOT EXISTS idx_dht_items_exp ON dht_items(expires_at);
+
+            CREATE TABLE IF NOT EXISTS dht_peers (
+                destination TEXT PRIMARY KEY,
+                stores INTEGER NOT NULL,
+                first_seen INTEGER NOT NULL,
+                last_ok INTEGER NOT NULL
+            );
+
             CREATE TRIGGER IF NOT EXISTS tr_pending_outbound_msg_del
                 AFTER DELETE ON messages
                 BEGIN
@@ -1563,7 +1583,119 @@ impl Db {
         self.with_conn(|c| Ok(c.execute(
             "DELETE FROM deferred_pins WHERE created_at < ?1", params![older_than])?))
     }
+
+    // ── relay network ────────────────────────────────────────────────────
+
+    /// Store an item held for others, evicting the oldest under its key and
+    /// then the oldest overall to stay within the limits. An identical value
+    /// under the same key is a no-op. The item is already admitted
+    /// (`gipny_dht::store::admit`).
+    pub fn dht_item_put(&self, item: &DhtStoredItem, limits: &DhtStoreLimits) -> Result<()> {
+        let hash = gipny_dht::crypto::sha256(&[&item.value]);
+        let len = item.value.len() as i64;
+        self.with_tx(|tx| {
+            let dup: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM dht_items WHERE k = ?1 AND v_hash = ?2",
+                params![&item.key[..], &hash[..]], |r| r.get(0))?;
+            if dup > 0 {
+                return Ok(());
+            }
+            loop {
+                let (n, bytes): (i64, i64) = tx.query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(LENGTH(v)), 0) FROM dht_items WHERE k = ?1",
+                    params![&item.key[..]], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                if n == 0 || (n < limits.max_items_per_key as i64 && bytes + len <= limits.max_bytes_per_key as i64) {
+                    break;
+                }
+                tx.execute("DELETE FROM dht_items WHERE id = (SELECT MIN(id) FROM dht_items WHERE k = ?1)", params![&item.key[..]])?;
+            }
+            loop {
+                let total: i64 = tx.query_row("SELECT COALESCE(SUM(LENGTH(v)), 0) FROM dht_items", [], |r| r.get(0))?;
+                if total == 0 || total + len <= limits.max_total_bytes as i64 {
+                    break;
+                }
+                tx.execute("DELETE FROM dht_items WHERE id = (SELECT MIN(id) FROM dht_items)", [])?;
+            }
+            tx.execute(
+                "INSERT INTO dht_items (k, v, v_hash, delete_hash, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![&item.key[..], &item.value, &hash[..], item.delete_hash.as_ref().map(|h| &h[..]), item.expires_at_ms as i64])?;
+            Ok(())
+        })
+    }
+
+    fn dht_rows(&self, sql: &str, p: impl rusqlite::Params) -> Result<Vec<DhtStoredItem>> {
+        self.with_conn(|c| {
+            let mut st = c.prepare(sql)?;
+            let rows = st.query_map(p, |r| {
+                let k: Vec<u8> = r.get(0)?;
+                let d: Option<Vec<u8>> = r.get(2)?;
+                let e: i64 = r.get(3)?;
+                Ok((k, r.get::<_, Vec<u8>>(1)?, d, e))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (k, value, d, e) = row?;
+                let Ok(key) = <[u8; 32]>::try_from(k.as_slice()) else { continue };
+                let delete_hash = d.and_then(|d| <[u8; 32]>::try_from(d.as_slice()).ok());
+                out.push(DhtStoredItem { key, value, delete_hash, expires_at_ms: e.max(0) as u64 });
+            }
+            Ok(out)
+        })
+    }
+
+    /// Live items under `key`, oldest first.
+    pub fn dht_items_get(&self, key: &[u8; 32], now_ms: i64) -> Result<Vec<DhtStoredItem>> {
+        self.dht_rows("SELECT k, v, delete_hash, expires_at FROM dht_items WHERE k = ?1 AND expires_at > ?2 ORDER BY id",
+            params![&key[..], now_ms])
+    }
+
+    pub fn dht_items_all(&self, now_ms: i64) -> Result<Vec<DhtStoredItem>> {
+        self.dht_rows("SELECT k, v, delete_hash, expires_at FROM dht_items WHERE expires_at > ?1 ORDER BY id", params![now_ms])
+    }
+
+    pub fn dht_item_delete(&self, key: &[u8; 32], delete_hash: &[u8; 32]) -> Result<u32> {
+        self.with_conn(|c| Ok(c.execute(
+            "DELETE FROM dht_items WHERE k = ?1 AND delete_hash = ?2", params![&key[..], &delete_hash[..]])? as u32))
+    }
+
+    pub fn dht_items_gc(&self, now_ms: i64) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute("DELETE FROM dht_items WHERE expires_at <= ?1", params![now_ms])?))
+    }
+
+    /// Items held and their bytes.
+    pub fn dht_items_stats(&self) -> Result<(usize, usize)> {
+        self.with_conn(|c| Ok(c.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(LENGTH(v)), 0) FROM dht_items", [],
+            |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)))?))
+    }
+
+    /// Replace the saved table of nodes that answered us.
+    pub fn dht_peers_save(&self, peers: &[DhtKnownPeer]) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute("DELETE FROM dht_peers", [])?;
+            for p in peers {
+                tx.execute(
+                    "INSERT OR REPLACE INTO dht_peers (destination, stores, first_seen, last_ok) VALUES (?1, ?2, ?3, ?4)",
+                    params![p.info.destination, p.info.stores as i64, p.first_seen_ms as i64, p.last_ok_ms as i64])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Saved nodes, longest known first: a node that has been around longer
+    /// is likelier to still be.
+    pub fn dht_peers_load(&self) -> Result<Vec<String>> {
+        self.with_conn(|c| {
+            let mut st = c.prepare("SELECT destination FROM dht_peers ORDER BY first_seen")?;
+            let rows = st.query_map([], |r| r.get::<_, String>(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+    }
 }
+
+type DhtStoredItem = gipny_dht::proto::StoredItem;
+type DhtStoreLimits = gipny_dht::store::StoreLimits;
+type DhtKnownPeer = gipny_dht::node::KnownPeer;
 
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)

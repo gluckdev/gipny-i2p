@@ -35,6 +35,16 @@ use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 use crate::net::{NetError, SESSION_SEQ};
 use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
+/// Answers one relay-network request, given the connection's challenge and the
+/// request's bytes; returns the response's bytes. The node behind it lives in
+/// [`crate::dht_client`]; the relay only carries the frames.
+pub type DhtHandler = Arc<dyn Fn(&[u8; 32], Vec<u8>) -> Vec<u8> + Send + Sync>;
+
+/// Requests one anonymous relay-network connection may make, and how long it
+/// may sit idle between them.
+const DHT_MAX_REQUESTS: usize = 64;
+const DHT_IDLE: Duration = Duration::from_secs(60);
+
 /// Live connections by the signing key they authenticated as.
 pub type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
 
@@ -288,11 +298,45 @@ impl MemStore {
 /// which an `AuthV2` signature must cover. A client that logs in with plain
 /// `Auth` may deposit and fetch bundles and nothing else: its signature could
 /// have been lifted from a login to some other relay.
+/// A relay-network connection: request, answer, until the other side is done.
+/// It never logs in, so nothing here touches the mailbox or `Connections`.
+async fn serve_dht<S>(mut stream: S, challenge: [u8; 32], first: Vec<u8>, dht: Option<DhtHandler>) -> Result<(), RelayError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let Some(dht) = dht else {
+        send(&mut stream, &RelayToClient::Error("not a relay-network node".into())).await?;
+        return Ok(());
+    };
+    let mut request = first;
+    for served in 1.. {
+        let answer = tokio::task::spawn_blocking({
+            let dht = dht.clone();
+            move || dht(&challenge, request)
+        })
+        .await
+        .map_err(|e| RelayError::Proto(format!("dht handler: {e}")))?;
+        send(&mut stream, &RelayToClient::Dht(answer)).await?;
+        if served >= DHT_MAX_REQUESTS {
+            return Ok(());
+        }
+        request = match tokio::time::timeout(DHT_IDLE, recv::<_, ClientToRelay>(&mut stream)).await {
+            Err(_) => return Ok(()),
+            Ok(Err(RelayError::Io(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            Ok(Err(e)) => return Err(e),
+            Ok(Ok(ClientToRelay::Dht(bytes))) => bytes,
+            Ok(Ok(_)) => return Err(RelayError::Proto("only relay-network frames after one".into())),
+        };
+    }
+    Ok(())
+}
+
 pub async fn handle_client<S>(
     mut stream: S,
     store: Arc<MemStore>,
     connections: Connections,
     destination_hash: [u8; 32],
+    dht: Option<DhtHandler>,
 ) -> Result<(), RelayError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -302,6 +346,7 @@ where
     send(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
     let (sign_pk, signature, signed, owner) = match recv::<_, ClientToRelay>(&mut stream).await? {
+        ClientToRelay::Dht(first) => return serve_dht(stream, challenge, first, dht).await,
         ClientToRelay::AuthV2 { sign_pk, signature } => {
             (sign_pk, signature, crate::relay::auth_v2_message(&destination_hash, &challenge), true)
         }
@@ -429,7 +474,7 @@ where
                         }
                     }
                     ClientToRelay::Ping => send(stream, &RelayToClient::Pong).await?,
-                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } => {}
+                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
                 }
             }
             push = push_rx.recv() => {
@@ -463,7 +508,9 @@ impl EphemeralRelay {
     /// session exists, which for a published destination means its tunnels are
     /// built, commonly a minute or two. Run it in a spawned task; never on a
     /// path anything user-facing waits on.
-    pub async fn start(sam_port: u16, limits: MemStoreLimits) -> Result<Self, NetError> {
+    ///
+    /// `dht` answers relay-network requests arriving here; `None` refuses them.
+    pub async fn start(sam_port: u16, limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
         let (address, private_key) = RouterApi::new(sam_port)
             .generate_destination()
             .await
@@ -504,9 +551,9 @@ impl EphemeralRelay {
                         accepted = live.accept() => match accepted {
                             Ok(stream) => {
                                 failures = 0;
-                                let (store, connections) = (store.clone(), connections.clone());
+                                let (store, connections, dht) = (store.clone(), connections.clone(), dht.clone());
                                 clients.spawn(async move {
-                                    if let Err(e) = handle_client(stream, store, connections, destination_hash).await {
+                                    if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
                                         eprintln!("[relay-server] client gone: {e}");
                                     }
                                 });
@@ -705,16 +752,17 @@ mod tests {
     struct Rig {
         store: Arc<MemStore>,
         connections: Connections,
+        dht: Option<DhtHandler>,
     }
 
     impl Rig {
         fn new() -> Self {
-            Self { store: Arc::new(MemStore::new(MemStoreLimits::default())), connections: Arc::default() }
+            Self { store: Arc::new(MemStore::new(MemStoreLimits::default())), connections: Arc::default(), dht: None }
         }
 
         fn open(&self) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
             let (client, server) = tokio::io::duplex(1 << 20);
-            let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone(), RIG_DESTINATION));
+            let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone(), RIG_DESTINATION, self.dht.clone()));
             (client, task)
         }
 
@@ -754,6 +802,33 @@ mod tests {
         let _challenge: RelayToClient = recv(&mut c).await.unwrap();
         send(&mut c, &ClientToRelay::Ping).await.unwrap();
         assert!(matches!(task.await.unwrap(), Err(RelayError::Proto(_))));
+    }
+
+    #[tokio::test]
+    async fn a_relay_network_connection_is_answered_but_never_logged_in() {
+        let mut rig = Rig::new();
+        rig.dht = Some(Arc::new(|challenge: &[u8; 32], req: Vec<u8>| [&challenge[..1], &req[..]].concat()));
+        let (mut c, task) = rig.open();
+        let RelayToClient::Challenge(ch) = recv(&mut c).await.unwrap() else { panic!() };
+        send(&mut c, &ClientToRelay::Dht(vec![1, 2])).await.unwrap();
+        let RelayToClient::Dht(a) = next(&mut c).await else { panic!("no dht answer") };
+        assert_eq!(a, vec![ch[0], 1, 2]);
+        send(&mut c, &ClientToRelay::Dht(vec![3])).await.unwrap();
+        assert!(matches!(next(&mut c).await, RelayToClient::Dht(_)));
+        // The same connection cannot turn into a mailbox one.
+        send(&mut c, &ClientToRelay::Ack { id: 1 }).await.unwrap();
+        assert!(matches!(task.await.unwrap(), Err(RelayError::Proto(_))));
+        assert!(rig.connections.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_relay_without_a_node_refuses_relay_network_requests() {
+        let rig = Rig::new();
+        let (mut c, task) = rig.open();
+        let _challenge: RelayToClient = recv(&mut c).await.unwrap();
+        send(&mut c, &ClientToRelay::Dht(vec![1])).await.unwrap();
+        assert!(matches!(next(&mut c).await, RelayToClient::Error(_)));
+        assert!(task.await.unwrap().is_ok());
     }
 
     #[tokio::test]
@@ -830,6 +905,7 @@ mod tests {
         let rig = Rig {
             store: Arc::new(MemStore::new(MemStoreLimits::personal(owner.card().sign_pk))),
             connections: Arc::default(),
+            dht: None,
         };
         let mut a = rig.login(&alice).await;
 

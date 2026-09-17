@@ -30,6 +30,10 @@ pub enum ClientToRelay {
         #[serde(with = "BigArray")]
         signature: [u8; 64],
     },
+    /// One request to the relay-network node behind this relay, encoded by
+    /// `gipny_dht`. Only as a connection's first frame, and never followed by
+    /// a login: whoever sends it stays anonymous to the relay.
+    Dht(Vec<u8>),
 }
 
 const AUTH_V2_CONTEXT: &[u8] = b"gipny-relay-auth-v2";
@@ -113,6 +117,8 @@ pub enum RelayToClient {
     Deposited { id: u64 },
     Pong,
     Error(String),
+    /// The answer to a [`ClientToRelay::Dht`].
+    Dht(Vec<u8>),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -268,6 +274,7 @@ fn out_kind(f: &ClientToRelay) -> String {
         ClientToRelay::Ack { id } => format!("Ack({})", id),
         ClientToRelay::Ping => "Ping".into(),
         ClientToRelay::AuthV2 { .. } => "AuthV2".into(),
+        ClientToRelay::Dht(b) => format!("Dht({}B)", b.len()),
     }
 }
 
@@ -281,6 +288,7 @@ fn frame_kind(f: &RelayToClient) -> String {
         RelayToClient::Deposited { id } => format!("Deposited({})", id),
         RelayToClient::Pong => "Pong".into(),
         RelayToClient::Error(e) => format!("Error({})", e),
+        RelayToClient::Dht(b) => format!("Dht({}B)", b.len()),
     }
 }
 
@@ -381,6 +389,14 @@ mod wire_compat {
         assert_eq!(&e[..4], &[0x06, 0, 0, 0]);
         assert!(e[4..36].iter().all(|&b| b == 0xAA));
         assert!(e[36..100].iter().all(|&b| b == 0xBB));
+    }
+
+    #[test]
+    fn dht_frames_are_the_last_variants() {
+        let e = enc(&ClientToRelay::Dht(vec![9, 8]));
+        assert_eq!(e, [0x07, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 9, 8]);
+        let r = enc(&RelayToClient::Dht(vec![7]));
+        assert_eq!(r, [0x08, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7]);
     }
 
     #[test]

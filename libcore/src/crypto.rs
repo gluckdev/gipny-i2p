@@ -81,6 +81,8 @@ impl Identity {
     pub fn sign_seed(&self) -> &[u8; 32] { &self.sign_seed }
     pub fn dh_secret(&self) -> &[u8; 32] { &self.dh_sk }
     fn signing(&self) -> SigningKey { SigningKey::from_bytes(&self.sign_seed) }
+    /// For signing relay-network records (`gipny_dht::items`).
+    pub(crate) fn signing_key(&self) -> SigningKey { self.signing() }
     fn static_secret(&self) -> StaticSecret { StaticSecret::from(self.dh_sk) }
     pub fn card(&self) -> IdentityCard {
         IdentityCard {
