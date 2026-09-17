@@ -181,6 +181,9 @@ pub struct RouterHandle {
     /// attach to somebody else's): we don't control its config and cannot
     /// assume it has an HTTP proxy open at all.
     http_proxy_port: Option<u16>,
+    /// Where this profile's router state lives, for the note we leave about
+    /// our child (`RUNTIME_FILE`). `None` when we did not spawn it.
+    router_dir: Option<PathBuf>,
 }
 
 impl RouterHandle {
@@ -226,6 +229,27 @@ impl RouterHandle {
         let router_dir = data_dir.join("i2p").join("router");
         std::fs::create_dir_all(&router_dir)
             .map_err(|e| NetError::I2p(format!("router data dir: {e}")))?;
+
+        // A router from an earlier run of this profile may still be alive: the
+        // app can die (or be killed) without its child going with it. i2pd
+        // locks `i2pd.pid`, so the new one exits at once with
+        // "Could not lock pid file", which reached the unlock screen as
+        // "router exited early: exit status: 1" (seen 2026-09-17). If that
+        // router still answers SAM, use it — its tunnels are already built.
+        // If it answers nothing, it is stuck: stop it and start fresh.
+        match previous_router(&router_dir).await {
+            Some(Previous::Serving { sam_port, http_proxy_port }) => {
+                eprintln!("[i2p] a router from an earlier run is still serving SAM on {sam_port}; using it");
+                let mut handle = Self { child: None, sam_port, http_proxy_port, router_dir: None };
+                handle.await_ready().await?;
+                return Ok(handle);
+            }
+            Some(Previous::Stuck { pid }) => {
+                eprintln!("[i2p] a router from an earlier run (pid {pid}) holds the data directory but does not answer; stopping it");
+                stop_pid(pid).await;
+            }
+            None => {}
+        }
 
         // Always run our own router on private, free ports so the profile is
         // self-contained and we never route through an untrusted foreign router.
@@ -281,7 +305,11 @@ impl RouterHandle {
             .spawn()
             .map_err(|e| NetError::I2p(format!("spawn router {}: {e}", bin.display())))?;
 
-        let mut handle = Self { child: Some(child), sam_port, http_proxy_port: Some(http_proxy_port) };
+        // Ports of the router we own, so the next launch can find it if this
+        // process dies without taking it down (see `previous_router`).
+        let _ = std::fs::write(router_dir.join(RUNTIME_FILE), format!("{} {sam_port} {http_proxy_port}\n", child.id()));
+
+        let mut handle = Self { child: Some(child), sam_port, http_proxy_port: Some(http_proxy_port), router_dir: Some(router_dir.clone()) };
         handle.await_ready().await?;
         eprintln!("[i2p] router ready (SAM up on {sam_port})");
         Ok(handle)
@@ -291,7 +319,7 @@ impl RouterHandle {
     /// JNI; or a developer-managed router). Does not own the process, and does
     /// not know whether that router has an HTTP proxy open.
     pub async fn attach(sam_port: u16) -> Result<Self> {
-        let mut handle = Self { child: None, sam_port, http_proxy_port: None };
+        let mut handle = Self { child: None, sam_port, http_proxy_port: None, router_dir: None };
         handle.await_ready().await?;
         Ok(handle)
     }
@@ -330,6 +358,10 @@ impl RouterHandle {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+            // The note is about a router that is now gone.
+            if let Some(dir) = self.router_dir.take() {
+                let _ = std::fs::remove_file(dir.join(RUNTIME_FILE));
+            }
         }
     }
 
@@ -343,6 +375,81 @@ impl Drop for RouterHandle {
     fn drop(&mut self) {
         self.kill_child();
     }
+}
+
+/// What a still-running router from an earlier launch of this profile is good
+/// for.
+enum Previous {
+    /// Answers SAM on these ports: adopt it.
+    Serving { sam_port: u16, http_proxy_port: Option<u16> },
+    /// Holds the data directory but does not answer: has to go.
+    Stuck { pid: u32 },
+}
+
+/// Ports of the router this process spawned, next to i2pd's own pid file.
+const RUNTIME_FILE: &str = "gipny-router.txt";
+
+async fn previous_router(router_dir: &Path) -> Option<Previous> {
+    // i2pd writes and locks this; a pid here that is still alive means the
+    // directory is taken, whoever started it.
+    let pid: u32 = std::fs::read_to_string(router_dir.join("i2pd.pid")).ok()?.trim().parse().ok()?;
+    if pid == 0 || !pid_alive(pid) {
+        return None;
+    }
+    let ports = std::fs::read_to_string(router_dir.join(RUNTIME_FILE)).ok();
+    let parsed = ports.as_deref().and_then(|line| {
+        let mut it = line.split_whitespace();
+        let noted_pid: u32 = it.next()?.parse().ok()?;
+        let sam: u16 = it.next()?.parse().ok()?;
+        let http: u16 = it.next()?.parse().ok()?;
+        // A recycled pid would point at some unrelated process.
+        (noted_pid == pid).then_some((sam, http))
+    });
+    match parsed {
+        Some((sam, http)) if probe_sam(sam).await => {
+            Some(Previous::Serving { sam_port: sam, http_proxy_port: Some(http) })
+        }
+        _ => Some(Previous::Stuck { pid }),
+    }
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // Signal 0 checks for the process without touching it.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
+/// Ask a router we no longer talk to to exit, then insist. It is our own
+/// process for this profile: the pid came from the data directory it locks.
+async fn stop_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string()]).output();
+    for _ in 0..20 {
+        if !pid_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
 /// Probe a SAMv3 bridge: TCP connect + `HELLO VERSION` handshake, expect `RESULT=OK`.
