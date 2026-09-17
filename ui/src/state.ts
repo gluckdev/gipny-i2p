@@ -462,7 +462,9 @@ export class Store {
     this.recomputeOnline();
     const unread = new Map<string, number>();
     await Promise.all([
-      ...contacts.map(async (c) => unread.set(targetKey({ kind: 'contact', id: c.id }), await Api.unreadCount(c.id))),
+      // A request's messages are held back until it is accepted.
+      ...contacts.filter((c) => c.request !== 'incoming')
+        .map(async (c) => unread.set(targetKey({ kind: 'contact', id: c.id }), await Api.unreadCount(c.id))),
       ...groups.map(async (g) => unread.set(targetKey({ kind: 'group', id: g.id }), await Api.groupUnreadCount(g.id))),
     ]);
     this.unread.set(unread);
@@ -947,6 +949,13 @@ export class Store {
       this.refreshContacts();
     } else if ('ContactUpdated' in e) {
       this.refreshContacts();
+    } else if ('ContactRequest' in e) {
+      const id = e.ContactRequest.contact_id;
+      void this.refreshContacts().then(() => {
+        const name = this.contacts.get().find((c) => c.id === id)?.name ?? 'someone';
+        this.showToast(`${name} wants to add you`);
+        if (this.settled) this.nativeNotify('contact request', `${name} wants to add you`);
+      });
     } else if ('RelayInfoChanged' in e) {
       const info = e.RelayInfoChanged.info;
       this.relayInfo.set(info);

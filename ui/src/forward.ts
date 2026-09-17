@@ -15,7 +15,7 @@ export class ForwardModal {
 
     const render = (): void => {
       const q = search.value.trim().toLowerCase();
-      const contacts = this.store.contacts.get();
+      const contacts = this.store.contacts.get().filter((c) => c.request !== 'incoming');
       const groups = this.store.groups.get();
       list.replaceChildren();
       const matches = (name: string): boolean => q === '' || name.toLowerCase().includes(q);

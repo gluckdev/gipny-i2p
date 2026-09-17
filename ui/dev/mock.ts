@@ -37,27 +37,38 @@ const contacts: Contact[] = [
     name: 'gpu-worker-17.eu-central-1.compute.internal.example-company.net',
     trust: 1, created_at: now - 900 * min, last_seen: now - 2 * min, is_bot: false,
     pinned_at: now - 800 * min, last_message_at: now - 3 * min, relay: RELAY, agent_granted: true,
+    request: 'none',
   },
   {
     id: 2, sign_pk: hex('c3'), dh_pk: hex('d4'), onion: B32, name: 'Анна',
     trust: 1, created_at: now - 700 * min, last_seen: now - 1 * min, is_bot: false,
     pinned_at: null, last_message_at: now - 1 * min, relay: null, agent_granted: false,
+    request: 'none',
   },
   {
     id: 3, sign_pk: hex('e5'), dh_pk: hex('f6'), onion: DEST,
     name: 'a_single_token_name_without_spaces_or_any_other_break_opportunity_0123456789abcdef',
     trust: 0, created_at: now - 600 * min, last_seen: null, is_bot: false,
     pinned_at: null, last_message_at: now - 90 * min, relay: null, agent_granted: false,
+    request: 'outgoing',
   },
   {
     id: 4, sign_pk: hex('07'), dh_pk: hex('18'), onion: B32, name: 'deploy-bot',
     trust: 1, created_at: now - 500 * min, last_seen: now - 30 * min, is_bot: true,
     pinned_at: null, last_message_at: now - 240 * min, relay: null, agent_granted: false,
+    request: 'none',
   },
   {
     id: 5, sign_pk: hex('29'), dh_pk: hex('3a'), onion: B32, name: 'backup-nas.home.arpa',
     trust: 2, created_at: now - 400 * min, last_seen: null, is_bot: false,
     pinned_at: null, last_message_at: null, relay: null, agent_granted: false,
+    request: 'none',
+  },
+  {
+    id: 6, sign_pk: hex('4b'), dh_pk: hex('5c'), onion: '', name: 'Stranger with a rather long display name',
+    trust: 0, created_at: now - 5 * min, last_seen: null, is_bot: false,
+    pinned_at: null, last_message_at: now - 4 * min, relay: RELAY, agent_granted: false,
+    request: 'incoming',
   },
 ];
 

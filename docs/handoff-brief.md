@@ -193,6 +193,35 @@ lost mail with no new protocol at all:
   `Auth` once 0.4.2 is no longer in use.** The new-client → old-relay fallback
   has no automated test: one crate cannot hold both enum versions.
 
+CONTACT REQUESTS (2026-09-17, phase 2 of 5)
+
+Adding someone's card now introduces us to them right away, and on their side
+we show up as a request, not as a contact. `contacts.request_state`
+(`RequestState` in `libcore/src/db.rs`) is a column of its own rather than a
+fourth `TrustLevel`, because the `Blocked` checks are spread over both
+copy-paste siblings and a new trust value would have to be taught to each.
+
+- Adding a card marks the contact `Outgoing` and makes `flush_all_pending`
+  open a session with no message queued. The tiebreaker wait is skipped, since
+  nobody on the other side knows us yet. The X3DH init carries identity,
+  name and (since phase 1) relay, which is the whole card. No wire change: an
+  init from an unknown key *is* the request.
+- An init from an unknown key creates the contact as `Incoming` and emits
+  `CoreEvent::ContactRequest`. At most 50 are kept; the oldest go first.
+  `persist_from_requester` applies the sender's relay and name, keeps plain
+  messages, and does not show, notify or acknowledge them. The sender sees
+  them as undelivered and retries (phase 1: until a week old); duplicates are
+  deduplicated by origin. Nothing at all is sent to an `Incoming` contact.
+- Accept: back to `None`, ack every held message, queue a relay announcement.
+  Adding the card of someone who asked does the same. Decline deletes the
+  contact and what it sent; block is the ordinary trust change.
+- Anything arriving from an `Outgoing` contact means they accepted.
+- The sidebar has a "requests" section with accept, decline and block. The
+  group picker, forwarding and the agent-master picker leave requests out.
+- `SessionManager` (agent, bots) keeps accepting everyone, as before.
+- Known cost: a stranger with our card can make us spend X3DH work and
+  one-time prekeys.
+
 WHAT CHANGED SINCE THE LAST BRIEF
 
 go-i2p is gone from the repository. It never finished building client tunnels

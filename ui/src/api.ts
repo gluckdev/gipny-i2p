@@ -22,6 +22,10 @@ export interface Contact {
   /** This contact is running in agent mode with us as master: its console is
    * open. The chat shows the чат/консоль switch when true. */
   agent_granted: boolean;
+  /** 'incoming': they introduced themselves and wait for an answer; their
+   * messages are held back until then. 'outgoing': we added their card and
+   * have not heard from them yet. */
+  request: 'none' | 'incoming' | 'outgoing';
 }
 
 export type TransitProfile = 'frugal' | 'balanced' | 'generous';
@@ -163,6 +167,7 @@ export type CoreEvent =
   | { Typing: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; typing: boolean } }
   | { ContactAdded: { contact_id: number } }
   | { ContactUpdated: { contact_id: number } }
+  | { ContactRequest: { contact_id: number } }
   | { GroupUpdated: { group_id: string } }
   | { PeerOnline: { contact_id: number } }
   | { PeerOffline: { contact_id: number } }
@@ -276,6 +281,12 @@ export class Api {
   }
   static deleteContact(id: number): Promise<void> {
     return invoke('delete_contact', { id });
+  }
+  static acceptContactRequest(id: number): Promise<void> {
+    return invoke('accept_contact_request', { id });
+  }
+  static declineContactRequest(id: number): Promise<void> {
+    return invoke('decline_contact_request', { id });
   }
   static setContactBot(id: number, isBot: boolean): Promise<void> {
     return invoke('set_contact_bot', { id, isBot });

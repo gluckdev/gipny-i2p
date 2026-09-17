@@ -14,7 +14,7 @@ use crate::core::{AgentMaster, Core, PendingAttachment};
 use gipny_libcore::{WireConsole, CONSOLE_COMMAND, CONSOLE_OFF};
 use gipny_libcore::agent::BODY_OFF;
 use gipny_libcore::crypto::IdentityCard;
-use gipny_libcore::db::{Contact, Group, GroupMember, Message, TrustLevel};
+use gipny_libcore::db::{Contact, Group, GroupMember, Message, RequestState, TrustLevel};
 use gipny_libcore::net::I2pNode;
 use gipny_libcore::security::{DuressMode, UnlockOutcome, Vault};
 
@@ -120,6 +120,7 @@ pub fn run() {
             update_configured,
             get_router_settings, set_router_settings,
             add_contact, list_contacts, get_contact, update_contact, delete_contact,
+            accept_contact_request, decline_contact_request,
             set_contact_bot, reset_contact_session,
             get_agent_mode, set_agent_mode, send_console_command, send_agent_off,
             list_messages, message_position, unread_count, mark_read, delete_message,
@@ -223,6 +224,9 @@ struct ContactDto {
     relay: Option<String>,
     /// This contact is in agent mode with us as master: its console is open.
     agent_granted: bool,
+    /// "none", "incoming" (they asked, we have not answered) or "outgoing"
+    /// (we added their card and have not heard back).
+    request: &'static str,
 }
 
 impl From<Contact> for ContactDto {
@@ -237,6 +241,11 @@ impl From<Contact> for ContactDto {
             pinned_at: c.pinned_at, last_message_at: c.last_message_at,
             relay: c.relay_address,
             agent_granted: c.agent_granted,
+            request: match c.request_state {
+                RequestState::None => "none",
+                RequestState::Incoming => "incoming",
+                RequestState::Outgoing => "outgoing",
+            },
         }
     }
 }
@@ -770,6 +779,16 @@ async fn send_agent_off(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<i64, 
 #[tauri::command]
 async fn delete_contact(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
     core_of(&ctx).await?.delete_contact(id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn accept_contact_request(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.accept_contact_request(id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn decline_contact_request(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.decline_contact_request(id).await.map_err(err)
 }
 
 #[tauri::command]
