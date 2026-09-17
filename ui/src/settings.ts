@@ -48,16 +48,16 @@ export class SettingsModal {
               const fname = `gipny-${version}-android-${it.arch}.apk`;
               const dest = await save({ defaultPath: fname, filters: [{ name: 'APK', extensions: ['apk'] }] });
               if (!dest) return;
-              apkProgress.textContent = `downloading ${humanSize(it.size)}...`;
+              apkProgress.textContent = `Скачиваю ${humanSize(it.size)}…`;
               await Api.downloadApk(it.arch, dest);
-              apkProgress.textContent = `saved → ${dest}`;
-              store.showToast(`apk saved (${humanSize(it.size)})`);
+              apkProgress.textContent = `Сохранено → ${dest}`;
+              store.showToast(`APK сохранён (${humanSize(it.size)})`);
             } catch (e) {
               apkErr.textContent = String(e);
               apkProgress.textContent = '';
             }
           }),
-        }, `Download ${it.arch.toUpperCase()} · ${humanSize(it.size)}`) as HTMLButtonElement;
+        }, `Скачать ${it.arch.toUpperCase()} · ${humanSize(it.size)}`) as HTMLButtonElement;
         apkButtons.appendChild(btn);
       }
     };
@@ -69,9 +69,16 @@ export class SettingsModal {
     Api.updateConfigured()
       .then((configured) => {
         if (!configured) {
-          updateSection.classList.add('hidden');
-          apkSection.classList.add('hidden');
-          return;
+          // No local HTTP proxy this run (Android, or a router we don't own):
+          // say so instead of quietly hiding the whole block.
+          updateSection.replaceChildren(h('div', { class: 'hint' },
+            'Автообновление в этом запуске недоступно: проверка идёт через выходной узел i2p, '
+            + 'а его нет на Android и при подключении к внешнему роутеру. Свежую версию берите '
+            + 'со страницы релизов (на Android — APK ниже).'));
+          apkSection.classList.remove('hidden');
+          return Api.listApkArtifacts()
+            .then((info) => renderApk(info.version, info.artifacts))
+            .catch(() => { apkInfo.textContent = ''; });
         }
         return Api.listApkArtifacts()
           .then((info) => renderApk(info.version, info.artifacts))
@@ -81,7 +88,7 @@ export class SettingsModal {
 
     const unsubProg = store.updateProgress.subscribe((p) => {
       if (!p) return;
-      apkProgress.textContent = `downloading ${p.pct}% · ${humanSize(p.downloaded)} / ${humanSize(p.total)}`;
+      apkProgress.textContent = `Скачиваю ${p.pct}% · ${humanSize(p.downloaded)} / ${humanSize(p.total)}`;
     }, false);
     const closeWrapped = (): void => { unsubProg(); close(); };
 
@@ -91,9 +98,34 @@ export class SettingsModal {
         h('button', { class: 'icon-btn', onClick: closeWrapped }, 'x'),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'card-label' }, 'version'),
+        h('div', { class: 'card-label' }, 'Версия'),
         verSlot,
         (() => {
+          // A found-but-not-installed version: either auto-update is off, or
+          // its install failed and the log was the only place that said so.
+          const pending = h('div', { class: 'hint' });
+          const installBtn = h('button', { class: 'btn' }, 'Установить сейчас') as HTMLButtonElement;
+          const installRow = h('div', { class: 'row hidden', style: { marginTop: '8px' } }, installBtn);
+          const showPending = (v: { version: string; size: number } | null): void => {
+            installRow.classList.toggle('hidden', !v);
+            pending.textContent = v ? `Готово к установке: ${v.version} · ${humanSize(v.size)}` : '';
+          };
+          // A version this session already found (auto-update off, or its
+          // install failed) — the button must be there without checking again.
+          const known = store.updateAvailable.get();
+          if (known) showPending({ version: known.version, size: known.size });
+          const lastErr = store.updateError.get();
+          if (lastErr) {
+            updErr.textContent = `Последняя попытка установки не удалась: ${lastErr}`;
+            installRow.classList.remove('hidden');
+          }
+          installBtn.addEventListener('click', () => void busy(installBtn, async () => {
+            updErr.textContent = '';
+            try {
+              await Api.installUpdate();
+              showPending(null);
+            } catch (e) { updErr.textContent = String(e); }
+          }));
           updateSection.append(
             h('div', { class: 'row', style: { marginTop: '8px' } },
               (() => {
@@ -103,14 +135,21 @@ export class SettingsModal {
                     updErr.textContent = '';
                     try {
                       const info = await Api.checkUpdate();
-                      if (!info) store.showToast('you are on the latest version');
-                      else store.showToast(`update v${info.version} found`);
+                      if (!info) {
+                        store.showToast('Установлена последняя версия');
+                        showPending(null);
+                      } else {
+                        store.showToast(`Найдена версия ${info.version}`);
+                        showPending({ version: info.version, size: info.size });
+                      }
                     } catch (e) { updErr.textContent = String(e); }
                   }),
-                }, 'Check for updates') as HTMLButtonElement;
+                }, 'Проверить обновления') as HTMLButtonElement;
                 return b;
               })(),
             ),
+            pending,
+            installRow,
             updErr,
             (() => {
               const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
