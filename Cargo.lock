@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "gipny"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "arboard",
  "argon2",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "gipny-agent"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "bincode",
