@@ -265,6 +265,7 @@ jobs:
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
@@ -305,39 +306,5 @@ jobs:
           avd-name: smoke
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
-          script: |
-            APK=$(find apk-x86_64 -name '*.apk' | head -1)
-            echo "Installing $APK"
-            adb install "$APK"
-
-            # Cold start: `am start -W` blocks until the activity is displayed
-            # and reports TotalTime (ms from launch to first frame).
-            START_OUTPUT=$(adb shell am start -W -n app.gipny.i2p/.MainActivity)
-            echo "$START_OUTPUT"
-            COLD_MS=$(echo "$START_OUTPUT" | grep TotalTime | awk '{print $2}')
-
-            # Assert the process is alive.
-            adb shell pidof app.gipny.i2p
-
-            # GipnyService: wait up to 15 s for the foreground-service start log.
-            # This is a hard assertion — if it times out, the step fails (the job
-            # has continue-on-error: true, so it never blocks other jobs).
-            timeout 15 adb logcat -s GipnyService | grep -m1 "GipnyService started"
-
-            # No SAM assertion: this APK ships no router by construction. Record
-            # what the service said about it so a genuinely broken JNI path (as
-            # opposed to a deliberately absent library) is still visible.
-            timeout 10 adb logcat -d -s GipnyService | tail -20 || true
-
-            # Memory snapshot.
-            MEMINFO=$(adb shell dumpsys meminfo app.gipny.i2p 2>/dev/null || echo "")
-            PSS_KB=$(echo "$MEMINFO" | awk '/TOTAL PSS/ {print $NF}' | head -1)
-
-            {
-              echo "### Android Emulator Smoke (x86_64, API 33)"
-              echo ""
-              echo "| Metric | Value |"
-              echo "|--------|-------|"
-              echo "| Cold start (TotalTime) | ${COLD_MS:-n/a} ms |"
-              echo "| Total PSS | ${PSS_KB:-n/a} kB |"
-            } >> "$GITHUB_STEP_SUMMARY"
+          # One command: the runner runs each line of a script in its own shell.
+          script: bash .github/scripts/android-smoke.sh
