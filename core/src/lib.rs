@@ -115,6 +115,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
+            get_relay_info, set_relay_mode, list_unreachable_contacts,
             get_attachment_privacy, set_attachment_privacy,
             update_configured,
             get_router_settings, set_router_settings,
@@ -135,7 +136,7 @@ pub fn run() {
             pin_contact_message, unpin_contact_message, list_pinned_contact,
             pin_group_message, unpin_group_message, list_pinned_group,
             pin_chat, unpin_chat,
-            check_update, install_update, dismiss_update, current_version,
+            check_update, install_update, dismiss_update, get_auto_update, set_auto_update, current_version,
             list_apk_artifacts, download_apk,
             read_debug_log,
             export_identity, import_identity_to_profile,
@@ -489,6 +490,11 @@ async fn boot(
     ctx: &State<'_, AppCtx>, app: AppHandle, vault: Arc<Vault>,
     pass: &str, profile: &str, dir: &std::path::Path,
 ) -> Result<Option<String>, String> {
+    // As early as this profile's own startup gets: before the vault is even
+    // unlocked, and well before the ~1-3 min router wait below. A staged
+    // Windows update means the app closes and reopens once here, rather than
+    // after the user has sat through both of those for nothing.
+    gipny_libcore::update::apply_staged_windows_installer(dir);
     let outcome = vault.unlock(pass).map_err(err)?;
     // The decoy key is freshly random and unrelated to the primary master key,
     // so it cannot open data.db — SQLCipher rejects it and the unlock screen
@@ -624,6 +630,24 @@ async fn get_relay_address(ctx: State<'_, AppCtx>) -> Result<String, String> {
 #[tauri::command]
 async fn set_relay_address(addr: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     core_of(&ctx).await?.set_relay_address(&addr).map_err(err)
+}
+
+/// Relay mode, the saved external address, and the state of the built-in relay.
+#[tauri::command]
+async fn get_relay_info(ctx: State<'_, AppCtx>) -> Result<crate::core::RelayInfo, String> {
+    Ok(core_of(&ctx).await?.relay_info())
+}
+
+#[tauri::command]
+async fn set_relay_mode(mode: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let mode = crate::core::RelayMode::parse(&mode).ok_or("bad relay mode")?;
+    core_of(&ctx).await?.set_relay_mode(mode).await.map_err(err)
+}
+
+/// Contacts whose relay has not answered for a while with mail waiting.
+#[tauri::command]
+async fn list_unreachable_contacts(ctx: State<'_, AppCtx>) -> Result<Vec<i64>, String> {
+    Ok(core_of(&ctx).await?.unreachable_contacts().await)
 }
 
 const SETTING_ATTACHMENT_PRIVACY: &str = "attachment_privacy";
@@ -1339,8 +1363,7 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<Option<serde_json::Value
     Ok(info.map(|i| serde_json::json!({
         "version": i.version,
         "notes": i.notes,
-        "target_key": i.target_key,
-        "size": i.artifact.size,
+        "size": i.asset.size,
     })))
 }
 
@@ -1353,6 +1376,16 @@ async fn install_update(ctx: State<'_, AppCtx>) -> Result<(), String> {
 #[tauri::command]
 async fn dismiss_update(version: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     core_of(&ctx).await?.dismiss_update(version).await.map_err(err)
+}
+
+#[tauri::command]
+async fn get_auto_update(ctx: State<'_, AppCtx>) -> Result<bool, String> {
+    Ok(core_of(&ctx).await?.auto_update_enabled())
+}
+
+#[tauri::command]
+async fn set_auto_update(enabled: bool, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.set_auto_update(enabled).map_err(err)
 }
 
 #[tauri::command]

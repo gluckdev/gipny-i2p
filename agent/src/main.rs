@@ -14,7 +14,9 @@
 //!
 //! Optional flags:
 //!   --name <display name>   what the agent calls itself (default: hostname)
-//!   --relay <dest>          relay to collect from; default: the master card's relay
+//!   --relay <dest>          external relay to collect from, remembered in <data>/relay.txt;
+//!                           default: none — the agent hosts a personal relay for itself,
+//!                           the same way the app does for its own inbox
 //!   --sam <port>            attach to a running SAM bridge on this port instead of
 //!                           spawning our own router (for dev/CI)
 //!   --cwd <dir>             working directory for commands (default: home dir)
@@ -33,15 +35,21 @@ use tokio::signal;
 use tokio::sync::mpsc;
 
 use gipny_libcore::{
-    ContactCard, Db, I2pNode, SessionManager, SessionEvent,
+    ContactCard, Db, I2pNode, SessionManager, SessionEvent, Updater, UpdateComponent,
     WireConsole, CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OFF, CONSOLE_REVOKE,
 };
 use gipny_libcore::agent::{self, ExecOptions, BODY_GRANT, BODY_REVOKE};
 use gipny_libcore::crypto::AttachmentCipher;
 use gipny_libcore::router::RouterSettings;
+use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SECS};
 
 const MASTER_CARD_FILE: &str = "master.card";
+const RELAY_FILE: &str = "relay.txt";
 const OWN_CARD_FILE: &str = "card.txt";
+/// Same DB setting key/convention as the app's `dismissed_update_version`:
+/// which version this run already downloaded and installed, so a later check
+/// this same launch does not redo it every `UPDATE_CHECK_INTERVAL_SECS`.
+const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// How long the closing REVOKE may take to reach the master before the agent
 /// exits anyway. It is queued and retried like any message; this only bounds
 /// how long a stopped service lingers.
@@ -137,6 +145,20 @@ fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
     ContactCard::parse(&raw).with_context(|| format!("invalid master card in {}", path.display()))
 }
 
+/// `--relay` is remembered like `--master`: given once, read back afterwards.
+fn load_relay(args: &Args, data: &Path) -> Result<Option<String>> {
+    let path = data.join(RELAY_FILE);
+    match args.relay.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => {
+            write_private(&path, r)?;
+            Ok(Some(r.to_string()))
+        }
+        None => Ok(std::fs::read_to_string(&path).ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())),
+    }
+}
+
 /// Load the encrypted attachments of an incoming command from the data dir.
 fn load_attachments(db: &Db, data_dir: &Path, msg_id: i64) -> Vec<(String, Vec<u8>)> {
     let atts = match db.list_attachments(msg_id) {
@@ -174,18 +196,16 @@ async fn main() -> Result<()> {
     let args = parse_args();
     let data_dir = data_dir(&args)?;
     let master_card = load_master(&args, &data_dir)?;
-
-    // The agent collects its commands from the master's relay; a v1 card does
-    // not say which one that is.
-    let relay_onion = match (args.relay.clone(), master_card.relay.clone()) {
-        (Some(r), _) => r,
-        (None, Some(r)) => r,
-        (None, None) => bail!(
-            "the master's card is a v1 card without a relay, and the agent collects \
-            its commands from the master's relay. Ask the master for a v2 card \
-            (Settings → my card), or pass --relay <destination>"
-        ),
-    };
+    // The agent's own relay is separate from the master's: this is only about
+    // reaching the master to deliver a message, which needs a v2 card either
+    // way.
+    if master_card.relay.is_none() {
+        bail!(
+            "the master's card is a v1 card without a relay, and the agent has no way to \
+            reach the master until it gets a v2 card (Settings → my card)"
+        );
+    }
+    let relay_override = load_relay(&args, &data_dir)?;
 
     // A plain (unencrypted) database: a headless daemon has nobody to type a
     // passphrase. The data dir is 0700 for that reason.
@@ -206,15 +226,41 @@ async fn main() -> Result<()> {
     );
     eprintln!("[agent] i2p address: {}", node.b32_address().unwrap_or_else(|| node.onion_address().to_string()));
 
+    tokio::spawn(run_update_loop(db.clone(), data_dir.clone(), node.clone()));
+
     let display_name = args.name.clone().unwrap_or_else(agent::hostname);
     let (session, mut events) = SessionManager::start(data_dir.clone(), db.clone(), node.clone())
         .await
         .context("start session manager")?;
     session.set_display_name(&display_name)?;
-    session.set_relay_onion(&relay_onion)?;
+    let me = session.my_card();
+
+    // Where the agent collects its own mail: a personal relay it hosts for
+    // itself by default (exactly what the app does for its own inbox), or an
+    // external one if `--relay` names it — the escape hatch for an offline
+    // mailbox. Kept alive for the life of the process; dropping it releases
+    // the destination.
+    let (relay_onion, _hosted_relay) = match relay_override {
+        Some(r) => {
+            session.set_relay_onion(&r)?;
+            (r, None)
+        }
+        None => {
+            eprintln!("[agent] starting the built-in relay (this can take a minute or two)…");
+            let relay = gipny_libcore::EphemeralRelay::start(
+                node.sam_port(),
+                gipny_libcore::MemStoreLimits::personal(me.sign_pk),
+            )
+            .await
+            .context("start the agent's built-in relay")?;
+            let address = relay.address().to_string();
+            eprintln!("[agent] built-in relay ready");
+            session.set_relay_onion(&address)?;
+            (address, Some(relay))
+        }
+    };
 
     // Our own card, for the record and for anyone reading the log.
-    let me = session.my_card();
     let own_card = ContactCard {
         onion: node.onion_address().to_string(),
         sign_pk: me.sign_pk,
@@ -332,6 +378,19 @@ async fn main() -> Result<()> {
                             _ => {}
                         }
                     }
+                    SessionEvent::RelayError { reason } if reason == gipny_libcore::relay::ERR_NOT_SERVED => {
+                        // Not a fault that passes: this can only be the relay
+                        // named by --relay, and it is somebody else's
+                        // personal one, which will never hold our mail. The
+                        // agent's own built-in relay always serves itself.
+                        eprintln!(
+                            "[agent] the relay named by --relay refused this agent: it is somebody else's \
+                            personal relay and will never hold this agent's mail. Drop --relay so the agent \
+                            hosts its own relay, or point it at a standalone gipny-relay instead, and give \
+                            the master the new card from card.txt."
+                        );
+                        std::process::exit(2);
+                    }
                     SessionEvent::MessageDelivered { message_id } => {
                         if stopping.map(|(id, _)| id == message_id).unwrap_or(false) {
                             eprintln!("[agent] REVOKE delivered — exiting");
@@ -345,6 +404,56 @@ async fn main() -> Result<()> {
     }
     session.shutdown();
     Ok(())
+}
+
+/// Checks GitHub for a newer `gipny-agent` release on the same cadence as the
+/// desktop app, and replaces this binary's file in place if one is found —
+/// no restart, and no disruption to commands already in flight; the next
+/// time this process starts (a service restart, a reboot) runs the new build.
+async fn run_update_loop(db: Arc<Db>, data_dir: PathBuf, node: Arc<I2pNode>) {
+    let updater = Updater::new(node, UpdateComponent::Agent);
+    if !updater.is_configured() {
+        eprintln!("[agent] no local HTTP proxy this run — auto-update disabled");
+        return;
+    }
+    // Resolved once, before any install: after a first in-place replace,
+    // `current_exe()` would resolve to the old, now-deleted file instead of
+    // the path a later install needs to overwrite.
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("[agent] cannot resolve our own binary path — auto-update disabled: {e}"); return; }
+    };
+    tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INITIAL_SECS)).await;
+    loop {
+        match updater.check(env!("CARGO_PKG_VERSION")).await {
+            Ok(Some(info)) => {
+                let already_handled = db.get_setting(SETTING_DISMISSED_UPDATE).ok().flatten()
+                    .is_some_and(|v| v == info.version.as_bytes());
+                if already_handled {
+                    // Downloaded and installed earlier this run; nothing to
+                    // redo until the next actual restart picks it up.
+                } else {
+                    eprintln!("[agent] update {} found; downloading...", info.version);
+                    let dl_dir = data_dir.join("update_dl");
+                    let outcome = match updater.download(&info, &dl_dir, |_, _| {}).await {
+                        Ok(path) => updater.install(&path, &data_dir, Some(&exe)),
+                        Err(e) => Err(e),
+                    };
+                    match outcome {
+                        Ok(outcome) => {
+                            let _ = std::fs::remove_dir_all(&dl_dir);
+                            let _ = db.set_setting(SETTING_DISMISSED_UPDATE, info.version.as_bytes());
+                            eprintln!("[agent] update {}: {:?} — takes effect next start", info.version, outcome);
+                        }
+                        Err(e) => eprintln!("[agent] update {} failed: {e:?}", info.version),
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("[agent] update check failed: {e:?}"),
+        }
+        tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS)).await;
+    }
 }
 
 /// Queues the closing REVOKE and returns its row id with the deadline by

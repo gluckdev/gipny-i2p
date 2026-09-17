@@ -44,6 +44,22 @@ export interface ConsoleFrame {
   truncated: boolean;
 }
 
+export type RelayMode = 'builtin' | 'external';
+
+/** The relay this process hosts for itself in built-in mode. */
+export type HostedRelayState =
+  | { state: 'off' }
+  | { state: 'starting' }
+  | { state: 'ready'; address: string }
+  | { state: 'failed'; reason: string };
+
+export interface RelayInfo {
+  mode: RelayMode;
+  /** The address saved for external mode, whether or not it is in use. */
+  external: string;
+  hosted: HostedRelayState;
+}
+
 /** A contact that put this client into agent mode, from `get_agent_mode`. */
 export interface AgentMaster {
   contact_id: number;
@@ -131,7 +147,6 @@ export interface Bundle {
 export interface UpdateInfo {
   version: string;
   notes: string;
-  target_key: string;
   size: number;
 }
 
@@ -151,12 +166,15 @@ export type CoreEvent =
   | { GroupUpdated: { group_id: string } }
   | { PeerOnline: { contact_id: number } }
   | { PeerOffline: { contact_id: number } }
-  | { UpdateAvailable: { version: string; notes: string; target_key: string; size: number } }
+  | { UpdateAvailable: { version: string; notes: string; size: number } }
   | { UpdateProgress: { downloaded: number; total: number; pct: number } }
+  | { UpdateStaged: { version: string } }
   | { UpdateReady: { path: string } }
   | { UpdateFailed: { reason: string } }
   | { AgentModeChanged: { master: AgentMaster | null } }
-  | { ConsoleActivity: { contact_id: number } };
+  | { ConsoleActivity: { contact_id: number } }
+  | { RelayInfoChanged: { info: RelayInfo } }
+  | { ContactReachability: { contact_id: number; unreachable: boolean } };
 
 export interface PendingAttachment { name: string; data: string; }
 
@@ -224,6 +242,16 @@ export class Api {
   }
   static setRelayAddress(addr: string): Promise<void> {
     return invoke('set_relay_address', { addr });
+  }
+  static getRelayInfo(): Promise<RelayInfo> {
+    return invoke('get_relay_info');
+  }
+  static setRelayMode(mode: RelayMode): Promise<void> {
+    return invoke('set_relay_mode', { mode });
+  }
+  /** Contacts whose relay has been silent for a while with mail waiting. */
+  static listUnreachableContacts(): Promise<number[]> {
+    return invoke('list_unreachable_contacts');
   }
   /** Strip private metadata from local attachments before they are sent. */
   static getAttachmentPrivacy(): Promise<boolean> {
@@ -420,6 +448,12 @@ export class Api {
   }
   static dismissUpdate(version: string): Promise<void> {
     return invoke('dismiss_update', { version });
+  }
+  static getAutoUpdate(): Promise<boolean> {
+    return invoke('get_auto_update');
+  }
+  static setAutoUpdate(enabled: boolean): Promise<void> {
+    return invoke('set_auto_update', { enabled });
   }
   static currentVersion(): Promise<string> {
     return invoke('current_version');

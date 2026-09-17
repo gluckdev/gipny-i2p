@@ -127,7 +127,7 @@ export class App extends View {
     this.updateStatusEl = h('div', {
       class: 'fp',
       style: { marginTop: '8px', wordBreak: 'break-all' },
-    }, `version ${info.version} · ${humanSize(info.size)} · target: ${info.target_key}`);
+    }, `version ${info.version} · ${humanSize(info.size)}`);
 
     this.updateProgressEl = h('div', {
       class: 'update-progress',
@@ -217,14 +217,22 @@ class MainView extends View {
       banner.classList.toggle('hidden', connected);
       banner.classList.toggle('warn', unconfigured);
       if (connected) return;
+      const info = store.relayInfo.get();
+      const builtin = info?.mode === 'builtin';
+      banner.classList.toggle('warn', unconfigured || (builtin && info?.hosted.state === 'failed'));
       banner.replaceChildren(
         unconfigured
-          ? 'релей не задан — отправка недоступна. Настройки → адрес релея'
-          : 'нет связи с релеем — сообщения уйдут, когда связь восстановится'
+          ? 'внешний релей выбран, но адрес не задан — отправка недоступна. Настройки → relay'
+          : builtin && info?.hosted.state === 'failed'
+            ? 'встроенный релей не поднялся, пробую снова — сообщения пока ждут в очереди'
+            : builtin && info?.hosted.state !== 'ready'
+              ? 'встроенный релей запускается — обычно 1–2 минуты. Сообщения уйдут, как только он будет готов'
+              : 'нет связи с релеем — сообщения уйдут, когда связь восстановится'
       );
     };
     this.subs.push(store.relayConnected.subscribe(paintBanner, true));
     this.subs.push(store.relayUnconfigured.subscribe(paintBanner, true));
+    this.subs.push(store.relayInfo.subscribe(paintBanner, false));
     main.insertBefore(banner, main.firstChild);
 
     // Agent mode is intentionally visible in the same always-on strip as relay

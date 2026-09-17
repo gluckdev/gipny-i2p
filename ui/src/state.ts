@@ -1,4 +1,4 @@
-import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster } from './api';
+import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo } from './api';
 import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 
 const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF]);
@@ -134,6 +134,10 @@ export class Store {
   private bootTimer: number | null = null;
   /** No relay configured: the app is usable, it just cannot send yet. */
   relayUnconfigured = new Signal<boolean>(false);
+  /** Mode and built-in relay state; null until the core has been asked. */
+  relayInfo = new Signal<RelayInfo | null>(null);
+  /** Contacts whose relay has been silent for a while with mail waiting. */
+  unreachable = new Signal<Set<number>>(new Set());
   private lastSeenMs: Map<number, number> = new Map();
   private onlineTickTimer: number | null = null;
   private static readonly ONLINE_WINDOW_MS = 60_000;
@@ -318,8 +322,23 @@ export class Store {
    * still flips the banner through the normal event path.
    */
   private async enterMainWhenReady(): Promise<void> {
-    const configured = await Api.getRelayAddress().catch(() => '');
-    this.relayUnconfigured.set(configured.trim() === '');
+    const [configured, info, unreachable] = await Promise.all([
+      Api.getRelayAddress().catch(() => ''),
+      Api.getRelayInfo().catch(() => null),
+      Api.listUnreachableContacts().catch(() => [] as number[]),
+    ]);
+    this.relayInfo.set(info);
+    this.unreachable.set(new Set(unreachable));
+    // In built-in mode there is always a relay on the way: nothing for the
+    // user to configure, only a minute or two to wait.
+    this.relayUnconfigured.set(info?.mode !== 'builtin' && configured.trim() === '');
+    if (info?.mode === 'builtin' && info.hosted.state !== 'ready') {
+      // Do not hold the boot screen for the relay's tunnels; the banner says
+      // what is happening and messages queue meanwhile.
+      this.bootStage.set('done');
+      if (this.view.get() === 'auth-booting') this.view.set('main');
+      return;
+    }
     if (this.relayUnconfigured.get()) {
       this.bootStage.set('done');
       if (this.view.get() === 'auth-booting') this.view.set('main');
@@ -412,6 +431,8 @@ export class Store {
     this.relayConnected.set(false);
     this.agentMode.set(null);
     this.consoleMode.set(new Set());
+    this.relayInfo.set(null);
+    this.unreachable.set(new Set());
     this.bootStage.set('unlocking');
     this.updateAvailable.set(null);
     this.updateProgress.set(null);
@@ -926,6 +947,17 @@ export class Store {
       this.refreshContacts();
     } else if ('ContactUpdated' in e) {
       this.refreshContacts();
+    } else if ('RelayInfoChanged' in e) {
+      const info = e.RelayInfoChanged.info;
+      this.relayInfo.set(info);
+      this.relayUnconfigured.set(info.mode !== 'builtin' && info.external.trim() === '');
+    } else if ('ContactReachability' in e) {
+      const { contact_id, unreachable } = e.ContactReachability;
+      this.unreachable.update((s) => {
+        const n = new Set(s);
+        if (unreachable) n.add(contact_id); else n.delete(contact_id);
+        return n;
+      });
     } else if ('AgentModeChanged' in e) {
       this.agentMode.set(e.AgentModeChanged.master);
       if (!e.AgentModeChanged.master) {
@@ -948,15 +980,25 @@ export class Store {
     } else if ('PeerOffline' in e) {
       this.peerOnline.update((s) => { const n = new Set(s); n.delete(e.PeerOffline.contact_id); return n; });
     } else if ('UpdateAvailable' in e) {
+      // Only fires when auto-update is off — the manual install prompt.
       this.updateAvailable.set(e.UpdateAvailable);
     } else if ('UpdateProgress' in e) {
       this.updateProgress.set(e.UpdateProgress);
+    } else if ('UpdateStaged' in e) {
+      // Fires both for the silent auto-install path and for a manual
+      // "Update now" click (auto-update off) — either way there is nothing
+      // left to show a modal for, so close it if one is open.
+      this.updateAvailable.set(null);
+      this.updateProgress.set(null);
+      this.showToast(`update v${e.UpdateStaged.version} installed — restart gipny to use it`);
     } else if ('UpdateReady' in e) {
       this.updateReadyPath.set(e.UpdateReady.path);
       this.updateProgress.set(null);
+      this.showToast(`update downloaded to ${e.UpdateReady.path}`);
     } else if ('UpdateFailed' in e) {
       this.updateError.set(e.UpdateFailed.reason);
       this.updateProgress.set(null);
+      this.showToast(`update failed: ${e.UpdateFailed.reason}`, true);
     }
   }
 

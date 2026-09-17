@@ -123,6 +123,56 @@ the current one.
 Still open: no relay is baked in (`DEFAULT_RELAY` is empty), so a fresh install
 has nowhere to start until someone operates one.
 
+## Status (2026-09-17)
+
+The app starts the in-client relay now, at every launch, and a fresh install
+needs no relay from anyone. That closes the point above without baking an
+address in.
+
+How it is wired (`core/src/core.rs`):
+
+- Two modes, `relay_mode` in the settings: **built-in** (the default for a
+  profile that names no relay) and **external** (a profile that already names
+  one keeps it; upgrading moves nobody).
+- Built-in: `Core::start` spawns `run_hosted_relay`, which starts an
+  `EphemeralRelay` with `MemStoreLimits::personal(own sign_pk)` — it holds mail
+  and a prekey bundle for its owner and answers `ERR_NOT_SERVED` to anyone
+  else. The address lives in memory only. It is never written to the settings;
+  that is what 0.4.0's button did, and it left clients listening on a relay
+  that no longer existed.
+- Per launch, by the owner's decision: a destination that persisted would be a
+  stable LeaseSet whose appearances trace the owner's online hours. The cost is
+  accepted and documented — delivery happens while both apps run, and there is
+  no mailbox for later.
+- Discovery of the new address: once the relay is up, every contact we share a
+  session with gets an empty payload (the keepalive shape) carrying
+  `relay_address`; the send loop keeps trying until each has been told.
+  Mail for a contact whose relay does not answer stays queued without burning
+  retry attempts, and goes out when their announcement arrives.
+- What cannot be recovered automatically: both sides restart without ever
+  being online together. Each then holds the other's dead address. After ten
+  minutes with mail queued the chat says so, and the fix is a fresh card —
+  re-adding a contact by card keeps history and keys and replaces the relay.
+- `gipny-agent` hosts a personal relay for itself too, exactly the same way
+  and at the same point in startup (before it prints its own card — a card
+  with no reachable relay is useless to hand to a master). `--relay` remains
+  an external override, for an agent operator who wants an offline mailbox
+  instead; pointed at somebody *else's* personal relay, it exits with an
+  explanation (`ERR_NOT_SERVED`). Since the agent's relay is ephemeral like
+  the app's, it re-sends its GRANT message to the master on every restart —
+  already unconditional — which carries the new address for free through the
+  same per-message `relay_address` field contacts use; no separate
+  announcement was needed. The one gap this doesn't close: if the agent and
+  its master both restart without ever being online together since, the
+  master needs a fresh copy of the agent's `card.txt` (SSH access), the same
+  as re-adding a contact by card, just with higher friction for a headless box.
+
+Proof: the e2e job "relays inside the bots" starts each bot with no relay,
+then a *personal* relay for that bot's key, then tells the bot the address —
+the app's order — and delivers over live i2p. What it does not exercise is
+`Core` itself (the harness drives `SessionManager`), so the wiring above is
+covered by the app crate's unit tests and a manual check on a CI build.
+
 ## Prerequisites either way
 
 - `DEFAULT_RELAY` must stop being a compile-time constant (`libcore/src/relay.rs`).

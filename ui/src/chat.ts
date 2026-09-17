@@ -44,6 +44,7 @@ export class ChatView extends View {
   private modeBtn: HTMLButtonElement;
   private agentOffBtn: HTMLButtonElement;
   private promptEl: HTMLElement;
+  private unreachableNote: HTMLElement;
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
@@ -205,6 +206,18 @@ export class ChatView extends View {
 
     this.pinnedBanner = new PinnedBanner(store, target);
 
+    // With built-in relays a contact's address lasts until they restart. If it
+    // has been silent for a while with mail queued, say so and say what helps —
+    // the alternative is messages that wait forever with no explanation.
+    this.unreachableNote = h('div', { class: 'chat-notice hidden' },
+      'релей контакта не отвечает больше 10 минут — сообщения ждут в очереди. Если контакт перезапускал '
+      + 'приложение, адрес его релея сменился: попросите свежую карточку («моя карточка») и добавьте её '
+      + 'снова — переписка сохранится.');
+    this.sub(store.unreachable, (set) => {
+      const hit = target.kind === 'contact' && set.has(target.id as number);
+      this.unreachableNote.classList.toggle('hidden', !hit);
+    }, true);
+
     this.el = h('div', { class: 'chat' },
       h('div', { class: 'chat-header' },
         h('button', {
@@ -220,6 +233,7 @@ export class ChatView extends View {
         ),
         headerRight,
       ),
+      this.unreachableNote,
       this.pinnedBanner.el,
       this.logWrap,
       h('div', { class: 'chat-input' },

@@ -22,6 +22,12 @@ pub enum ClientToRelay {
     Ping,
 }
 
+/// What a relay answers, in an `Error` frame, to a publish or a deposit for a
+/// key it does not hold mail for: the relay built into somebody's app serves
+/// its owner and nobody else. A client reads it to tell "wrong relay" from a
+/// passing fault.
+pub const ERR_NOT_SERVED: &str = "this relay does not serve that recipient";
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum RelayToClient {
     Challenge([u8; 32]),

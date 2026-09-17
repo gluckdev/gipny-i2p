@@ -129,6 +129,7 @@ pub struct I2pNode {
     #[allow(dead_code)]
     data_dir: PathBuf,
     sam_port: u16,
+    http_proxy_port: Option<u16>,
     inbound_tx: mpsc::Sender<Connection>,
     inbound: Arc<Mutex<mpsc::Receiver<Connection>>>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
@@ -174,6 +175,7 @@ impl I2pNode {
         };
 
         let sam_port = router.sam_port();
+        let http_proxy_port = router.http_proxy_port();
         eprintln!("[i2p] generating ephemeral destination for this session...");
         let (address, privkey) = RouterApi::new(sam_port)
             .generate_destination()
@@ -193,6 +195,7 @@ impl I2pNode {
             privkey: zeroize::Zeroizing::new(privkey),
             data_dir: data_dir.to_path_buf(),
             sam_port,
+            http_proxy_port,
             inbound_tx: tx,
             inbound: Arc::new(Mutex::new(rx)),
             accept_task: Mutex::new(accept_task),
@@ -217,6 +220,11 @@ impl I2pNode {
 
     /// The SAM bridge TCP port this node talks to.
     pub fn sam_port(&self) -> u16 { self.sam_port }
+
+    /// Local HTTP proxy port for the update checker, if this router has one
+    /// open — `None` on Android or when attached to a router we don't own
+    /// (`GIPNY_SAM_PORT`), where auto-update is simply unavailable this run.
+    pub fn http_proxy_port(&self) -> Option<u16> { self.http_proxy_port }
 
     /// Short `.b32.i2p` address derived from the destination.
     ///

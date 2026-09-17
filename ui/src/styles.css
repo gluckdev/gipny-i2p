@@ -1757,6 +1757,17 @@ select.input { width: 100%; text-overflow: ellipsis; }
   line-height: 1;
 }
 
+/* A notice that belongs to one conversation: same voice as the relay banner. */
+.chat-notice {
+  padding: 8px 14px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger);
+  background: var(--danger-soft, rgba(255, 60, 60, 0.1));
+  border-bottom: 1px solid var(--danger);
+  overflow-wrap: anywhere;
+}
+
 /* --- 2. Sizes follow the space, not three hard-coded screens ------------- */
 
 /* The chat pane is a size container: what its header and log can afford

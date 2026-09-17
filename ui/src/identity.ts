@@ -1,5 +1,5 @@
 import { Api, encodeCard } from './api';
-import type { Bundle } from './api';
+import type { Bundle, RelayInfo } from './api';
 import type { Store } from './state';
 import { h, fmtFp } from './view';
 
@@ -29,16 +29,51 @@ export class IdentityModal {
     // where we actually collect. Without it they would have to already use the
     // same relay as us, which is what made one shared relay mandatory.
     let myRelay = '';
+    // Built-in relay not up yet: a card without a relay is one nobody can
+    // write to, so it is not shown and cannot be copied until there is one.
+    let waiting = false;
+    const copyBtn = h('button', {
+      class: 'btn btn-amber',
+      onClick: async () => {
+        if (waiting) return;
+        await navigator.clipboard.writeText(cardBlock.textContent ?? '');
+        store.showToast('card copied');
+      },
+    }, 'Copy card') as HTMLButtonElement;
+    const cardNote = h('div', { class: 'hint', style: { marginTop: '6px' } });
     const updateCard = (): void => {
       const name = nameI.value.trim();
+      copyBtn.disabled = waiting;
+      if (waiting) {
+        cardBlock.textContent = 'встроенный релей запускается — карточка появится здесь через минуту-две…';
+        return;
+      }
       cardBlock.textContent = id
         ? encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay)
         : '';
     };
+    const paintRelay = (info: RelayInfo | null): void => {
+      const builtin = info?.mode === 'builtin';
+      if (builtin) myRelay = info.hosted.state === 'ready' ? info.hosted.address.trim() : '';
+      waiting = builtin && !myRelay;
+      cardNote.textContent = builtin && myRelay
+        ? 'адрес релея в карточке действует до перезапуска приложения. Тот, с кем вы уже переписываетесь, '
+          + 'узнает новый адрес сам; новому контакту давайте свежую карточку.'
+        : '';
+      updateCard();
+    };
     updateCard();
     Api.getRelayAddress()
-      .then((r) => { myRelay = r.trim(); updateCard(); })
+      .then((r) => { myRelay = r.trim(); paintRelay(store.relayInfo.get()); })
       .catch(() => {});
+    // The relay comes up while this window is open: the card fills in by itself.
+    let shown = false;
+    const unsub = store.relayInfo.subscribe((info) => {
+      if (cardBlock.isConnected) shown = true;
+      else if (shown) { unsub(); return; }
+      paintRelay(info);
+    });
+    Api.getRelayInfo().then((info) => store.relayInfo.set(info)).catch(() => {});
     nameI.addEventListener('input', updateCard);
 
     Api.myBundle().then((b: Bundle) => {
@@ -83,14 +118,9 @@ export class IdentityModal {
         h('div', { class: 'card-block fp' }, id ? fmtFp(id.fingerprint) : ''),
         h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'card (share this)'),
         cardBlock,
+        cardNote,
         h('div', { class: 'row', style: { marginTop: '10px' } },
-          h('button', {
-            class: 'btn btn-amber',
-            onClick: async () => {
-              await navigator.clipboard.writeText(cardBlock.textContent ?? '');
-              store.showToast('card copied');
-            },
-          }, 'Copy card'),
+          copyBtn,
         ),
         h('div', { class: 'divider-text' }, 'bundle'),
         bundleSlot,

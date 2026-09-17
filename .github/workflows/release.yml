@@ -345,10 +345,22 @@ jobs:
             i2pd                  the i2p router it starts (keep it next to gipny-agent)
             gipny-agent.service   systemd unit
 
+          The agent hosts a personal relay for itself at every start, the same
+          way the desktop app does for its own inbox — no relay to set up.
+          It needs a minute or two to come up before the agent prints its own
+          card. --relay is only for pointing the agent at an external relay
+          instead (the gipny-relay archive from the same release page), for
+          anyone who wants mail held while the agent is stopped.
+
           Run by hand:
             ./gipny-agent --data <dir> --master <gipny:v2:... card of the master>
-          --master is needed once: the card is kept in <dir>/master.card and
-          later runs read it from there (pass it again to change the master).
+          --master is needed once: it is kept in <dir>/master.card and later
+          runs read it from there (pass it again to change it). Same for the
+          optional --relay, in <dir>/relay.txt.
+          Copy the master's card right before the first start: with the
+          built-in relay the address in it is good until the master's app is
+          restarted. After the first contact the agent follows the master's
+          address by itself.
           --data can also come from the GIPNY_AGENT_DATA environment variable.
 
           Install as a service (Linux, as root):
@@ -367,7 +379,8 @@ jobs:
 
           Options:
             --name <name>      display name for this agent (default: hostname)
-            --relay <dest>     relay to use (default: the master card's relay)
+            --relay <dest>     external relay to collect from instead of the agent's own
+                               built-in one
             --sam <port>       attach to an already running SAM bridge instead of spawning i2pd
             --cwd <dir>        working directory for commands (default: home directory)
             --timeout <secs>   per-command timeout (default: 120)
@@ -381,7 +394,9 @@ jobs:
       # tarball somewhere fresh, make sure no i2pd is on PATH, start the agent
       # with a syntactically valid throwaway master card and wait for it to
       # print its own card — which it only does after it found and started
-      # the router next to itself. v0.4.0 would have failed here.
+      # the router next to itself, *and* its own built-in relay has tunnels
+      # (another 1-2 min on top of the router's own). v0.4.0 would have failed
+      # here.
       - name: smoke test — the tarball starts with no system i2pd
         run: |
           if command -v i2pd >/dev/null; then echo "an i2pd on PATH would mask this test"; exit 1; fi
@@ -392,7 +407,7 @@ jobs:
           b32="$(printf 'a%.0s' $(seq 1 52)).b32.i2p"
           setsid ./gipny-agent --data "$smoke/data" --master "gipny:v2:$b32:$zeros:$zeros:$b32" > "$smoke/agent.log" 2>&1 &
           pid=$!
-          for i in $(seq 1 150); do
+          for i in $(seq 1 240); do
             grep -q "agent card:" "$smoke/agent.log" && break
             kill -0 "$pid" 2>/dev/null || break
             sleep 2

@@ -533,6 +533,9 @@ pub enum SessionEvent {
     MessageUnpinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
     ContactAdded { contact_id: i64 },
     ContactUpdated { contact_id: i64 },
+    /// A relay answered with an error frame: a deposit or a publish it would
+    /// not take. `reason` is the relay's text, e.g. [`crate::relay::ERR_NOT_SERVED`].
+    RelayError { reason: String },
 }
 
 pub struct SessionManager {
@@ -1134,6 +1137,11 @@ impl SessionManager {
                 if let Some(vec) = w.remove(&pk) {
                     for tx in vec { let _ = tx.send(bundle.clone()); }
                 }
+            }
+            RelayToClient::Error(reason) => {
+                // Dropped silently before, which hid a relay refusing us.
+                eprintln!("[session] relay error: {reason}");
+                let _ = self.events.send(SessionEvent::RelayError { reason }).await;
             }
             _ => {}
         }

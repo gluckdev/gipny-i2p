@@ -14,9 +14,12 @@
 //! * **A new destination every start**, never written down. There is no stable
 //!   LeaseSet whose appearances would trace this user's online hours.
 //!
-//! So this is a fast path for whoever is online now, not a mailbox. Nothing
-//! starts it yet: a relay nobody can discover serves nobody, and discovery is
-//! the next stage (see docs/relay-independence.md).
+//! So this is a fast path for whoever is online now, not a mailbox. The app
+//! starts one for itself at every launch unless an external relay is chosen
+//! (`core/src/core.rs`, `run_hosted_relay`). Contacts learn the address of the
+//! day from the relay field every message carries, and from the empty
+//! announcement sent to each of them once the relay is up; see
+//! docs/relay-independence.md for what that does and does not cover.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::Ordering;
@@ -60,6 +63,12 @@ pub struct MemStoreLimits {
     pub max_bundles: usize,
     pub message_ttl: Duration,
     pub bundle_ttl: Duration,
+    /// Serve this one identity only: hold mail and a prekey bundle for it and
+    /// refuse everyone else's. What a relay inside somebody's app is for — it
+    /// is that person's inbox, not a public mailbox that strangers can fill
+    /// with up to `max_total_bytes` of the host's memory. `None` serves
+    /// anyone, as a standalone relay does.
+    pub only_for: Option<[u8; 32]>,
 }
 
 impl Default for MemStoreLimits {
@@ -71,7 +80,15 @@ impl Default for MemStoreLimits {
             max_bundles: 4096,
             message_ttl: Duration::from_secs(3 * 24 * 3600),
             bundle_ttl: Duration::from_secs(7 * 24 * 3600),
+            only_for: None,
         }
+    }
+}
+
+impl MemStoreLimits {
+    /// The defaults, serving `owner` alone.
+    pub fn personal(owner: [u8; 32]) -> Self {
+        Self { only_for: Some(owner), ..Self::default() }
     }
 }
 
@@ -79,6 +96,8 @@ impl Default for MemStoreLimits {
 pub enum StoreError {
     #[error("larger than this relay holds")]
     TooLarge,
+    #[error("this relay does not serve that recipient")]
+    NotServed,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +166,9 @@ impl MemStore {
     }
 
     pub fn store_bundle(&self, pk: &[u8; 32], bundle: &[u8]) -> Result<(), StoreError> {
+        if self.limits.only_for.is_some_and(|owner| owner != *pk) {
+            return Err(StoreError::NotServed);
+        }
         if bundle.len() > self.limits.max_bundle_bytes {
             return Err(StoreError::TooLarge);
         }
@@ -166,6 +188,9 @@ impl MemStore {
     }
 
     pub fn deposit(&self, to: &[u8; 32], blob: &[u8]) -> Result<u64, StoreError> {
+        if self.limits.only_for.is_some_and(|owner| owner != *to) {
+            return Err(StoreError::NotServed);
+        }
         if blob.len() > self.limits.max_recipient_bytes {
             return Err(StoreError::TooLarge);
         }
@@ -349,8 +374,8 @@ where
             frame = recv::<_, ClientToRelay>(stream) => {
                 match frame? {
                     ClientToRelay::Publish { bundle } => {
-                        if store.store_bundle(&sign_pk, &bundle).is_err() {
-                            send(stream, &RelayToClient::Error("bundle too large".into())).await?;
+                        if let Err(e) = store.store_bundle(&sign_pk, &bundle) {
+                            send(stream, &RelayToClient::Error(e.to_string())).await?;
                         }
                     }
                     ClientToRelay::GetBundle { pk } => {
@@ -727,6 +752,41 @@ mod tests {
         send(&mut b, &ClientToRelay::Ping).await.unwrap();
         assert!(matches!(next(&mut b).await, RelayToClient::Pong));
         assert_eq!(rig.store.stats().messages, 0);
+    }
+
+    #[test]
+    fn the_refusal_text_is_the_one_clients_look_for() {
+        assert_eq!(StoreError::NotServed.to_string(), crate::relay::ERR_NOT_SERVED);
+    }
+
+    #[tokio::test]
+    async fn a_personal_relay_holds_mail_for_its_owner_only() {
+        let (owner, alice, stranger) = (Identity::generate(), Identity::generate(), Identity::generate());
+        let rig = Rig {
+            store: Arc::new(MemStore::new(MemStoreLimits::personal(owner.card().sign_pk))),
+            connections: Arc::default(),
+        };
+        let mut a = rig.login(&alice).await;
+
+        // Mail for the owner is what it is there for.
+        send(&mut a, &ClientToRelay::Send { to: owner.card().sign_pk, blob: b"for the owner".to_vec() }).await.unwrap();
+        assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+
+        // Mail for anyone else is refused, not stored: the sender keeps it
+        // queued for the right relay, and the host's memory is not a mailbox.
+        send(&mut a, &ClientToRelay::Send { to: stranger.card().sign_pk, blob: b"parked here".to_vec() }).await.unwrap();
+        assert!(matches!(next(&mut a).await, RelayToClient::Error(_)));
+        assert_eq!(rig.store.stats().messages, 1);
+
+        // Same for prekey bundles: only the owner publishes one here.
+        send(&mut a, &ClientToRelay::Publish { bundle: b"alice's prekeys".to_vec() }).await.unwrap();
+        assert!(matches!(next(&mut a).await, RelayToClient::Error(_)));
+        let mut o = rig.login(&owner).await;
+        assert!(matches!(next(&mut o).await, RelayToClient::Incoming { .. }), "the owner collects on login");
+        send(&mut o, &ClientToRelay::Publish { bundle: b"owner's prekeys".to_vec() }).await.unwrap();
+        send(&mut o, &ClientToRelay::Ping).await.unwrap();
+        assert!(matches!(next(&mut o).await, RelayToClient::Pong));
+        assert_eq!(rig.store.stats().bundles, 1);
     }
 
     #[tokio::test]

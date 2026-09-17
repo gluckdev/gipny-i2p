@@ -1,10 +1,10 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { Api } from './api';
-import type { RouterSettings, TransitProfile, YggdrasilMode } from './api';
+import type { RelayInfo, RelayMode, RouterSettings, TransitProfile, YggdrasilMode } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
 import type { Store } from './state';
-import { h, busy, humanSize } from './view';
+import { h, busy, humanSize, short } from './view';
 import type { App } from './app';
 
 export class SettingsModal {
@@ -62,9 +62,8 @@ export class SettingsModal {
       }
     };
 
-    // Only ask when there is an update server to ask. With DEFAULT_UPDATE_ONION
-    // empty this fired on every Settings open and painted a raw SAM error, and
-    // each failed dial counted against the shared relay health counter.
+    // Only ask when this session has a local HTTP proxy to check GitHub
+    // through (Android, or attached to a router we don't own, has none).
     const updateSection = h('div', { class: 'stack' });
     const apkSection = h('div', { class: 'stack' });
     Api.updateConfigured()
@@ -105,6 +104,7 @@ export class SettingsModal {
                     try {
                       const info = await Api.checkUpdate();
                       if (!info) store.showToast('you are on the latest version');
+                      else store.showToast(`update v${info.version} found`);
                     } catch (e) { updErr.textContent = String(e); }
                   }),
                 }, 'Check for updates') as HTMLButtonElement;
@@ -112,34 +112,106 @@ export class SettingsModal {
               })(),
             ),
             updErr,
+            (() => {
+              const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
+              const err = h('div', { class: 'err' });
+              Api.getAutoUpdate().then((v) => { cb.checked = v; }).catch(() => { cb.checked = true; });
+              cb.addEventListener('change', () => {
+                err.textContent = '';
+                Api.setAutoUpdate(cb.checked).catch((e) => {
+                  err.textContent = String(e);
+                  cb.checked = !cb.checked;
+                });
+              });
+              return h('div', { style: { marginTop: '8px' } },
+                h('label', { class: 'opt', style: { alignItems: 'center' } },
+                  cb,
+                  h('span', { class: 'opt-text' },
+                    h('span', { class: 'opt-title' }, 'обновляться автоматически'),
+                    h('span', { class: 'opt-blurb' },
+                      'скачивается и ставится в фоне без вопросов; новая версия запустится '
+                      + 'при следующем запуске gipny. Выключено — только уведомление, ставить вручную.'))),
+                err,
+              );
+            })(),
           );
           return updateSection;
         })(),
 
         h('div', { class: 'divider-text' }, 'relay'),
         (() => {
-          const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) — leave empty to disable', 'aria-label': 'relay i2p destination' }) as HTMLInputElement;
+          const choices: { id: RelayMode; title: string; blurb: string }[] = [
+            {
+              id: 'builtin', title: 'встроенный',
+              blurb: 'релей внутри приложения, настраивать нечего. Адрес новый при каждом запуске и нигде не '
+                + 'хранится — по нему не отследить, когда вы в сети; контакты узнают его из ваших сообщений. '
+                + 'Почту принимает, пока приложение запущено: иначе она ждёт у отправителя.',
+            },
+            {
+              id: 'external', title: 'внешний',
+              blurb: 'релей на сервере, своём или чужом: почтовый ящик, который работает и когда приложение '
+                + 'закрыто. Адрес постоянный — так надёжнее для агентов и для тех, кто редко в сети.',
+            },
+          ];
+          const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) of the relay', 'aria-label': 'relay i2p destination' }) as HTMLInputElement;
+          const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
           const relayErr = h('div', { class: 'err' });
-          Api.getRelayAddress().then((v) => { relayI.value = v; }).catch(() => {});
           const saveBtn = h('button', {
             class: 'btn btn-block',
             onClick: () => busy(saveBtn, async () => {
               relayErr.textContent = '';
               try {
                 await Api.setRelayAddress(relayI.value.trim());
-                store.showToast('relay address saved — will reconnect shortly');
+                store.relayInfo.set(await Api.getRelayInfo());
+                store.showToast('адрес релея сохранён — переподключусь в течение 20 секунд');
               } catch (e) { relayErr.textContent = String(e); }
             }),
           }, 'Save relay address') as HTMLButtonElement;
+          const externalBox = h('div', null, h('div', { class: 'field' }, relayI), saveBtn);
 
-          return h('div', null,
-            h('div', { class: 'hint', style: { marginBottom: '6px' } },
-              'i2p destination of the relay server. Overrides the built-in default. '
-              + 'Takes effect on next reconnect.'),
-            h('div', { class: 'field' }, relayI),
-            relayErr,
-            saveBtn,
-          );
+          const radios = new Map<RelayMode, HTMLInputElement>();
+          const rows = choices.map(({ id, title, blurb }) => {
+            const r = h('input', { type: 'radio', name: 'relay-mode', id: `opt-relay-${id}` }) as HTMLInputElement;
+            radios.set(id, r);
+            r.addEventListener('change', () => {
+              if (!r.checked) return;
+              relayErr.textContent = '';
+              Api.setRelayMode(id)
+                .then(() => Api.getRelayInfo())
+                .then((info) => store.relayInfo.set(info))
+                .catch((e) => { relayErr.textContent = String(e); paint(store.relayInfo.get()); });
+            });
+            return h('label', { class: 'opt', for: `opt-relay-${id}` },
+              r,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, title),
+                h('span', { class: 'opt-blurb' }, blurb)),
+            );
+          });
+
+          const paint = (info: RelayInfo | null): void => {
+            if (!info) { status.textContent = '…'; return; }
+            for (const [id, r] of radios) r.checked = id === info.mode;
+            externalBox.classList.toggle('hidden', info.mode !== 'external');
+            if (document.activeElement !== relayI) relayI.value = info.external;
+            status.textContent = info.mode === 'external'
+              ? (info.external.trim() ? 'почта собирается с внешнего релея' : 'адрес внешнего релея не задан — отправка недоступна')
+              : info.hosted.state === 'ready' ? `встроенный релей работает · ${short(info.hosted.address)}`
+              : info.hosted.state === 'failed' ? `не поднялся, пробую снова: ${info.hosted.reason}`
+              : 'встроенный релей запускается — обычно 1–2 минуты';
+          };
+
+          const box = h('div', null, h('div', { class: 'opts' }, ...rows), status, externalBox, relayErr);
+          // The modal has no teardown hook; the subscription lets go of itself
+          // once the modal has been on screen and is gone again.
+          let shown = false;
+          const unsub = store.relayInfo.subscribe((info) => {
+            if (box.isConnected) shown = true;
+            else if (shown) { unsub(); return; }
+            paint(info);
+          }, true);
+          Api.getRelayInfo().then((info) => store.relayInfo.set(info)).catch(() => {});
+          return box;
         })(),
 
         h('div', { class: 'divider-text' }, 'приватность'),

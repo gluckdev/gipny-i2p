@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,7 +16,7 @@ use gipny_libcore::crypto::{
 use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, PreKeyKind, TrustLevel};
 use gipny_libcore::net::{NetError, TorNode};
 use gipny_libcore::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY};
-use gipny_libcore::update::{UpdateError, UpdateInfo, Updater};
+use gipny_libcore::update::{Component as UpdateComponent, InstallOutcome, UpdateError, UpdateInfo, Updater};
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
@@ -41,7 +41,15 @@ const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
 const SETTING_RELAY_ONION: &str = "relay_onion";
+const SETTING_RELAY_MODE: &str = "relay_mode";
+/// A contact's relay that has not answered for this long, while mail for them
+/// is queued, is reported to the user: with built-in relays it most likely
+/// means the contact restarted and collects somewhere else now.
+const CONTACT_UNREACHABLE_AFTER: Duration = Duration::from_secs(600);
 const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
+/// Default on: absent or anything but `"0"` means auto-update stays on,
+/// matching `attachment_privacy`'s convention.
+const SETTING_AUTO_UPDATE: &str = "auto_update";
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;
 const PURGE_INTERVAL_SECS: u64 = 60;
@@ -73,8 +81,6 @@ const PEER_RELAY_RETRY_BACKOFF: Duration = Duration::from_secs(120);
 const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
-const UPDATE_CHECK_INITIAL_SECS: u64 = 30;
-const UPDATE_CHECK_INTERVAL_SECS: u64 = 6 * 3600;
 const EVENTS_CAPACITY: usize = 1024;
 const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
 const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
@@ -126,14 +132,75 @@ pub enum CoreEvent {
     ContactAdded { contact_id: i64 },
     ContactUpdated { contact_id: i64 },
     GroupUpdated { group_id: String },
-    UpdateAvailable { version: String, notes: String, target_key: String, size: u64 },
+    /// A newer version exists and auto-update is off — the UI's manual
+    /// install prompt is the only path from here.
+    UpdateAvailable { version: String, notes: String, size: u64 },
     UpdateProgress { downloaded: u64, total: u64, pct: u8 },
+    /// Downloaded and installed (or staged for the next launch, on Windows) —
+    /// nothing to click, just a notice.
+    UpdateStaged { version: String },
+    /// Downloaded, but this build cannot install it automatically; `path` is
+    /// where it landed.
     UpdateReady { path: String },
     UpdateFailed { reason: String },
     /// Agent mode switched on (with this master) or off, locally or remotely.
     AgentModeChanged { master: Option<AgentMaster> },
     /// This client, in agent mode, produced console output for `contact_id`.
     ConsoleActivity { contact_id: i64 },
+    /// The relay mode changed, or the built-in relay changed state.
+    RelayInfoChanged { info: RelayInfo },
+    /// Mail for this contact is queued and their relay has not answered for a
+    /// while (`unreachable`), or it answers again.
+    ContactReachability { contact_id: i64, unreachable: bool },
+}
+
+/// Where this client collects its mail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelayMode {
+    /// A relay inside this process, on a destination made at launch and never
+    /// written down. The default: a fresh install works with no setup.
+    Builtin,
+    /// A relay somebody operates, named in Settings. A mailbox that is there
+    /// while this app is not.
+    External,
+}
+
+impl RelayMode {
+    fn as_str(self) -> &'static str {
+        match self { Self::Builtin => "builtin", Self::External => "external" }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s { "builtin" => Some(Self::Builtin), "external" => Some(Self::External), _ => None }
+    }
+}
+
+/// The saved choice if there is one. Without one, a profile that already names
+/// a relay keeps using it, and a profile that names none gets the built-in one.
+fn resolve_relay_mode(saved: Option<&[u8]>, external: &str) -> RelayMode {
+    match saved.and_then(|b| std::str::from_utf8(b).ok()).and_then(RelayMode::parse) {
+        Some(mode) => mode,
+        None if external.trim().is_empty() => RelayMode::Builtin,
+        None => RelayMode::External,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum HostedRelayState {
+    Off,
+    /// A published destination is usable once its tunnels exist: a minute or two.
+    Starting,
+    Ready { address: String },
+    Failed { reason: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RelayInfo {
+    pub mode: RelayMode,
+    /// The address saved for external mode, whether or not it is in use.
+    pub external: String,
+    pub hosted: HostedRelayState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -188,6 +255,16 @@ pub struct Core {
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
     /// Ids of console commands to run, in order, by the single agent worker.
     agent_tx: mpsc::UnboundedSender<i64>,
+    /// The relay this process hosts for itself in built-in mode. Holding it is
+    /// what keeps it serving; dropping it takes the destination away.
+    hosted_relay: Arc<std::sync::Mutex<Option<gipny_libcore::EphemeralRelay>>>,
+    hosted_state: Arc<std::sync::RwLock<HostedRelayState>>,
+    hosted_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
+    /// Contacts that have not been told this launch's relay address yet.
+    announce_pending: Arc<Mutex<HashSet<i64>>>,
+    /// When each peer relay first stopped answering, and who was told about it.
+    relay_down_since: Arc<Mutex<HashMap<String, Instant>>>,
+    unreachable_reported: Arc<Mutex<HashSet<i64>>>,
 }
 
 impl Core {
@@ -196,10 +273,13 @@ impl Core {
         db: Arc<Db>,
         node: Arc<TorNode>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<CoreEvent>)> {
+        // A staged Windows update is applied earlier than this, in `lib.rs`'s
+        // `boot()` — before the vault unlock and the router wait below, not
+        // after them.
         std::fs::create_dir_all(data_dir.join(ATTACHMENTS_DIR))?;
         let identity = Arc::new(Self::load_or_create_identity(&db)?);
         let (events_tx, events_rx) = mpsc::channel(EVENTS_CAPACITY);
-        let updater = Arc::new(Updater::new(node.clone()));
+        let updater = Arc::new(Updater::new(node.clone(), UpdateComponent::App));
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let core = Arc::new(Self {
             db: db.clone(),
@@ -219,6 +299,12 @@ impl Core {
             pending_update: Arc::new(Mutex::new(None)),
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             agent_tx,
+            hosted_relay: Arc::new(std::sync::Mutex::new(None)),
+            hosted_state: Arc::new(std::sync::RwLock::new(HostedRelayState::Off)),
+            hosted_task: Arc::new(std::sync::Mutex::new(None)),
+            announce_pending: Arc::new(Mutex::new(HashSet::new())),
+            relay_down_since: Arc::new(Mutex::new(HashMap::new())),
+            unreachable_reported: Arc::new(Mutex::new(HashSet::new())),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -227,6 +313,9 @@ impl Core {
         core.clone().spawn_purge_loop();
         core.clone().spawn_update_loop();
         core.clone().spawn_agent_worker(agent_rx);
+        if core.relay_mode() == RelayMode::Builtin {
+            core.start_hosted_relay();
+        }
         if let Some(m) = core.agent_master() {
             // Commands that arrived while the app was closed are on disk with
             // their pending markers; pick them up in order.
@@ -240,10 +329,178 @@ impl Core {
         for h in v.drain(..) { h.abort(); }
     }
 
-    fn relay_onion(&self) -> String {
+    /// The relay named in Settings, used in external mode.
+    fn external_relay(&self) -> String {
         self.db.get_setting(SETTING_RELAY_ONION).ok().flatten()
             .and_then(|v| String::from_utf8(v).ok())
             .unwrap_or_else(|| DEFAULT_RELAY.to_string())
+    }
+
+    pub fn relay_mode(&self) -> RelayMode {
+        resolve_relay_mode(
+            self.db.get_setting(SETTING_RELAY_MODE).ok().flatten().as_deref(),
+            &self.external_relay(),
+        )
+    }
+
+    /// Where we collect right now; empty while there is nowhere yet. In
+    /// built-in mode this is the address of this launch and lives in memory
+    /// only — it is never written into the settings, which is how 0.4.0 left
+    /// clients listening on a relay that no longer existed.
+    fn relay_onion(&self) -> String {
+        match self.relay_mode() {
+            RelayMode::External => self.external_relay(),
+            RelayMode::Builtin => match &*self.hosted_state.read().unwrap_or_else(|p| p.into_inner()) {
+                HostedRelayState::Ready { address } => address.clone(),
+                _ => String::new(),
+            },
+        }
+    }
+
+    pub fn relay_info(&self) -> RelayInfo {
+        RelayInfo {
+            mode: self.relay_mode(),
+            external: self.external_relay(),
+            hosted: self.hosted_state.read().unwrap_or_else(|p| p.into_inner()).clone(),
+        }
+    }
+
+    fn set_hosted_state(&self, state: HostedRelayState) {
+        *self.hosted_state.write().unwrap_or_else(|p| p.into_inner()) = state;
+        let _ = self.events.try_send(CoreEvent::RelayInfoChanged { info: self.relay_info() });
+    }
+
+    pub async fn set_relay_mode(self: &Arc<Self>, mode: RelayMode) -> Result<()> {
+        self.db.set_setting(SETTING_RELAY_MODE, mode.as_str().as_bytes())?;
+        match mode {
+            RelayMode::Builtin => self.start_hosted_relay(),
+            RelayMode::External => {
+                if let Some(task) = self.hosted_task.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                    task.abort();
+                }
+                *self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                self.announce_pending.lock().await.clear();
+                self.set_hosted_state(HostedRelayState::Off);
+            }
+        }
+        // The open connection to the old relay notices at its next ping that
+        // it is no longer the one to collect from, and the loop redials.
+        Ok(())
+    }
+
+    /// Starts the relay this client hosts for itself, unless it is already
+    /// starting or up.
+    fn start_hosted_relay(self: &Arc<Self>) {
+        let mut slot = self.hosted_task.lock().unwrap_or_else(|p| p.into_inner());
+        let busy = slot.as_ref().is_some_and(|t| !t.is_finished());
+        let up = matches!(&*self.hosted_state.read().unwrap_or_else(|p| p.into_inner()), HostedRelayState::Ready { .. });
+        if busy || up {
+            return;
+        }
+        let this = self.clone();
+        *slot = Some(tokio::spawn(async move { this.run_hosted_relay().await }));
+    }
+
+    /// Brings the built-in relay up and hands it over. Off the path anything
+    /// user-facing waits on: `EphemeralRelay::start` returns once the
+    /// destination's tunnels exist, commonly a minute or two.
+    async fn run_hosted_relay(self: Arc<Self>) {
+        let mut wait = Duration::from_secs(15);
+        loop {
+            if self.relay_mode() != RelayMode::Builtin {
+                self.set_hosted_state(HostedRelayState::Off);
+                return;
+            }
+            self.set_hosted_state(HostedRelayState::Starting);
+            eprintln!("[relay-hosted] starting the built-in relay on SAM port {}...", self.node.sam_port());
+            match gipny_libcore::EphemeralRelay::start(
+                self.node.sam_port(),
+                // This relay is our inbox and nobody else's.
+                gipny_libcore::MemStoreLimits::personal(self.identity.card().sign_pk),
+            ).await {
+                Ok(relay) => {
+                    // The mode may have changed while the tunnels were building.
+                    if self.relay_mode() != RelayMode::Builtin {
+                        drop(relay);
+                        self.set_hosted_state(HostedRelayState::Off);
+                        return;
+                    }
+                    let address = relay.address().to_string();
+                    eprintln!("[relay-hosted] built-in relay ready at {}", &address[..address.len().min(16)]);
+                    *self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(relay);
+                    // Every contact still holds the previous launch's address.
+                    // They are told as soon as their relay can be reached; the
+                    // send loop keeps trying until each has been.
+                    if let Ok(contacts) = self.db.list_contacts() {
+                        let mut pending = self.announce_pending.lock().await;
+                        pending.extend(contacts.iter().filter(|c| c.trust != TrustLevel::Blocked).map(|c| c.id));
+                    }
+                    self.set_hosted_state(HostedRelayState::Ready { address });
+                    self.send_kick.notify_one();
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("[relay-hosted] could not start: {e:?}; retrying in {wait:?}");
+                    self.set_hosted_state(HostedRelayState::Failed { reason: format!("{e:?}") });
+                    tokio::time::sleep(wait).await;
+                    wait = (wait * 2).min(Duration::from_secs(300));
+                }
+            }
+        }
+    }
+
+    /// Tells contacts where we collect during this launch. An empty payload:
+    /// the receiver reads the relay address off it and drops it. Only contacts
+    /// we already share a session with — a first message carries the address
+    /// anyway, and an announcement is no reason to open a session.
+    async fn flush_relay_announcements(self: &Arc<Self>) {
+        let ids: Vec<i64> = self.announce_pending.lock().await.iter().copied().collect();
+        for id in ids {
+            let contact = match self.db.get_contact(id) {
+                Ok(Some(c)) if c.trust != TrustLevel::Blocked => c,
+                _ => { self.announce_pending.lock().await.remove(&id); continue; }
+            };
+            let has_session = self.sessions.lock().await.contains_key(&id)
+                || self.db.get_session(id).ok().flatten().is_some();
+            if !has_session {
+                self.announce_pending.lock().await.remove(&id);
+                continue;
+            }
+            // Dialing happens in the background; an unreachable relay is tried
+            // again on a later tick.
+            let Some(out) = self.relay_for(&contact).await else { continue };
+            if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
+            let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
+            if self.send_payload_via_relay(&contact, &mut payload, &out).await.is_ok() {
+                eprintln!("[relay-hosted] told contact {id} where we collect now");
+                self.announce_pending.lock().await.remove(&id);
+            }
+        }
+    }
+
+    /// Reports a contact whose relay has been silent for a while with mail
+    /// waiting, once, and reports it again when the relay answers.
+    async fn note_reachability(&self, contact: &gipny_libcore::db::Contact, reachable: bool, has_mail: bool) {
+        let Some(relay) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return };
+        if reachable {
+            self.relay_down_since.lock().await.remove(relay);
+            if self.unreachable_reported.lock().await.remove(&contact.id) {
+                let _ = self.events.try_send(CoreEvent::ContactReachability { contact_id: contact.id, unreachable: false });
+            }
+            return;
+        }
+        let since = *self.relay_down_since.lock().await.entry(relay.to_string()).or_insert_with(Instant::now);
+        if has_mail && since.elapsed() >= CONTACT_UNREACHABLE_AFTER
+            && self.unreachable_reported.lock().await.insert(contact.id)
+        {
+            eprintln!("[relay-client] contact {} has been unreachable for {:?}", contact.id, since.elapsed());
+            let _ = self.events.try_send(CoreEvent::ContactReachability { contact_id: contact.id, unreachable: true });
+        }
+    }
+
+    /// Contacts currently reported as unreachable, for a UI that starts late.
+    pub async fn unreachable_contacts(&self) -> Vec<i64> {
+        self.unreachable_reported.lock().await.iter().copied().collect()
     }
 
     fn load_or_create_identity(db: &Db) -> Result<Identity> {
@@ -849,6 +1106,22 @@ impl Core {
         Ok(())
     }
 
+    /// Whether auto-update should install silently once it finds something,
+    /// or just notify and leave it to the UI's manual prompt.
+    pub fn auto_update_enabled(&self) -> bool {
+        !matches!(self.db.get_setting(SETTING_AUTO_UPDATE).ok().flatten().as_deref(), Some(b"0"))
+    }
+
+    pub fn set_auto_update(&self, enabled: bool) -> Result<()> {
+        self.db.set_setting(SETTING_AUTO_UPDATE, if enabled { b"1" } else { b"0" })?;
+        Ok(())
+    }
+
+    /// Checks GitHub for a newer release. With auto-update on (the default)
+    /// and a matching asset for this platform, this also downloads and
+    /// installs it — silently, without waiting for anything to be clicked —
+    /// before returning; the caller only ever needs to act on the result when
+    /// auto-update is off.
     pub async fn check_and_emit_update(self: Arc<Self>) -> Result<Option<UpdateInfo>> {
         let info = match self.updater.check(env!("CARGO_PKG_VERSION")).await {
             Ok(Some(i)) => i,
@@ -864,22 +1137,33 @@ impl Core {
             }
         }
         *self.pending_update.lock().await = Some(info.clone());
-        let _ = self.events.try_send(CoreEvent::UpdateAvailable {
-            version: info.version.clone(),
-            notes: info.notes.clone(),
-            target_key: info.target_key.clone(),
-            size: info.artifact.size,
-        });
+        if self.auto_update_enabled() {
+            let this = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = this.install_update().await {
+                    eprintln!("[update] auto-install failed: {e:?}");
+                }
+            });
+        } else {
+            let _ = self.events.try_send(CoreEvent::UpdateAvailable {
+                version: info.version.clone(),
+                notes: info.notes.clone(),
+                size: info.asset.size,
+            });
+        }
         Ok(Some(info))
     }
 
+    /// Downloads and installs the pending update (from `check_and_emit_update`
+    /// or a manual "Update now" click), then marks that version dismissed so
+    /// it is not re-installed on every later check within the same launch.
     pub async fn install_update(self: Arc<Self>) -> Result<()> {
         let info = self.pending_update.lock().await.clone().ok_or(CoreError::NotFound)?;
         let ev = self.events.clone();
         let ev_dl = ev.clone();
-        let total = info.artifact.size;
+        let dl_dir = self.data_dir.join("update_dl");
 
-        let path = match self.updater.download(&info, move |done, t| {
+        let path = match self.updater.download(&info, &dl_dir, move |done, t| {
             let pct = if t > 0 { ((done * 100) / t).min(100) as u8 } else { 0 };
             let _ = ev_dl.try_send(CoreEvent::UpdateProgress { downloaded: done, total: t, pct });
         }).await {
@@ -889,19 +1173,26 @@ impl Core {
                 return Err(e.into());
             }
         };
-        let _ = total;
 
-        match self.updater.install_and_respawn(&path, &info.target_key) {
-            Ok(_) => Ok(()),
-            Err(UpdateError::Unsupported(_)) => {
-                let _ = ev.send(CoreEvent::UpdateReady { path: path.display().to_string() }).await;
-                Ok(())
-            }
+        let outcome = match self.updater.install(&path, &self.data_dir, None) {
+            Ok(o) => o,
             Err(e) => {
                 let _ = ev.send(CoreEvent::UpdateFailed { reason: e.to_string() }).await;
-                Err(e.into())
+                return Err(e.into());
+            }
+        };
+        match outcome {
+            InstallOutcome::InstalledNow | InstallOutcome::StagedForNextLaunch => {
+                let _ = std::fs::remove_dir_all(&dl_dir);
+                self.dismiss_update(info.version.clone()).await?;
+                let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
+            }
+            InstallOutcome::Unsupported(msg) => {
+                self.dismiss_update(info.version.clone()).await?;
+                let _ = ev.send(CoreEvent::UpdateReady { path: msg }).await;
             }
         }
+        Ok(())
     }
 
     pub async fn dismiss_update(&self, version: String) -> Result<()> {
@@ -911,34 +1202,34 @@ impl Core {
     }
 
     pub async fn list_apk_artifacts(&self) -> Result<(String, Vec<(String, u64)>)> {
-        let m = self.updater.manifest().await?;
+        let release = self.updater.latest_release().await?;
         let mut out = Vec::new();
-        for (key, art) in m.artifacts.iter() {
-            if let Some(arch) = key.strip_prefix("android-apk-") {
-                out.push((arch.to_string(), art.size));
+        for asset in &release.assets {
+            if let Some(rest) = asset.name.strip_prefix("gipny-i2p_") {
+                if let Some(arch) = rest.split("_android-").nth(1).and_then(|s| s.strip_suffix(".apk")) {
+                    out.push((arch.to_string(), asset.size));
+                }
             }
         }
         out.sort();
-        Ok((m.version, out))
+        Ok((release.version, out))
     }
 
     pub async fn download_apk(self: Arc<Self>, arch: String, dest_path: String) -> Result<()> {
-        let m = self.updater.manifest().await?;
-        let key = format!("android-apk-{}", arch);
-        let art = m.artifacts.get(&key)
+        let release = self.updater.latest_release().await?;
+        let suffix = format!("_android-{arch}.apk");
+        let asset = release.assets.iter().find(|a| a.name.ends_with(&suffix))
             .ok_or(CoreError::NotFound)?
             .clone();
-        let total = art.size;
         let ev = self.events.clone();
         let ev_dl = ev.clone();
         let dest = std::path::PathBuf::from(dest_path);
-        match self.updater.download_artifact_to(&art, &dest, move |done, t| {
+        match self.updater.download_asset_to(&asset, None, &dest, move |done, t| {
             let pct = if t > 0 { ((done * 100) / t).min(100) as u8 } else { 0 };
             let _ = ev_dl.try_send(CoreEvent::UpdateProgress { downloaded: done, total: t, pct });
         }).await {
             Ok(_) => {
                 let _ = ev.send(CoreEvent::UpdateReady { path: dest.display().to_string() }).await;
-                let _ = total;
                 Ok(())
             }
             Err(e) => {
@@ -1128,7 +1419,7 @@ impl Core {
                             }
                         }
                         this.send_kick.notify_one();
-                        this.clone().run_recv_loop(client).await;
+                        this.clone().run_recv_loop(client, Some(onion.clone())).await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.try_send(CoreEvent::RelayDisconnected);
                     }
@@ -1226,7 +1517,7 @@ impl Core {
             // mail for us, and the frame handling is identical. No
             // RelayConnected event — that state is about our own relay, and
             // flipping it here would tell the user the wrong thing.
-            this.clone().run_recv_loop(client).await;
+            this.clone().run_recv_loop(client, None).await;
             this.peer_relays.lock().await.remove(&key);
             eprintln!("[relay-client] peer relay {short} disconnected");
         });
@@ -1235,7 +1526,11 @@ impl Core {
         })
     }
 
-    async fn run_recv_loop(self: Arc<Self>, client: RelayClient) {
+    /// `own` is the address this connection was opened as *our* relay under.
+    /// When the relay we collect from changes — another mode, another address
+    /// in Settings — the connection ends at its next ping and the loop redials;
+    /// before, a new address only took effect when the old relay went away.
+    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, own: Option<String>) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
         let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -1246,6 +1541,10 @@ impl Core {
         loop {
             tokio::select! {
                 _ = ping.tick() => {
+                    if own.as_ref().is_some_and(|o| *o != self.relay_onion()) {
+                        eprintln!("[relay-client] our relay changed, reconnecting");
+                        break;
+                    }
                     if last_activity.elapsed() > dead_threshold {
                         eprintln!("[relay-client] no activity for {:?}, forcing reconnect", last_activity.elapsed());
                         break;
@@ -1310,6 +1609,12 @@ impl Core {
                 if let Some(vec) = w.remove(&pk) {
                     for tx in vec { let _ = tx.send(bundle.clone()); }
                 }
+            }
+            RelayToClient::Error(reason) => {
+                // Dropped silently before. The usual cause now: a deposit for a
+                // contact whose card names a relay built into someone else's
+                // app, which holds mail for its owner only.
+                eprintln!("[relay-client] relay error: {reason}");
             }
             _ => {}
         }
@@ -1787,6 +2092,7 @@ impl Core {
         if self.relay_out.read().await.is_none() {
             return Ok(());
         }
+        self.flush_relay_announcements().await;
         let contacts = self.db.list_contacts()?;
         let groups_by_id: HashMap<Vec<u8>, String> = self.db.list_groups()?
             .into_iter().map(|g| (g.id, g.name)).collect();
@@ -1803,7 +2109,12 @@ impl Core {
                 && self.sessions.lock().await.contains_key(&contact.id);
             if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
             // Deposit on the relay this contact collects from, not on ours.
-            let Some(out) = self.relay_for(&contact).await else { continue };
+            let has_mail = !pending.is_empty() || !unacked.is_empty();
+            let Some(out) = self.relay_for(&contact).await else {
+                self.note_reachability(&contact, false, has_mail).await;
+                continue;
+            };
+            self.note_reachability(&contact, true, has_mail).await;
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
@@ -2104,18 +2415,15 @@ impl Core {
     }
 
     fn spawn_update_loop(self: Arc<Self>) {
-        // Unlike the relay loop, this one used to dial unconditionally. With
-        // DEFAULT_UPDATE_ONION empty — which it is, and which no setting can
-        // change — every check dialed the empty destination, failed, and
-        // incremented the *shared* relay failure counter in libcore::net; five
-        // of those tear down and rebuild the SAM session for a subsystem that
-        // was never configured.
+        // No local HTTP proxy this run (Android, or attached to a router we
+        // don't own) — nothing to dial, so don't even try.
         if !self.updater.is_configured() {
-            eprintln!("[update] no update server configured — auto-update disabled");
+            eprintln!("[update] no local HTTP proxy this run — auto-update disabled");
             return;
         }
         let this = self.clone();
         let handle = tokio::spawn(async move {
+            use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SECS};
             tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INITIAL_SECS)).await;
             loop {
                 let _ = this.clone().check_and_emit_update().await;
@@ -2203,4 +2511,29 @@ fn hex_short(b: &[u8]) -> String {
     let mut s = String::new();
     for x in &b[..8.min(b.len())] { s.push_str(&format!("{:02x}", x)); }
     s
+}
+
+#[cfg(test)]
+mod relay_mode_tests {
+    use super::{resolve_relay_mode, RelayMode};
+
+    #[test]
+    fn a_fresh_profile_gets_the_built_in_relay() {
+        assert_eq!(resolve_relay_mode(None, ""), RelayMode::Builtin);
+        assert_eq!(resolve_relay_mode(None, "  "), RelayMode::Builtin);
+    }
+
+    #[test]
+    fn a_profile_that_already_names_a_relay_keeps_it() {
+        // Upgrading must not move anyone off the relay their contacts know.
+        assert_eq!(resolve_relay_mode(None, "abc.b32.i2p"), RelayMode::External);
+    }
+
+    #[test]
+    fn an_explicit_choice_wins_either_way() {
+        assert_eq!(resolve_relay_mode(Some(b"builtin"), "abc.b32.i2p"), RelayMode::Builtin);
+        assert_eq!(resolve_relay_mode(Some(b"external"), ""), RelayMode::External);
+        // Garbage in the setting is no choice at all.
+        assert_eq!(resolve_relay_mode(Some(b"???"), ""), RelayMode::Builtin);
+    }
 }

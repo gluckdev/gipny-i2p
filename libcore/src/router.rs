@@ -22,6 +22,22 @@ use crate::net::{NetError, Result};
 /// Default SAMv3 TCP port.
 pub const DEFAULT_SAM_PORT: u16 = 7656;
 
+/// i2pd's conventional local HTTP proxy port, tried first before falling back
+/// to a free one (same policy as the SAM port).
+const DEFAULT_HTTP_PROXY_PORT: u16 = 4444;
+
+/// Where the local HTTP proxy sends anything outside i2p: the update checker
+/// is the only thing that uses it (`libcore::update`), to reach GitHub without
+/// this host's real IP ever reaching GitHub. `exit.stormycloud.i2p` is the
+/// standard, long-running i2pd/I2P outproxy for HTTP(S); it only ever sees an
+/// encrypted CONNECT to api.github.com/objects.githubusercontent.com, never
+/// content, but it is still a third party this depends on for update checks —
+/// and, unverified either way here, i2pd may build the outproxy tunnel pool
+/// at router start rather than on first use, which would mean every instance
+/// carries that tunnel whether or not an update check ever runs.
+/// specifically — nothing else uses this proxy.
+const DEFAULT_OUTPROXY: &str = "http://exit.stormycloud.i2p";
+
 /// How much of the line to give to other people's tunnels.
 ///
 /// This is an anonymity setting, not a generosity setting. Transit traffic is
@@ -161,6 +177,10 @@ pub struct RouterSettings {
 pub struct RouterHandle {
     child: Option<Child>,
     sam_port: u16,
+    /// `None` for a router we did not spawn ourselves (Android, or `--sam`
+    /// attach to somebody else's): we don't control its config and cannot
+    /// assume it has an HTTP proxy open at all.
+    http_proxy_port: Option<u16>,
 }
 
 impl RouterHandle {
@@ -207,24 +227,29 @@ impl RouterHandle {
         std::fs::create_dir_all(&router_dir)
             .map_err(|e| NetError::I2p(format!("router data dir: {e}")))?;
 
-        // Always run our own router on a private, free port so the profile is
+        // Always run our own router on private, free ports so the profile is
         // self-contained and we never route through an untrusted foreign router.
         let sam_port = pick_free_port(DEFAULT_SAM_PORT);
+        let http_proxy_port = pick_free_port(DEFAULT_HTTP_PROXY_PORT);
 
         eprintln!(
             "[i2p] launching router {} (SAM 127.0.0.1:{sam_port}); first run may take 1-3 min...",
             bin.display()
         );
-        // Everything but SAM is switched off: gipny talks SAMv3 over loopback and
-        // has no use for the HTTP console, the proxies, or UPnP punching holes on
-        // the user's behalf.
+        // Everything but SAM and the HTTP proxy is switched off: gipny talks
+        // SAMv3 over loopback for messaging, and the HTTP proxy (with an
+        // outproxy) only for the update checker's GitHub requests — no HTTP
+        // console, no SOCKS proxy, no UPnP punching holes on the user's behalf.
         let mut cmd = Command::new(bin);
         cmd.arg(format!("--datadir={}", router_dir.display()))
             .arg("--sam.enabled=true")
             .arg("--sam.address=127.0.0.1")
             .arg(format!("--sam.port={sam_port}"))
             .arg("--http.enabled=false")
-            .arg("--httpproxy.enabled=false")
+            .arg("--httpproxy.enabled=true")
+            .arg("--httpproxy.address=127.0.0.1")
+            .arg(format!("--httpproxy.port={http_proxy_port}"))
+            .arg(format!("--httpproxy.outproxy={DEFAULT_OUTPROXY}"))
             .arg("--socksproxy.enabled=false")
             .arg("--upnp.enabled=false")
             .arg(format!("--bandwidth={}", settings.transit.bandwidth()))
@@ -256,16 +281,17 @@ impl RouterHandle {
             .spawn()
             .map_err(|e| NetError::I2p(format!("spawn router {}: {e}", bin.display())))?;
 
-        let mut handle = Self { child: Some(child), sam_port };
+        let mut handle = Self { child: Some(child), sam_port, http_proxy_port: Some(http_proxy_port) };
         handle.await_ready().await?;
         eprintln!("[i2p] router ready (SAM up on {sam_port})");
         Ok(handle)
     }
 
     /// Attach to an already-running SAM bridge (Android: started in-process via
-    /// JNI; or a developer-managed router). Does not own the process.
+    /// JNI; or a developer-managed router). Does not own the process, and does
+    /// not know whether that router has an HTTP proxy open.
     pub async fn attach(sam_port: u16) -> Result<Self> {
-        let mut handle = Self { child: None, sam_port };
+        let mut handle = Self { child: None, sam_port, http_proxy_port: None };
         handle.await_ready().await?;
         Ok(handle)
     }
@@ -273,6 +299,11 @@ impl RouterHandle {
     /// SAM TCP port the router is listening on.
     pub fn sam_port(&self) -> u16 {
         self.sam_port
+    }
+
+    /// Local HTTP proxy port, if this router has one open (see the field doc).
+    pub fn http_proxy_port(&self) -> Option<u16> {
+        self.http_proxy_port
     }
 
     async fn await_ready(&mut self) -> Result<()> {

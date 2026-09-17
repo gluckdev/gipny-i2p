@@ -13,12 +13,15 @@
 //! # Optional environment variables
 //! * `E2E_RELAY_DEST_A` / `E2E_RELAY_DEST_B` — a separate relay per bot.
 //! * `E2E_IN_PROCESS_RELAYS=1` — no standalone relay: each bot gets an
-//!   in-process `EphemeralRelay` on the router at `GIPNY_SAM_PORT`.
+//!   in-process `EphemeralRelay` on the router at `GIPNY_SAM_PORT`, started
+//!   for that bot's key only (`MemStoreLimits::personal`) after the bot is up
+//!   — the app's built-in relay, in the order the app does it.
 //! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
 //!   far side is the real `gipny-agent` binary at that path, started with
-//!   bot-a's v2 card and attached to the shared router. Needs
-//!   `GIPNY_SAM_PORT`; uses one in-process relay (the master's, which the
-//!   agent collects from too). `E2E_N_MESSAGES` is the number of commands.
+//!   bot-a's v2 card and attached to the shared router, with no `--relay` —
+//!   proving the agent hosts a personal relay for itself, the same as the
+//!   app does. Needs `GIPNY_SAM_PORT`; the master gets its own in-process
+//!   relay too. `E2E_N_MESSAGES` is the number of commands.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -116,7 +119,13 @@ async fn start_bot(
 /// A published destination is not usable until its tunnels exist, which is
 /// what `EphemeralRelay::start` waits for, so this can take a couple of
 /// minutes. It runs before the delivery clock starts and has its own deadline.
-async fn start_in_process_relays() -> Result<(EphemeralRelay, EphemeralRelay)> {
+///
+/// Each relay is a *personal* one, as the app starts it: it holds mail and a
+/// prekey bundle for its owner's key and refuses everyone else's. Delivery
+/// then proves two things the unit tests cannot: that a contact's deposit names
+/// the key the relay was started for, and that the refusal does not get in the
+/// way of the owner's own traffic.
+async fn start_in_process_relays(owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
     let port: u16 = std::env::var("GIPNY_SAM_PORT")
         .context("E2E_IN_PROCESS_RELAYS needs GIPNY_SAM_PORT, the shared router's SAM port")?
         .trim()
@@ -126,8 +135,8 @@ async fn start_in_process_relays() -> Result<(EphemeralRelay, EphemeralRelay)> {
     let t0 = Instant::now();
     let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
         tokio::join!(
-            EphemeralRelay::start(port, MemStoreLimits::default()),
-            EphemeralRelay::start(port, MemStoreLimits::default()),
+            EphemeralRelay::start(port, MemStoreLimits::personal(owner_a)),
+            EphemeralRelay::start(port, MemStoreLimits::personal(owner_b)),
         )
     })
     .await
@@ -264,7 +273,10 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let budget = |t_start: Instant| timeout.saturating_sub(t_start.elapsed());
     eprintln!("[e2e] agent mode: {} · {n_commands} commands · timeout {timeout_secs}s", agent_bin.display());
 
-    // One relay: the agent collects from the master's, which its card names.
+    // The master's own relay, for the agent to deposit its GRANT/replies on.
+    // No `--relay` is passed to the agent below: it hosts a personal relay
+    // for itself and tells the master the address through its GRANT message,
+    // exactly as any contact's relay is learned.
     eprintln!("[e2e] starting the master's in-process relay on SAM port {port}...");
     let t0 = Instant::now();
     let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(port, MemStoreLimits::default()))
@@ -539,17 +551,15 @@ async fn main() -> Result<()> {
     // that exists only in memory. That is the relay every client can run, over
     // real i2p, with the bots reaching it exactly as they would a remote one.
     let in_process = std::env::var("E2E_IN_PROCESS_RELAYS").is_ok_and(|v| v == "1");
-    let (relay_a, relay_b, in_process_relays) = if in_process {
-        let (a, b) = start_in_process_relays().await?;
-        (a.address().to_string(), b.address().to_string(), Some((a, b)))
+    let standalone = if in_process {
+        None
     } else {
         let relay_dest = std::env::var("E2E_RELAY_DEST")
             .context("E2E_RELAY_DEST env var is required (contents of dest.pub)")?;
         let a = std::env::var("E2E_RELAY_DEST_A").unwrap_or_else(|_| relay_dest.clone());
         let b = std::env::var("E2E_RELAY_DEST_B").unwrap_or_else(|_| relay_dest.clone());
-        (a, b, None)
+        Some((a, b))
     };
-    let split_relays = relay_a != relay_b;
     let n_messages: usize = std::env::var("E2E_N_MESSAGES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -565,28 +575,48 @@ async fn main() -> Result<()> {
         .context("create work dir")?;
 
     let timeout = Duration::from_secs(timeout_secs);
+    // -----------------------------------------------------------------------
+    // 1. Start both bots sequentially (sharing the same i2p router).
+    // -----------------------------------------------------------------------
+    // With in-process relays the bots start with no relay at all and wait,
+    // which is the app's built-in mode exactly: the identity exists first, the
+    // relay is started for that identity, and only then does the client learn
+    // where it collects.
+    let first = standalone.clone().unwrap_or_default();
+    let a_result = start_bot("bot-a", &work_dir, &first.0).await;
+    let b_result = start_bot("bot-b", &work_dir, &first.1).await;
+    let (a, mut a_events) = a_result.context("bot-a start")?;
+    let (b, mut b_events) = b_result.context("bot-b start")?;
+
+    let (relay_a, relay_b, in_process_relays) = match standalone {
+        Some((ra, rb)) => (ra, rb, None),
+        None => {
+            let (ra, rb) = start_in_process_relays(a.card.sign_pk, b.card.sign_pk).await?;
+            let (dest_a, dest_b) = (ra.address().to_string(), rb.address().to_string());
+            a.session.set_relay_onion(&dest_a).context("bot-a: set_relay_onion")?;
+            b.session.set_relay_onion(&dest_b).context("bot-b: set_relay_onion")?;
+            eprintln!("[e2e] personal relays: each holds mail for its own bot and refuses anyone else's");
+            (dest_a, dest_b, Some((ra, rb)))
+        }
+    };
+    let split_relays = relay_a != relay_b;
+
+    // The delivery clock starts here: router and relay start-up have their own
+    // deadlines above.
     let t_start = Instant::now();
 
     if split_relays {
         eprintln!(
-            "[e2e] starting (bot-a relay={}... bot-b relay={}... n={n_messages} timeout={timeout_secs}s)",
+            "[e2e] running (bot-a relay={}... bot-b relay={}... n={n_messages} timeout={timeout_secs}s)",
             &relay_a[..20.min(relay_a.len())], &relay_b[..20.min(relay_b.len())]
         );
         eprintln!("[e2e] two relays: delivery proves messages follow the recipient's card");
     } else {
         eprintln!(
-            "[e2e] starting (shared relay={}... n={n_messages} timeout={timeout_secs}s)",
+            "[e2e] running (shared relay={}... n={n_messages} timeout={timeout_secs}s)",
             &relay_a[..20.min(relay_a.len())]
         );
     }
-
-    // -----------------------------------------------------------------------
-    // 1. Start both bots sequentially (sharing the same i2p router).
-    // -----------------------------------------------------------------------
-    let a_result = start_bot("bot-a", &work_dir, &relay_a).await;
-    let b_result = start_bot("bot-b", &work_dir, &relay_b).await;
-    let (a, mut a_events) = a_result.context("bot-a start")?;
-    let (b, mut b_events) = b_result.context("bot-b start")?;
 
     // -----------------------------------------------------------------------
     // 2. Cross-add contacts (writes to DB; relay loop will handle the rest).

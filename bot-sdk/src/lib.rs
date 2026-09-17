@@ -278,6 +278,7 @@ impl Bot {
                     SessionEvent::MessageEdited { message_id, .. } => eprintln!("[bot] edited mid={}", message_id),
                     SessionEvent::MessagePinned { message_id, .. } => eprintln!("[bot] pinned mid={}", message_id),
                     SessionEvent::MessageUnpinned { message_id, .. } => eprintln!("[bot] unpinned mid={}", message_id),
+                    SessionEvent::RelayError { reason } => eprintln!("[bot] relay error: {}", reason),
                     SessionEvent::IncomingPayload { contact_id, payload, message_id } =>
                         eprintln!("[bot] incoming contact={} mid={} group={} body={:?} cb={:?} atts={} buttons={}",
                             contact_id, message_id,

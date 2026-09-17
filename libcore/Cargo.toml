@@ -26,6 +26,16 @@ argon2 = { workspace = true }
 rusqlite = { workspace = true }
 yosemite = { workspace = true }
 libc = { workspace = true }
+# rustls, not native-tls/openssl: no system OpenSSL to fight with when cross
+# compiling (see the CC/CXX note for local `cargo check`), and one TLS stack
+# instead of two in the dependency tree. Explicit ring provider, not rustls's
+# own default (aws-lc-rs): aws-lc-sys needs cmake and a C toolchain per
+# target, which the Android cross-compiles (this crate builds into the APK)
+# are not set up for; ring is already in this tree and already cross-builds.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+flate2 = "1"
+tar = "0.4"
 [dev-dependencies]
 tempfile = "3"
 

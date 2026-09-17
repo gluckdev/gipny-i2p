@@ -21,6 +21,8 @@ import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT } from '../src/api';
 const params = new URLSearchParams(location.search);
 const scene = params.get('scene') ?? 'list';
 const theme = params.get('theme');
+// ?relay=starting shows the app before its built-in relay has an address.
+const relayStarting = params.get('relay') === 'starting';
 
 const DEST = 'q7Hk2-~Lm9XzRt'.repeat(37).slice(0, 516) + 'AAAA';
 const RELAY = 'Vb8~nP3-sQw1YeUi'.repeat(33).slice(0, 516) + 'AAAA';
@@ -139,7 +141,13 @@ mockIPC((cmd, payload) => {
     case 'my_fingerprint': return hex('5e');
     case 'my_bundle': return { sign_pk: hex('00'), dh_pk: hex('01'), signed_prekey: hex('aa'), signed_prekey_sig: hex('bb') + hex('cc'), one_time_prekey: null, one_time_id: null };
     case 'get_display_name': return 'admin@workstation-with-a-rather-long-hostname';
-    case 'get_relay_address': return RELAY;
+    case 'get_relay_address': return relayStarting ? '' : RELAY;
+    case 'get_attachment_privacy': return true;
+    case 'get_relay_info': return {
+      mode: 'builtin', external: '',
+      hosted: relayStarting ? { state: 'starting' } : { state: 'ready', address: RELAY },
+    };
+    case 'list_unreachable_contacts': return scene === 'chat' ? [2] : [];
     case 'get_agent_mode': return agentMaster;
     case 'get_router_settings': return { transit: 'balanced', yggdrasil: 'auto' };
     case 'update_configured': return false;
