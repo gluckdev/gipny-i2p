@@ -1,6 +1,6 @@
 [package]
 name = "gipny-agent"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 publish = false
 description = "Headless Gipny console agent"
