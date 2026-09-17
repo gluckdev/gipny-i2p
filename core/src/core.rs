@@ -68,6 +68,33 @@ const RECONNECT_MAX_MS: u64 = 15_000;
 ///
 /// `Connecting` and `Failed` exist so the send loop never dials: it checks this
 /// map, and either gets a live sender or moves on to the next contact.
+/// An unconfirmed address announcement is repeated no more often than this.
+const ANNOUNCE_REPEAT_EVERY: Duration = Duration::from_secs(20 * 60);
+
+/// A contact whose relay is silent gets one address lookup in the network per
+/// this interval; each one costs tunnels and tens of seconds.
+const DHT_ADDRESS_LOOKUP_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// How often to look in the network for letters left while we were away.
+const DHT_COLLECT_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// Letters are remembered as handled for as long as one can live in the
+/// network, plus a day.
+const DHT_SEEN_TTL_MS: i64 = 8 * 24 * 3600 * 1000;
+
+/// How far back the first pass after a launch looks; a letter lives a week.
+const DHT_COLLECT_DAYS_FIRST: u32 = 7;
+/// Later passes only need today and (around midnight) yesterday.
+const DHT_COLLECT_DAYS: u32 = 2;
+
+/// Where an outgoing letter goes. `Relay` is a live connection to the relay
+/// the contact collects from; `Dht` leaves it in the relay network, where it
+/// waits until they come back (see libcore/src/dht_client.rs).
+enum Route {
+    Relay(mpsc::Sender<ClientToRelay>),
+    Dht,
+}
+
 enum PeerRelay {
     Ready(mpsc::Sender<ClientToRelay>),
     Connecting,
@@ -271,11 +298,16 @@ pub struct Core {
     hosted_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     /// Contacts that have not been told this launch's relay address yet.
     announce_pending: Arc<Mutex<HashSet<i64>>>,
+    /// When each of them was last told, so the repeat is paced.
+    announce_sent_at: Arc<Mutex<HashMap<i64, Instant>>>,
     /// When each peer relay first stopped answering, and who was told about it.
     relay_down_since: Arc<Mutex<HashMap<String, Instant>>>,
     unreachable_reported: Arc<Mutex<HashSet<i64>>>,
     /// Our node in the relay network, answering through the built-in relay.
     dht: Arc<dht_client::Node>,
+    /// When we last asked the network where a contact collects, so a contact
+    /// whose relay is down does not start a lookup on every send tick.
+    dht_addr_asked: Arc<Mutex<HashMap<i64, Instant>>>,
 }
 
 impl Core {
@@ -314,9 +346,11 @@ impl Core {
             hosted_state: Arc::new(std::sync::RwLock::new(HostedRelayState::Off)),
             hosted_task: Arc::new(std::sync::Mutex::new(None)),
             announce_pending: Arc::new(Mutex::new(HashSet::new())),
+            announce_sent_at: Arc::new(Mutex::new(HashMap::new())),
             relay_down_since: Arc::new(Mutex::new(HashMap::new())),
             unreachable_reported: Arc::new(Mutex::new(HashSet::new())),
             dht: dht_client::new_node(node.clone(), db.clone()),
+            dht_addr_asked: Arc::new(Mutex::new(HashMap::new())),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -456,7 +490,13 @@ impl Core {
                     self.set_hosted_state(HostedRelayState::Ready { address: address.clone() });
                     self.send_kick.notify_one();
                     let (dht, db, identity) = (self.dht.clone(), self.db.clone(), self.identity.clone());
-                    let join = tokio::spawn(async move { dht_client::join(&dht, &db, &identity, &address).await });
+                    let this = self.clone();
+                    let join = tokio::spawn(async move {
+                        dht_client::join(&dht, &db, &identity, &address).await;
+                        this.publish_bundle_to_dht().await;
+                        // Anything left for us while we were away.
+                        this.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
+                    });
                     self.tasks.lock().unwrap().push(join);
                     return;
                 }
@@ -471,9 +511,15 @@ impl Core {
     }
 
     /// Tells contacts where we collect during this launch. An empty payload:
-    /// the receiver reads the relay address off it and drops it. Only contacts
-    /// we already share a session with — a first message carries the address
-    /// anyway, and an announcement is no reason to open a session.
+    /// the receiver reads the relay address off it and drops it.
+    ///
+    /// A contact is never dropped from this list for being away (2026-09-17,
+    /// owner's requirement): an address that changed must not cost people the
+    /// contact. So an announcement goes out again and again — over their relay,
+    /// or through the network when that relay is silent, opening a session if
+    /// there is none — until something arrives *from* them, which is the only
+    /// proof they have our address. `announce_sent_at` keeps that from
+    /// repeating on every tick of the send loop.
     async fn flush_relay_announcements(self: &Arc<Self>) {
         let ids: Vec<i64> = self.announce_pending.lock().await.iter().copied().collect();
         for id in ids {
@@ -481,20 +527,20 @@ impl Core {
                 Ok(Some(c)) if c.trust != TrustLevel::Blocked && c.request_state != RequestState::Incoming => c,
                 _ => { self.announce_pending.lock().await.remove(&id); continue; }
             };
-            let has_session = self.sessions.lock().await.contains_key(&id)
-                || self.db.get_session(id).ok().flatten().is_some();
-            if !has_session {
-                self.announce_pending.lock().await.remove(&id);
-                continue;
+            {
+                let sent = self.announce_sent_at.lock().await;
+                if sent.get(&id).is_some_and(|t| t.elapsed() < ANNOUNCE_REPEAT_EVERY) {
+                    continue;
+                }
             }
             // Dialing happens in the background; an unreachable relay is tried
-            // again on a later tick.
-            let Some(out) = self.relay_for(&contact).await else { continue };
+            // again on a later tick, and the network carries it meanwhile.
+            let Some(out) = self.route_for(&contact).await else { continue };
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
             let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
             if self.send_payload_via_relay(&contact, &mut payload, &out).await.is_ok() {
-                eprintln!("[relay-hosted] told contact {id} where we collect now");
-                self.announce_pending.lock().await.remove(&id);
+                eprintln!("[relay-hosted] told contact {id} where we collect now (waiting to hear back)");
+                self.announce_sent_at.lock().await.insert(id, Instant::now());
             }
         }
     }
@@ -930,7 +976,7 @@ impl Core {
             console: None,
             relay_address: None,
         };
-        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
+        let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
@@ -971,7 +1017,7 @@ impl Core {
             console: None,
             relay_address: None,
         };
-        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
+        let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
@@ -1008,7 +1054,7 @@ impl Core {
             console: None,
             relay_address: None,
         };
-        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
+        let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
@@ -1109,7 +1155,7 @@ impl Core {
             relay_address: None,
         };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
-        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
+        let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, &mut payload, &out).await
     }
@@ -1538,6 +1584,49 @@ impl Core {
     /// loop, which handles a frame, which may send an ack, which comes back
     /// here. `async fn` would make that an infinitely recursive future type and
     /// the compiler cannot prove it `Send`.
+    /// Where a letter goes out: straight to the contact's relay, or into the
+    /// relay network when that relay is not answering. The network path is
+    /// slower and needs proof of work, so it is the fallback, never the
+    /// default.
+    async fn route_for(self: &Arc<Self>, contact: &gipny_libcore::db::Contact) -> Option<Route> {
+        if let Some(tx) = self.relay_for(contact).await {
+            return Some(Route::Relay(tx));
+        }
+        // Their relay is down or unknown. The network holds the letter until
+        // they come back, but only if we are in it.
+        (self.dht.peer_count() > 0).then_some(Route::Dht)
+    }
+
+    /// Hand one envelope to the contact by `route`.
+    async fn deliver(
+        &self,
+        contact: &gipny_libcore::db::Contact,
+        blob: Vec<u8>,
+        route: &Route,
+        first_letter: bool,
+    ) -> Result<()> {
+        let (their_sign, their_dh) = (to_arr32(contact.identity_sign.clone())?, to_arr32(contact.identity_dh.clone())?);
+        match route {
+            Route::Relay(out) => out.send(ClientToRelay::Send { to: their_sign, blob }).await.map_err(|_| CoreError::State),
+            Route::Dht => {
+                // A first letter goes to the box anyone holding their card can
+                // find (they may not know us yet); everything else to the one
+                // only the two of us can compute.
+                let ok = if first_letter {
+                    dht_client::put_intro(&self.dht, &their_sign, &their_dh, &blob).await
+                } else {
+                    dht_client::put_mail(&self.dht, &self.identity, &their_sign, &their_dh, &blob).await
+                };
+                if ok {
+                    eprintln!("[dht] letter for contact {} left in the network", contact.id);
+                    Ok(())
+                } else {
+                    Err(CoreError::State)
+                }
+            }
+        }
+    }
+
     fn relay_for<'a>(
         self: &'a Arc<Self>,
         contact: &'a gipny_libcore::db::Contact,
@@ -1858,6 +1947,15 @@ impl Core {
     }
 
     /// The sender's relay and name, which every payload may carry.
+    /// Anything from a contact proves they can reach us, so the address
+    /// announcement for them has arrived and stops repeating.
+    async fn note_heard_from(self: &Arc<Self>, contact_id: i64) {
+        if self.announce_pending.lock().await.remove(&contact_id) {
+            self.announce_sent_at.lock().await.remove(&contact_id);
+            eprintln!("[relay-hosted] contact {contact_id} answered; they have our address");
+        }
+    }
+
     fn apply_contact_hints(&self, contact_id: i64, payload: &WirePayload) {
         if let Some(relay) = payload.relay_address.as_deref() {
             let trimmed = relay.trim();
@@ -1882,6 +1980,7 @@ impl Core {
     /// acknowledging them, and ignore everything else.
     async fn persist_from_requester(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
         self.apply_contact_hints(contact_id, &payload);
+        self.note_heard_from(contact_id).await;
         let plain = payload.group.is_none() && payload.typing.is_none() && payload.edit_of.is_none()
             && payload.pin.is_none() && payload.ack_for.is_none() && payload.callback_data.is_none()
             && payload.console.is_none() && payload.origin_msg_id > 0
@@ -1925,6 +2024,7 @@ impl Core {
             return Ok(());
         }
         self.apply_contact_hints(contact_id, &payload);
+        self.note_heard_from(contact_id).await;
         if payload.buttons.is_some() || payload.callback_data.is_some() {
             if self.db.set_contact_is_bot(contact_id, true).unwrap_or(false) {
                 let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
@@ -2201,7 +2301,7 @@ impl Core {
             console: None,
             relay_address: None,
         };
-        let out = match self.relay_for(contact).await {
+        let out = match self.route_for(contact).await {
             Some(x) => x,
             None => return Ok(()),
         };
@@ -2259,11 +2359,24 @@ impl Core {
             if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
             // Deposit on the relay this contact collects from, not on ours.
             let has_mail = !pending.is_empty() || !unacked.is_empty();
-            let Some(out) = self.relay_for(&contact).await else {
-                self.note_reachability(&contact, false, has_mail).await;
-                continue;
+            let out = match self.relay_for(&contact).await {
+                Some(tx) => {
+                    self.note_reachability(&contact, true, has_mail).await;
+                    Route::Relay(tx)
+                }
+                // Their relay is away. Leave it in the network, where it waits
+                // for them — and keep the contact marked unreachable, because
+                // nothing has been handed over yet.
+                None => {
+                    self.note_reachability(&contact, false, has_mail).await;
+                    if self.dht.peer_count() == 0 { continue; }
+                    // They may simply have restarted onto a new address; ask
+                    // the network in the background, and meanwhile leave the
+                    // letter where they will find it either way.
+                    self.maybe_look_up_address(&contact).await;
+                    Route::Dht
+                }
             };
-            self.note_reachability(&contact, true, has_mail).await;
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
@@ -2328,7 +2441,7 @@ impl Core {
 
     async fn send_to_contact(self: &Arc<Self>, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
-        let out = self.relay_for(&contact).await.ok_or(CoreError::State)?;
+        let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
         self.send_payload_via_relay(&contact, payload, &out).await
     }
@@ -2365,7 +2478,7 @@ impl Core {
     async fn ensure_session_for(
         &self,
         contact: &gipny_libcore::db::Contact,
-        out: &mpsc::Sender<ClientToRelay>,
+        route: &Route,
     ) -> Result<()> {
         if self.sessions.lock().await.contains_key(&contact.id) {
             eprintln!("[relay-client] ensure_session: contact {} already in cache, no-op", contact.id);
@@ -2398,22 +2511,32 @@ impl Core {
 
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&contact.identity_sign);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
-        if out.send(ClientToRelay::GetBundle { pk }).await.is_err() {
-            eprintln!("[relay-client] get_bundle send failed for contact {} (relay channel closed)", contact.id);
-            return Err(CoreError::State);
-        }
-        let bundle_bytes = match tokio::time::timeout(Duration::from_millis(PENDING_REQ_TIMEOUT_MS), rx).await {
-            Err(_) => {
-                eprintln!("[relay-client] get_bundle timeout for contact {} after {}ms — relay not responding", contact.id, PENDING_REQ_TIMEOUT_MS);
-                return Err(CoreError::State);
+        let bundle_bytes = match route {
+            Route::Relay(out) => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
+                if out.send(ClientToRelay::GetBundle { pk }).await.is_err() {
+                    eprintln!("[relay-client] get_bundle send failed for contact {} (relay channel closed)", contact.id);
+                    return Err(CoreError::State);
+                }
+                match tokio::time::timeout(Duration::from_millis(PENDING_REQ_TIMEOUT_MS), rx).await {
+                    Err(_) => {
+                        eprintln!("[relay-client] get_bundle timeout for contact {} after {}ms — relay not responding", contact.id, PENDING_REQ_TIMEOUT_MS);
+                        return Err(CoreError::State);
+                    }
+                    Ok(Err(_)) => {
+                        eprintln!("[relay-client] get_bundle channel dropped for contact {}", contact.id);
+                        return Err(CoreError::State);
+                    }
+                    Ok(Ok(v)) => v,
+                }
             }
-            Ok(Err(_)) => {
-                eprintln!("[relay-client] get_bundle channel dropped for contact {}", contact.id);
-                return Err(CoreError::State);
+            // Their relay is away, so their bundle comes from the network,
+            // where they publish it for exactly this case.
+            Route::Dht => {
+                let their_dh = to_arr32(contact.identity_dh.clone())?;
+                dht_client::find_bundle(&self.dht, &pk, &their_dh).await
             }
-            Ok(Ok(v)) => v,
         };
         let bundle_bytes = match bundle_bytes {
             Some(b) => b,
@@ -2445,11 +2568,9 @@ impl Core {
         self.sessions.lock().await.insert(contact.id, state);
         self.session_created_at.lock().await.insert(contact.id, now_ms());
 
-        let mut to = [0u8; 32];
-        to.copy_from_slice(&contact.identity_sign);
         let envelope = EnvelopeBlob::X3dhInit(init);
         let blob = bincode::serialize(&envelope)?;
-        out.send(ClientToRelay::Send { to, blob }).await.map_err(|_| CoreError::State)?;
+        self.deliver(contact, blob, route, true).await?;
         eprintln!("[relay-client] x3dh sent to contact {}", contact.id);
         Ok(())
     }
@@ -2458,7 +2579,7 @@ impl Core {
         &self,
         contact: &gipny_libcore::db::Contact,
         payload: &mut WirePayload,
-        out: &mpsc::Sender<ClientToRelay>,
+        route: &Route,
     ) -> Result<()> {
         if payload.sender_name.is_none() {
             payload.sender_name = self.outgoing_sender_name();
@@ -2492,9 +2613,7 @@ impl Core {
         };
         let envelope = EnvelopeBlob::Ratchet { header, ciphertext: ct };
         let blob = bincode::serialize(&envelope)?;
-        let mut to = [0u8; 32];
-        to.copy_from_slice(&contact.identity_sign);
-        out.send(ClientToRelay::Send { to, blob }).await.map_err(|_| CoreError::State)?;
+        self.deliver(contact, blob, route, false).await?;
 
         self.incoming_since_send.lock().await.insert(contact.id, 0);
 
@@ -2562,16 +2681,126 @@ impl Core {
             let mut tick = tokio::time::interval(dht_client::MAINTAIN_EVERY);
             tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
             tick.tick().await;
+            let mut collect = tokio::time::interval(DHT_COLLECT_EVERY);
+            collect.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            collect.tick().await;
+            let mut days = DHT_COLLECT_DAYS_FIRST;
             loop {
-                tick.tick().await;
-                let address = match &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()) {
-                    HostedRelayState::Ready { address } => Some(address.clone()),
-                    _ => None,
-                };
-                dht_client::maintain(&this.dht, &this.db, &this.identity, address.as_deref()).await;
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let address = match &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()) {
+                            HostedRelayState::Ready { address } => Some(address.clone()),
+                            _ => None,
+                        };
+                        dht_client::maintain(&this.dht, &this.db, &this.identity, address.as_deref()).await;
+                        this.publish_bundle_to_dht().await;
+                        let _ = this.db.dht_seen_purge(now_ms() - DHT_SEEN_TTL_MS);
+                    }
+                    _ = collect.tick() => {
+                        this.collect_from_dht(days).await;
+                        days = DHT_COLLECT_DAYS;
+                    }
+                }
             }
         });
         self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// Collect what the network holds for us and hand it to the ordinary
+    /// incoming path. `days` is how far back to look: a week on the first pass
+    /// after a launch, then today and yesterday.
+    async fn collect_from_dht(self: &Arc<Self>, days: u32) {
+        if self.dht.peer_count() == 0 {
+            return;
+        }
+        let Ok(contacts) = self.db.list_contacts() else { return };
+        let mut letters = Vec::new();
+        for c in &contacts {
+            if c.trust == TrustLevel::Blocked || c.request_state == RequestState::Incoming {
+                continue;
+            }
+            let (Ok(their_sign), Ok(their_dh)) = (to_arr32(c.identity_sign.clone()), to_arr32(c.identity_dh.clone())) else {
+                continue;
+            };
+            letters.extend(dht_client::collect_mail(&self.dht, &self.identity, &their_sign, &their_dh, days).await);
+        }
+        // First letters from people who may not know us yet; an unknown sender
+        // becomes a contact request, exactly as over a relay.
+        letters.extend(dht_client::collect_intros(&self.dht, &self.identity, days).await);
+
+        for letter in letters {
+            let hash = dht_client::letter_hash(&letter.envelope);
+            // A ratchet envelope decrypted twice looks like a broken session.
+            match self.db.dht_seen_mark(&hash, now_ms()) {
+                Ok(true) => {}
+                _ => continue,
+            }
+            match self.handle_incoming_envelope(&[0u8; 32], &letter.envelope).await {
+                Ok(()) | Err(CoreError::StaleOpk) | Err(CoreError::SealedDrop) => {
+                    // Ours and handled: take it out of the network so nobody
+                    // holds it for the rest of its week.
+                    dht_client::drop_letter(&self.dht, &letter).await;
+                }
+                Err(e) => {
+                    eprintln!("[dht] letter from the network did not open: {e:?}");
+                    // Not handled: let a later pass try again.
+                    let _ = self.db.dht_seen_forget(&hash);
+                }
+            }
+        }
+        // The answers (acks among them) go out on the next send tick.
+        self.send_kick.notify_one();
+    }
+
+    /// Ask at most once every `DHT_ADDRESS_LOOKUP_EVERY`.
+    async fn maybe_look_up_address(self: &Arc<Self>, contact: &gipny_libcore::db::Contact) {
+        if self.dht.peer_count() == 0 {
+            return;
+        }
+        {
+            let mut asked = self.dht_addr_asked.lock().await;
+            let now = Instant::now();
+            match asked.get(&contact.id) {
+                Some(t) if now.duration_since(*t) < DHT_ADDRESS_LOOKUP_EVERY => return,
+                _ => asked.insert(contact.id, now),
+            };
+        }
+        self.look_up_address(contact);
+    }
+
+    /// Ask the network where a contact collects now. Runs in the background:
+    /// a lookup takes tens of seconds over i2p, and the send loop must not
+    /// wait for it.
+    fn look_up_address(self: &Arc<Self>, contact: &gipny_libcore::db::Contact) {
+        let (Ok(their_sign), Ok(their_dh)) = (to_arr32(contact.identity_sign.clone()), to_arr32(contact.identity_dh.clone())) else {
+            return;
+        };
+        let (this, id, known) = (self.clone(), contact.id, contact.relay_address.clone());
+        tokio::spawn(async move {
+            let Some((relay, _issued)) = dht_client::find_address(&this.dht, &this.identity, &their_sign, &their_dh).await else {
+                return;
+            };
+            if known.as_deref() == Some(relay.as_str()) || relay.trim().is_empty() {
+                return;
+            }
+            eprintln!("[dht] contact {id} moved to a new relay; taking the address from the network");
+            if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
+                this.send_kick.notify_one();
+                let _ = this.events.try_send(CoreEvent::ContactUpdated { contact_id: id });
+            }
+        });
+    }
+
+    /// Put our prekey bundle in the network, so a contact can open a session
+    /// with us while our relay is down. It is the same bundle the relay hands
+    /// out, and anyone holding our card may read it.
+    async fn publish_bundle_to_dht(self: &Arc<Self>) {
+        if self.dht.peer_count() == 0 {
+            return;
+        }
+        let Ok(bundle) = self.my_bundle() else { return };
+        let Ok(bytes) = bincode::serialize(&bundle) else { return };
+        dht_client::publish_bundle(&self.dht, &self.identity, &bytes).await;
     }
 
     pub fn dht_status(&self) -> dht_client::DhtStatus {

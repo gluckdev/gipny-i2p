@@ -142,6 +142,110 @@ async fn publish_addresses(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identi
     eprintln!("[dht] address published for {published} contact(s)");
 }
 
+// ── mail through the network ─────────────────────────────────────────────
+//
+// Everything below works on a pair of identities and needs nothing from the
+// session protocol: both sides derive the same secret from the cards they
+// already hold. The storing nodes see ciphertext under a key that rolls daily.
+
+/// The secret only these two can compute, from our identity and their card.
+pub fn pair_with(identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32]) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+    gipny_dht::crypto::pair_secret(identity.dh_secret(), their_dh, &identity.card().sign_pk, their_sign)
+}
+
+fn to_stored(item: gipny_dht::items::PreparedItem) -> StoredItem {
+    StoredItem { key: item.key, value: item.value, delete_hash: item.delete_hash, expires_at_ms: item.expires_at_ms }
+}
+
+/// Leave an envelope where this contact collects it. `true` when at least one
+/// node took it.
+pub async fn put_mail(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32], envelope: &[u8]) -> bool {
+    let Some(pair) = pair_with(identity, their_sign, their_dh) else { return false };
+    let Some(item) = gipny_dht::items::mail(&pair, their_sign, node.now_ms(), envelope) else { return false };
+    node.put(to_stored(item)).await > 0
+}
+
+/// A first letter to someone who may not know us yet: sealed to their card,
+/// so only they can open it, and found under a key any holder of that card
+/// can compute.
+pub async fn put_intro(node: &Arc<Node>, their_sign: &[u8; 32], their_dh: &[u8; 32], envelope: &[u8]) -> bool {
+    let Some(item) = gipny_dht::items::intro(their_sign, their_dh, node.now_ms(), envelope) else { return false };
+    node.put(to_stored(item)).await > 0
+}
+
+/// One letter found in the network, with what it takes to remove it.
+pub struct Letter {
+    pub envelope: Vec<u8>,
+    pub key: [u8; 32],
+    pub delete_token: [u8; 32],
+}
+
+/// Letters this contact left for us over the last `days` days.
+pub async fn collect_mail(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32], days: u32) -> Vec<Letter> {
+    let Some(pair) = pair_with(identity, their_sign, their_dh) else { return Vec::new() };
+    let me = identity.card().sign_pk;
+    let mut out = Vec::new();
+    for key in gipny_dht::items::mail_keys_to_poll(&pair, &me, node.now_ms(), days) {
+        for item in node.get(&key).await {
+            if let Some(opened) = gipny_dht::items::open_mail(&pair, &key, &item.value) {
+                out.push(Letter { envelope: opened.envelope, key, delete_token: opened.delete_token });
+            }
+        }
+    }
+    out
+}
+
+/// First letters addressed to our card, from anyone.
+pub async fn collect_intros(node: &Arc<Node>, identity: &Arc<Identity>, days: u32) -> Vec<Letter> {
+    let me = identity.card();
+    let mut out = Vec::new();
+    for key in gipny_dht::items::intro_keys_to_poll(&me.sign_pk, &me.dh_pk, node.now_ms(), days) {
+        for item in node.get(&key).await {
+            if let Some(opened) = gipny_dht::items::open_intro(identity.dh_secret(), &key, &item.value) {
+                out.push(Letter { envelope: opened.envelope, key, delete_token: opened.delete_token });
+            }
+        }
+    }
+    out
+}
+
+/// Identifies a letter for the "already handled" table.
+pub fn letter_hash(envelope: &[u8]) -> [u8; 32] {
+    gipny_dht::crypto::sha256(&[envelope])
+}
+
+/// Take a letter we have read out of the network. Only the recipient can: the
+/// token was inside the sealed value.
+pub async fn drop_letter(node: &Arc<Node>, letter: &Letter) {
+    node.delete(&letter.key, &letter.delete_token).await;
+}
+
+/// Where this contact collects now, as they published it, and when.
+pub async fn find_address(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32]) -> Option<(String, u64)> {
+    let pair = pair_with(identity, their_sign, their_dh)?;
+    let key = gipny_dht::items::address_key(&pair, their_sign);
+    let values: Vec<Vec<u8>> = node.get(&key).await.into_iter().map(|i| i.value).collect();
+    gipny_dht::items::open_address_record(&pair, their_sign, &values, node.now_ms())
+}
+
+/// Their prekey bundle, for starting a session while they are away.
+pub async fn find_bundle(node: &Arc<Node>, their_sign: &[u8; 32], their_dh: &[u8; 32]) -> Option<Vec<u8>> {
+    let key = gipny_dht::items::bundle_key(their_sign, their_dh);
+    let values: Vec<Vec<u8>> = node.get(&key).await.into_iter().map(|i| i.value).collect();
+    gipny_dht::items::open_bundle_record(their_sign, their_dh, &values, node.now_ms())
+}
+
+/// Publish our prekey bundle so a contact can start a session with us while
+/// we are offline. Anyone holding our card can read it — it is public by
+/// design — but a storing node cannot tell whose it is.
+pub async fn publish_bundle(node: &Arc<Node>, identity: &Arc<Identity>, bundle: &[u8]) -> bool {
+    let me = identity.card();
+    let Some(item) = gipny_dht::items::bundle_record(&identity.signing_key(), &me.dh_pk, node.now_ms(), bundle) else {
+        return false;
+    };
+    node.put(to_stored(item)).await > 0
+}
+
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct DhtStatus {
     /// Nodes that answered us.

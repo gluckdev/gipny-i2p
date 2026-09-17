@@ -22,10 +22,11 @@
 **`core.rs` по областям:**
 
 - **Запуск:** `Core::start` поднимает циклы и встроенный релей.
-- **Свой релей:** `relay_mode`/`set_relay_mode`, `start_hosted_relay`/`run_hosted_relay`, `flush_relay_announcements`.
+- **Свой релей:** `relay_mode`/`set_relay_mode`, `start_hosted_relay`/`run_hosted_relay`, `flush_relay_announcements` (адрес объявляется повторно, пока контакт не ответит — `note_heard_from`; контакт из списка не выбрасывается).
 - **Соединения с релеями:** `spawn_relay_loop` (свой релей), `relay_for` (релей контакта, пул `peer_relays`), `run_recv_loop`, `handle_relay_frame`.
 - **Приём:** `handle_incoming_envelope` (X3dhInit / Ratchet) → `persist_incoming`. Контакт-запрос обрабатывает `persist_from_requester`, имя и адрес отправителя — `apply_contact_hints`.
-- **Отправка:** `send_message` кладёт в базу, `spawn_send_loop` → `flush_all_pending` отправляет и повторяет, `send_payload_via_relay` шифрует, `ensure_session_for` открывает сессию (X3DH, тайбрейкер).
+- **Отправка:** `send_message` кладёт в базу, `spawn_send_loop` → `flush_all_pending` отправляет и повторяет, `send_payload_via_relay` шифрует, `ensure_session_for` открывает сессию (X3DH, тайбрейкер). Куда именно уходит письмо, решает `route_for` → `Route::Relay` (релей контакта) или `Route::Dht` (сеть релеев), отдаёт `deliver`.
+- **Сеть релеев:** `spawn_dht_loop` (обслуживание раз в 45 мин, сбор писем раз в 10 мин), `collect_from_dht` (письма и intro → `handle_incoming_envelope`, отметки в `dht_seen`, удаление из сети), `look_up_address`/`maybe_look_up_address` (новый адрес контакта), `publish_bundle_to_dht`. Всё, что не зависит от `Core`, — в `libcore/src/dht_client.rs`.
 - **Контакты:** `add_contact_via`, `accept_contact_request`, `decline_contact_request`, `delete_contact`, `request_resync`.
 - **Группы:** `create_group`, `send_to_group`, `ensure_group_from_wire`.
 - **Режим агента:** `agent_master`, `set_agent_mode`, `disable_agent_mode`.
