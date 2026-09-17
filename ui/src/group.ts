@@ -21,7 +21,7 @@ export class GroupModal {
 
     const renderPicker = (): void => {
       const memberSigns = new Set((store.groupMembers.get().get(groupId) ?? []).map((m) => m.sign_pk));
-      const candidates = store.contacts.get().filter((c) => !memberSigns.has(c.sign_pk));
+      const candidates = store.contacts.get().filter((c) => !memberSigns.has(c.sign_pk) && c.request !== 'incoming');
       picker.replaceChildren();
       const opt0 = h('option', { value: '' }, '-- pick contact / bot --');
       picker.appendChild(opt0);
@@ -133,7 +133,7 @@ export class CreateGroupModal {
     const list = h('div', { class: 'stack', style: { gap: '4px', maxHeight: '300px', overflowY: 'auto' } });
 
     for (const c of store.contacts.get()) {
-      if (c.trust === 2) continue;
+      if (c.trust === 2 || c.request === 'incoming') continue;
       const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
       cb.addEventListener('change', () => {
         if (cb.checked) this.selected.add(c.id);

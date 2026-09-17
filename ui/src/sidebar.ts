@@ -1,6 +1,7 @@
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget } from './state';
 import { View, h, short } from './view';
+import { Api, type Contact } from './api';
 import { attachContextMenu, type MenuItem } from './actions';
 import type { App } from './app';
 import { AddContactModal } from './contact';
@@ -87,11 +88,18 @@ export class Sidebar extends View {
       }
     }
 
+    const requests = contacts.filter((c) => c.request === 'incoming' && c.trust !== 2);
+    if (requests.length > 0) {
+      this.listEl.appendChild(h('div', { class: 'section-label' }, '── requests ──'));
+      for (const c of requests) this.listEl.appendChild(this.requestRow(c));
+    }
+
+    const known = contacts.filter((c) => c.request !== 'incoming');
     this.listEl.appendChild(h('div', { class: 'section-label' }, '── contacts ──'));
-    if (contacts.length === 0) {
+    if (known.length === 0) {
       this.listEl.appendChild(h('div', { class: 'empty', style: { padding: '20px 16px' } }, '── empty ──'));
     } else {
-      for (const c of contacts) {
+      for (const c of known) {
         const target: ChatTarget = { kind: 'contact', id: c.id };
         const u = unread.get(targetKey(target)) ?? 0;
         const pinned = c.pinned_at != null;
@@ -102,7 +110,8 @@ export class Sidebar extends View {
           h('div', { class: 'contact-status' + (online.has(c.id) ? ' online' : '') }),
           h('div', { class: 'contact-info' },
             h('div', { class: 'contact-name' }, c.name),
-            h('div', { class: 'contact-sub' }, short(c.onion)),
+            h('div', { class: 'contact-sub' },
+              c.request === 'outgoing' ? 'waiting for them to accept' : short(c.onion)),
           ),
           pinned && h('div', { class: 'contact-pin', title: 'pinned' }, '⚑'),
           u > 0 && h('div', { class: 'contact-badge' }, String(u)),
@@ -111,6 +120,37 @@ export class Sidebar extends View {
         this.listEl.appendChild(row);
       }
     }
+  }
+
+  private requestRow(c: Contact): HTMLElement {
+    const act = (op: () => Promise<void>, done: string) => (ev: Event) => {
+      ev.stopPropagation();
+      op().then(() => {
+        this.store.showToast(done);
+        return this.store.refreshContacts();
+      }).catch((e: unknown) => this.store.showToast(String(e), true));
+    };
+    return h('div', { class: 'contact request' },
+      h('div', { class: 'contact-status' }),
+      h('div', { class: 'contact-info' },
+        h('div', { class: 'contact-name' }, c.name),
+        h('div', { class: 'contact-sub' }, 'wants to add you · ' + c.sign_pk.slice(0, 16)),
+      ),
+      h('div', { class: 'row request-actions' },
+        h('button', {
+          class: 'icon-btn', title: 'accept',
+          onClick: act(() => Api.acceptContactRequest(c.id), `${c.name} added`),
+        }, '✓'),
+        h('button', {
+          class: 'icon-btn', title: 'decline',
+          onClick: act(() => Api.declineContactRequest(c.id), 'request declined'),
+        }, '✕'),
+        h('button', {
+          class: 'icon-btn', title: 'block',
+          onClick: act(() => Api.updateContact(c.id, c.name, 2), `${c.name} blocked`),
+        }, '⊘'),
+      ),
+    );
   }
 
   private chatMenu(target: ChatTarget, pinned: boolean): MenuItem[] {

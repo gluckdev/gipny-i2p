@@ -13,7 +13,7 @@ use tokio::time::MissedTickBehavior;
 use gipny_libcore::crypto::{
     self, AttachmentCipher, Identity, IdentityCard, PreKeyBundle, PreKeyPair, RatchetState,
 };
-use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, PreKeyKind, TrustLevel};
+use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, PreKeyKind, RequestState, TrustLevel};
 use gipny_libcore::net::{NetError, TorNode};
 use gipny_libcore::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY};
 use gipny_libcore::update::{Component as UpdateComponent, InstallOutcome, UpdateError, UpdateInfo, Updater};
@@ -89,6 +89,8 @@ const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
 const TIEBREAKER_TIMEOUT_MS: i64 = 10_000;
 const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
+/// Unanswered introductions kept at once; the oldest goes first.
+const MAX_INCOMING_REQUESTS: usize = 50;
 
 #[derive(Debug, Clone, Serialize)]
 pub enum CoreEvent {
@@ -131,6 +133,8 @@ pub enum CoreEvent {
     RelayDisconnected,
     ContactAdded { contact_id: i64 },
     ContactUpdated { contact_id: i64 },
+    /// Someone we do not know introduced themselves.
+    ContactRequest { contact_id: i64 },
     GroupUpdated { group_id: String },
     /// A newer version exists and auto-update is off — the UI's manual
     /// install prompt is the only path from here.
@@ -457,7 +461,7 @@ impl Core {
         let ids: Vec<i64> = self.announce_pending.lock().await.iter().copied().collect();
         for id in ids {
             let contact = match self.db.get_contact(id) {
-                Ok(Some(c)) if c.trust != TrustLevel::Blocked => c,
+                Ok(Some(c)) if c.trust != TrustLevel::Blocked && c.request_state != RequestState::Incoming => c,
                 _ => { self.announce_pending.lock().await.remove(&id); continue; }
             };
             let has_session = self.sessions.lock().await.contains_key(&id)
@@ -768,16 +772,69 @@ impl Core {
         Ok(bundle)
     }
 
+    /// Accept an introduction: show what they sent, acknowledge it, and tell
+    /// them where we collect.
+    pub async fn accept_contact_request(self: &Arc<Self>, contact_id: i64) -> Result<()> {
+        let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        if contact.request_state != RequestState::Incoming {
+            return Ok(());
+        }
+        self.accept_request_now(contact_id).await?;
+        let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
+        Ok(())
+    }
+
+    async fn accept_request_now(self: &Arc<Self>, contact_id: i64) -> Result<()> {
+        self.db.set_contact_request_state(contact_id, RequestState::None)?;
+        let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        // An ack that finds no relay yet is not lost: the sender retries, and
+        // the duplicate is acknowledged on arrival.
+        for origin in self.db.incoming_origins(contact_id)? {
+            let original = WirePayload::simple(origin as u64, String::new(), Vec::new(), now_ms(), None);
+            let _ = self.send_ack(&contact, &original).await;
+        }
+        // Also what tells them we accepted when there was nothing to ack.
+        self.announce_pending.lock().await.insert(contact_id);
+        self.send_kick.notify_one();
+        Ok(())
+    }
+
+    /// Decline an introduction: forget them and whatever they sent. They can
+    /// ask again; blocking is what keeps them out.
+    pub async fn decline_contact_request(self: &Arc<Self>, contact_id: i64) -> Result<()> {
+        let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        if contact.request_state != RequestState::Incoming {
+            return Err(CoreError::State);
+        }
+        self.delete_contact(contact_id).await
+    }
+
     /// Add a contact, recording the relay their card named.
     ///
     /// `relay` is where *they* receive: messages to this contact are deposited
     /// there, not on whatever relay this client happens to use. `None` keeps the
     /// old behaviour of falling back to this client's configured relay.
     pub async fn add_contact_via(
-        &self, card: &gipny_libcore::crypto::IdentityCard, onion: &str, name: &str,
+        self: &Arc<Self>, card: &gipny_libcore::crypto::IdentityCard, onion: &str, name: &str,
         relay: Option<&str>,
     ) -> Result<i64> {
+        let known = self.db.find_contact_by_sign_pk(&card.sign_pk)?;
         let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
+        match known.map(|c| c.request_state) {
+            // A fresh card: introduce ourselves right away, so they see us
+            // without waiting for a first message.
+            None => {
+                self.db.set_contact_request_state(id, RequestState::Outgoing)?;
+                // Nobody on their side knows us yet to open the session, so do
+                // not sit out the tiebreaker waiting for them.
+                self.tiebreaker_waits.lock().await.insert(id, now_ms() - TIEBREAKER_TIMEOUT_MS);
+            }
+            // Adding the card of someone who asked is accepting them.
+            Some(RequestState::Incoming) => {
+                self.accept_request_now(id).await?;
+            }
+            Some(_) => {}
+        }
         let _ = self.events.try_send(CoreEvent::ContactAdded { contact_id: id });
         self.send_kick.notify_one();
         Ok(id)
@@ -1640,7 +1697,13 @@ impl Core {
                     None => {
                         let name = hex_short(&sender_sign);
                         let id = self.db.add_contact(&sender_sign, &sender_dh, "", &name, None)?;
-                        let _ = self.events.try_send(CoreEvent::ContactAdded { contact_id: id });
+                        self.db.set_contact_request_state(id, RequestState::Incoming)?;
+                        let requests = self.db.list_incoming_requests()?;
+                        for &old in requests.iter().take(requests.len().saturating_sub(MAX_INCOMING_REQUESTS)) {
+                            eprintln!("[relay-client] too many open requests, dropping contact {old}");
+                            let _ = self.delete_contact(old).await;
+                        }
+                        let _ = self.events.try_send(CoreEvent::ContactRequest { contact_id: id });
                         self.db.get_contact(id)?.ok_or(CoreError::NotFound)?
                     }
                 };
@@ -1757,19 +1820,8 @@ impl Core {
         Ok((state, pt))
     }
 
-    async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
-        if let Some(typing) = payload.typing {
-            let group_id_hex = payload.group.as_ref().map(|g| hex_bytes(&g.id));
-            let sender_sign_hex = self.db.get_contact(contact_id).ok().flatten()
-                .map(|c| hex_bytes(&c.identity_sign));
-            let _ = self.events.try_send(CoreEvent::Typing {
-                contact_id: if payload.group.is_none() { Some(contact_id) } else { None },
-                group_id: group_id_hex,
-                sender_sign_pk: sender_sign_hex,
-                typing,
-            });
-            return Ok(());
-        }
+    /// The sender's relay and name, which every payload may carry.
+    fn apply_contact_hints(&self, contact_id: i64, payload: &WirePayload) {
         if let Some(relay) = payload.relay_address.as_deref() {
             let trimmed = relay.trim();
             if !trimmed.is_empty() && gipny_libcore::card::is_valid_i2p_address(trimmed) {
@@ -1787,6 +1839,55 @@ impl Core {
                 self.apply_peer_name(contact_id, trimmed);
             }
         }
+    }
+
+    /// Until a request is accepted, keep plain messages without showing or
+    /// acknowledging them, and ignore everything else.
+    async fn persist_from_requester(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        self.apply_contact_hints(contact_id, &payload);
+        let plain = payload.group.is_none() && payload.typing.is_none() && payload.edit_of.is_none()
+            && payload.pin.is_none() && payload.ack_for.is_none() && payload.callback_data.is_none()
+            && payload.console.is_none() && payload.origin_msg_id > 0
+            && (!payload.body.is_empty() || !payload.attachments.is_empty());
+        if !plain || self.db.find_message_by_origin(contact_id, payload.origin_msg_id as i64)?.is_some() {
+            return Ok(());
+        }
+        let expires_at = payload.ttl_ms.map(|t| payload.sent_at + t);
+        let mut atts = Vec::with_capacity(payload.attachments.len());
+        for a in &payload.attachments {
+            let (key, path, size) = store_attachment_raw(&self.data_dir, &a.data)?;
+            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path });
+        }
+        self.db.insert_message_with_origin(
+            contact_id, Direction::In, &payload.body, payload.sent_at, expires_at, &atts,
+            Some(payload.origin_msg_id as i64),
+        )?;
+        Ok(())
+    }
+
+    async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        match self.db.get_contact(contact_id)?.map(|c| c.request_state) {
+            Some(RequestState::Incoming) => return self.persist_from_requester(contact_id, payload).await,
+            // Anything at all from them means our introduction arrived.
+            Some(RequestState::Outgoing) => {
+                self.db.set_contact_request_state(contact_id, RequestState::None)?;
+                let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
+            }
+            _ => {}
+        }
+        if let Some(typing) = payload.typing {
+            let group_id_hex = payload.group.as_ref().map(|g| hex_bytes(&g.id));
+            let sender_sign_hex = self.db.get_contact(contact_id).ok().flatten()
+                .map(|c| hex_bytes(&c.identity_sign));
+            let _ = self.events.try_send(CoreEvent::Typing {
+                contact_id: if payload.group.is_none() { Some(contact_id) } else { None },
+                group_id: group_id_hex,
+                sender_sign_pk: sender_sign_hex,
+                typing,
+            });
+            return Ok(());
+        }
+        self.apply_contact_hints(contact_id, &payload);
         if payload.buttons.is_some() || payload.callback_data.is_some() {
             if self.db.set_contact_is_bot(contact_id, true).unwrap_or(false) {
                 let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
@@ -2106,11 +2207,15 @@ impl Core {
         let members_by_group: HashMap<Vec<u8>, Vec<GroupMember>> = self.db.list_all_group_members()?;
         for contact in contacts {
             if contact.trust == TrustLevel::Blocked { continue; }
+            // Nothing goes to someone we have not accepted, not even an ack.
+            if contact.request_state == RequestState::Incoming { continue; }
             let pending = self.db.list_unsent_outgoing(contact.id, 50)?;
             let unacked = self.db.list_unacked_outgoing(
                 contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
             )?;
-            let needs_session = self.db.resync_recent(contact.id, 120_000).unwrap_or(false)
+            let introducing = contact.request_state == RequestState::Outgoing
+                && self.db.get_session(contact.id)?.is_none();
+            let needs_session = (introducing || self.db.resync_recent(contact.id, 120_000).unwrap_or(false))
                 && !self.sessions.lock().await.contains_key(&contact.id);
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
                 && self.sessions.lock().await.contains_key(&contact.id);

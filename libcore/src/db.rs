@@ -59,6 +59,23 @@ impl PreKeyKind {
     fn from_i64(v: i64) -> Self { match v { 1 => Self::Signed, 2 => Self::OneTime, _ => Self::Identity } }
 }
 
+/// Where a contact stands in being introduced. Separate from [`TrustLevel`]:
+/// a request is about whether we talk at all, trust about who they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestState {
+    /// An ordinary contact.
+    None,
+    /// Someone we do not know introduced themselves. Their messages are kept
+    /// but neither shown nor acknowledged until we accept.
+    Incoming,
+    /// We added their card and are waiting to hear back.
+    Outgoing,
+}
+impl RequestState {
+    pub fn to_i64(self) -> i64 { match self { Self::None => 0, Self::Incoming => 1, Self::Outgoing => 2 } }
+    pub fn from_i64(v: i64) -> Self { match v { 1 => Self::Incoming, 2 => Self::Outgoing, _ => Self::None } }
+}
+
 #[derive(Clone, Debug)]
 pub struct Contact {
     pub id: i64,
@@ -78,6 +95,7 @@ pub struct Contact {
     /// This contact has put itself in agent mode with us as master: its console
     /// is open to us until it sends a revoke.
     pub agent_granted: bool,
+    pub request_state: RequestState,
 }
 
 #[derive(Clone, Debug)]
@@ -218,7 +236,7 @@ CREATE TABLE settings (
 );
 "#;
 
-macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0) FROM contacts" }; }
+macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0), COALESCE(request_state, 0) FROM contacts" }; }
 macro_rules! select_group { () => { "SELECT id, name, created_at, pinned_at, last_message_at FROM groups" }; }
 macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to" }; }
 macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to" }; }
@@ -474,6 +492,7 @@ impl Db {
         // run infrastructure for the whole network.
         Self::ensure_column(conn, "contacts", "relay_address", "TEXT")?;
         Self::ensure_column(conn, "contacts", "agent_granted", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_column(conn, "contacts", "request_state", "INTEGER NOT NULL DEFAULT 0")?;
         let added_group_lma = Self::ensure_column(conn, "groups", "last_message_at", "INTEGER")?;
         Self::ensure_column(conn, "groups", "pinned_at", "INTEGER")?;
         if added_contact_lma {
@@ -629,6 +648,28 @@ impl Db {
         self.with_conn(|c| { c.execute("UPDATE contacts SET last_seen = ?1 WHERE id = ?2", params![now_ms(), id])?; Ok(()) })
     }
 
+    pub fn set_contact_request_state(&self, id: i64, state: RequestState) -> Result<()> {
+        self.with_conn(|c| {
+            c.execute("UPDATE contacts SET request_state = ?2 WHERE id = ?1", params![id, state.to_i64()])?;
+            Ok(())
+        })
+    }
+
+    /// Incoming requests, oldest first.
+    pub fn list_incoming_requests(&self) -> Result<Vec<i64>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT id FROM contacts WHERE request_state = 1 ORDER BY created_at ASC, id ASC")?
+            .query_map([], |r| r.get(0))?.collect_rows())
+    }
+
+    /// Origins of the messages a contact sent us, for acknowledging them late.
+    pub fn incoming_origins(&self, contact_id: i64) -> Result<Vec<i64>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT origin_msg_id FROM messages
+             WHERE contact_id = ?1 AND direction = 0 AND origin_msg_id IS NOT NULL ORDER BY id ASC")?
+            .query_map(params![contact_id], |r| r.get(0))?.collect_rows())
+    }
+
     pub fn delete_contact(&self, id: i64) -> Result<()> {
         self.with_conn(|c| { c.execute("DELETE FROM contacts WHERE id = ?1", params![id])?; Ok(()) })
     }
@@ -648,6 +689,7 @@ impl Db {
             last_message_at: r.get(10)?,
             relay_address: r.get(11)?,
             agent_granted: r.get::<_, i64>(12)? != 0,
+            request_state: RequestState::from_i64(r.get(13)?),
         })
     }
 
@@ -1603,5 +1645,35 @@ mod retry_tests {
             db.pending_outbound_record_attempt(recent, contact).unwrap();
         }
         assert_eq!(db.pending_outbound_for_recipient(contact, later, 5_000, 300_000, 50).unwrap(), vec![recent]);
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn requests_round_trip_and_list_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("t.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "a", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "b", None).unwrap();
+        let c = db.add_contact(&[5; 32], &[6; 32], "", "c", None).unwrap();
+        assert_eq!(db.get_contact(a).unwrap().unwrap().request_state, RequestState::None);
+
+        db.set_contact_request_state(b, RequestState::Incoming).unwrap();
+        db.set_contact_request_state(a, RequestState::Incoming).unwrap();
+        db.set_contact_request_state(c, RequestState::Outgoing).unwrap();
+        assert_eq!(db.list_incoming_requests().unwrap(), vec![a, b]);
+        assert_eq!(db.get_contact(c).unwrap().unwrap().request_state, RequestState::Outgoing);
+
+        let now = now_ms();
+        db.insert_message_with_origin(a, Direction::In, "hi", now, None, &[], Some(7)).unwrap();
+        db.insert_message_with_origin(a, Direction::In, "again", now, None, &[], Some(9)).unwrap();
+        db.insert_message(a, Direction::Out, "mine", now, None, &[]).unwrap();
+        assert_eq!(db.incoming_origins(a).unwrap(), vec![7, 9]);
+
+        db.set_contact_request_state(a, RequestState::None).unwrap();
+        assert_eq!(db.list_incoming_requests().unwrap(), vec![b]);
     }
 }

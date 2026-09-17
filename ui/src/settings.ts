@@ -247,7 +247,7 @@ export class SettingsModal {
           const err = h('div', { class: 'err' });
           const toggle = h('button', { class: 'btn btn-block' }) as HTMLButtonElement;
 
-          const candidates = () => store.contacts.get().filter((c) => c.trust !== 2);
+          const candidates = () => store.contacts.get().filter((c) => c.trust !== 2 && c.request !== 'incoming');
 
           const render = (): void => {
             const master = store.agentMode.get();
