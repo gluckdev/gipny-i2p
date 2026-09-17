@@ -29,11 +29,19 @@ The afternoon's agent work was done by another tool from the plan in
 docs/plans/2026-09-16-agent-mode.md; docs/plans/2026-09-16-inspection.md is
 the audit of it and the source of what follows.
 
-- Agent mode in the app and the headless `gipny-agent` exist and compile:
-  `WireConsole` on the wire, the runner in `libcore/src/agent.rs`, one
-  sequential worker in `Core`, a chat/console switch in the UI, tests for the
-  wire shape, the card codec and the runner. Not run over live i2p until the
-  e2e-i2pd dispatch on 4141448 — check that run before trusting delivery.
+- Agent mode in the app and the headless `gipny-agent` exist and are proven
+  over live i2p: e2e-i2pd run 35182927011, job "e2e (agent binary)". The
+  harness is the master, the real binary is a separate process started with
+  the master's v2 card; GRANT creates the contact on the master by itself,
+  commands run one at a time (start/end pairs never interleave), an uploaded
+  script is on disk when its command runs, OFF is answered with REVOKE and
+  exit 0. Command RTT over the relay was 4–5 s on the first run.
+- **The desktop app could not start its router at all in 0.4.0.** 5e9e337
+  passed `--meshnets.yggdrasil=false`; i2pd declares that option as a boost
+  bool_switch and refuses a value, exiting before SAM opens. Nothing in CI
+  spawned the router through libcore — the e2e jobs attach to one their own
+  script starts — until the agent tarball smoke test in release.yml did. That
+  smoke step is now the only CI check of `RouterHandle::spawn`; keep it.
 - Shipped broken in 0.4.0, fixed on main for 0.4.1: the agent tarball had no
   i2pd (the agent looks for it next to its own executable) — now bundled with
   a systemd unit; the "start built-in relay" button wrote a per-launch
@@ -42,13 +50,16 @@ the audit of it and the source of what follows.
   sender's relay inside the ratchet envelope and the receiver updates the
   contact. README's delivery section says so.
 - Still open from the agent plan: installers (install-agent.sh/.ps1, a
-  launchd plist), an e2e job that drives the real binary, macOS and Windows
-  agent tarballs.
+  launchd plist), macOS and Windows agent tarballs.
 - Behaviour to keep in mind: a COMMAND from any contact is stored pending;
   the moment that contact is made master, its backlog runs.
-- Parked on branch feat/attachment-privacy: an attachment metadata sanitizer
-  and a voice scrambler. Both are wanted; both are to be redone per the
-  inspection's section B, not merged as they are.
+- Branch feat/attachment-privacy: the attachment metadata sanitizer, redone
+  per the inspection's section B1 (JPEG/PNG/WebP/PDF by content, fail closed
+  on what cannot be cleaned, never on console uploads), with its tests. The
+  voice messages (B2) are not started: the first step is a microphone spike
+  per webview, and the parked first attempt is in 86c757a.
+- Branch deps/rustcrypto-wave (PR #65, issue #31): the crypto/serde stack on
+  current majors, with compatibility fixtures generated on the old stack.
 
 WHAT CHANGED SINCE THE LAST BRIEF
 
