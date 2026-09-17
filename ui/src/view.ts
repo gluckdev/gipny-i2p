@@ -34,9 +34,11 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 export function appendAll(parent: Node, children: Child[]): void {
   for (const c of children) {
     if (c == null || c === false) continue;
-    if (Array.isArray(c)) appendAll(parent, c);
+    // Text first, and only ever as a text node: strings here are often what a
+    // person typed (names, folders) and must never be parsed as markup.
+    if (typeof c === 'string' || typeof c === 'number') parent.appendChild(document.createTextNode(String(c)));
+    else if (Array.isArray(c)) appendAll(parent, c);
     else if (c instanceof Node) parent.appendChild(c);
-    else parent.appendChild(document.createTextNode(String(c)));
   }
 }
 
