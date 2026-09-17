@@ -13,6 +13,13 @@ pub enum ClientToRelay {
     Send { to: [u8; 32], blob: Vec<u8> },
     Ack { id: u64 },
     Ping,
+    /// Signature over [`auth_v2_message`]; the only login that may collect
+    /// or publish. See libcore/src/relay.rs.
+    AuthV2 {
+        sign_pk: [u8; 32],
+        #[serde(with = "BigArray")]
+        signature: [u8; 64],
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -30,6 +37,38 @@ pub enum RelayToClient {
 pub const HS_PORT: u16 = 443;
 pub const HS_NICKNAME: &str = "gipny-relay";
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
+
+pub const ERR_NEEDS_AUTH_V2: &str = "log in with AuthV2 to collect or publish";
+
+/// Byte-for-byte what libcore's `auth_v2_message` builds.
+pub fn auth_v2_message(destination_hash: &[u8; 32], challenge: &[u8; 32]) -> Vec<u8> {
+    [&b"gipny-relay-auth-v2"[..], destination_hash, challenge].concat()
+}
+
+/// SHA-256 of our own destination's binary form, from its I2P base64.
+pub fn destination_hash(dest_b64: &str) -> Option<[u8; 32]> {
+    let body = dest_b64.trim().trim_end_matches('=');
+    let mut raw = Vec::with_capacity(body.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in body.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' => 62,
+            b'~' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            raw.push((acc >> bits) as u8);
+        }
+    }
+    use sha2::Digest;
+    Some(sha2::Sha256::digest(&raw).into())
+}
 
 /// Wire-format compatibility tests.
 ///
@@ -165,6 +204,26 @@ mod wire_compat {
         assert!(encoded[36..100].iter().all(|&b| b == 0xBB));
     }
 
+    #[test]
+    fn auth_v2_golden() {
+        // ClientToRelay::AuthV2 is variant index 6, laid out like Auth
+        let msg = ClientToRelay::AuthV2 { sign_pk: [0xAA; 32], signature: [0xBB; 64] };
+        let encoded = enc(&msg);
+        assert_eq!(encoded.len(), 4 + 32 + 64);
+        assert_eq!(&encoded[..4], &[0x06, 0x00, 0x00, 0x00]);
+        assert!(encoded[4..36].iter().all(|&b| b == 0xAA));
+        assert!(encoded[36..100].iter().all(|&b| b == 0xBB));
+    }
+
+    #[test]
+    fn destination_hash_matches_libcore() {
+        // Same vector as libcore/src/relay.rs `destination` tests.
+        let dest = "CzBVep~E6Q4zWH2ix-wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW-yBFao-02f4jSG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn-kye4TOF2Cp8zxFjtgharP9Bk-Y4it0vccQWaLsNX6H0RpjrPY~SJHbJG22wAlSm-Uud4DKE1yl7zhBitQdZq~5AkuU3idwucMMVZ7oMXqDzRZfqPI7RI3XIGmy~AVOl-Eqc7zGD1ih6zR9htAZYqv1PkeQ2iNstf8IUZrkLXa~yRJbpO43QInTHGWu-AFKk90mb7jCC1Sd5zB5gswVXqfxOkOM1h9osfsETZbgKXK7xQ5XoOozfIXPGGGq9D1Gj9kia7T-B1CZ4yx1vsgRWqPtNn-I0htkrfcASZLcJW63wQpTnOYveIHLFF2m8DlCi9UeZ7D6A0yV3yhxusQNVp~pMnuEzhdgqfM8RY7YIWqz~QZPmOIrdL3HEFmi7DV-h9EaQ==";
+        let hex: String = destination_hash(dest).unwrap().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "7ae6d2d802b8d0d3b5e36a5996f22ec12d4f0c4179c0d00ab99d857e552581bc");
+        assert!(auth_v2_message(&[1; 32], &[2; 32]).starts_with(b"gipny-relay-auth-v2"));
+    }
+
     // ── Send (to + Vec<u8> blob) ─────────────────────────────────────────────
 
     #[test]
@@ -220,6 +279,7 @@ mod wire_compat {
             ClientToRelay::Send { to: [4u8; 32], blob: vec![5, 6] },
             ClientToRelay::Ack { id: 42 },
             ClientToRelay::Ping,
+            ClientToRelay::AuthV2 { sign_pk: [3u8; 32], signature: [4u8; 64] },
         ];
         for msg in msgs {
             let encoded = enc(&msg);

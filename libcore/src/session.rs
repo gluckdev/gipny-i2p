@@ -709,7 +709,7 @@ impl SessionManager {
         Ok(msg_id)
     }
 
-    pub async fn send_callback(&self, contact_id: i64, data: String) -> Result<()> {
+    pub async fn send_callback(self: &Arc<Self>, contact_id: i64, data: String) -> Result<()> {
         let mut payload = WirePayload {
             origin_msg_id: 0,
             body: String::new(),
@@ -729,17 +729,11 @@ impl SessionManager {
             console: None,
             relay_address: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(SessionError::State)?
-        };
-        let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
-        self.ensure_session_for(&contact, &out).await?;
-        self.send_payload_via_relay(&contact, &mut payload, &out).await
+        self.send_to_contact(contact_id, &mut payload).await
     }
 
     pub async fn send_edit(
-        &self,
+        self: &Arc<Self>,
         contact_id: i64,
         edit_target_origin: u64,
         new_body: String,
@@ -764,13 +758,7 @@ impl SessionManager {
             console: None,
             relay_address: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(SessionError::State)?
-        };
-        let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
-        self.ensure_session_for(&contact, &out).await?;
-        self.send_payload_via_relay(&contact, &mut payload, &out).await
+        self.send_to_contact(contact_id, &mut payload).await
     }
 
     pub async fn send_to_group(
@@ -915,13 +903,7 @@ impl SessionManager {
             console: None,
             relay_address: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            g.clone().ok_or(SessionError::State)?
-        };
-        let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
-        self.ensure_session_for(&contact, &out).await?;
-        self.send_payload_via_relay(&contact, &mut payload, &out).await
+        self.send_to_contact(contact_id, &mut payload).await
     }
 
     async fn ensure_prekeys(&self) -> Result<()> {
@@ -980,7 +962,7 @@ impl SessionManager {
                             }
                         }
                         this.send_kick.notify_one();
-                        this.clone().run_recv_loop(client).await;
+                        this.clone().run_recv_loop(client, Some(onion.clone())).await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.send(SessionEvent::Disconnected).await;
                     }
@@ -1054,7 +1036,7 @@ impl SessionManager {
                 this.peer_relays.lock().await
                     .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
                 this.send_kick.notify_one();
-                this.clone().run_recv_loop(client).await;
+                this.clone().run_recv_loop(client, None).await;
                 this.peer_relays.lock().await.remove(&key);
             });
             self.tasks.lock().unwrap().push(handle);
@@ -1062,7 +1044,9 @@ impl SessionManager {
         })
     }
 
-    async fn run_recv_loop(self: Arc<Self>, client: RelayClient) {
+    /// `collecting_from` is set on the connection to our own relay: once the
+    /// relay we collect from changes, this one is no longer where mail arrives.
+    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, collecting_from: Option<String>) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
         let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -1073,6 +1057,10 @@ impl SessionManager {
         loop {
             tokio::select! {
                 _ = ping.tick() => {
+                    if collecting_from.as_deref().is_some_and(|o| o != self.relay_onion()) {
+                        eprintln!("[session] our relay changed, reconnecting to the new one");
+                        break;
+                    }
                     if last_activity.elapsed() > dead_threshold {
                         eprintln!("[session] no relay activity for {:?}, forcing reconnect", last_activity.elapsed());
                         break;
@@ -1516,10 +1504,9 @@ impl SessionManager {
             console: None,
             relay_address: None,
         };
-        let out = {
-            let g = self.relay_out.read().await;
-            match g.clone() { Some(x) => x, None => return Ok(()) }
-        };
+        // The contact's relay, not ours: an ack left on our own relay is never
+        // collected by anyone.
+        let Some(out) = self.relay_for(contact).await else { return Ok(()) };
         if self.ensure_session_for(contact, &out).await.is_err() {
             return Ok(());
         }
@@ -1639,6 +1626,12 @@ impl SessionManager {
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
         let mut empty = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
         empty.sender_name = self.outgoing_sender_name();
+        // A contact created from this init would otherwise have no relay to
+        // answer to until a later message brings one.
+        let relay = self.relay_onion();
+        if !relay.is_empty() {
+            empty.relay_address = Some(relay);
+        }
         let pt = pad_payload(&encode_payload(&empty)?);
         let (state, init) = crypto::x3dh_initiate(&self.identity, &bundle, &pt, &ad)?;
         self.db.put_session(contact.id, &state.to_bytes()?)?;
@@ -1660,6 +1653,14 @@ impl SessionManager {
     ) -> Result<()> {
         if payload.sender_name.is_none() {
             payload.sender_name = self.outgoing_sender_name();
+        }
+        // Every payload tells the contact where we collect, except typing
+        // notices: the most frequent payload, and ~520 bytes of address each.
+        if payload.relay_address.is_none() && payload.typing.is_none() {
+            let r = self.relay_onion();
+            if !r.is_empty() {
+                payload.relay_address = Some(r);
+            }
         }
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
         let raw = encode_payload(payload)?;
@@ -1718,10 +1719,6 @@ impl SessionManager {
         p.buttons = buttons;
         p.notify_sound = sound;
         p.console = console;
-        let r = self.relay_onion();
-        if !r.is_empty() {
-            p.relay_address = Some(r);
-        }
         Ok(p)
     }
 

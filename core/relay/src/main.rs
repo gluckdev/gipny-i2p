@@ -37,6 +37,8 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[relay] connecting to SAMv3 bridge on 127.0.0.1:{sam_port}...");
     let (dest_pub, privkey) = load_or_create_identity(&data_dir, sam_port).await?;
 
+    let destination_hash = destination_hash(&dest_pub)
+        .ok_or_else(|| anyhow::anyhow!("dest.pub is not an i2p destination"))?;
     let mut session = Some(open_session(sam_port, &privkey).await?);
     eprintln!("========================================================");
     eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
@@ -95,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
         let storage = storage.clone();
         let connections = connections.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, storage, connections).await {
+            if let Err(e) = handle_client(stream, storage, connections, destination_hash).await {
                 eprintln!("[relay] client disconnected: {}", e);
             }
         });
@@ -148,10 +150,13 @@ async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> anyhow::Resu
     Ok((dest, key))
 }
 
+/// Plain `Auth` may deposit and fetch bundles only: its signature covers no
+/// relay in particular, so another relay could have passed it on.
 async fn handle_client<S>(
     mut stream: S,
     storage: Arc<Storage>,
     connections: Connections,
+    destination_hash: [u8; 32],
 ) -> anyhow::Result<()>
 where S: AsyncRead + AsyncWrite + Unpin + Send
 {
@@ -160,24 +165,30 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     send_frame(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
     let auth: ClientToRelay = recv_frame(&mut stream).await?;
-    let (sign_pk, signature) = match auth {
-        ClientToRelay::Auth { sign_pk, signature } => (sign_pk, signature),
+    let (sign_pk, signature, signed, owner) = match auth {
+        ClientToRelay::AuthV2 { sign_pk, signature } => {
+            (sign_pk, signature, auth_v2_message(&destination_hash, &challenge), true)
+        }
+        ClientToRelay::Auth { sign_pk, signature } => (sign_pk, signature, challenge.to_vec(), false),
         _ => anyhow::bail!("expected Auth first"),
     };
 
     let vk = VerifyingKey::from_bytes(&sign_pk).map_err(|e| anyhow::anyhow!("bad pk: {}", e))?;
     let sig = Signature::from_bytes(&signature);
-    if vk.verify(&challenge, &sig).is_err() {
+    if vk.verify(&signed, &sig).is_err() {
         send_frame(&mut stream, &RelayToClient::AuthFail).await?;
         anyhow::bail!("bad signature");
     }
     send_frame(&mut stream, &RelayToClient::AuthOk).await?;
-    eprintln!("[relay] auth ok {}", hex_short(&sign_pk));
+    eprintln!("[relay] auth ok {} ({})", hex_short(&sign_pk), if owner { "v2" } else { "v1, deposit only" });
 
     let (push_tx, mut push_rx) = mpsc::channel::<RelayToClient>(512);
+    let cursor = Arc::new(tokio::sync::Mutex::new(0i64));
+    if !owner {
+        return client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &storage, &connections, cursor).await;
+    }
     connections.write().await.insert(sign_pk, push_tx.clone());
 
-    let cursor = Arc::new(tokio::sync::Mutex::new(0i64));
     let storage_init = storage.clone();
     let push_tx_init = push_tx.clone();
     let cursor_init = cursor.clone();
@@ -223,7 +234,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
         }
     });
 
-    let result = client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, &storage, &connections, cursor.clone()).await;
+    let result = client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &storage, &connections, cursor.clone()).await;
     refresh_handle.abort();
     // Only our own entry. A client that reconnects registers a new sender under
     // the same key; when the old connection finally errors out, removing by key
@@ -243,6 +254,7 @@ async fn client_loop<S>(
     push_rx: &mut mpsc::Receiver<RelayToClient>,
     push_tx: &mpsc::Sender<RelayToClient>,
     sign_pk: [u8; 32],
+    owner: bool,
     storage: &Arc<Storage>,
     connections: &Connections,
     cursor: Arc<tokio::sync::Mutex<i64>>,
@@ -254,6 +266,9 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
             frame = recv_frame::<_, ClientToRelay>(stream) => {
                 let frame = frame?;
                 match frame {
+                    ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
+                        send_frame(stream, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
+                    }
                     ClientToRelay::Publish { bundle } => {
                         storage.store_bundle(&sign_pk, &bundle)?;
                     }
@@ -291,7 +306,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     ClientToRelay::Ping => {
                         send_frame(stream, &RelayToClient::Pong).await?;
                     }
-                    ClientToRelay::Auth { .. } => {}
+                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } => {}
                 }
             }
             push = push_rx.recv() => {

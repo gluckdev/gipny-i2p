@@ -131,12 +131,12 @@ owner before writing anything:
   immediately — safe because this process keeps executing what it already
   loaded, and only the *next* exec of that path sees the new bytes. Windows
   cannot overwrite a running exe, so it stages the installer and
-  `apply_staged_windows_installer` runs it — silently, then relaunches — at
-  the very start of the *next* launch, before anything is shown. That
-  Windows relaunch dance (`cmd /C timeout ... & start ...`, both detached) is
-  the one piece of this whole change that is **not verified beyond a compile
-  check** — NSIS's silent mode gives no completion signal back, so the
-  relaunch is a fixed 20 s wait, not a poll. Needs a real Windows CI build.
+  `apply_staged_windows_installer` runs it as `installer.exe /S /UPDATE /R
+  /NCRC` and exits, at the very start of the *next* launch (`boot()` in
+  `core/src/lib.rs`, before the vault is unlocked). Tauri's NSIS template
+  honours `/R` in silent mode and starts the app again itself; `/UPDATE` skips
+  re-creating shortcuts. This is the one piece of the change that is **not
+  verified beyond a compile check** — it needs a real Windows machine.
 - Auto-install is on by default (`Core::auto_update_enabled`, Settings →
   "обновляться автоматически", same default-on convention as
   `attachment_privacy`). Off, the old manual modal (`ui/src/app.ts`,
@@ -155,6 +155,36 @@ owner before writing anything:
   reinstall the same version every `UPDATE_CHECK_INTERVAL_SECS` forever,
   because `env!("CARGO_PKG_VERSION")` cannot change until the process
   actually restarts.
+
+DELIVERY HOLES, BEFORE THE RELAY NETWORK (2026-09-17, phase 1 of 5)
+
+The owner wants closing a client never to lose mail, and chose a network of
+relays that store sealed mail for each other, with addresses that stay
+ephemeral (plan and decisions: docs/relay-independence.md once phase 3 lands;
+until then the phase list lives in the PR descriptions). Phase 1 fixes what
+lost mail with no new protocol at all:
+
+- An undelivered message used to be retried eight times over about fifteen
+  minutes and then abandoned. `list_unacked_outgoing` and
+  `pending_outbound_for_recipient` now retry until the message is
+  `RETRY_TTL_MS` (7 days) old, with the same capped backoff.
+- The X3DH init payload now carries the sender's relay, in core and in
+  `session.rs`. A contact created from an init had no relay to answer to.
+- `session.rs` caught up with core: every payload is stamped with our relay
+  (was only messages built from the DB), the connection to our own relay
+  drops when that relay changes (was: after the 75 s dead threshold), and
+  callbacks, edits, pins and delivery acks go to the contact's relay instead
+  of our own, where nobody would ever collect them.
+- Relay login: plain `Auth` signed the bare challenge, so a relay a client
+  connected to could pass on another relay's challenge and log in there as
+  that client. `ClientToRelay::AuthV2` signs `"gipny-relay-auth-v2" ||
+  SHA-256(relay destination) || challenge`; the hash is computed from either
+  spelling of the address (base64 or `.b32.i2p`). Relays grant collecting,
+  acking and publishing only to `AuthV2`; plain `Auth` may still deposit and
+  fetch bundles, so 0.4.2 clients can keep writing to new relays. Clients try
+  `AuthV2` and fall back to `Auth` only when the relay hangs up on it, which
+  is what a relay from before it does; a relay faking that gains nothing but
+  deposit rights. **Remove plain `Auth` once 0.4.2 is no longer in use.**
 
 WHAT CHANGED SINCE THE LAST BRIEF
 
