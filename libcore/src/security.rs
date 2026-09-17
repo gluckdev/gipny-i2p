@@ -270,8 +270,8 @@ impl Vault {
     }
 }
 
-fn random32() -> [u8; 32] { let mut s = [0u8; 32]; fill_random(&mut s); s }
-fn random24() -> [u8; 24] { let mut s = [0u8; 24]; fill_random(&mut s); s }
+fn random32() -> [u8; 32] { crate::crypto::random_array() }
+fn random24() -> [u8; 24] { crate::crypto::random_array() }
 
 fn derive_kek(pass: &str, salt: &[u8; 32], p: &ArgonParams, device: &[u8; 32]) -> Result<[u8; 32]> {
     let params = Params::new(p.m, p.t, p.p, Some(32)).map_err(|_| SecurityError::Crypto)?;

@@ -19,6 +19,17 @@ pub fn fill_random(dst: &mut [u8]) {
     rand::rngs::SysRng.try_fill_bytes(dst).expect("system RNG unavailable");
 }
 
+/// `N` bytes from the operating system's RNG, as a value.
+///
+/// For salts, nonces and the like. There is no zeroed placeholder to forget to
+/// fill, and nothing constant for a reader — or a static analyser — to follow
+/// into a cryptographic parameter. Secrets that must not be copied around are
+/// filled in place with [`fill_random`] instead.
+pub fn random_array<const N: usize>() -> [u8; N] {
+    use rand::RngExt;
+    rand::rand_core::UnwrapErr(rand::rngs::SysRng).random()
+}
+
 
 pub type Result<T> = std::result::Result<T, CryptoError>;
 
