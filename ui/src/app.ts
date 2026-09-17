@@ -1,4 +1,5 @@
 import type { UpdateInfo } from './api';
+import { emptyChatArt, icon } from './icons';
 import type { Store, UpdateProgress, ChatTarget } from './state';
 import { View, h, busy, humanSize } from './view';
 import { ProfileSelect } from './profile';
@@ -56,6 +57,35 @@ export class App extends View {
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
     backdrop.appendChild(build(close));
     document.body.appendChild(backdrop);
+  }
+
+  /** Ask for one line of text; resolves null when cancelled. */
+  prompt(title: string, label: string, initial = '', action = 'Сохранить'): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.openModal((close) => {
+        const input = h('input', { class: 'input', value: initial, maxlength: '80' });
+        const done = (v: string | null) => { close(); resolve(v); };
+        const submit = () => { const v = input.value.trim(); if (v) done(v); };
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') submit();
+          if (e.key === 'Escape') done(null);
+        });
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+        return h('div', { class: 'modal modal-sm' },
+          h('div', { class: 'modal-header' },
+            h('div', { class: 'modal-title' }, title),
+            h('button', { class: 'icon-btn', title: 'Закрыть', onClick: () => done(null) }, icon('close')),
+          ),
+          h('div', { class: 'modal-body' },
+            h('div', { class: 'field' }, h('label', null, label), input),
+          ),
+          h('div', { class: 'modal-footer' },
+            h('button', { class: 'btn btn-ghost', onClick: () => done(null) }, 'Отмена'),
+            h('button', { class: 'btn', onClick: submit }, action),
+          ),
+        );
+      });
+    });
   }
 
   isModalActive(): boolean {
@@ -168,7 +198,7 @@ export class App extends View {
 
     const modal = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── NEW VERSION AVAILABLE ──'),
+        h('div', { class: 'modal-title' }, 'Доступна новая версия'),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'card-label' }, 'release notes'),
@@ -202,7 +232,11 @@ class MainView extends View {
     super();
     const sidebar = new Sidebar(store, app);
     const chatSlot = h('div', { class: 'stack grow', style: { minHeight: '0' } });
-    const empty = h('div', { class: 'empty' }, '── select chat ──');
+    const empty = h('div', { class: 'empty empty-chat' },
+      emptyChatArt(),
+      h('div', { class: 'empty-title' }, 'Выберите чат'),
+      h('div', { class: 'empty-sub' }, 'Сообщения шифруются на вашем устройстве и идут через сеть i2p.'),
+    );
     chatSlot.appendChild(empty);
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
 

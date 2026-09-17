@@ -22,7 +22,7 @@ export class ContactModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── contact ──'),
+        h('div', { class: 'modal-title' }, 'Контакт'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },
@@ -120,7 +120,7 @@ export class AddContactModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── add contact ──'),
+        h('div', { class: 'modal-title' }, 'Добавить контакт'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },

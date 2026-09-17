@@ -5,6 +5,25 @@ export interface VaultStatus { exists: boolean; unlocked: boolean; }
 
 export interface IdentityCard { sign_pk: string; dh_pk: string; }
 
+/** A folder the person made for their contacts. Kept in the vault as JSON;
+ * the backend does not look inside. */
+export interface ContactFolder {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  contacts: number[];
+}
+
+/** The relay network as this device's node sees it. */
+export interface DhtStatus {
+  peers: number;
+  items: number;
+  bytes: number;
+  joined: boolean;
+  stores: boolean;
+  seeds: number;
+}
+
 export interface Contact {
   id: number;
   sign_pk: string;
@@ -459,6 +478,20 @@ export class Api {
   }
   static dismissUpdate(version: string): Promise<void> {
     return invoke('dismiss_update', { version });
+  }
+  static async getContactFolders(): Promise<ContactFolder[]> {
+    try {
+      const parsed: unknown = JSON.parse(await invoke<string>('get_contact_folders'));
+      return Array.isArray(parsed) ? parsed as ContactFolder[] : [];
+    } catch {
+      return [];
+    }
+  }
+  static setContactFolders(folders: ContactFolder[]): Promise<void> {
+    return invoke('set_contact_folders', { json: JSON.stringify(folders) });
+  }
+  static getDhtStatus(): Promise<DhtStatus> {
+    return invoke('get_dht_status');
   }
   static getAutoUpdate(): Promise<boolean> {
     return invoke('get_auto_update');

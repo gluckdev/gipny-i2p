@@ -89,7 +89,7 @@ export class IdentityModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── my identity ──'),
+        h('div', { class: 'modal-title' }, 'Моя карточка'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },

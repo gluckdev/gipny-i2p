@@ -65,7 +65,7 @@ export class ProfileSelect extends View {
     };
     this.app.openModal((close) => h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── import backup ──'),
+        h('div', { class: 'modal-title' }, 'Импорт резервной копии'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },

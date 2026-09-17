@@ -39,6 +39,19 @@ export function appendAll(parent: Node, children: Child[]): void {
   }
 }
 
+/** A round picture made of a name's initials, in a colour that stays the same
+ * for the same `seed` (a key, an id). */
+export function avatar(name: string, seed: string, extra = ''): HTMLElement {
+  const words = name.trim().split(/[\s._@-]+/).filter(Boolean);
+  const [a, b] = words;
+  const initials = (a && b ? a.charAt(0) + b.charAt(0) : (a ?? '?').slice(0, 2)).toUpperCase();
+  let hash = 0;
+  for (const ch of seed || name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const el = h('div', { class: 'avatar' + (extra ? ' ' + extra : '') }, initials);
+  el.style.setProperty('--avatar-hue', String(hash % 360));
+  return el;
+}
+
 export function fmtTime(ts: number): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, '0');
@@ -56,7 +69,7 @@ export function fmtFp(hex: string): string {
 }
 
 export function trustLabel(t: number): string {
-  return ['UNVERIFIED', 'VERIFIED', 'BLOCKED'][t] ?? 'UNKNOWN';
+  return ['Не проверен', 'Проверен', 'Заблокирован'][t] ?? 'Неизвестно';
 }
 
 export async function busy(btn: HTMLButtonElement, fn: () => Promise<void>): Promise<void> {
@@ -78,13 +91,13 @@ export function short(s: string, n = 22): string {
 
 export function fmtAgo(ts: number): string {
   const d = Math.max(0, Date.now() - ts);
-  if (d < 60_000) return 'just now';
+  if (d < 60_000) return 'только что';
   const m = Math.floor(d / 60_000);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m} мин назад`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return `${h} ч назад`;
   const days = Math.floor(h / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return `${days} дн назад`;
   return new Date(ts).toISOString().slice(0, 10);
 }
 

@@ -87,7 +87,7 @@ export class SettingsModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, `── settings :: ${store.currentProfile.get() ?? ''} ──`),
+        h('div', { class: 'modal-title' }, `Настройки · ${store.currentProfile.get() ?? ''}`),
         h('button', { class: 'icon-btn', onClick: closeWrapped }, 'x'),
       ),
       h('div', { class: 'modal-body' },
@@ -138,7 +138,7 @@ export class SettingsModal {
           return updateSection;
         })(),
 
-        h('div', { class: 'divider-text' }, 'relay'),
+        h('div', { class: 'divider-text' }, 'Релей'),
         (() => {
           const choices: { id: RelayMode; title: string; blurb: string }[] = [
             {
@@ -214,7 +214,30 @@ export class SettingsModal {
           return box;
         })(),
 
-        h('div', { class: 'divider-text' }, 'приватность'),
+        h('div', { class: 'divider-text' }, 'Сеть релеев'),
+        (() => {
+          const stat = (label: string) => {
+            const v = h('div', { class: 'stat-value' }, '…');
+            return { v, el: h('div', { class: 'stat' }, v, h('div', { class: 'stat-label' }, label)) };
+          };
+          const peers = stat('узлов знаем');
+          const items = stat('хранится для других');
+          const role = stat('роль устройства');
+          const note = h('div', { class: 'hint' });
+          Api.getDhtStatus().then((d) => {
+            peers.v.textContent = String(d.peers);
+            items.v.textContent = d.stores ? `${d.items} · ${humanSize(d.bytes)}` : '—';
+            role.v.textContent = d.stores ? 'хранит' : 'только клиент';
+            note.textContent = !d.joined
+              ? 'Узел подключится к сети, когда поднимется встроенный релей.'
+              : d.peers === 0 && d.seeds === 0
+                ? 'Пока ищем сеть через релеи ваших контактов.'
+                : 'Устройство участвует в сети: хранит зашифрованные записи и отвечает другим узлам.';
+          }).catch(() => { note.textContent = 'Состояние сети недоступно.'; });
+          return h('div', null, h('div', { class: 'stats' }, peers.el, items.el, role.el), note);
+        })(),
+
+        h('div', { class: 'divider-text' }, 'Приватность'),
         (() => {
           const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
           const err = h('div', { class: 'err' });
@@ -240,7 +263,7 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'agent mode'),
+        h('div', { class: 'divider-text' }, 'Режим агента'),
         (() => {
           const picker = h('select', { class: 'input' }) as HTMLSelectElement;
           const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
@@ -299,7 +322,7 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'appearance'),
+        h('div', { class: 'divider-text' }, 'Оформление'),
         (() => {
           // Applied the moment it is picked — unlike the router settings there is
           // nothing to restart, so there is no "takes effect later" to explain.
@@ -325,7 +348,7 @@ export class SettingsModal {
           return h('div', { class: 'opt-group' }, ...rows);
         })(),
 
-        h('div', { class: 'divider-text' }, 'i2p router'),
+        h('div', { class: 'divider-text' }, 'Роутер i2p'),
         (() => {
           const err = h('div', { class: 'err' });
           const note = h('div', { class: 'hint', style: { marginTop: '6px' } });
@@ -419,7 +442,7 @@ export class SettingsModal {
 
         (() => {
           apkSection.append(
-            h('div', { class: 'divider-text' }, 'mobile apk'),
+            h('div', { class: 'divider-text' }, 'Android-приложение'),
             apkInfo,
             apkButtons,
             apkProgress,
@@ -428,7 +451,7 @@ export class SettingsModal {
           return apkSection;
         })(),
 
-        h('div', { class: 'divider-text' }, 'change passphrase'),
+        h('div', { class: 'divider-text' }, 'Смена пароля'),
         h('div', { class: 'field' }, oldP),
         h('div', { class: 'field' }, newP),
         h('div', { class: 'field' }, newP2),
@@ -447,7 +470,7 @@ export class SettingsModal {
           },
         }, 'Change'),
 
-        h('div', { class: 'divider-text' }, 'duress'),
+        h('div', { class: 'divider-text' }, 'Пароль под принуждением'),
         h('div', { class: 'field' }, currP),
         h('div', { class: 'field' }, duP, h('div', { class: 'hint' }, 'leave empty to remove')),
         h('label', { class: 'chk', style: { marginBottom: '10px' } },
@@ -465,7 +488,7 @@ export class SettingsModal {
           },
         }, 'Update duress'),
 
-        h('div', { class: 'divider-text' }, 'max attempts'),
+        h('div', { class: 'divider-text' }, 'Лимит попыток'),
         h('div', { class: 'field' }, attP),
         h('div', { class: 'field' }, attN, h('div', { class: 'hint' }, '0 = unlimited')),
         attErr,
@@ -482,7 +505,7 @@ export class SettingsModal {
         }, 'Update'),
 
 
-        h('div', { class: 'divider-text' }, 'backup'),
+        h('div', { class: 'divider-text' }, 'Резервная копия'),
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           'полный экспорт профиля: identity, контакты, группы, ВСЯ переписка с вложениями, прекеи, pinned, settings — всё в один зашифрованный файл. ',
           'импорт на другом устройстве: profile-select → [ IMPORT BACKUP ]. ',
@@ -506,7 +529,7 @@ export class SettingsModal {
                 errEl.textContent = String(e);
               }
             },
-          }, 'Export backup');
+          }, 'Экспортировать копию');
           return h('div', null,
             h('div', { class: 'field' }, passI),
             errEl,
@@ -514,7 +537,7 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'debug'),
+        h('div', { class: 'divider-text' }, 'Отладка'),
         (() => {
           const out = h('pre', {
             class: 'card-block',
@@ -543,7 +566,7 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'danger zone'),
+        h('div', { class: 'divider-text' }, 'Опасная зона'),
         h('button', {
           class: 'btn btn-block btn-danger',
           onClick: async () => {

@@ -21,7 +21,7 @@ export class MediaModal {
 
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── media ──'),
+        h('div', { class: 'modal-title' }, 'Медиа и файлы'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },

@@ -133,7 +133,7 @@ export class PinnedBanner {
 
     this.el = h('div', { class: 'pinned-banner', style: { display: 'none' } },
       h('div', { class: 'pinned-header' },
-        h('span', { class: 'pinned-label' }, '── PINNED ──'),
+        h('span', { class: 'pinned-label' }, 'Закреплённые'),
         this.toggleBtn,
       ),
       this.listEl,
