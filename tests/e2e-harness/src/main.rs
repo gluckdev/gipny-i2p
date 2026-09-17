@@ -135,8 +135,8 @@ async fn start_in_process_relays(owner_a: [u8; 32], owner_b: [u8; 32]) -> Result
     let t0 = Instant::now();
     let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
         tokio::join!(
-            EphemeralRelay::start(port, MemStoreLimits::personal(owner_a)),
-            EphemeralRelay::start(port, MemStoreLimits::personal(owner_b)),
+            EphemeralRelay::start(port, MemStoreLimits::personal(owner_a), None),
+            EphemeralRelay::start(port, MemStoreLimits::personal(owner_b), None),
         )
     })
     .await
@@ -279,7 +279,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     // exactly as any contact's relay is learned.
     eprintln!("[e2e] starting the master's in-process relay on SAM port {port}...");
     let t0 = Instant::now();
-    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(port, MemStoreLimits::default()))
+    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(port, MemStoreLimits::default(), None))
         .await
         .context("timeout: in-process relay did not come up in 300s")?
         .context("in-process relay")?;

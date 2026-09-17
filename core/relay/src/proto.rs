@@ -20,6 +20,9 @@ pub enum ClientToRelay {
         #[serde(with = "BigArray")]
         signature: [u8; 64],
     },
+    /// A relay-network request (libcore/src/relay.rs). Not served here yet:
+    /// answered with `Error` so a node drops this relay from its table.
+    Dht(Vec<u8>),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -32,6 +35,7 @@ pub enum RelayToClient {
     Deposited { id: u64 },
     Pong,
     Error(String),
+    Dht(Vec<u8>),
 }
 
 pub const HS_PORT: u16 = 443;
@@ -213,6 +217,13 @@ mod wire_compat {
         assert_eq!(&encoded[..4], &[0x06, 0x00, 0x00, 0x00]);
         assert!(encoded[4..36].iter().all(|&b| b == 0xAA));
         assert!(encoded[36..100].iter().all(|&b| b == 0xBB));
+    }
+
+    #[test]
+    fn dht_golden() {
+        // Same bytes as libcore's `dht_frames_are_the_last_variants`.
+        assert_eq!(enc(&ClientToRelay::Dht(vec![9, 8])), [0x07, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 9, 8]);
+        assert_eq!(enc(&RelayToClient::Dht(vec![7])), [0x08, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7]);
     }
 
     #[test]

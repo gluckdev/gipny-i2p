@@ -240,6 +240,9 @@ async fn main() -> Result<()> {
     // external one if `--relay` names it — the escape hatch for an offline
     // mailbox. Kept alive for the life of the process; dropping it releases
     // the destination.
+    // The agent is a storing node in the relay network while its built-in
+    // relay is up (libcore/src/dht_client.rs).
+    let dht = gipny_libcore::dht_client::new_node(node.clone(), db.clone());
     let (relay_onion, _hosted_relay) = match relay_override {
         Some(r) => {
             session.set_relay_onion(&r)?;
@@ -250,12 +253,26 @@ async fn main() -> Result<()> {
             let relay = gipny_libcore::EphemeralRelay::start(
                 node.sam_port(),
                 gipny_libcore::MemStoreLimits::personal(me.sign_pk),
+                Some(gipny_libcore::dht_client::handler(&dht)),
             )
             .await
             .context("start the agent's built-in relay")?;
             let address = relay.address().to_string();
             eprintln!("[agent] built-in relay ready");
             session.set_relay_onion(&address)?;
+            tokio::spawn({
+                let (dht, db, identity, address) = (dht.clone(), db.clone(), session.identity.clone(), address.clone());
+                async move {
+                    use gipny_libcore::dht_client;
+                    dht_client::join(&dht, &db, &identity, &address).await;
+                    let mut tick = tokio::time::interval(dht_client::MAINTAIN_EVERY);
+                    tick.tick().await;
+                    loop {
+                        tick.tick().await;
+                        dht_client::maintain(&dht, &db, &identity, Some(&address)).await;
+                    }
+                }
+            });
             (address, Some(relay))
         }
     };

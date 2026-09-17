@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use gipny_libcore::dht_client;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -269,6 +270,8 @@ pub struct Core {
     /// When each peer relay first stopped answering, and who was told about it.
     relay_down_since: Arc<Mutex<HashMap<String, Instant>>>,
     unreachable_reported: Arc<Mutex<HashSet<i64>>>,
+    /// Our node in the relay network, answering through the built-in relay.
+    dht: Arc<dht_client::Node>,
 }
 
 impl Core {
@@ -309,6 +312,7 @@ impl Core {
             announce_pending: Arc::new(Mutex::new(HashSet::new())),
             relay_down_since: Arc::new(Mutex::new(HashMap::new())),
             unreachable_reported: Arc::new(Mutex::new(HashSet::new())),
+            dht: dht_client::new_node(node.clone(), db.clone()),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -317,6 +321,7 @@ impl Core {
         core.clone().spawn_purge_loop();
         core.clone().spawn_update_loop();
         core.clone().spawn_agent_worker(agent_rx);
+        core.clone().spawn_dht_loop();
         if core.relay_mode() == RelayMode::Builtin {
             core.start_hosted_relay();
         }
@@ -370,6 +375,10 @@ impl Core {
     }
 
     fn set_hosted_state(&self, state: HostedRelayState) {
+        if !matches!(state, HostedRelayState::Ready { .. }) {
+            // Without our relay nobody can reach this node; keep asking only.
+            self.dht.set_me(None);
+        }
         *self.hosted_state.write().unwrap_or_else(|p| p.into_inner()) = state;
         let _ = self.events.try_send(CoreEvent::RelayInfoChanged { info: self.relay_info() });
     }
@@ -421,6 +430,7 @@ impl Core {
                 self.node.sam_port(),
                 // This relay is our inbox and nobody else's.
                 gipny_libcore::MemStoreLimits::personal(self.identity.card().sign_pk),
+                Some(dht_client::handler(&self.dht)),
             ).await {
                 Ok(relay) => {
                     // The mode may have changed while the tunnels were building.
@@ -439,8 +449,11 @@ impl Core {
                         let mut pending = self.announce_pending.lock().await;
                         pending.extend(contacts.iter().filter(|c| c.trust != TrustLevel::Blocked).map(|c| c.id));
                     }
-                    self.set_hosted_state(HostedRelayState::Ready { address });
+                    self.set_hosted_state(HostedRelayState::Ready { address: address.clone() });
                     self.send_kick.notify_one();
+                    let (dht, db, identity) = (self.dht.clone(), self.db.clone(), self.identity.clone());
+                    let join = tokio::spawn(async move { dht_client::join(&dht, &db, &identity, &address).await });
+                    self.tasks.lock().unwrap().push(join);
                     return;
                 }
                 Err(e) => {
@@ -2516,6 +2529,29 @@ impl Core {
             }
         });
         self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// Relay-network upkeep; joining happens when the built-in relay is up.
+    fn spawn_dht_loop(self: Arc<Self>) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(dht_client::MAINTAIN_EVERY);
+            tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let address = match &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()) {
+                    HostedRelayState::Ready { address } => Some(address.clone()),
+                    _ => None,
+                };
+                dht_client::maintain(&this.dht, &this.db, &this.identity, address.as_deref()).await;
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    pub fn dht_status(&self) -> dht_client::DhtStatus {
+        dht_client::status(&self.dht)
     }
 
     async fn republish_bundle(&self) {
