@@ -1,8 +1,15 @@
 # gipny-bot
 
-Library for writing bots for gipny messenger. Bots are regular gipny accounts without UI — they connect to the relay, receive messages, and respond. Same E2E encryption as regular clients.
+Библиотека для написания ботов для мессенджера gipny. Бот — обычный аккаунт
+gipny без интерфейса: подключается к релею, получает сообщения и отвечает. То же
+сквозное шифрование, что у обычных клиентов.
 
-## Quick start
+Чем бот отличается от агента (`gipny-agent`): бот говорит **с кем угодно** и
+делает **только то, что вы написали в обработчиках**, а агент подчиняется
+**одному мастеру** и выполняет **произвольные команды оболочки**. Сравнение — в
+корневом `README.md`, раздел «Агент и бот — в чём разница».
+
+## Быстрый старт
 
 `Cargo.toml`:
 ```toml
@@ -21,8 +28,9 @@ async fn main() -> anyhow::Result<()> {
     Bot::builder()
         .data_dir("./bot-data")
         .display_name("my-bot")
+        .relay("<i2p destination релея>")
         .on_command("start", |ctx, _args| async move {
-            ctx.reply("Hello!").await?;
+            ctx.reply("Привет!").await?;
             Ok(())
         })
         .build()?
@@ -31,21 +39,29 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Run:
+Запуск:
 ```bash
 cargo run
 ```
 
-The bot spawns the bundled i2p router (`gipny-i2p-router`; resolved from
-`GIPNY_I2P_BIN`, next to the executable, or `PATH`). On first start the router
-reseeds and builds tunnels (~1-3 min), then the bot prints its identity card:
+Бот поднимает рядом с собой роутер i2p (бинарь `i2pd`: берётся из переменной
+`GIPNY_I2P_BIN`, затем рядом с исполняемым файлом, затем из `PATH`). При первом
+запуске роутер делает reseed и строит туннели — это 1–3 минуты, — после чего бот
+печатает свою карточку:
 ```
 [bot] Identity card (share with users):
   sign_pk: abc123...
   dh_pk:   def456...
 ```
 
-Users add the bot as a contact in gipny client using these keys.
+Пользователи добавляют бота в контакты по этим ключам.
+
+**Релей боту нужно указать.** Встроенного релея в процессе, как у приложения и у
+агента, в SDK нет: `relay(...)` задаёт адрес внешнего релея, с которого бот
+забирает почту. Поднять свой можно из архива `gipny-relay` со страницы релиза
+(или `cargo build --release -p gipny-relay`). Пример личного релея внутри
+процесса есть в `tests/e2e-harness` (`start_in_process_relays`) — если он вам
+нужен, повторите этот приём у себя.
 
 ## API
 
@@ -53,9 +69,10 @@ Users add the bot as a contact in gipny client using these keys.
 
 ```rust
 Bot::builder()
-    .data_dir(path)          // required: where to store keys/db/i2p router state
-    .display_name("name")    // optional: shown to users
-    .relay("base64dest...")  // optional: override default relay (i2p destination)
+    .data_dir(path)          // обязательно: где хранить ключи, базу и состояние роутера
+    .display_name("name")    // необязательно: имя, которое видят пользователи
+    .relay("base64dest...")  // адрес релея (i2p destination)
+    .vault_passphrase("…")   // необязательно: пароль для шифрования базы бота
     .on_message(|ctx, msg| async { ... })
     .on_command("name", |ctx, args| async { ... })
     .on_callback(|ctx, data| async { ... })
@@ -64,73 +81,74 @@ Bot::builder()
     .await
 ```
 
-### Handlers
+### Обработчики
 
-**`on_message(fn)`** — any non-command message.
+**`on_message(fn)`** — любое сообщение, которое не является командой.
 
 ```rust
 .on_message(|ctx, msg| async move {
-    ctx.reply(format!("echo: {}", msg.body)).await?;
+    ctx.reply(format!("эхо: {}", msg.body)).await?;
     Ok(())
 })
 ```
 
-`msg: IncomingMessage` fields:
-- `body: String`
-- `sender_sign_pk: Vec<u8>` — bot user's pubkey
-- `sent_at: i64` — unix ms
-- `attachments: Vec<WireAttachment>`
-- `message_id: i64` — local ID in bot's DB
+Поля `msg: IncomingMessage`:
+- `body: String`;
+- `sender_sign_pk: Vec<u8>` — открытый ключ пользователя;
+- `sent_at: i64` — unix-время в миллисекундах;
+- `attachments: Vec<WireAttachment>`;
+- `message_id: i64` — локальный идентификатор в базе бота.
 
-**`on_command(name, fn)`** — messages starting with `/name`. Args = text after command.
+**`on_command(name, fn)`** — сообщения, начинающиеся с `/name`. Аргументы — всё,
+что идёт после команды.
 
 ```rust
 .on_command("notify", |ctx, args| async move {
-    ctx.reply(format!("sending: {}", args)).await?;
+    ctx.reply(format!("отправляю: {}", args)).await?;
     Ok(())
 })
 ```
 
-Invoked for `/notify hello world` → `args = "hello world"`.
+Для `/notify привет мир` обработчик получит `args = "привет мир"`.
 
-**`on_callback(fn)`** — user tapped a button.
+**`on_callback(fn)`** — пользователь нажал кнопку.
 
 ```rust
 .on_callback(|ctx, data| async move {
-    ctx.reply(format!("you pressed: {}", data)).await?;
+    ctx.reply(format!("вы нажали: {}", data)).await?;
     Ok(())
 })
 ```
 
-`data` is the `callback_data` string attached to the button.
+`data` — строка `callback_data`, привязанная к кнопке.
 
-### Context
+### Контекст
 
-All handlers receive `Context`:
-
-```rust
-ctx.contact_id          // i64 - user's contact id in bot's db
-ctx.origin_msg_id       // Option<u64> - for callbacks: the msg_id of button source
-ctx.session             // Arc<SessionManager> - low-level API
-```
-
-Methods:
+Каждый обработчик получает `Context`:
 
 ```rust
-ctx.reply("text")                                                 // send text
-ctx.reply_with_buttons("text", buttons)                           // text + inline keyboard
-ctx.send_attachment("caption", "file.pdf", bytes)                 // text + 1 file
-ctx.send_attachment_with_buttons("caption", "file.pdf", bytes, buttons)  // text + 1 file + buttons
-ctx.send_attachments("caption", vec![(name, bytes), ...])         // text + N files
-ctx.send_attachments_with_buttons("caption", files, buttons)      // text + N files + buttons
-ctx.edit(message_id, "new text")                                  // edit existing message
-ctx.edit_with_buttons(message_id, "new text", buttons)            // edit + update buttons
+ctx.contact_id          // i64 — id пользователя в базе бота
+ctx.origin_msg_id       // Option<u64> — для коллбеков: id сообщения с кнопкой
+ctx.session             // Arc<SessionManager> — низкоуровневый API
 ```
 
-### Files in callbacks
+Методы:
 
-`on_callback` handler has the same `Context` as `on_message` — full send API available.
-Send multiple files from a single button press:
+```rust
+ctx.reply("текст")                                                // отправить текст
+ctx.reply_with_buttons("текст", buttons)                          // текст + инлайн-клавиатура
+ctx.send_attachment("подпись", "file.pdf", bytes)                 // текст + один файл
+ctx.send_attachment_with_buttons("подпись", "file.pdf", bytes, buttons)
+ctx.send_attachments("подпись", vec![(name, bytes), ...])         // текст + N файлов
+ctx.send_attachments_with_buttons("подпись", files, buttons)
+ctx.edit(message_id, "новый текст")                               // правка своего сообщения
+ctx.edit_with_buttons(message_id, "новый текст", buttons)         // правка вместе с кнопками
+```
+
+### Файлы в коллбеках
+
+У обработчика `on_callback` тот же `Context`, что у `on_message`, — доступен весь
+API отправки. Несколько файлов по одному нажатию:
 
 ```rust
 .on_callback(|ctx, data| async move {
@@ -150,36 +168,38 @@ Send multiple files from a single button press:
 })
 ```
 
-File size cap is 16 MiB per message (padding bucket limit). Multiple files in one message share that limit.
+Ограничение на размер — 16 МиБ на сообщение (предел корзины паддинга).
+Несколько файлов в одном сообщении делят этот предел между собой.
 
-### Inline keyboards
+### Инлайн-клавиатуры
 
-Buttons are `Vec<Vec<(text, callback_data)>>` — outer vec = rows.
+Кнопки — это `Vec<Vec<(текст, callback_data)>>`: внешний вектор — ряды.
 
 ```rust
-ctx.reply_with_buttons("Choose:", vec![
+ctx.reply_with_buttons("Выберите:", vec![
     vec![
-        ("Yes".into(), "yes".into()),
-        ("No".into(), "no".into()),
+        ("Да".into(), "yes".into()),
+        ("Нет".into(), "no".into()),
     ],
     vec![
-        ("Maybe".into(), "maybe".into()),
+        ("Может быть".into(), "maybe".into()),
     ],
 ]).await?;
 ```
 
-When user taps a button:
-1. `on_callback` fires with `data = "yes"` (etc.)
-2. `ctx.origin_msg_id` = the message_id of the message with the button (on sender side)
-3. Bot can `ctx.edit(origin, "new text")` to update the message in-place
+Когда пользователь нажимает кнопку:
+1. срабатывает `on_callback` с `data = "yes"` (и так далее);
+2. `ctx.origin_msg_id` — id сообщения с кнопкой на стороне отправителя;
+3. бот может вызвать `ctx.edit(origin, "новый текст")` и обновить сообщение на
+   месте.
 
-### Example: nested menu
+### Пример: вложенное меню
 
 ```rust
 .on_command("start", |ctx, _| async move {
-    ctx.reply_with_buttons("Menu:", vec![
-        vec![("Stats".into(), "stats".into())],
-        vec![("Settings".into(), "settings".into())],
+    ctx.reply_with_buttons("Меню:", vec![
+        vec![("Статистика".into(), "stats".into())],
+        vec![("Настройки".into(), "settings".into())],
     ]).await?;
     Ok(())
 })
@@ -187,13 +207,13 @@ When user taps a button:
     let origin = ctx.origin_msg_id.unwrap_or(0);
     match data.as_str() {
         "stats" => {
-            ctx.edit_with_buttons(origin, "Stats: 42 users",
-                vec![vec![("< Back".into(), "back".into())]]).await?;
+            ctx.edit_with_buttons(origin, "Статистика: 42 пользователя",
+                vec![vec![("< Назад".into(), "back".into())]]).await?;
         }
         "back" => {
-            ctx.edit_with_buttons(origin, "Menu:", vec![
-                vec![("Stats".into(), "stats".into())],
-                vec![("Settings".into(), "settings".into())],
+            ctx.edit_with_buttons(origin, "Меню:", vec![
+                vec![("Статистика".into(), "stats".into())],
+                vec![("Настройки".into(), "settings".into())],
             ]).await?;
         }
         _ => {}
@@ -202,16 +222,16 @@ When user taps a button:
 })
 ```
 
-## Deployment
+## Развёртывание
 
-### Local test
+### Локальная проверка
 ```bash
 cargo run
 ```
 
-### Production (systemd on VPS)
+### На сервере (systemd на VPS)
 
-Build release binary:
+Сборка релизного бинаря:
 ```bash
 cargo build --release
 scp target/release/my-bot root@vps:/usr/local/bin/
@@ -243,29 +263,38 @@ systemctl enable --now my-bot
 journalctl -u my-bot -f
 ```
 
-Bot's identity is stored in `/var/lib/my-bot/bot.db`. Back this up — losing it = new identity = users must re-add the bot.
+Личность бота лежит в `/var/lib/my-bot/bot.db`. Делайте резервную копию: потеря
+базы означает новую личность, и пользователям придётся добавлять бота заново.
 
-## Data layout
+## Что лежит в каталоге данных
 
 ```
 data-dir/
-├── bot.db           — SQLite: contacts, sessions, prekeys, messages
-├── i2p/             — i2p router state (the network address itself is
-│                      ephemeral: regenerated every session, never stored)
-└── attachments/     — encrypted attachment blobs
+├── bot.db           — SQLite: контакты, сессии, prekey-и, сообщения
+├── i2p/             — состояние роутера i2p (сам сетевой адрес эфемерный:
+│                      создаётся заново каждую сессию и не сохраняется)
+└── attachments/     — зашифрованные блобы вложений
 ```
 
-## Architecture notes
+## Как это устроено
 
-- Bot uses the same relay as regular gipny clients (default is hardcoded)
-- E2E encryption with Double Ratchet, same as regular chats — relay never sees content
-- Bot can be reached both when online and offline; messages queue on the relay and deliver when bot reconnects
-- No built-in rate limiting — if you need it, implement per-contact_id tracking in your handler
-- Handlers run in tokio tasks — spawn background work freely, but don't block a handler waiting on something that requires another message
+- Бот забирает почту с релея, адрес которого задан через `relay(...)`.
+- Сквозное шифрование Double Ratchet, как в обычных чатах: содержимое релею не
+  видно.
+- Пока бот выключен, сообщения ждут на релее и доставляются при подключении —
+  если релей внешний и работает постоянно.
+- Ограничения частоты запросов нет: если нужно, ведите учёт по `contact_id`
+  в своём обработчике.
+- Обработчики запускаются в задачах tokio: фоновую работу порождать можно
+  свободно, но не блокируйте обработчик ожиданием того, что придёт следующим
+  сообщением.
 
-## Limitations
+## Ограничения
 
-- No groups support for bots yet (bots only handle DMs)
-- No rich message types (only text + attachments + buttons)
-- Callback data size should be kept reasonable (< 1KB)
-- Edits only work on messages the bot itself sent; you can't edit user messages
+- Групп у ботов пока нет: только личные чаты.
+- Богатых типов сообщений нет: текст, вложения, кнопки.
+- Размер `callback_data` стоит держать разумным (меньше 1 КБ).
+- Правки работают только для сообщений, отправленных самим ботом; сообщения
+  пользователя править нельзя.
+- Запросов в контакты у ботов нет: бот принимает всех, кто ему написал. Если
+  нужен отбор, ведите свой список разрешённых `sender_sign_pk`.

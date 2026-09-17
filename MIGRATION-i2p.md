@@ -1,287 +1,313 @@
-# gipny: Tor → i2p migration
+# gipny: переход с Tor на i2p
 
-> **Статус на 2026‑09‑16.** Этот документ описывает переход Tor → i2p и во
-> многом историчен: роутер с тех пор сменился второй раз, с go‑i2p на **i2pd**,
-> потому что go‑i2p не достраивал клиентские туннели и не доставил ни одного
-> сообщения (`docs/i2p-transport-evaluation.md`). Разделы про архитектуру
-> транспорта, крипту и релей актуальны; всё, что описывает `i2p-router/`,
-> `gipny-i2p-router` и I2CP‑обвязку go‑i2p — это история, такого кода в дереве
+> **Статус на 2026-09-17.** Документ описывает переход Tor → i2p и во многом
+> историчен: роутер с тех пор сменился второй раз, с go-i2p на **i2pd**, потому
+> что go-i2p не достраивал клиентские туннели и не доставил ни одного сообщения
+> (`docs/i2p-transport-evaluation.md`). Разделы про архитектуру транспорта,
+> криптографию и релей актуальны; всё, что описывает `i2p-router/`,
+> `gipny-i2p-router` и обвязку I2CP для go-i2p, — история, такого кода в дереве
 > больше нет. Текущее состояние: `docs/handoff-brief.md`.
+>
+> Что ещё устарело в тексте ниже, чтобы не искать: релей больше не «обязателен
+> перед работой» — каждое приложение и агент поднимают личный встроенный релей
+> (0.4.2), а для офлайна есть сеть релеев (0.4.4 и далее);
+> `DEFAULT_UPDATE_ONION` и весь старый протокол обновлений удалены, обновления
+> идут с GitHub через выходной узел i2p; джоба e2e больше не
+> `continue-on-error` и падает честно; мок-режим SAM удалён вместе с
+> `i2p-router/`.
 
-This fork replaces the network transport of gipny from **Tor (embedded Arti)**
-to **i2p**, using the pure‑Go **go‑i2p** router (via its SAMv3 bridge) bundled as
-a sidecar. Everything else — X3DH + Double Ratchet crypto, SQLCipher vault,
-sealed‑sender relay protocol, DB, UI, bot‑sdk — is unchanged. The node address
-(historically an `.onion`) is treated as an opaque string that now carries an i2p
-destination.
+Этот форк заменяет сетевой транспорт gipny с **Tor (встроенный Arti)** на
+**i2p**, используя роутер **go-i2p** на чистом Go (через его мост SAMv3),
+поставляемый рядом с приложением. Всё остальное — криптография X3DH + Double
+Ratchet, хранилище SQLCipher, протокол релея со скрытым отправителем, база,
+интерфейс, bot-sdk — не меняется. Адрес узла (исторически `.onion`) считается
+непрозрачной строкой, в которой теперь лежит i2p-destination.
 
-> Status: transport core done and the bundled router is verified to build and
-> answer SAMv3 (`HELLO REPLY RESULT=OK VERSION=3.3`). Client addresses are
-> **ephemeral per session** (the relay routes by the ed25519 key, not by i2p
-> address), the identity card shows a `.b32.i2p` short form, and the client runs
-> outbound-only (`publish: false`). Android embeds the router in-process through
-> JNI; CI builds an installable debug APK on every push (artifact
-> `gipny-android-debug-apk`) and remains experimental pending a broader
-> real-device test matrix. A real i2p relay still has to be deployed and its
-> destination baked in (see “Deploy a relay”) — meanwhile a relay address can be
-> set at runtime in Settings.
+> Статус: ядро транспорта готово, поставляемый роутер проверенно собирается и
+> отвечает по SAMv3 (`HELLO REPLY RESULT=OK VERSION=3.3`). Адреса клиентов
+> **эфемерные на сессию** (релей маршрутизирует по ключу ed25519, а не по
+> i2p-адресу), карточка личности показывает короткую форму `.b32.i2p`, клиент
+> работает только исходящими соединениями (`publish: false`). На Android роутер
+> встроен в процесс через JNI; CI собирает устанавливаемый debug-APK на каждый
+> push (артефакт `gipny-android-debug-apk`) и остаётся экспериментальным, пока не
+> будет более широкой проверки на живых устройствах. Настоящий релей i2p ещё надо
+> развернуть и вшить его destination (см. «Развернуть релей») — а пока адрес
+> релея можно задать в настройках во время работы.
 
 ---
 
-## Why this shape
+## Почему именно такая форма
 
-- **i2p needs a running router.** Unlike Arti (a library compiled into the app),
-  i2p routing lives in a separate router process exposing a **SAMv3** TCP API.
-- **go‑i2p** is a pure‑Go router; its **`go-sam-bridge`** has an *embedded router*
-  library (`lib/embedding`) that starts the router in‑process and serves SAM. We
-  wrap it in a tiny binary (`i2p-router/`, `gipny-i2p-router`) — one self‑contained
-  Go binary providing both router and SAM, so the app stays “zero install”.
-- The Rust side speaks SAMv3 with the **`yosemite`** crate (async/tokio).
-- **I2CP wiring (why the wrapper is not one line).** `embedding.New` starts the
-  router's I2CP *server* but never connects an I2CP *client*, so out of the box
-  SAM STREAM sessions have no transport: `SESSION CREATE` returns OK, yet every
-  `STREAM CONNECT`/`ACCEPT` fails (`no listener for session`, surfaced to the
-  caller as a generic `CANT_REACH_PEER`). The wrapper (`i2p-router/wiring.go`)
-  therefore starts the router, waits for its I2CP port, connects an `i2cp.Client`,
-  and builds the SAM bridge wired to it — mirroring go-sam-bridge's own
-  `cmd/sam-bridge`. Caveat: the underlying `go-i2cp` client hardcodes its dial
-  target to `127.0.0.1:7654` (its TCP address is fixed at construction and
-  `SetProperty` cannot move it), so **exactly one router per host** is supported.
-  Running several independent routers on one machine (e.g. an all‑in‑one e2e job
-  with relay + two bots) therefore cannot work; the e2e harness puts the relay
-  and both bots on one shared router instead (`GIPNY_SAM_PORT`, see below).
-- **I2CP reconnect (the second half of #42).** Wiring the transport was necessary
-  but not sufficient. The router's I2CP server arms a 30 s read deadline *before*
-  the header read (`go-i2p lib/i2cp/protocol.go:175,400`), so it also bounds the
-  idle gap between messages, and it closes the connection when that expires —
-  reported upstream as [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54).
-  `go-i2cp` sends no keepalives, so the client we connect at startup is reliably
-  dead by the time the first SAM session is created (something always has to
-  start a session *after* the router boots). The `CreateSession` write then
-  fails, and go-sam-bridge closes the SAM control socket **without a
-  `SESSION STATUS`** — which reaches the Rust side as a bare EOF, reported by
-  `yosemite` as the singularly unhelpful `invalid message from router`.
-  `wiring.go` therefore reconnects and retries once when a session create fails.
-  Two traps worth knowing: `IsConnected()` cannot gate this (the client's read
-  loop never observes the close and keeps reporting the link as up while every
-  write fails), and the retry must be skipped when a session is already live —
-  on a shared router a reconnect would drop other clients' sessions with it.
+- **i2p нужен работающий роутер.** В отличие от Arti (библиотеки, вкомпилированной
+  в приложение) маршрутизация i2p живёт в отдельном процессе роутера, который
+  отдаёт TCP-API **SAMv3**.
+- **go-i2p** — роутер на чистом Go; у его **`go-sam-bridge`** есть библиотека
+  *встроенного роутера* (`lib/embedding`), которая запускает роутер внутри
+  процесса и отдаёт SAM. Мы оборачиваем её в крошечный бинарь (`i2p-router/`,
+  `gipny-i2p-router`) — один самодостаточный Go-бинарь, дающий и роутер, и SAM,
+  чтобы приложению не требовалась установка чего-либо.
+- Rust-сторона говорит по SAMv3 крейтом **`yosemite`** (async/tokio).
+- **Обвязка I2CP (почему обёртка не в одну строку).** `embedding.New` запускает
+  I2CP-*сервер* роутера, но никогда не подключает I2CP-*клиента*, поэтому «из
+  коробки» у SAM STREAM-сессий нет транспорта: `SESSION CREATE` отвечает OK, а
+  каждый `STREAM CONNECT`/`ACCEPT` падает (`no listener for session`, что
+  вызывающей стороне видно как общий `CANT_REACH_PEER`). Поэтому обёртка
+  (`i2p-router/wiring.go`) запускает роутер, ждёт его порт I2CP, подключает
+  `i2cp.Client` и собирает мост SAM, привязанный к нему, — повторяя собственный
+  `cmd/sam-bridge` из go-sam-bridge. Оговорка: нижележащий клиент `go-i2cp`
+  жёстко зашивает цель дозвона `127.0.0.1:7654` (его TCP-адрес фиксируется при
+  создании, а `SetProperty` его не меняет), поэтому поддерживается **ровно один
+  роутер на хост**. Несколько независимых роутеров на одной машине (например,
+  всё-в-одном e2e с релеем и двумя ботами) поэтому работать не могут; харнесс
+  e2e вместо этого держит релей и оба бота на одном общем роутере
+  (`GIPNY_SAM_PORT`, см. ниже).
+- **Переподключение I2CP (вторая половина #42).** Подключить транспорт было
+  необходимо, но недостаточно. Сервер I2CP роутера ставит дедлайн чтения в 30 с
+  *до* чтения заголовка (`go-i2p lib/i2cp/protocol.go:175,400`), то есть он
+  ограничивает и паузу между сообщениями, и закрывает соединение по его
+  истечении — сообщено в upstream как
+  [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54). `go-i2cp` не
+  отправляет keepalive, поэтому клиент, подключённый при старте, надёжно мёртв к
+  моменту создания первой SAM-сессии (кто-то всегда создаёт сессию *после*
+  загрузки роутера). Запись `CreateSession` тогда падает, а go-sam-bridge
+  закрывает управляющий сокет SAM **без `SESSION STATUS`** — и до Rust-стороны
+  это доходит голым EOF, который `yosemite` сообщает исключительно бесполезным
+  `invalid message from router`. Поэтому `wiring.go` переподключается и
+  повторяет попытку один раз, когда создание сессии падает. Две ловушки, которые
+  стоит знать: `IsConnected()` для этого не годится (цикл чтения клиента не
+  замечает закрытия и продолжает сообщать, что связь есть, пока каждая запись
+  падает), и повтор нужно пропускать, когда сессия уже живая — на общем роутере
+  переподключение уронило бы вместе с собой сессии других клиентов.
 
 ```
 gipny (Rust) ──SAMv3 127.0.0.1:7656──▶ i2pd (C++)
                                          ├─ роутер i2p
-                                         └─ SAMv3 bridge
+                                         └─ мост SAMv3
 ```
 
-> **Status 2026‑07‑19: this transport does not currently deliver anything.**
-> go‑i2p never finishes building client tunnels, so there is no anonymous
-> transport and no message ever arrives — while i2pd on the same machine fetched
-> a real eepsite in seconds. Measurements, the four stacked defects behind it,
-> the security implications, and the open decision about i2pd are in
+> **Статус на 2026-07-19: этот транспорт сейчас не доставляет ничего.** go-i2p
+> так и не достраивает клиентские туннели, поэтому анонимного транспорта нет и ни
+> одно сообщение не доходит — притом что i2pd на той же машине за секунды получил
+> настоящий eepsite. Измерения, четыре наложившихся дефекта, последствия для
+> безопасности и открытое решение про i2pd — в
 > [docs/i2p-transport-evaluation.md](docs/i2p-transport-evaluation.md).
 > Upstream: [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54),
 > [go-i2p#55](https://github.com/go-i2p/go-i2p/issues/55).
 
-**Risks (accepted):** go‑i2p is early‑stage (“probably not safe yet”); its
-streaming is a *prototype* — the exact thing our long‑lived relay stream relies
-on. First connection is slower than Tor (reseed + tunnel build). The design stays
-router‑agnostic (plain SAMv3), so **i2pd can be dropped in** on the same port if
-go‑i2p proves unstable.
+**Риски (приняты):** go-i2p на ранней стадии («вероятно, пока не безопасен»); его
+streaming — *прототип*, а это именно то, на что опирается наш долгоживущий поток к
+релею. Первое подключение медленнее, чем в Tor (reseed и построение туннелей).
+Схема остаётся независимой от роутера (обычный SAMv3), поэтому **i2pd можно
+подставить** на тот же порт, если go-i2p окажется нестабильным.
 
 ---
 
-## What changed, file by file
+## Что изменилось, по файлам
 
-### New
-- **`i2p-router/`** — the bundled Go router wrapper (`main.go`, `go.mod`,
-  `go.sum`). Flags: `--sam-listen 127.0.0.1:7656 --data <dir>`. Pure Go, builds
-  with `CGO_ENABLED=0` for every target. For Android the same codebase is
-  compiled as a JNI library instead: `android_export.go` (cgo exports) +
-  `jni_shim_android.c` (`JNI_OnLoad` / `Java_…` glue), built with
-  `buildmode=c-shared` into a per-ABI `libgipnyi2p.so` by the
-  `buildGoRouterJniLibs` Gradle task
-  (`core/gen/android/buildSrc/…/I2pdRouterTask.kt`).
-- **`core/tauri.android.conf.json`** — Android platform config override:
-  `bundle.resources = []`, so the desktop sidecar binary is not packaged into
-  the APK (Android runs the router in-process; the resource glob would
-  otherwise fail the android build).
-- **`libcore/src/router.rs`** — `RouterHandle` lifecycle: spawns/​supervises the
-  router child (desktop) or `attach`es to an in‑process one (Android), picks a
-  free SAM port, and `probe_sam()` waits for `HELLO … RESULT=OK`.
-- **`.github/workflows/build.yml`** — compile CI (router matrix + Rust + UI).
-- **`.github/workflows/release.yml`** — full release pipeline on Actions.
+### Новое
+- **`i2p-router/`** — поставляемая обёртка роутера на Go (`main.go`, `go.mod`,
+  `go.sum`). Флаги: `--sam-listen 127.0.0.1:7656 --data <каталог>`. Чистый Go,
+  собирается с `CGO_ENABLED=0` для всех целей. Для Android та же кодовая база
+  компилируется как библиотека JNI: `android_export.go` (экспорты cgo) +
+  `jni_shim_android.c` (склейка `JNI_OnLoad` / `Java_…`), собирается с
+  `buildmode=c-shared` в `libgipnyi2p.so` под каждый ABI задачей Gradle
+  `buildGoRouterJniLibs` (`core/gen/android/buildSrc/…/I2pdRouterTask.kt`).
+- **`core/tauri.android.conf.json`** — переопределение конфигурации для Android:
+  `bundle.resources = []`, чтобы десктопный бинарь роутера не попадал в APK (на
+  Android роутер работает внутри процесса, а glob ресурсов иначе валил сборку).
+- **`libcore/src/router.rs`** — жизненный цикл `RouterHandle`: запускает и
+  присматривает за дочерним процессом роутера (десктоп) либо `attach`-ится к
+  внутрипроцессному (Android), выбирает свободный порт SAM, а `probe_sam()` ждёт
+  `HELLO … RESULT=OK`.
+- **`.github/workflows/build.yml`** — CI компиляции (матрица роутера + Rust + UI).
+- **`.github/workflows/release.yml`** — полный релизный конвейер на Actions.
 
-### Rewritten
-- **`libcore/src/net.rs`** — `TorNode` → **`I2pNode`** (same public API; a
-  `pub type TorNode = I2pNode;` alias keeps callers untouched). One SAMv3 STREAM
-  session bound to a fresh **ephemeral destination** (regenerated every
-  session, never persisted; see “Network identity” below) with
-  `publish: false` — no LeaseSet publish and no inbound tunnels, which speeds
-  up cold start; outbound via detached SAM
-  streams (concurrent dials); optional inbound via `STREAM FORWARD`
-  (`GIPNY_I2P_ACCEPT=1`, off by default since the app is relay‑mediated).
-  Deleted: SOCKS5 provider, `ProxyConfig`/`ProxyKind`, Arti bootstrap, onion
-  keystore handling. `NetError::Tor` → `NetError::I2p`.
-- **`core/relay/src/main.rs`** — relay server now opens a persistent yosemite
-  `Session` (publish=true) and accepts SAM streams; `handle_client`/`client_loop`
-  are byte‑stream generic and **unchanged**. Prints its i2p destination on start.
+### Переписано
+- **`libcore/src/net.rs`** — `TorNode` → **`I2pNode`** (публичный API тот же;
+  алиас `pub type TorNode = I2pNode;` оставляет вызывающий код нетронутым). Одна
+  SAMv3 STREAM-сессия, привязанная к свежему **эфемерному destination**
+  (создаётся заново каждую сессию, не сохраняется; см. «Сетевая личность» ниже) с
+  `publish: false` — без публикации LeaseSet и без входящих туннелей, что ускоряет
+  холодный старт; исходящие — через detached-потоки SAM (параллельные дозвоны);
+  входящие по желанию через `STREAM FORWARD` (`GIPNY_I2P_ACCEPT=1`, по умолчанию
+  выключено, поскольку приложение работает через релей). Удалено: провайдер
+  SOCKS5, `ProxyConfig`/`ProxyKind`, bootstrap Arti, работа с хранилищем
+  onion-ключей. `NetError::Tor` → `NetError::I2p`.
+- **`core/relay/src/main.rs`** — сервер релея теперь открывает постоянную
+  `Session` yosemite (publish=true) и принимает потоки SAM;
+  `handle_client`/`client_loop` работают с любым байтовым потоком и **не
+  изменились**. При старте печатает свой i2p-destination.
 
-### Edited (mechanical / wiring)
-- **`core/src/lib.rs`** — boot() starts `I2pNode` directly; resolves the bundled
-  router via the Tauri resource dir (`GIPNY_I2P_BIN`); **all proxy plumbing
-  removed** (DTO, `From` impls, `SETTING_PROXY`, `read_proxy_config`,
-  `get/set_proxy_config` commands + their `invoke_handler` entries,
-  `start_tor_with_proxy_fallback`).
+### Правки (механические, обвязка)
+- **`core/src/lib.rs`** — `boot()` запускает `I2pNode` напрямую; путь к
+  поставляемому роутеру разрешается через каталог ресурсов Tauri
+  (`GIPNY_I2P_BIN`); **вся прокси-обвязка удалена** (DTO, реализации `From`,
+  `SETTING_PROXY`, `read_proxy_config`, команды `get/set_proxy_config` и их
+  записи в `invoke_handler`, `start_tor_with_proxy_fallback`).
 - **`bot-sdk/src/lib.rs`** — `TorNode::start(dir, None)` → `TorNode::start(dir)`.
-- **`libcore/src/{relay,update}.rs`** — `DEFAULT_RELAY` / `DEFAULT_UPDATE_ONION`
-  are now **empty placeholders** (old `.onion`s are invalid on i2p) — fill after
-  deploying (see below).
-- **`libcore/src/session.rs`, `core/src/core.rs`** — relay loops skip quietly
-  when no relay is configured (empty address) instead of hammering.
-- **Cargo**: removed `arti-client`/`tor-*`/`async-trait`/(libcore)`futures`; added
-  `yosemite` (workspace + relay). `core` no longer depends on transport crates.
-- **UI** (`ui/src/*`): removed the outer‑proxy settings + `ProxyConfig` types and
-  `get/set_proxy_config` calls; relaxed the add‑contact address validation from
-  `.endsWith('.onion')` to “`.i2p` or a full base64 destination”; boot log/stage
-  copy Tor → i2p (`BootStage` `'tor'` → `'i2p'`). Address fields/labels are
-  opaque and otherwise unchanged.
-- **`core/tauri.conf.json`** — bundles `resources/i2pd*`.
-- **Android** — Gradle cross-compiles the Go router as a per-ABI JNI library
-  (`libgipnyi2p.so`); `GipnyService.kt` loads it, starts SAM on
-  `127.0.0.1:7656` off the main thread and keeps it alive in the foreground
-  service; the Rust side connects with `RouterHandle::attach` instead of
-  spawning a child. In-app updates fetch `android-apk-<arch>` artifacts from
-  the update-server manifest (no Play Store).
+- **`libcore/src/{relay,update}.rs`** — `DEFAULT_RELAY` и
+  `DEFAULT_UPDATE_ONION` стали **пустыми заглушками** (старые `.onion` в i2p
+  недействительны) — заполнить после развёртывания (см. ниже).
+- **`libcore/src/session.rs`, `core/src/core.rs`** — циклы релея тихо
+  пропускают работу, когда релей не настроен (пустой адрес), вместо того чтобы
+  долбиться.
+- **Cargo**: убраны `arti-client`, `tor-*`, `async-trait` и (в libcore)
+  `futures`; добавлен `yosemite` (workspace и релей). `core` больше не зависит от
+  транспортных крейтов.
+- **Интерфейс** (`ui/src/*`): убраны настройки внешнего прокси, типы
+  `ProxyConfig` и вызовы `get/set_proxy_config`; проверка адреса при добавлении
+  контакта ослаблена с `.endsWith('.onion')` до «`.i2p` или полный
+  base64-destination»; тексты загрузки и стадий переведены с Tor на i2p
+  (`BootStage` `'tor'` → `'i2p'`). Поля и подписи адресов непрозрачны и в
+  остальном не менялись.
+- **`core/tauri.conf.json`** — в сборку кладётся `resources/i2pd*`.
+- **Android** — Gradle кросс-компилирует Go-роутер как библиотеку JNI под каждый
+  ABI (`libgipnyi2p.so`); `GipnyService.kt` её загружает, запускает SAM на
+  `127.0.0.1:7656` не в главном потоке и держит живым в foreground-сервисе;
+  Rust-сторона подключается через `RouterHandle::attach` вместо запуска дочернего
+  процесса. Обновления внутри приложения тянут артефакты `android-apk-<arch>` из
+  манифеста сервера обновлений (без Play Store).
 
-### Deliberately unchanged
-`crypto.rs`, `db.rs` (schema, incl. the `onion_address`/`onion` columns —
-opaque), `security.rs`/vault, `session.rs` message logic, relay wire protocol,
-the whole message/attachment/group flow. The address is just a string.
+### Сознательно не менялось
+`crypto.rs`, `db.rs` (схема, включая колонки `onion_address`/`onion` — они
+непрозрачны), `security.rs` и хранилище, логика сообщений в `session.rs`, протокол
+релея на проводе, весь поток сообщений, вложений и групп. Адрес — просто строка.
 
 ---
 
-## Network identity: ephemeral per session
+## Сетевая личность: эфемерная на сессию
 
-Early revisions persisted the SAM keypair (`i2p/dest.key` / `dest.pub`) for a
-stable address; that design was replaced. On every start the node calls SAM
-`DEST GENERATE` (via `yosemite::RouterApi::generate_destination`) and uses the
-destination **for that session only**: nothing touches disk, the private key
-blob lives in `Zeroizing` memory and is kept in-session solely so `recreate`
-can rebuild the SAM session after a router hiccup.
+Ранние ревизии сохраняли пару ключей SAM (`i2p/dest.key` / `dest.pub`) для
+постоянного адреса; та схема заменена. При каждом старте узел вызывает SAM
+`DEST GENERATE` (через `yosemite::RouterApi::generate_destination`) и использует
+destination **только для этой сессии**: на диск не попадает ничего, приватный
+ключ живёт в памяти под `Zeroizing` и хранится в пределах сессии лишь затем, чтобы
+`recreate` мог пересобрать SAM-сессию после сбоя роутера.
 
-The stable identity is the ed25519/x25519 pair in the encrypted vault — the
-relay routes by that key, not by i2p address, so regenerating the address is
-free and unlinks sessions at the network layer.
+Постоянная личность — это пара ed25519/x25519 в зашифрованном хранилище: релей
+маршрутизирует по этому ключу, а не по i2p-адресу, поэтому пересоздание адреса
+бесплатно и разрывает связь между сессиями на сетевом уровне.
 
-The identity card shows both the full base64 destination and the short
-`.b32.i2p` form — `base32(sha256(binary_destination)).b32.i2p`, computed in
+Карточка личности показывает и полный base64-destination, и короткую форму
+`.b32.i2p` — `base32(sha256(двоичный destination)).b32.i2p`, вычисляется в
 `I2pNode::b32_address`.
 
 ---
 
-## Build & run
+## Сборка и запуск
 
-### Router (standalone, for testing)
+### Роутер (отдельно, для проверки)
 ```bash
 git submodule update --init --recursive
 make -C third_party/i2pd USE_UPNP=no -j"$(nproc)"
 ./third_party/i2pd/i2pd --datadir="$PWD/router-data" \
   --sam.enabled=true --sam.port=7656 --http.enabled=false --upnp.enabled=false
-# verify:  printf 'HELLO VERSION MIN=3.0 MAX=3.3\n' | nc 127.0.0.1 7656  → RESULT=OK
+# проверка:  printf 'HELLO VERSION MIN=3.0 MAX=3.3\n' | nc 127.0.0.1 7656  → RESULT=OK
 ```
 
-### App
-The Rust app auto‑spawns the bundled router. Override its path with
-`GIPNY_I2P_BIN=/path/to/i2pd` (a system i2pd works too).
+### Приложение
+Rust-приложение само запускает поставляемый роутер. Путь к нему переопределяется
+через `GIPNY_I2P_BIN=/путь/к/i2pd` (системный i2pd тоже подходит).
 
-To run several local profiles, point them at **one** router with
-`GIPNY_SAM_PORT=<port>` (`I2pNode::start` then attaches instead of spawning).
-Letting each profile spawn its own router does not work: only the first one to
-bind `127.0.0.1:7654` gets a working I2CP transport, and the rest come up with a
-SAM bridge that can never open a STREAM session.
+Чтобы запустить несколько локальных профилей, направьте их на **один** роутер
+через `GIPNY_SAM_PORT=<порт>` (`I2pNode::start` тогда подключается, а не
+запускает). Дать каждому профилю запустить свой роутер не получится: работающий
+транспорт I2CP достанется только тому, кто первым занял `127.0.0.1:7654`, а
+остальные поднимутся с мостом SAM, который никогда не сможет открыть
+STREAM-сессию.
 
-### CI / releases
-All builds run on GitHub Actions:
-- `build.yml` — compile check on every push/PR: router matrix, Rust workspace,
-  UI typecheck, plus an **android APK** job that builds a debug APK, asserts
-  `libgipnyi2p.so` is packaged, and uploads the APK as the
-  `gipny-android-debug-apk` artifact.
-- `release.yml` — on a `v*` tag: AppImage/deb + NSIS + signed Android arm64
-  APK (router bundled on desktop, JNI-embedded on Android).
-- `e2e.yml` — relay + two headless bots over real i2p, nightly and on demand.
-  All three share one router (`GIPNY_SAM_PORT=7656`) because of the `:7654`
-  hardwire above. Still `continue-on-error`: reseed and tunnel building make it
-  genuinely flaky, and the job's green check means nothing on its own — read the
-  `PASS`/`FAIL` line in the step summary and `echoes received` in `[e2e-timing]`.
-  For the fast local loop there is a mock SAM server behind the `mocksam` build
-  tag (`go build -tags mocksam`, then `--mock`; see `i2p-router/mock_sam.go`).
-  It speaks just enough SAMv3 to pair two streams over loopback, with no router
-  and no tunnels — deliberately impossible to reach in a shipped binary, and
-  deliberately not wired into CI, where it would produce a green run that never
-  touched i2p.
-- `codeql.yml` — security scanning (rust / js-ts / actions).
-- `dependabot.yml` — weekly grouped updates for every ecosystem. Breaking bumps
-  for `core/relay` are pinned until the migration issue lands (bincode ≥2 is
-  never taken — 3.0.0 on crates.io is a `compile_error!` stub).
+### CI и релизы
+Все сборки идут на GitHub Actions:
+- `build.yml` — проверка компиляции на каждый push и PR: матрица роутера,
+  workspace Rust, типы интерфейса, плюс джоба **android APK**, которая собирает
+  debug-APK, проверяет, что `libgipnyi2p.so` внутри, и выкладывает APK артефактом
+  `gipny-android-debug-apk`.
+- `release.yml` — по тегу `v*`: AppImage и deb, NSIS и подписанный APK для
+  Android arm64 (роутер поставляется рядом на десктопе и встроен через JNI на
+  Android).
+- `e2e.yml` — релей и два headless-бота по настоящей i2p, ночью и по требованию.
+  Все трое делят один роутер (`GIPNY_SAM_PORT=7656`) из-за жёсткого `:7654`
+  выше. Пока стоит `continue-on-error`: reseed и построение туннелей делают
+  джобу по-настоящему нестабильной, и зелёная галочка сама по себе ничего не
+  значит — читайте строку `PASS`/`FAIL` в summary шага и `echoes received` в
+  `[e2e-timing]`. Для быстрого локального цикла есть мок-сервер SAM под
+  build-тегом `mocksam` (`go build -tags mocksam`, затем `--mock`; см.
+  `i2p-router/mock_sam.go`). Он говорит ровно настолько по SAMv3, чтобы свести
+  два потока по loopback, без роутера и туннелей — сознательно недостижим в
+  поставляемом бинаре и сознательно не подключён к CI, где давал бы зелёный
+  прогон, ни разу не коснувшийся i2p.
+- `codeql.yml` — сканирование безопасности (rust / js-ts / actions).
+- `dependabot.yml` — еженедельные сгруппированные обновления для каждой
+  экосистемы. Ломающие поднятия версий для `core/relay` закреплены, пока не
+  закрыта issue о миграции (bincode ≥2 не берётся никогда: 3.0.0 на crates.io —
+  заглушка с `compile_error!`).
 
-Android note: the vendored OpenSSL build (SQLCipher) expects binutils-style
-`<triple>-ranlib`/`-ar` names that NDK r23+ no longer ships; the workflows
-symlink them to `llvm-ranlib`/`llvm-ar` before building.
+Замечание про Android: вендоренная сборка OpenSSL (для SQLCipher) ожидает имена в
+стиле binutils — `<triple>-ranlib`/`-ar`, — которых NDK r23+ больше не
+поставляет; workflow создают симлинки на `llvm-ranlib`/`llvm-ar` перед сборкой.
 
 ---
 
-## Deploy a relay (required before it works end‑to‑end)
+## Развернуть релей (было обязательно для сквозной работы)
 
-1. On a server, run i2pd exposing SAMv3 on `127.0.0.1:7656`.
-2. Run `gipny-relay` (`GIPNY_RELAY_DATA=/var/lib/gipny-relay`). It prints
+1. На сервере запустить i2pd, отдающий SAMv3 на `127.0.0.1:7656`.
+2. Запустить `gipny-relay` (`GIPNY_RELAY_DATA=/var/lib/gipny-relay`). Он напечатает
    `I2P DESTINATION: <base64>`.
-3. Paste that into `libcore/src/relay.rs::DEFAULT_RELAY` and rebuild. (Same for
-   an update server → `libcore/src/update.rs::DEFAULT_UPDATE_ONION`.)
-4. Wire the relay’s router as a companion systemd unit (`After=/Wants=`) in
+3. Вставить это в `libcore/src/relay.rs::DEFAULT_RELAY` и пересобрать. (То же для
+   сервера обновлений → `libcore/src/update.rs::DEFAULT_UPDATE_ONION`.)
+4. Привязать роутер релея как соседний юнит systemd (`After=`/`Wants=`) в
    `core/relay/gipny-relay.service`.
 
-Until a relay destination is baked in (or set at runtime), clients start and get
-their i2p address but have no relay to reach — messaging is idle by design.
+Пока destination релея не вшит (или не задан во время работы), клиенты
+запускаются и получают свой i2p-адрес, но им некуда обращаться — переписка стоит
+по замыслу.
+
+*Сейчас это не так:* релей есть внутри каждого приложения и агента (0.4.2), и
+`DEFAULT_RELAY` никому не нужен для начала работы; шага 3 для обновлений больше
+не существует.
 
 ---
 
-## Applied optimizations
-- **SAM `gzip: false`** on client and relay sessions — payloads are already
-  E2E‑encrypted and padded to fixed buckets; SAM gzip only burns CPU and blurs
-  the uniform size classes.
-- **Detached concurrent dials** (`yosemite` `async-extra`) — outbound streams
-  don’t serialize behind one session lock.
+## Применённые оптимизации
+- **`gzip: false` в SAM** на сессиях клиента и релея: payload уже зашифрован
+  сквозным образом и дополнен до фиксированных корзин, а gzip в SAM только жжёт
+  процессор и размывает однородные классы размеров.
+- **Detached-дозвоны параллельно** (`yosemite`, `async-extra`): исходящие потоки
+  не выстраиваются в очередь за одной блокировкой сессии.
 
-## Done since the initial migration
-- ~~Compute `.b32.i2p` short address~~ — shown in the identity card.
-- ~~A relay‑address setter in Settings~~ — overrides the baked-in
-  `DEFAULT_RELAY` at runtime.
-- ~~Client outbound‑only mode~~ — `publish: false` is now the default.
-- ~~Ephemeral per-session address~~ — replaced the persisted `dest.key`.
-- ~~Android JNI embedding~~ — router runs in-process; debug APK in CI.
-- ~~relay: migrate to current major deps and commit its lockfile~~ — bincode 2,
-  rand 0.10, ed25519-dalek 3, thiserror 2, rusqlite 0.40.
-- ~~x86_64 Android APK for emulator testing~~ — debug APK + emulator smoke
-  job in CI; the main workspace (`libcore`/`core`/`bot-sdk`) crypto/serde
-  stack migration is still open (issue #31).
-- ~~SAM STREAM sessions carry no data (#42)~~ — two defects, both in
-  `i2p-router/wiring.go`: the bridge was built without an I2CP client at all,
-  and the client it does get was dropped by the router's 30 s idle deadline
-  before any session could be created. Wired + reconnect-on-create; verified
-  end to end against a live router (`SESSION STATUS RESULT=OK`, stream manager
-  registered).
-- ~~e2e on three independent routers (#45)~~ — relay and both bots now attach
-  to one shared router via `GIPNY_SAM_PORT`.
+## Сделано после первоначального перехода
+- ~~Вычислять короткий адрес `.b32.i2p`~~ — показывается в карточке личности.
+- ~~Поле адреса релея в настройках~~ — переопределяет вшитый `DEFAULT_RELAY` во
+  время работы.
+- ~~Режим клиента «только исходящие»~~ — `publish: false` теперь по умолчанию.
+- ~~Эфемерный адрес на сессию~~ — заменил сохраняемый `dest.key`.
+- ~~Встраивание через JNI на Android~~ — роутер работает внутри процесса,
+  debug-APK в CI.
+- ~~релей: перейти на текущие мажорные версии зависимостей и закоммитить
+  lock-файл~~ — bincode 2, rand 0.10, ed25519-dalek 3, thiserror 2, rusqlite 0.40.
+- ~~APK для Android x86_64 для проверки в эмуляторе~~ — debug-APK и smoke-джоба
+  эмулятора в CI; миграция стека crypto/serde в основном workspace
+  (`libcore`/`core`/`bot-sdk`) тогда оставалась открытой (issue #31).
+- ~~SAM STREAM-сессии не несут данных (#42)~~ — два дефекта, оба в
+  `i2p-router/wiring.go`: мост собирался вообще без клиента I2CP, а тот клиент,
+  который он получал, роутер сбрасывал по 30-секундному дедлайну простоя до того,
+  как можно было создать сессию. Обвязано и добавлено переподключение при
+  создании; проверено сквозным прогоном против живого роутера
+  (`SESSION STATUS RESULT=OK`, stream manager зарегистрирован).
+- ~~e2e на трёх независимых роутерах (#45)~~ — релей и оба бота подключаются к
+  одному общему роутеру через `GIPNY_SAM_PORT`.
 
-## Follow‑ups / ideas
-- Drop the I2CP reconnect workaround once
-  [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54) (idle client
-  connections killed after 30 s) is fixed upstream.
-- Prove the e2e job actually delivers messages over real tunnels before taking
-  it off `continue-on-error`. Everything below the transport — tunnel build on a
-  runner's cold netdb, then streaming over it — has never once executed, so it
-  is unmeasured rather than known-good.
-- Deploy the canonical relay + update server and bake in their destinations
+## Продолжения и идеи
+- Убрать обходной путь с переподключением I2CP, когда
+  [go-i2p#54](https://github.com/go-i2p/go-i2p/issues/54) (клиентские соединения
+  простоя убиваются через 30 с) будет исправлен в upstream.
+- Доказать, что джоба e2e действительно доставляет сообщения по настоящим
+  туннелям, прежде чем снимать с неё `continue-on-error`. Всё, что ниже
+  транспорта — построение туннеля на холодной netdb раннера и затем streaming
+  поверх него, — не исполнялось ни разу, так что это не «известно хорошо», а
+  «не измерено».
+- Развернуть канонический релей и сервер обновлений и вшить их destination
   (`DEFAULT_RELAY`, `DEFAULT_UPDATE_ONION`).
-- Expand Android validation across physical devices and additional ABIs.
-- Large‑file throughput: bump outbound tunnel quantity during transfers.
+- Расширить проверку Android на физические устройства и дополнительные ABI.
+- Пропускная способность на больших файлах: увеличивать число исходящих туннелей
+  во время передачи.

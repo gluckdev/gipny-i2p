@@ -1,239 +1,254 @@
-# Getting rid of the relay
+# Как уйти от единственного релея
 
-An open design question, written down because the relay is currently the single
-thing standing between a working build and a working product: `DEFAULT_RELAY` is
-empty, no production relay is deployed, and with no relay address the client can
-receive nothing and send nothing.
+Открытый вопрос проектирования, записанный потому, что релей — единственное, что
+отделяло рабочую сборку от рабочего продукта: `DEFAULT_RELAY` пуст, продакшн-релея
+никто не развернул, а без адреса релея клиент не может ни принимать, ни отправлять.
 
-This is a note to decide from, not a plan that has been agreed.
+Это заметка, из которой принимают решение, а не согласованный план.
 
-## What the relay actually buys
+## Что релей на самом деле даёт
 
-Three things, and they are worth separating because only one of them is hard to
-replace.
+Три вещи, и их стоит разделить: тяжело заменить только одну.
 
-1. **Offline delivery.** The relay holds encrypted blobs until the recipient
-   comes online. Without it, both parties must be online simultaneously.
-2. **Reachability without publishing.** The client runs with `publish: false`
-   (`libcore/src/net.rs`), so it has no LeaseSet and nothing in the public netdb.
-   Nobody can open a connection *to* it. All delivery is outbound, to the relay.
-3. **Sealed sender.** The relay sees `{recipient, blob}` and never the sender
-   (`from = [0u8; 32]` on the wire). It routes by public key, not by address.
+1. **Доставку в офлайне.** Релей держит зашифрованные блобы, пока получатель не
+   появится. Без него оба собеседника обязаны быть в сети одновременно.
+2. **Достижимость без публикации.** Клиент работает с `publish: false`
+   (`libcore/src/net.rs`): у него нет LeaseSet и ничего нет в публичной netdb.
+   Открыть соединение *к нему* невозможно, вся доставка — исходящая, на релей.
+3. **Скрытого отправителя (sealed sender).** Релей видит `{получатель, блоб}` и
+   никогда отправителя (`from = [0u8; 32]` на проводе). Он маршрутизирует по
+   открытому ключу, а не по адресу.
 
-Point 3 is not actually a reason to keep a relay — a direct connection gives the
-peer your destination, but the peer already knows who you are. It is a reason the
-*current* design is safe, not a requirement of any future one.
+Пункт 3 сам по себе не повод держать релей: при прямом соединении собеседник
+узнаёт твой destination, но он и так знает, кто ты. Это аргумент в пользу
+безопасности *текущей* схемы, а не требование к любой будущей.
 
-## What already exists
+## Что уже написано
 
-More than one might expect. `libcore/src/net.rs` carries a complete
-point-to-point surface that nothing calls today:
+Больше, чем можно ожидать. В `libcore/src/net.rs` лежит целая поверхность для
+связи точка-точка, которую сегодня никто не вызывает:
 
-- `Frame` (including a `Hello { identity, onion }` handshake left from the Tor
-  era), `Connection::send/recv/close`
-- `I2pNode::connect`, `connect_retry`, `accept`
-- `spawn_inbound`, gated behind `GIPNY_I2P_ACCEPT=1`
+- `Frame` (включая рукопожатие `Hello { identity, onion }`, оставшееся со времён
+  Tor), `Connection::send/recv/close`;
+- `I2pNode::connect`, `connect_retry`, `accept`;
+- `spawn_inbound` под переменной `GIPNY_I2P_ACCEPT=1`.
 
-`core/src/core.rs` touches `self.node` in four places, none of which dial or
-accept. So the transport primitives for direct delivery are written and unused;
-what is missing is everything around them.
+`core/src/core.rs` обращается к `self.node` в четырёх местах, и ни одно из них не
+звонит и не принимает соединения. То есть примитивы транспорта для прямой доставки
+написаны и не используются; нет всего того, что должно быть вокруг них.
 
-## What breaks without a relay
+## Что ломается без релея
 
-**Reachability.** Direct delivery requires a *published, stable* destination:
-persistent i2p keys on disk and a LeaseSet in the public netdb. That reverses
-two deliberate decisions — the address is ephemeral per session and never
-written to disk, and `publish: false` keeps us out of the netdb entirely. The
-cost is real: a published LeaseSet ties a long-lived destination to a
-continuously observable presence pattern. It does not expose an IP (that is what
-the tunnels are for, and it is the question #49 turned on), but "this
-destination was reachable between 09:00 and 18:00 on weekdays" is metadata the
-current design simply does not emit.
+**Достижимость.** Прямая доставка требует *опубликованного постоянного*
+destination: ключи i2p на диске и LeaseSet в публичной netdb. Это разворачивает
+два сознательных решения — адрес эфемерный на сессию и никогда не пишется на
+диск, а `publish: false` вообще держит нас вне netdb. Цена настоящая:
+опубликованный LeaseSet привязывает долгоживущий адрес к непрерывно наблюдаемой
+картине появлений. IP он не раскрывает (для этого туннели, и об этом был вопрос
+#49), но «этот адрес был доступен с 09:00 до 18:00 по рабочим дням» — метаданные,
+которых текущая схема просто не выдаёт.
 
-**Offline delivery.** This is the hard one. Peer-to-peer means both online, which
-for a phone means almost never. Any fix is some form of store-and-forward, and a
-store-and-forward node that holds your ciphertext is a relay by another name —
-the question is only who runs it and how many there are.
+**Доставка в офлайне.** Вот это тяжело. P2P означает «оба в сети», а для телефона
+это почти никогда. Любое решение — та или иная форма store-and-forward, а узел,
+который хранит твой шифротекст, и есть релей под другим именем; вопрос лишь в
+том, кто его держит и сколько их.
 
-**Address freshness.** Contact cards embed the destination
-(`gipny:v1:<dest>:<sign_pk>:<dh_pk>`), and the destination is regenerated every
-launch. A card shared today is stale tomorrow and nothing notices. Direct
-delivery makes that a hard failure rather than a cosmetic one.
+**Свежесть адреса.** Карточка контакта несёт destination
+(`gipny:v1:<dest>:<sign_pk>:<dh_pk>`), а destination создаётся заново при каждом
+запуске. Карточка, которой поделились сегодня, завтра мертва, и никто этого не
+замечает. При прямой доставке это уже не косметическая проблема, а жёсткий отказ.
 
-## The options, and what each costs
+## Варианты и цена каждого
 
-**A. Direct P2P, relay only as offline fallback.** Persistent published
-destination; dial the peer directly when reachable; fall back to the relay when
-not. Keeps offline delivery, removes the relay from the common path, and the
-relay stops being able to observe the timing of most messages. Costs: LeaseSet
-publication, a reachability probe, two delivery paths to keep correct, and the
-relay still has to exist for the fallback.
+**A. Прямой P2P, релей только как офлайн-запас.** Постоянный опубликованный
+destination; звоним собеседнику напрямую, пока он доступен; уходим на релей,
+когда нет. Сохраняет офлайн-доставку, убирает релей с обычного пути, и релей
+перестаёт видеть время большинства сообщений. Цена: публикация LeaseSet, проверка
+достижимости, два пути доставки, которые надо держать исправными, и релей всё
+равно должен существовать для запаса.
 
-**B. Pure P2P, no offline delivery.** Both online or nothing. Honest, simple,
-and a different product — closer to a secure chat than to a messenger. Would
-have to be stated plainly in the UI, because "message sent" would stop meaning
-"message will arrive".
+**B. Чистый P2P без офлайн-доставки.** Либо оба в сети, либо ничего. Честно,
+просто — и это другой продукт, ближе к защищённому чату, чем к мессенджеру. Это
+пришлось бы прямо сказать в интерфейсе, потому что «сообщение отправлено»
+перестало бы означать «сообщение дойдёт».
 
-**C. Many small relays instead of one.** Does not remove the relay; removes the
-*single* one. Users or communities run their own; a contact card carries its
-owner's relay. Much cheaper to build than A or B — the relay already exists,
-`core/relay/` is a small crate with systemd units — and it addresses the actual
-operational risk today, which is that one unowned relay is a single point of
-failure for delivery. Costs: discovery, and the fact that your relay learns your
-contact graph's timing even if not its content.
+**C. Много маленьких релеев вместо одного.** Убирает не релей, а его
+*единственность*. Пользователи и сообщества держат свои; карточка контакта несёт
+релей владельца. Строить намного дешевле, чем A или B, — релей уже есть,
+`core/relay/` небольшой крейт с юнитами systemd — и это снимает реальный
+операционный риск: один ничей релей был единой точкой отказа доставки. Цена:
+обнаружение адресов и то, что твой релей узнаёт тайминг твоего графа контактов,
+пусть и не содержимое.
 
-**D. Dead drops in the netdb.** Encrypted blobs at deterministic addresses
-derived from the pair's shared secret. Removes the trusted node entirely. Also
-the largest amount of new cryptographic protocol, in a codebase whose crypto core
-(`libcore/src/crypto.rs`) currently has no tests at all.
+**D. Тайники в netdb.** Зашифрованные блобы по детерминированным адресам,
+выведенным из общего секрета пары. Полностью убирает доверенный узел. И это же
+самый большой объём нового криптографического протокола — в кодовой базе, где у
+криптоядра (`libcore/src/crypto.rs`) на тот момент не было ни одного теста.
 
-## Recommendation
+## Рекомендация
 
-**C now, A next, and not B or D.**
+**Сейчас C, потом A, и не B и не D.**
 
-C is days of work on code that already exists and fixes the thing that actually
-blocks the product: there is no deployed relay and no plan for who operates one
-forever. Making the relay address part of the contact card, rather than a global
-constant, turns "we must run infrastructure" into "anyone can".
+C — это дни работы над уже существующим кодом, и она решает то, что реально
+блокирует продукт: развёрнутого релея нет и нет плана, кто будет держать его
+всегда. Когда адрес релея становится частью карточки контакта, а не глобальной
+константой, «мы обязаны держать инфраструктуру» превращается в «её может держать
+любой».
 
-A is the real answer to the question as asked, and it becomes much easier once C
-exists, because the fallback path is already there and already tested. Its
-prerequisite is a decision about persistent destinations and LeaseSet
-publication, which is an anonymity trade-off and not only an engineering one — it
-deserves its own write-up before anyone implements it.
+A — настоящий ответ на поставленный вопрос, и делать её намного легче после C,
+потому что запасной путь уже есть и уже проверен. Её предпосылка — решение о
+постоянных destination и публикации LeaseSet, а это выбор в модели анонимности, а
+не только инженерный; он заслуживает отдельного разбора до реализации.
 
-B is a different product. D is a research project, and this codebase should
-earn some test coverage over its existing crypto before it grows more.
+B — другой продукт. D — исследовательский проект, и этой кодовой базе стоит
+сначала заработать тесты на существующую криптографию, прежде чем растить новую.
 
-## Status (2026-09-16)
+## Состояние (2026-09-16)
 
-C is built and proven. A v2 contact card carries its owner's relay, each
-contact's messages are deposited on that contact's relay, and the e2e job runs
-with a separate relay per bot, so delivery only succeeds if routing follows the
-card (e2e-i2pd run 35075367552, 5/5). The crypto core has tests now
-(`libcore/tests/crypto.rs`).
+C сделана и доказана. Карточка контакта версии v2 несёт релей владельца,
+сообщения каждому контакту кладутся на релей *этого контакта*, а джоба e2e
+запускается с отдельным релеем на бота — то есть доставка проходит только если
+маршрутизация следует карточке (прогон e2e-i2pd 35075367552, 5/5). У криптоядра
+появились тесты (`libcore/tests/crypto.rs`).
 
-The relay also runs inside a client: `libcore/src/relay_server.rs` serves the
-same protocol from memory only, on a destination generated per start and never
-stored. It carried 5/5 over live i2p with each bot served by one
-(run 35076520090). The app does not start it yet. That waits on discovery: a
-relay whose address changes every launch is only useful once contacts can learn
-the current one.
+Релей научился работать и внутри клиента: `libcore/src/relay_server.rs` отдаёт
+тот же протокол, только из памяти, на destination, который создаётся при каждом
+старте и никуда не сохраняется. По живой i2p он провёл 5/5, обслуживая по одному
+боту каждый (прогон 35076520090). Приложение его пока не запускает: это ждёт
+обнаружения адресов — релей, адрес которого меняется при каждом запуске, полезен
+только когда контакты могут узнать текущий.
 
-Still open: no relay is baked in (`DEFAULT_RELAY` is empty), so a fresh install
-has nowhere to start until someone operates one.
+Осталось открытым: вшитого релея нет (`DEFAULT_RELAY` пуст), поэтому свежей
+установке некуда обратиться, пока кто-нибудь не станет держать релей.
 
-## Status (2026-09-17)
+## Состояние (2026-09-17)
 
-The app starts the in-client relay now, at every launch, and a fresh install
-needs no relay from anyone. That closes the point above without baking an
-address in.
+Приложение запускает релей внутри себя при каждом запуске, и свежей установке
+чужой релей больше не нужен. Пункт выше закрыт без вшивания адреса.
 
-How it is wired (`core/src/core.rs`):
+Как это устроено (`core/src/core.rs`):
 
-- Two modes, `relay_mode` in the settings: **built-in** (the default for a
-  profile that names no relay) and **external** (a profile that already names
-  one keeps it; upgrading moves nobody).
-- Built-in: `Core::start` spawns `run_hosted_relay`, which starts an
-  `EphemeralRelay` with `MemStoreLimits::personal(own sign_pk)` — it holds mail
-  and a prekey bundle for its owner and answers `ERR_NOT_SERVED` to anyone
-  else. The address lives in memory only. It is never written to the settings;
-  that is what 0.4.0's button did, and it left clients listening on a relay
-  that no longer existed.
-- Per launch, by the owner's decision: a destination that persisted would be a
-  stable LeaseSet whose appearances trace the owner's online hours. The cost is
-  accepted and documented — delivery happens while both apps run, and there is
-  no mailbox for later.
-- Discovery of the new address: once the relay is up, every contact we share a
-  session with gets an empty payload (the keepalive shape) carrying
-  `relay_address`; the send loop keeps trying until each has been told.
-  Mail for a contact whose relay does not answer stays queued without burning
-  retry attempts, and goes out when their announcement arrives.
-- What cannot be recovered automatically: both sides restart without ever
-  being online together. Each then holds the other's dead address. After ten
-  minutes with mail queued the chat says so, and the fix is a fresh card —
-  re-adding a contact by card keeps history and keys and replaces the relay.
-- `gipny-agent` hosts a personal relay for itself too, exactly the same way
-  and at the same point in startup (before it prints its own card — a card
-  with no reachable relay is useless to hand to a master). `--relay` remains
-  an external override, for an agent operator who wants an offline mailbox
-  instead; pointed at somebody *else's* personal relay, it exits with an
-  explanation (`ERR_NOT_SERVED`). Since the agent's relay is ephemeral like
-  the app's, it re-sends its GRANT message to the master on every restart —
-  already unconditional — which carries the new address for free through the
-  same per-message `relay_address` field contacts use; no separate
-  announcement was needed. The one gap this doesn't close: if the agent and
-  its master both restart without ever being online together since, the
-  master needs a fresh copy of the agent's `card.txt` (SSH access), the same
-  as re-adding a contact by card, just with higher friction for a headless box.
+- Два режима, `relay_mode` в настройках: **встроенный** (по умолчанию для
+  профиля, в котором релей не указан) и **внешний** (профиль, где релей уже
+  указан, его сохраняет; обновление никого не переключает).
+- Встроенный: `Core::start` запускает `run_hosted_relay`, который поднимает
+  `EphemeralRelay` с `MemStoreLimits::personal(свой sign_pk)` — он держит почту и
+  prekey-пакет только владельца и всем остальным отвечает `ERR_NOT_SERVED`. Адрес
+  живёт только в памяти и никогда не пишется в настройки: именно это делала
+  кнопка в 0.4.0, и клиенты оставались слушать релей, которого больше нет.
+- Новый адрес на каждый запуск — решение владельца: сохранённый destination был
+  бы стабильным LeaseSet, по появлениям которого видно часы активности владельца.
+  Цена принята и описана: доставка идёт, пока работают оба приложения, ящика «на
+  потом» нет.
+- Обнаружение нового адреса: как только релей поднялся, каждому контакту, с
+  которым есть сессия, уходит пустой payload (по форме — keepalive) с полем
+  `relay_address`; цикл отправки повторяет попытки, пока не сообщит каждому.
+  Почта контакту, чей релей не отвечает, остаётся в очереди, не тратя попытки, и
+  уходит, когда придёт его объявление.
+- Что автоматически не восстановить: оба перезапустились, ни разу не побывав в
+  сети одновременно. Тогда у каждого мёртвый адрес другого. Через десять минут с
+  почтой в очереди чат об этом говорит, а лечится это свежей карточкой:
+  повторное добавление контакта по карточке сохраняет историю и ключи и заменяет
+  только релей.
+- `gipny-agent` поднимает личный релей себе точно так же и в том же месте
+  запуска (до того, как напечатает свою карточку: карточка без достижимого релея
+  мастеру бесполезна). `--relay` остаётся внешним переопределением — для
+  оператора, которому нужен ящик на потом; если указать *чужой* личный релей,
+  агент выходит с объяснением (`ERR_NOT_SERVED`). Поскольку релей агента
+  эфемерный, как и у приложения, агент при каждом перезапуске заново отправляет
+  мастеру сообщение GRANT — это и так было безусловным, — а новый адрес едет
+  бесплатно в том же поле `relay_address`, что у обычных сообщений; отдельное
+  объявление не понадобилось. Единственная дырка, которую это не закрывает: если
+  агент и его мастер оба перезапустились и с тех пор ни разу не были в сети
+  вместе, мастеру нужна свежая копия `card.txt` агента (доступ по SSH) — то же
+  повторное добавление по карточке, только с большим трением для машины без
+  интерфейса.
 
-Proof: the e2e job "relays inside the bots" starts each bot with no relay,
-then a *personal* relay for that bot's key, then tells the bot the address —
-the app's order — and delivers over live i2p. What it does not exercise is
-`Core` itself (the harness drives `SessionManager`), so the wiring above is
-covered by the app crate's unit tests and a manual check on a CI build.
+Доказательство: джоба e2e «relays inside the bots» стартует каждого бота без
+релея, затем поднимает *личный* релей под ключ этого бота, затем сообщает боту
+адрес — порядок как в приложении — и доставляет по живой i2p. Чего она не
+проверяет, так это самого `Core` (харнесс работает на `SessionManager`), поэтому
+обвязка выше закрыта юнит-тестами крейта приложения и ручной проверкой на
+CI-сборке.
 
-## Decision (2026-09-17): a network of relays after all
+## Решение (2026-09-17): всё-таки сеть релеев
 
-The recommendation above said "not D". The owner reversed that, for a reason
-the earlier options could not answer: with built-in relays, **closing the app
-loses mail**. The relay dies with the process, its address changes on every
-launch, and two contacts who were never online at the same time lose each
-other for good. The owner's requirements, asked one by one:
+Рекомендация выше говорила «не D». Владелец её развернул, по причине, на которую
+прежние варианты ответить не могли: со встроенными релеями **закрытие приложения
+теряет почту**. Релей умирает вместе с процессом, его адрес меняется при каждом
+запуске, а два контакта, которые ни разу не были в сети одновременно, теряют друг
+друга навсегда. Требования владельца, по одному:
 
-- Offline mail is held by **the whole gipny network**: every relay stores
-  sealed items for others, replicated.
-- Addresses **stay ephemeral**; a contact's current address is found through
-  the network, not by asking for a fresh card. There must never be a "your
-  contact is gone, re-add their card" moment: mail sent to a dead address
-  reaches the new one, and the card update back is acknowledged too.
-- Adding a card sends a **request** the other side accepts.
-- Entry into the network: contacts' last relays, a saved table of nodes, and a
-  **seed node run on a GitHub Actions worker** that carries its state, encrypted,
-  from one run to the next.
+- Почту для офлайна держит **вся сеть gipny**: каждый релей хранит запечатанные
+  элементы для других, с репликацией.
+- Адреса **остаются эфемерными**; текущий адрес контакта находится через сеть, а
+  не запросом свежей карточки. Момента «контакт пропал, добавьте карточку заново»
+  быть не должно: письмо, ушедшее на мёртвый адрес, доходит до нового, и
+  обновление карточки обратно тоже подтверждается.
+- Добавление карточки отправляет **запрос**, который вторая сторона принимает.
+- Вход в сеть: последние релеи контактов, сохранённая таблица узлов и **сид-узел
+  на воркере GitHub Actions**, который переносит своё состояние, зашифрованным,
+  из одного запуска в следующий.
 
-It is not D as written above. D stored blobs in i2p's own netdb; this stores
-them on gipny relays, which already exist in every app and agent, and reuses
-their connections. It is five phases:
+Это не D в том виде, как написано выше. D хранил блобы в собственной netdb i2p;
+здесь они лежат на релеях gipny, которые уже есть в каждом приложении и агенте, и
+переиспользуют их соединения. Работа разбита на пять фаз:
 
-1. Delivery holes with no new protocol (#70).
-2. Contact requests (#71).
-3. `dht/` (`gipny-dht`): protocol, sealing and an in-memory network, with no
-   integration yet.
-4. Integration into the app and the agent.
-5. `core/relay` as the seed node, its encrypted state on GitHub, and a live-i2p e2e.
+1. Дырки доставки без нового протокола (#70).
+2. Запросы в контакты (#71).
+3. `dht/` (`gipny-dht`): протокол, запечатывание и сеть в памяти, пока без
+   интеграции (#72).
+4. Интеграция в приложение и агента: 4a — узлы находят друг друга и публикуют
+   адреса (#76, в 0.4.4); 4b — отправка и сбор писем через сеть, подтверждаемое
+   объявление адреса (#80).
+5. `core/relay` как сид-узел, его зашифрованное состояние на GitHub и e2e по
+   живой i2p.
 
-### What a storing node can learn
+### Что может узнать хранящий узел
 
-Nothing it could use to tell who talks to whom.
+Ничего, чем можно было бы связать людей друг с другом.
 
-- **Keys.**
-  - Mail between two contacts is stored under `HMAC(pair, "mail" ‖ recipient ‖ day)`. `pair` is derived from X25519 of the two identities' static keys, so only those two can compute the key.
-  - A first letter goes under `HMAC(card, "intro" ‖ day)`. Only someone holding the recipient's card can compute that.
-  - Keys roll over daily, so no long-lived mailbox exists to watch.
-- **Values.**
-  - Every value is sealed again on top of the session layer (XChaCha20-Poly1305). Otherwise the ratchet header, stored in the clear, would link one letter to the next.
-  - Values are padded to a power-of-two size.
-  - A first letter names its sender, so it is sealed to the recipient's public key with an ephemeral key instead.
-- **Records.**
-  - Address and prekey-bundle records are signed by their owner *inside* the ciphertext. Readers take the newest valid one.
-  - An address record is readable only by the pair it was made for, so strangers holding a card cannot track when someone is online.
-- **Node identity.** A node's id is the hash of its relay destination. Nothing ties it to the person running the node.
-- **Storing** needs no login. Each store costs proof of work bound to the connection's challenge, the key and the value, and nodes enforce quotas.
-- **Deleting** needs a token found only inside the sealed value, so only the recipient can delete.
+- **Ключи.**
+  - Почта между двумя контактами лежит под `HMAC(pair, "mail" ‖ получатель ‖ сутки)`.
+    `pair` выводится из X25519 статических ключей двух личностей, поэтому ключ
+    могут вычислить только эти двое.
+  - Первое письмо ложится под `HMAC(card, "intro" ‖ сутки)`. Это может вычислить
+    только тот, у кого есть карточка получателя.
+  - Ключи меняются каждые сутки, поэтому долгоживущего ящика, за которым можно
+    было бы наблюдать, не существует.
+- **Значения.**
+  - Каждое значение запечатывается ещё раз поверх слоя сессии
+    (XChaCha20-Poly1305). Иначе заголовок ratchet, который лежит открытым, связал
+    бы письма между собой.
+  - Значения дополняются до размера, равного степени двойки.
+  - Первое письмо называет отправителя, поэтому оно запечатывается на открытый
+    ключ получателя эфемерным ключом.
+- **Записи.**
+  - Записи адреса и prekey-пакета подписаны владельцем *внутри* шифротекста.
+    Читатель берёт самую новую действительную.
+  - Запись адреса читает только та пара, для которой она сделана, поэтому
+    посторонние с карточкой не могут следить, когда человек в сети.
+- **Личность узла.** Идентификатор узла — хэш destination его релея. Ничто не
+  связывает его с человеком, который узел держит.
+- **Запись** не требует входа. Каждое сохранение стоит отправителю
+  доказательства работы, привязанного к challenge соединения, ключу и значению, а
+  узлы держат квоты.
+- **Удаление** требует токена, который лежит только внутри запечатанного
+  значения, поэтому удалить может лишь получатель.
 
-### What it does not promise
+### Чего это не обещает
 
-Mail arrives only if some storing node outlives the recipient's absence.
-Those nodes are contacts' apps, agents, and the seed; the seed is briefly down
-at every six-hour handover. Phones never store for others. Looking something
-up across i2p takes tens of seconds. That is acceptable for the offline path,
-and direct delivery stays the main path.
+Письмо дойдёт, только если хоть один хранящий узел пережил отсутствие получателя.
+Эти узлы — приложения контактов, агенты и сид; сид кратко недоступен на каждой
+пересменке раз в шесть часов. Телефоны для других не хранят никогда. Поиск по
+сети через i2p занимает десятки секунд. Для офлайн-пути это допустимо, а прямая
+доставка остаётся основной.
 
-## Prerequisites either way
+## Предпосылки в любом случае
 
-- `DEFAULT_RELAY` must stop being a compile-time constant (`libcore/src/relay.rs`).
-- Contact cards need a relay field and a version bump (`ui/src/api.ts`).
-- The stale-address problem has to be solved before any direct path: today the
-  destination in a card is ephemeral, and validation accepts anything ending in
-  `.i2p` (`ui/src/contact.ts`).
+- `DEFAULT_RELAY` должен перестать быть константой времени сборки
+  (`libcore/src/relay.rs`).
+- Карточкам контакта нужно поле релея и поднятие версии (`ui/src/api.ts`).
+- Проблему устаревшего адреса надо решить до любого прямого пути: сегодня
+  destination в карточке эфемерный, а проверка принимает что угодно,
+  оканчивающееся на `.i2p` (`ui/src/contact.ts`).
