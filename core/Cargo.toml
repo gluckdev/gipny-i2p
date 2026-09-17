@@ -29,6 +29,9 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
+# PDF metadata removal in the attachment sanitizer. Pure Rust; the default
+# features (chrono clock, rayon) are not needed for load → edit → save.
+lopdf = { version = "0.36", default-features = false }
 serde-big-array = { workspace = true }
 bincode = { workspace = true }
 zeroize = { workspace = true }

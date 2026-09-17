@@ -142,6 +142,32 @@ export class SettingsModal {
           );
         })(),
 
+        h('div', { class: 'divider-text' }, 'приватность'),
+        (() => {
+          const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
+          const err = h('div', { class: 'err' });
+          Api.getAttachmentPrivacy().then((v) => { cb.checked = v; }).catch(() => { cb.checked = true; });
+          cb.addEventListener('change', () => {
+            err.textContent = '';
+            Api.setAttachmentPrivacy(cb.checked).catch((e) => {
+              err.textContent = String(e);
+              cb.checked = !cb.checked;
+            });
+          });
+          return h('div', null,
+            h('label', { class: 'opt', style: { alignItems: 'center' } },
+              cb,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, 'очищать метаданные вложений'),
+                h('span', { class: 'opt-blurb' },
+                  'перед отправкой из фото и PDF удаляются EXIF/XMP/IPTC и авторские '
+                  + 'поля, имена фото с камеры заменяются на нейтральные. Формат, который '
+                  + 'нельзя очистить, не отправится — выключите приватность или пришлите '
+                  + 'другой файл. Команды агента отправляются как есть.'))),
+            err,
+          );
+        })(),
+
         h('div', { class: 'divider-text' }, 'agent mode'),
         (() => {
           const picker = h('select', { class: 'input' }) as HTMLSelectElement;

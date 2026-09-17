@@ -225,6 +225,13 @@ export class Api {
   static setRelayAddress(addr: string): Promise<void> {
     return invoke('set_relay_address', { addr });
   }
+  /** Strip private metadata from local attachments before they are sent. */
+  static getAttachmentPrivacy(): Promise<boolean> {
+    return invoke('get_attachment_privacy');
+  }
+  static setAttachmentPrivacy(enabled: boolean): Promise<void> {
+    return invoke('set_attachment_privacy', { enabled });
+  }
   static addContact(
     onion: string, signPk: string, dhPk: string, name: string, relay?: string,
   ): Promise<number> {

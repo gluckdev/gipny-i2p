@@ -59,6 +59,11 @@ jobs:
         run: |
           cd ui && npm ci && npm run build && cd ..
           cargo build --release -p gipny
+      # The app crate has tests of its own now (the attachment sanitizer, and
+      # that console uploads bypass it); only libcore's ran before. After the
+      # build, so the frontend the build script wants already exists.
+      - name: app crate tests
+        run: cargo test --release -p gipny --lib
 
   # ---------------------------------------------------------------------------
   # macOS: the app and libcore's tests on Apple Silicon. The Rust is the same on
@@ -86,6 +91,11 @@ jobs:
         run: |
           cd ui && npm ci && npm run build && cd ..
           cargo build --release -p gipny
+      # The app crate has tests of its own now (the attachment sanitizer, and
+      # that console uploads bypass it); only libcore's ran before. After the
+      # build, so the frontend the build script wants already exists.
+      - name: app crate tests
+        run: cargo test --release -p gipny --lib
 
   # ---------------------------------------------------------------------------
   # Rust tests: crypto core (X3DH, Double Ratchet, attachment chunks), vault
