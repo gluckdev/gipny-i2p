@@ -93,7 +93,7 @@ export class GroupModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, `── group :: ${g.name} ──`),
+        h('div', { class: 'modal-title' }, g.name),
         h('button', { class: 'icon-btn', onClick: closeWrapped }, 'x'),
       ),
       h('div', { class: 'modal-body' },
@@ -147,7 +147,7 @@ export class CreateGroupModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── new group ──'),
+        h('div', { class: 'modal-title' }, 'Новая группа'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },

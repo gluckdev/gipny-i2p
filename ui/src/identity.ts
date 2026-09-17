@@ -10,6 +10,7 @@ function kv(label: string, value: string): HTMLElement {
   );
 }
 
+import { avatarPicker } from './avatar-picker';
 export class IdentityModal {
   el: HTMLElement;
   constructor(store: Store, close: () => void) {
@@ -89,10 +90,11 @@ export class IdentityModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── my identity ──'),
+        h('div', { class: 'modal-title' }, 'Моя карточка'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },
+        id && avatarPicker(id.card.sign_pk, 'Ваша аватарка на этом устройстве; собеседники видят свою', (e) => store.showToast(String(e), true)),
         h('div', { class: 'field' },
           h('label', null, 'display name'),
           h('div', { class: 'row' },

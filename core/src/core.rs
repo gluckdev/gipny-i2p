@@ -51,6 +51,10 @@ const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// Default on: absent or anything but `"0"` means auto-update stays on,
 /// matching `attachment_privacy`'s convention.
 const SETTING_AUTO_UPDATE: &str = "auto_update";
+/// What the interface keeps in the vault for itself (JSON it does not
+/// interpret here): contact folders, chosen avatars. Only these keys.
+const UI_DATA_KEYS: &[&str] = &["contact_folders", "avatars"];
+const MAX_UI_DATA_BYTES: usize = 64 * 1024;
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;
 const PURGE_INTERVAL_SECS: u64 = 60;
@@ -1180,6 +1184,26 @@ impl Core {
     /// or just notify and leave it to the UI's manual prompt.
     pub fn auto_update_enabled(&self) -> bool {
         !matches!(self.db.get_setting(SETTING_AUTO_UPDATE).ok().flatten().as_deref(), Some(b"0"))
+    }
+
+    /// The interface's own data under `key` (see `UI_DATA_KEYS`), kept in the
+    /// vault so it comes back with the profile. `None` when never saved.
+    pub fn ui_data(&self, key: &str) -> Result<Option<String>> {
+        if !UI_DATA_KEYS.contains(&key) {
+            return Err(CoreError::NotFound);
+        }
+        Ok(self.db.get_setting(&format!("ui_{key}"))?.and_then(|v| String::from_utf8(v).ok()))
+    }
+
+    pub fn set_ui_data(&self, key: &str, json: &str) -> Result<()> {
+        if !UI_DATA_KEYS.contains(&key) {
+            return Err(CoreError::NotFound);
+        }
+        if json.len() > MAX_UI_DATA_BYTES {
+            return Err(CoreError::Db(gipny_libcore::db::DbError::TooLarge));
+        }
+        self.db.set_setting(&format!("ui_{key}"), json.as_bytes())?;
+        Ok(())
     }
 
     pub fn set_auto_update(&self, enabled: bool) -> Result<()> {

@@ -5,6 +5,25 @@ export interface VaultStatus { exists: boolean; unlocked: boolean; }
 
 export interface IdentityCard { sign_pk: string; dh_pk: string; }
 
+/** A folder the person made for their contacts. Kept in the vault as JSON;
+ * the backend does not look inside. */
+export interface ContactFolder {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  contacts: number[];
+}
+
+/** The relay network as this device's node sees it. */
+export interface DhtStatus {
+  peers: number;
+  items: number;
+  bytes: number;
+  joined: boolean;
+  stores: boolean;
+  seeds: number;
+}
+
 export interface Contact {
   id: number;
   sign_pk: string;
@@ -459,6 +478,32 @@ export class Api {
   }
   static dismissUpdate(version: string): Promise<void> {
     return invoke('dismiss_update', { version });
+  }
+  static async getContactFolders(): Promise<ContactFolder[]> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'contact_folders' })) ?? '[]');
+      return Array.isArray(parsed) ? parsed as ContactFolder[] : [];
+    } catch {
+      return [];
+    }
+  }
+  static setContactFolders(folders: ContactFolder[]): Promise<void> {
+    return invoke('set_ui_data', { key: 'contact_folders', json: JSON.stringify(folders) });
+  }
+  /** Avatar picked per key (sign_pk hex → avatar id); unpicked keys get a default. */
+  static async getAvatarChoices(): Promise<Record<string, string>> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'avatars' })) ?? '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+    } catch {
+      return {};
+    }
+  }
+  static setAvatarChoices(choices: Record<string, string>): Promise<void> {
+    return invoke('set_ui_data', { key: 'avatars', json: JSON.stringify(choices) });
+  }
+  static getDhtStatus(): Promise<DhtStatus> {
+    return invoke('get_dht_status');
   }
   static getAutoUpdate(): Promise<boolean> {
     return invoke('get_auto_update');

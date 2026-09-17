@@ -1,4 +1,5 @@
 import type { Signal } from './state';
+import { avatarIndex, paintAvatar } from './avatars';
 
 export type Child = Node | string | number | null | undefined | false | Child[];
 
@@ -33,10 +34,31 @@ export function h<K extends keyof HTMLElementTagNameMap>(
 export function appendAll(parent: Node, children: Child[]): void {
   for (const c of children) {
     if (c == null || c === false) continue;
-    if (Array.isArray(c)) appendAll(parent, c);
+    // Text first, and only ever as a text node: strings here are often what a
+    // person typed (names, folders) and must never be parsed as markup.
+    if (typeof c === 'string' || typeof c === 'number') parent.appendChild(document.createTextNode(String(c)));
+    else if (Array.isArray(c)) appendAll(parent, c);
     else if (c instanceof Node) parent.appendChild(c);
-    else parent.appendChild(document.createTextNode(String(c)));
   }
+}
+
+/** A round avatar. For a person (`seed` = their signing key) it is their
+ * character from the avatar sprite; with `picture` false (groups) it is the
+ * name's initials in a colour that stays the same for the same `seed`. */
+export function avatar(name: string, seed: string, extra = '', picture = true): HTMLElement {
+  if (picture) {
+    const pic = h('div', { class: 'avatar' + (extra ? ' ' + extra : ''), role: 'img', 'aria-label': name });
+    paintAvatar(pic, avatarIndex(seed));
+    return pic;
+  }
+  const words = name.trim().split(/[\s._@-]+/).filter(Boolean);
+  const [a, b] = words;
+  const initials = (a && b ? a.charAt(0) + b.charAt(0) : (a ?? '?').slice(0, 2)).toUpperCase();
+  let hash = 0;
+  for (const ch of seed || name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const el = h('div', { class: 'avatar' + (extra ? ' ' + extra : '') }, initials);
+  el.style.setProperty('--avatar-hue', String(hash % 360));
+  return el;
 }
 
 export function fmtTime(ts: number): string {
@@ -56,7 +78,7 @@ export function fmtFp(hex: string): string {
 }
 
 export function trustLabel(t: number): string {
-  return ['UNVERIFIED', 'VERIFIED', 'BLOCKED'][t] ?? 'UNKNOWN';
+  return ['Не проверен', 'Проверен', 'Заблокирован'][t] ?? 'Неизвестно';
 }
 
 export async function busy(btn: HTMLButtonElement, fn: () => Promise<void>): Promise<void> {
@@ -78,13 +100,13 @@ export function short(s: string, n = 22): string {
 
 export function fmtAgo(ts: number): string {
   const d = Math.max(0, Date.now() - ts);
-  if (d < 60_000) return 'just now';
+  if (d < 60_000) return 'только что';
   const m = Math.floor(d / 60_000);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m} мин назад`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return `${h} ч назад`;
   const days = Math.floor(h / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return `${days} дн назад`;
   return new Date(ts).toISOString().slice(0, 10);
 }
 

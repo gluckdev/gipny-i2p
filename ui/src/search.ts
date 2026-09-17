@@ -37,7 +37,7 @@ export class SearchModal {
 
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── search ──'),
+        h('div', { class: 'modal-title' }, 'Поиск по сообщениям'),
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },

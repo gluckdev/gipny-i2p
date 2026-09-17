@@ -3,7 +3,9 @@ import { Api, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CO
 import type { Message } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
-import { View, h, fmtTime, fmtDate, fmtAgo, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
+import { icon } from './icons';
+import { onAvatarsChanged } from './avatars';
+import { View, h, avatar, fmtTime, fmtDate, fmtAgo, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
 import { PinnedBanner, EditInline, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
 import { ContactModal } from './contact';
@@ -57,21 +59,21 @@ export class ChatView extends View {
     this.typingHeader = h('div', { class: 'chat-typing', style: { display: 'none' } });
     const statusEl = h('div', { class: 'chat-status' });
     const computeSub = (): string => isGroup
-      ? `group · ${(store.groupMembers.get().get(target.id)?.length ?? 0)} members`
-      : short(store.contacts.get().find((c) => c.id === target.id)?.onion ?? '');
+      ? `${(store.groupMembers.get().get(target.id)?.length ?? 0)} участн.`
+      : '';
     subEl.textContent = computeSub();
     const renderStatus = (): void => {
       if (isGroup) { statusEl.textContent = ''; return; }
       const cid = target.id as number;
       const online = store.peerOnline.get().has(cid);
       if (online) {
-        statusEl.textContent = '● online';
+        statusEl.textContent = 'в сети';
         statusEl.className = 'chat-status online';
         return;
       }
       const ls = store.contacts.get().find((c) => c.id === cid)?.last_seen ?? null;
       statusEl.className = 'chat-status';
-      statusEl.textContent = ls != null ? `last seen ${fmtAgo(ls)}` : '';
+      statusEl.textContent = ls != null ? `был(а) в сети ${fmtAgo(ls)}` : 'не в сети';
     };
     renderStatus();
 
@@ -98,10 +100,10 @@ export class ChatView extends View {
     // On a touch keyboard Enter is a newline and there is no Shift+Enter to
     // explain; the long hint also wraps to a second line at phone width.
     const placeholderFor = (consoleMode: boolean): string => {
-      if (isTouch) return consoleMode ? 'command…' : 'message…';
+      if (isTouch) return consoleMode ? 'Команда…' : 'Сообщение…';
       return consoleMode
-        ? 'command... (enter to run, shift+enter newline)'
-        : 'type message... (enter to send, shift+enter newline)';
+        ? 'Команда… (Enter — выполнить, Shift+Enter — новая строка)'
+        : 'Сообщение… (Enter — отправить, Shift+Enter — новая строка)';
     };
     this.input = h('textarea', {
       placeholder: placeholderFor(false),
@@ -142,14 +144,14 @@ export class ChatView extends View {
     // has room for it and the icon alone where it does not.
     const detailsBtn = h('button', {
       class: 'btn btn-ghost chat-details',
-      title: isGroup ? 'members' : 'contact details',
+      title: isGroup ? 'Участники' : 'Профиль контакта',
       onClick: () => (isGroup ? this.openGroupDetails() : this.openContactDetails()),
     },
-      h('span', { class: 'chat-details-icon', 'aria-hidden': 'true' }, 'ⓘ'),
-      h('span', { class: 'chat-details-label' }, isGroup ? 'Members' : 'Details'),
+      h('span', { class: 'chat-details-icon', 'aria-hidden': 'true' }, icon('info', 18)),
+      h('span', { class: 'chat-details-label' }, isGroup ? 'Участники' : 'Профиль'),
     );
-    const searchBtn = h('button', { class: 'btn btn-ghost', title: 'search in this chat', onClick: () => this.openSearch() }, '⌕');
-    const mediaBtn = h('button', { class: 'btn btn-ghost', title: 'media in this chat', onClick: () => this.openMedia() }, '◉');
+    const searchBtn = h('button', { class: 'icon-btn', title: 'Поиск в чате', onClick: () => this.openSearch() }, icon('search'));
+    const mediaBtn = h('button', { class: 'icon-btn', title: 'Медиа и файлы', onClick: () => this.openMedia() }, icon('image'));
 
     const agentControls = h('div', { class: 'agent-controls' });
     this.modeBtn = h('button', {
@@ -193,7 +195,7 @@ export class ChatView extends View {
       : (() => {
           const c = store.contacts.get().find((x) => x.id === (target.id as number));
           return h('div', { class: 'row chat-actions' },
-            h('span', {
+            (c?.trust ?? 0) !== 0 && h('span', {
               class: 'trust-badge trust-' + (c?.trust ?? 0),
               title: trustLabel(c?.trust ?? 0),
             }, trustLabel(c?.trust ?? 0)),
@@ -206,13 +208,18 @@ export class ChatView extends View {
 
     this.pinnedBanner = new PinnedBanner(store, target);
 
+    const avatarSeed = isGroup ? String(target.id) : (store.contacts.get().find((x) => x.id === target.id)?.sign_pk ?? title);
+    const headerAvatar = h('div', { class: 'chat-avatar-slot' }, avatar(title, avatarSeed, (isGroup ? 'avatar-group ' : '') + 'chat-avatar', !isGroup));
+    this.subs.push(onAvatarsChanged(() => {
+      headerAvatar.replaceChildren(avatar(title, avatarSeed, (isGroup ? 'avatar-group ' : '') + 'chat-avatar', !isGroup));
+    }));
+
     // With built-in relays a contact's address lasts until they restart. If it
     // has been silent for a while with mail queued, say so and say what helps —
     // the alternative is messages that wait forever with no explanation.
     this.unreachableNote = h('div', { class: 'chat-notice hidden' },
-      'релей контакта не отвечает больше 10 минут — сообщения ждут в очереди. Если контакт перезапускал '
-      + 'приложение, адрес его релея сменился: попросите свежую карточку («моя карточка») и добавьте её '
-      + 'снова — переписка сохранится.');
+      'Контакт давно не на связи. Сообщения сохранены и будут отправляться повторно, пока он не появится '
+      + 'в сети (до 7 дней); когда он запустит приложение, его новый адрес придёт сам.');
     this.sub(store.unreachable, (set) => {
       const hit = target.kind === 'contact' && set.has(target.id as number);
       this.unreachableNote.classList.toggle('hidden', !hit);
@@ -224,7 +231,8 @@ export class ChatView extends View {
           class: 'chat-back icon-btn',
           title: 'back',
           onClick: () => store.selectedChat.set(null),
-        }, '←'),
+        }, icon('back')),
+        headerAvatar,
         h('div', { class: 'chat-heading' },
           h('div', { class: 'chat-title', title }, title),
           subEl,
@@ -242,11 +250,11 @@ export class ChatView extends View {
         h('div', { class: 'chat-input-row' },
           this.promptEl = h('div', { class: 'prompt' }, '>'),
           this.input,
-          h('button', { class: 'btn btn-ghost', title: 'attach', onClick: () => this.pickFiles() }, '[+]'),
-          h('button', { class: 'btn', onClick: () => this.send() }, 'Send'),
+          h('button', { class: 'icon-btn', title: 'Прикрепить файл', onClick: () => this.pickFiles() }, icon('attach')),
+          h('button', { class: 'btn chat-send', title: 'Отправить', onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, 'Отправить')),
         ),
         h('div', { class: 'chat-input-meta' },
-          h('span', null, 'ratchet: active · aead: xchacha20-poly1305'),
+          h('span', { class: 'chat-e2e' }, icon('lock', 13), 'Сквозное шифрование'),
           this.ttlPicker,
         ),
       ),
@@ -584,8 +592,9 @@ export class ChatView extends View {
     if (m.console) return this.renderConsoleMessage(m);
     if (this.editingId === m.id) return this.renderEditing(m);
     const meta = m.outgoing
-      ? (m.delivered ? 'delivered ✓✓' : (m.sent ? 'sent ✓' : 'pending…'))
+      ? (m.delivered ? '✓✓' : (m.sent ? '✓' : '🕓'))
       : '';
+    const metaTitle = m.delivered ? 'Доставлено' : m.sent ? 'Отправлено' : 'Ждёт отправки';
     const sender = this.senderNameFor(m);
     const pinned = this.isPinned(m);
     const fromBot = !m.outgoing && this.isFromBot(m);
@@ -597,10 +606,13 @@ export class ChatView extends View {
       sender && h('div', { class: 'msg-sender' }, sender),
       replyQuote,
       h('div', { class: 'msg-row' },
-        h('div', { class: 'msg-ts' }, fmtTime(m.sent_at)),
-        h('div', { class: 'msg-body' }, m.body),
-        pinned && h('div', { class: 'msg-pin-indicator', title: 'pinned' }, '◆'),
-        meta && h('div', { class: 'msg-meta' }, meta),
+        h('div', { class: 'msg-body' }, m.body,
+          h('span', { class: 'msg-foot' },
+            pinned && h('span', { class: 'msg-pin-indicator', title: 'Закреплено' }, '📌'),
+            h('span', { class: 'msg-ts' }, fmtTime(m.sent_at)),
+            meta && h('span', { class: 'msg-meta' + (m.delivered ? ' delivered' : ''), title: metaTitle }, meta),
+          ),
+        ),
       ),
     );
     attachContextMenu(wrap, () => messageMenuItems(
@@ -647,9 +659,9 @@ export class ChatView extends View {
   private renderConsoleMessage(m: Message): HTMLElement {
     const frame = m.console!;
     if (frame.kind === CONSOLE_GRANT || frame.kind === CONSOLE_REVOKE || frame.kind === CONSOLE_OFF) {
-      const text = frame.kind === CONSOLE_GRANT ? '── консоль открыта ──'
-        : frame.kind === CONSOLE_OFF ? '── мастер выключил режим агента ──'
-        : '── консоль закрыта ──';
+      const text = frame.kind === CONSOLE_GRANT ? 'Консоль открыта'
+        : frame.kind === CONSOLE_OFF ? 'Мастер выключил режим агента'
+        : 'Консоль закрыта';
       return h('div', { class: 'divider-text console-divider', 'data-mid': String(m.id) }, text);
     }
     const wrap = h('div', { class: 'console-msg', 'data-mid': String(m.id) });

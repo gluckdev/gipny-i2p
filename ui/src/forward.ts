@@ -22,19 +22,19 @@ export class ForwardModal {
       const filteredGroups = groups.filter((g) => matches(g.name));
       const filteredContacts = contacts.filter((c) => matches(c.name));
       if (filteredGroups.length > 0) {
-        list.appendChild(h('div', { class: 'section-label' }, '── groups ──'));
+        list.appendChild(h('div', { class: 'section-label' }, 'Группы'));
         for (const g of filteredGroups) {
           list.appendChild(this.row(`◫  ${g.name}`, { kind: 'group', id: g.id }));
         }
       }
       if (filteredContacts.length > 0) {
-        list.appendChild(h('div', { class: 'section-label' }, '── contacts ──'));
+        list.appendChild(h('div', { class: 'section-label' }, 'Контакты'));
         for (const c of filteredContacts) {
           list.appendChild(this.row(`●  ${c.name}`, { kind: 'contact', id: c.id }));
         }
       }
       if (filteredGroups.length === 0 && filteredContacts.length === 0) {
-        list.appendChild(h('div', { class: 'empty', style: { padding: '20px' } }, '── no chats ──'));
+        list.appendChild(h('div', { class: 'empty', style: { padding: '20px' } }, 'Нет чатов'));
       }
     };
     search.addEventListener('input', render);
@@ -42,7 +42,7 @@ export class ForwardModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, '── FORWARD TO ──'),
+        h('div', { class: 'modal-title' }, 'Переслать'),
         h('button', { class: 'icon-btn', onClick: () => this.close() }, 'x'),
       ),
       h('div', { class: 'modal-body' },
