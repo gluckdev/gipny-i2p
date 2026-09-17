@@ -460,6 +460,16 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_dht_items_k ON dht_items(k);
             CREATE INDEX IF NOT EXISTS idx_dht_items_exp ON dht_items(expires_at);
 
+            -- Letters taken from the relay network and already handled: a
+            -- ratchet envelope decrypted twice looks like a broken session and
+            -- would trigger a resync, and deletion from the network is not
+            -- guaranteed to reach every node.
+            CREATE TABLE IF NOT EXISTS dht_seen (
+                envelope_hash BLOB PRIMARY KEY,
+                seen_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_dht_seen_age ON dht_seen(seen_at);
+
             CREATE TABLE IF NOT EXISTS dht_peers (
                 destination TEXT PRIMARY KEY,
                 stores INTEGER NOT NULL,
@@ -1682,6 +1692,25 @@ impl Db {
         })
     }
 
+    /// Records a letter as handled; `false` when it already was.
+    pub fn dht_seen_mark(&self, envelope_hash: &[u8; 32], now_ms: i64) -> Result<bool> {
+        self.with_conn(|c| Ok(c.execute(
+            "INSERT OR IGNORE INTO dht_seen (envelope_hash, seen_at) VALUES (?1, ?2)",
+            params![&envelope_hash[..], now_ms])? > 0))
+    }
+
+    /// Undo a mark, for a letter that turned out not to be handled after all.
+    pub fn dht_seen_forget(&self, envelope_hash: &[u8; 32]) -> Result<()> {
+        self.with_conn(|c| {
+            c.execute("DELETE FROM dht_seen WHERE envelope_hash = ?1", params![&envelope_hash[..]])?;
+            Ok(())
+        })
+    }
+
+    pub fn dht_seen_purge(&self, older_than: i64) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute("DELETE FROM dht_seen WHERE seen_at < ?1", params![older_than])?))
+    }
+
     /// Saved nodes, longest known first: a node that has been around longer
     /// is likelier to still be.
     pub fn dht_peers_load(&self) -> Result<Vec<String>> {
@@ -1777,6 +1806,43 @@ mod retry_tests {
             db.pending_outbound_record_attempt(recent, contact).unwrap();
         }
         assert_eq!(db.pending_outbound_for_recipient(contact, later, 5_000, 300_000, 50).unwrap(), vec![recent]);
+    }
+}
+
+#[cfg(test)]
+mod dht_tests {
+    use super::*;
+
+    #[test]
+    fn a_letter_is_handled_once_until_forgotten_or_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("t.db")).unwrap();
+        let hash = [9u8; 32];
+        assert!(db.dht_seen_mark(&hash, 1_000).unwrap(), "first time is ours to handle");
+        assert!(!db.dht_seen_mark(&hash, 2_000).unwrap(), "a second copy is skipped");
+        // Not handled after all: the next pass must try again.
+        db.dht_seen_forget(&hash).unwrap();
+        assert!(db.dht_seen_mark(&hash, 3_000).unwrap());
+        assert_eq!(db.dht_seen_purge(4_000).unwrap(), 1);
+        assert!(db.dht_seen_mark(&hash, 5_000).unwrap());
+    }
+
+    #[test]
+    fn items_held_for_others_survive_and_are_capped_per_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("t.db")).unwrap();
+        let limits = gipny_dht::store::StoreLimits { max_items_per_key: 2, ..Default::default() };
+        let item = |v: &[u8]| gipny_dht::proto::StoredItem {
+            key: [1u8; 32], value: v.to_vec(), delete_hash: None, expires_at_ms: 10_000,
+        };
+        db.dht_item_put(&item(b"a"), &limits).unwrap();
+        db.dht_item_put(&item(b"a"), &limits).unwrap();
+        db.dht_item_put(&item(b"b"), &limits).unwrap();
+        db.dht_item_put(&item(b"c"), &limits).unwrap();
+        let held: Vec<Vec<u8>> = db.dht_items_get(&[1u8; 32], 0).unwrap().into_iter().map(|i| i.value).collect();
+        assert_eq!(held, vec![b"b".to_vec(), b"c".to_vec()], "the oldest under the key goes first");
+        assert_eq!(db.dht_items_stats().unwrap(), (2, 2));
+        assert!(db.dht_items_get(&[1u8; 32], 20_000).unwrap().is_empty(), "expired items are not served");
     }
 }
 
