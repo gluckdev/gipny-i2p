@@ -173,6 +173,63 @@ the app's order — and delivers over live i2p. What it does not exercise is
 `Core` itself (the harness drives `SessionManager`), so the wiring above is
 covered by the app crate's unit tests and a manual check on a CI build.
 
+## Decision (2026-09-17): a network of relays after all
+
+The recommendation above said "not D". The owner reversed that, for a reason
+the earlier options could not answer: with built-in relays, **closing the app
+loses mail**. The relay dies with the process, its address changes on every
+launch, and two contacts who were never online at the same time lose each
+other for good. The owner's requirements, asked one by one:
+
+- Offline mail is held by **the whole gipny network**: every relay stores
+  sealed items for others, replicated.
+- Addresses **stay ephemeral**; a contact's current address is found through
+  the network, not by asking for a fresh card. There must never be a "your
+  contact is gone, re-add their card" moment: mail sent to a dead address
+  reaches the new one, and the card update back is acknowledged too.
+- Adding a card sends a **request** the other side accepts.
+- Entry into the network: contacts' last relays, a saved table of nodes, and a
+  **seed node run on a GitHub Actions worker** that carries its state, encrypted,
+  from one run to the next.
+
+It is not D as written above. D stored blobs in i2p's own netdb; this stores
+them on gipny relays, which already exist in every app and agent, and reuses
+their connections. It is five phases:
+
+1. Delivery holes with no new protocol (#70).
+2. Contact requests (#71).
+3. `dht/` (`gipny-dht`): protocol, sealing and an in-memory network, with no
+   integration yet.
+4. Integration into the app and the agent.
+5. `core/relay` as the seed node, its encrypted state on GitHub, and a live-i2p e2e.
+
+### What a storing node can learn
+
+Nothing it could use to tell who talks to whom.
+
+- **Keys.**
+  - Mail between two contacts is stored under `HMAC(pair, "mail" ‖ recipient ‖ day)`. `pair` is derived from X25519 of the two identities' static keys, so only those two can compute the key.
+  - A first letter goes under `HMAC(card, "intro" ‖ day)`. Only someone holding the recipient's card can compute that.
+  - Keys roll over daily, so no long-lived mailbox exists to watch.
+- **Values.**
+  - Every value is sealed again on top of the session layer (XChaCha20-Poly1305). Otherwise the ratchet header, stored in the clear, would link one letter to the next.
+  - Values are padded to a power-of-two size.
+  - A first letter names its sender, so it is sealed to the recipient's public key with an ephemeral key instead.
+- **Records.**
+  - Address and prekey-bundle records are signed by their owner *inside* the ciphertext. Readers take the newest valid one.
+  - An address record is readable only by the pair it was made for, so strangers holding a card cannot track when someone is online.
+- **Node identity.** A node's id is the hash of its relay destination. Nothing ties it to the person running the node.
+- **Storing** needs no login. Each store costs proof of work bound to the connection's challenge, the key and the value, and nodes enforce quotas.
+- **Deleting** needs a token found only inside the sealed value, so only the recipient can delete.
+
+### What it does not promise
+
+Mail arrives only if some storing node outlives the recipient's absence.
+Those nodes are contacts' apps, agents, and the seed; the seed is briefly down
+at every six-hour handover. Phones never store for others. Looking something
+up across i2p takes tens of seconds. That is acceptable for the offline path,
+and direct delivery stays the main path.
+
 ## Prerequisites either way
 
 - `DEFAULT_RELAY` must stop being a compile-time constant (`libcore/src/relay.rs`).

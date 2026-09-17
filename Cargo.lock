@@ -1867,6 +1867,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "gipny-dht"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "futures",
+ "hkdf",
+ "hmac",
+ "rand 0.10.2",
+ "serde",
+ "serde-big-array",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "gipny-libcore"
 version = "0.1.0"
 dependencies = [
