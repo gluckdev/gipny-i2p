@@ -13,7 +13,10 @@ adb install "$APK"
 
 # Cold start: `am start -W` blocks until the activity is displayed
 # and reports TotalTime (ms from launch to first frame).
-START_OUTPUT=$(adb shell am start -W -n app.gipny.i2p/.MainActivity)
+# The installed id is app.gipny.i2p, but the Kotlin namespace (and so the
+# activity class) is app.gipny: `.MainActivity` would resolve to a class that
+# does not exist.
+START_OUTPUT=$(adb shell am start -W -n app.gipny.i2p/app.gipny.MainActivity)
 echo "$START_OUTPUT"
 COLD_MS=$(echo "$START_OUTPUT" | awk '/TotalTime/ {print $2}')
 
