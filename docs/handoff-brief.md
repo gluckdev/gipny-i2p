@@ -126,6 +126,13 @@ KNOWN DEAD CODE, DELIBERATELY LEFT ALONE
 
 USEFUL TO KNOW
 
+- The UI can be looked at without a backend or an APK: `cd ui && npm run dev`,
+  then http://127.0.0.1:5173/dev/preview.html. It boots the real app against a
+  mocked Tauri IPC (`ui/dev/mock.ts`) at phone, tablet and desktop widths, with
+  fixtures that are hostile on purpose (host names, b32 addresses and
+  516-character destinations with no break opportunity), and a button that
+  lists every element sticking out of its viewport. The phone layout was eight
+  screens wide for want of exactly this.
 - `tools/sam-eepsite.py` fetches a real eepsite through whatever router is on
   SAM 7656. It is the fastest way to tell "the router works" from "our code is
   wrong", and it is what ended a day of guessing last time.

@@ -9,10 +9,17 @@
     "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "isolatedModules": true,
     "noEmit": true,
     "useDefineForClassFields": true
   },
-  "include": ["src"]
+  "include": [
+    "src",
+    "dev"
+  ]
 }
