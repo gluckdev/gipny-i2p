@@ -47,6 +47,7 @@ export class ChatView extends View {
   private agentOffBtn: HTMLButtonElement;
   private promptEl: HTMLElement;
   private unreachableNote: HTMLElement;
+  private caffeineBar: HTMLElement;
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
@@ -151,6 +152,12 @@ export class ChatView extends View {
       h('span', { class: 'chat-details-label' }, isGroup ? 'Участники' : 'Профиль'),
     );
     const searchBtn = h('button', { class: 'icon-btn', title: 'Поиск в чате', onClick: () => this.openSearch() }, icon('search'));
+    // «Кофеин»: экран не гаснет, чат не сменить, выход — по паролю профиля.
+    const caffeineBtn = h('button', {
+      class: 'icon-btn',
+      title: 'Кофеин: не гасить экран и остаться в этом чате',
+      onClick: () => void store.startCaffeine(target),
+    }, icon('coffee'));
     const mediaBtn = h('button', { class: 'icon-btn', title: 'Медиа и файлы', onClick: () => this.openMedia() }, icon('image'));
 
     const agentControls = h('div', { class: 'agent-controls' });
@@ -191,10 +198,11 @@ export class ChatView extends View {
     renderAgentControls();
 
     const headerRight = isGroup
-      ? h('div', { class: 'row chat-actions' }, searchBtn, mediaBtn, detailsBtn)
+      ? h('div', { class: 'row chat-actions' }, caffeineBtn, searchBtn, mediaBtn, detailsBtn)
       : (() => {
           const c = store.contacts.get().find((x) => x.id === (target.id as number));
           return h('div', { class: 'row chat-actions' },
+            caffeineBtn,
             (c?.trust ?? 0) !== 0 && h('span', {
               class: 'trust-badge trust-' + (c?.trust ?? 0),
               title: trustLabel(c?.trust ?? 0),
@@ -225,7 +233,22 @@ export class ChatView extends View {
       this.unreachableNote.classList.toggle('hidden', !hit);
     }, true);
 
+    this.caffeineBar = h('div', { class: 'caffeine-bar hidden' },
+      icon('coffee', 18),
+      h('div', { class: 'caffeine-text' },
+        h('div', { class: 'caffeine-title' }, 'Кофеин включён'),
+        h('div', { class: 'caffeine-hint' }, 'экран не гаснет, чат не переключается'),
+      ),
+      h('button', { class: 'btn btn-sm', onClick: () => void this.leaveCaffeine() }, 'Выйти'),
+    );
+    this.sub(store.caffeine, (on) => {
+      const mine = !!on && sameTarget(on, target);
+      this.caffeineBar.classList.toggle('hidden', !mine);
+      caffeineBtn.classList.toggle('hidden', mine);
+    }, true);
+
     this.el = h('div', { class: 'chat' },
+      this.caffeineBar,
       h('div', { class: 'chat-header' },
         h('button', {
           class: 'chat-back icon-btn',
@@ -974,6 +997,30 @@ export class ChatView extends View {
 
   private openGroupDetails(): void {
     this.app.openModal((close) => new GroupModal(this.store, this.app, this.target.id as string, close).el);
+  }
+
+  /** Leaving «кофеин» costs the profile passphrase — that is the whole point
+   * of it. The check goes through the vault, so a duress passphrase still does
+   * what it does and a wrong one still counts towards the attempt limit. */
+  private async leaveCaffeine(): Promise<void> {
+    const pass = await this.app.prompt(
+      'Выйти из кофеина',
+      'Пароль профиля',
+      '',
+      'Выйти',
+      true,
+    );
+    if (!pass) return;
+    try {
+      const result = await Api.verifyPassphrase(pass);
+      await this.store.stopCaffeine();
+      if (result === 'wiped') {
+        this.store.showToast('Профиль стёрт', true);
+        await this.store.lock();
+      }
+    } catch {
+      this.store.showToast('Неверный пароль', true);
+    }
   }
 
   private openSearch(): void {

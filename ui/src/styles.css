@@ -2122,6 +2122,20 @@ body::before { background: none; }
 .art-network { position: absolute; right: -10px; top: -6px; opacity: 0.55; pointer-events: none; }
 .about-hero > :not(.art) { position: relative; }
 
+/* --- «Кофеин»: one chat, screen on, passphrase to leave ---------------------- */
+.main.caffeine { grid-template-columns: minmax(0, 1fr); }
+.main.caffeine > .sidebar { display: none; }
+.caffeine-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px;
+  background: linear-gradient(90deg, rgba(230, 150, 20, 0.16), rgba(230, 150, 20, 0.06));
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.caffeine-text { flex: 1; min-width: 0; }
+.caffeine-title { font-size: 14px; font-weight: 600; }
+.caffeine-hint { font-size: 12px; color: var(--text-dim); }
+
 /* --- Log viewer -------------------------------------------------------------- */
 .log-view {
   margin-top: 10px; padding: 10px 12px;

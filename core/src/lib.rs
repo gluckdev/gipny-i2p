@@ -45,28 +45,76 @@ fn log_enabled(base_dir: &std::path::Path) -> bool {
     )
 }
 
-/// Redirect this process's stderr into a file. Unix only: it is a `dup2`, and
-/// Windows has no equivalent that survives the way Tauri starts up.
+/// Redirect this process's stderr into a file, one timestamped line at a time.
+///
+/// Unix only: it is a `dup2`, and Windows has no equivalent that survives the
+/// way Tauri starts up. stderr goes into a pipe rather than straight into the
+/// file so every line can be stamped — without that, a log of "relay failed"
+/// and "router ready" says nothing about *when*, which is most of what one
+/// needs from it.
 #[cfg(unix)]
 fn install_log_capture(base_dir: &std::path::Path) {
-    use std::os::unix::io::AsRawFd;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
     let log_path = base_dir.join("debug.log");
     // Keep the previous run's log: a crash is only readable afterwards, and
     // truncating on start threw away exactly the interesting one.
     let _ = std::fs::rename(&log_path, base_dir.join("debug.prev.log"));
-    let _ = std::fs::OpenOptions::new()
-        .create(true).write(true).truncate(true)
-        .open(&log_path)
-        .ok()
-        .and_then(|file| {
-            unsafe {
-                if libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) >= 0 {
-                    std::mem::forget(file);
-                    Some(())
-                } else { None }
-            }
-        });
-    eprintln!("[gipny] log capture installed: {}", log_path.display());
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&log_path) else {
+        return;
+    };
+
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+    if unsafe { libc::dup2(write_fd, libc::STDERR_FILENO) } < 0 {
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        return;
+    }
+    unsafe { libc::close(write_fd) };
+
+    std::thread::spawn(move || {
+        let reader = BufReader::new(unsafe { std::fs::File::from_raw_fd(read_fd) });
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            let _ = writeln!(file, "{} {line}", log_stamp());
+            let _ = file.flush();
+        }
+    });
+    eprintln!("log capture installed: {}", log_path.display());
+    eprintln!("gipny {} on {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS);
+}
+
+/// `HH:MM:SS.mmm` in local time — enough to line our log up against i2pd's,
+/// which stamps the same way, without dragging in a date library.
+#[cfg(unix)]
+fn log_stamp() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = now.as_secs() as i64;
+    let ms = now.subsec_millis();
+    let local = secs + local_utc_offset_secs();
+    let tod = local.rem_euclid(86_400);
+    format!("{:02}:{:02}:{:02}.{:03}", tod / 3600, (tod % 3600) / 60, tod % 60, ms)
+}
+
+/// The offset `localtime_r` reports for now, in seconds.
+#[cfg(unix)]
+fn local_utc_offset_secs() -> i64 {
+    unsafe {
+        let mut t: libc::time_t = 0;
+        libc::time(&mut t);
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return 0;
+        }
+        tm.tm_gmtoff as i64
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -140,7 +188,7 @@ pub fn run() {
         .manage(ctx)
         .invoke_handler(tauri::generate_handler![
             list_profiles, delete_profile,
-            vault_status, vault_create, vault_unlock, vault_lock,
+            vault_status, vault_create, vault_unlock, vault_lock, verify_passphrase,
             change_passphrase, set_duress, set_max_attempts,
             my_card, my_onion, my_b32, my_fingerprint, my_bundle, qr_svg,
             get_display_name, set_display_name,
@@ -677,6 +725,25 @@ async fn boot(
     *ctx.vault.lock().await = Some(vault);
     *ctx.core.lock().await = Some(core);
     Ok(warning)
+}
+
+/// Check the profile's passphrase without touching the running session.
+///
+/// Used by «кофеин» to let someone out of a locked-to-one-chat screen. It goes
+/// through the real `Vault::unlock`, so the attempt counter, the wipe limit and
+/// the duress passphrase all behave exactly as they do on the unlock screen —
+/// a mode that could be left with a password the vault does not honour would be
+/// a second, weaker door.
+#[tauri::command]
+async fn verify_passphrase(pass: String, ctx: State<'_, AppCtx>) -> Result<String, String> {
+    let vault = ctx.vault.lock().await.clone().ok_or("no profile open")?;
+    match vault.unlock(&pass).map_err(err)? {
+        UnlockOutcome::Primary(_) => Ok("ok".into()),
+        // The real profile is already open on screen, so a decoy cannot hide
+        // anything here; treat it as the wrong password rather than pretend.
+        UnlockOutcome::Decoy(_) => Err("invalid passphrase".into()),
+        UnlockOutcome::Wiped => Ok("wiped".into()),
+    }
 }
 
 #[tauri::command]

@@ -1832,6 +1832,9 @@ impl Core {
 
     async fn handle_incoming_envelope(self: &Arc<Self>, from_pk: &[u8; 32], blob: &[u8]) -> Result<()> {
         let envelope: EnvelopeBlob = bincode::deserialize(blob)?;
+        eprintln!("[recv] {} envelope, {} bytes",
+            match &envelope { EnvelopeBlob::X3dhInit(_) => "x3dh", EnvelopeBlob::Ratchet { .. } => "ratchet" },
+            blob.len());
         let sealed = from_pk == &[0u8; 32];
         match envelope {
             EnvelopeBlob::X3dhInit(init) => {
@@ -2351,12 +2354,18 @@ impl Core {
     }
 
     async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
-        // Our own relay must be up before we do anything: it is where replies
-        // come back to, and where sessions get established from.
-        if self.relay_out.read().await.is_none() {
-            return Ok(());
+        // Sending needs *their* relay, not ours: a letter is deposited where the
+        // recipient collects it. Ours is where replies come back to, and it takes
+        // a minute or two of tunnel building — waiting for it held every outgoing
+        // message hostage for no reason (owner, 2026-09-18). A contact who has no
+        // relay of their own still needs ours as the fallback, and `relay_for`
+        // already returns nothing in that case, so that contact is skipped rather
+        // than everyone.
+        //
+        // Announcing our address obviously waits for it to exist.
+        if self.relay_out.read().await.is_some() {
+            self.flush_relay_announcements().await;
         }
-        self.flush_relay_announcements().await;
         let contacts = self.db.list_contacts()?;
         let groups_by_id: HashMap<Vec<u8>, String> = self.db.list_groups()?
             .into_iter().map(|g| (g.id, g.name)).collect();
@@ -2378,6 +2387,13 @@ impl Core {
             if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
             // Deposit on the relay this contact collects from, not on ours.
             let has_mail = !pending.is_empty() || !unacked.is_empty();
+            eprintln!("[send] contact {} \"{}\": {} new, {} unacked, session={}, relay={}",
+                contact.id,
+                contact.display_name,
+                pending.len(),
+                unacked.len(),
+                if self.db.get_session(contact.id).ok().flatten().is_some() { "yes" } else { "no" },
+                contact.relay_address.as_deref().map(|r| &r[..16.min(r.len())]).unwrap_or("(none)"));
             let out = match self.relay_for(&contact).await {
                 Some(tx) => {
                     self.note_reachability(&contact, true, has_mail).await;
@@ -2388,7 +2404,11 @@ impl Core {
                 // nothing has been handed over yet.
                 None => {
                     self.note_reachability(&contact, false, has_mail).await;
-                    if self.dht.peer_count() == 0 { continue; }
+                    if self.dht.peer_count() == 0 {
+                        eprintln!("[send] contact {}: relay silent and the network is empty — mail stays queued", contact.id);
+                        continue;
+                    }
+                    eprintln!("[send] contact {}: relay silent, going through the network", contact.id);
                     // They may simply have restarted onto a new address; ask
                     // the network in the background, and meanwhile leave the
                     // letter where they will find it either way.

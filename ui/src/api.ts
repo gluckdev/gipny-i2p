@@ -227,6 +227,11 @@ export class Api {
   static vaultUnlock(profile: string, pass: string): Promise<string | null> {
     return invoke('vault_unlock', { profile, pass });
   }
+  /** Checks the profile passphrase without restarting anything. Resolves
+   * 'ok', 'wiped' (a duress passphrase wiped the profile), or rejects. */
+  static verifyPassphrase(pass: string): Promise<string> {
+    return invoke('verify_passphrase', { pass });
+  }
   static vaultLock(): Promise<void> {
     return invoke('vault_lock');
   }

@@ -89,6 +89,11 @@ export class Store {
   bootSteps = new Signal<BootStep[]>(freshBootSteps());
   /** The technical lines behind those steps, newest last. */
   bootLog = new Signal<string[]>([]);
+  /** «Кофеин»: the app is pinned to this chat and the screen is kept awake
+   * until someone types the profile passphrase. */
+  caffeine = new Signal<ChatTarget | null>(null);
+  private wakeLock: { release: () => Promise<void> } | null = null;
+
   /** Set when the core is up and only the relay is still coming. */
   bootCanEnter = new Signal<boolean>(false);
   private bootStartedAt = 0;
@@ -360,6 +365,43 @@ export class Store {
     if (status.stage === 'relay' && status.state === 'done') this.enterMain();
   }
 
+  /** Pin the app to this chat and keep the screen on. */
+  async startCaffeine(target: ChatTarget): Promise<void> {
+    this.caffeine.set(target);
+    await this.acquireWakeLock();
+  }
+
+  /** Let go — the caller has already checked the passphrase. */
+  async stopCaffeine(): Promise<void> {
+    this.caffeine.set(null);
+    await this.releaseWakeLock();
+  }
+
+  /** The screen lock is the system's, not ours: the browser API is all we
+   * have, and it is dropped whenever the window goes away, so it is taken
+   * again every time the window comes back. */
+  private async acquireWakeLock(): Promise<void> {
+    type Sentinel = { release: () => Promise<void> };
+    const nav = navigator as unknown as { wakeLock?: { request: (t: string) => Promise<Sentinel> } };
+    if (!nav.wakeLock) return;
+    try {
+      this.wakeLock = await nav.wakeLock.request('screen');
+      document.addEventListener('visibilitychange', this.reacquireWakeLock);
+    } catch { /* refused or unsupported: the chat still stays pinned */ }
+  }
+
+  private reacquireWakeLock = (): void => {
+    if (document.visibilityState !== 'visible' || !this.caffeine.get()) return;
+    void this.acquireWakeLock();
+  };
+
+  private async releaseWakeLock(): Promise<void> {
+    document.removeEventListener('visibilitychange', this.reacquireWakeLock);
+    const lock = this.wakeLock;
+    this.wakeLock = null;
+    try { await lock?.release(); } catch { /* already gone */ }
+  }
+
   /** Leave the loading screen for the chats. */
   enterMain(): void {
     this.bootStage.set('done');
@@ -520,6 +562,7 @@ export class Store {
     this.relayInfo.set(null);
     this.unreachable.set(new Set());
     this.bootStage.set('unlocking');
+    void this.stopCaffeine();
     this.bootSteps.set(freshBootSteps());
     this.bootLog.set([]);
     this.bootCanEnter.set(false);
@@ -638,6 +681,9 @@ export class Store {
   async refreshGroups(): Promise<void> { await this.refreshAll(); }
 
   async selectChat(target: ChatTarget | null): Promise<void> {
+    // In «кофеин» the chat does not change, whatever gets tapped.
+    const pinnedTo = this.caffeine.get();
+    if (pinnedTo && !sameTarget(pinnedTo, target)) return;
     this.selectedChat.set(target);
     if (!target) return;
     await this.loadMessages(target);

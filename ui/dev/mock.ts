@@ -179,6 +179,7 @@ mockIPC((cmd, payload) => {
     case 'log_settings': return { enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
     case 'set_log_enabled': return null;
     case 'clear_debug_log': return null;
+    case 'verify_passphrase': return String((payload as Record<string, unknown>)?.pass ?? '') === 'preview' ? 'ok' : Promise.reject('invalid passphrase');
     case 'qr_svg': return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" shape-rendering="crispEdges">'
       + '<rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0zM4 4h1v1H4zM6 5h1v1H6zM5 7h2v1H5z" fill="#000"/></svg>';
     case 'restart_app': return null;
