@@ -190,8 +190,21 @@ jobs:
           node-version: '20'
           cache: npm
           cache-dependency-path: ui/package-lock.json
+      # The APK job compiled the whole workspace and tauri-cli from scratch on
+      # every push — the slowest job in CI by a wide margin.
+      - uses: Swatinem/rust-cache@v2
+        with: { key: android }
+      - name: cache gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('core/gen/android/**/*.gradle*', 'core/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+      - uses: cargo-bins/cargo-binstall@main
       - name: install tauri-cli
-        run: cargo install tauri-cli --version '^2' --locked
+        run: cargo binstall -y --locked tauri-cli@^2 || cargo install tauri-cli --version '^2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
       # tauri builds every requested target into the "universal" flavor output
