@@ -71,19 +71,6 @@ jobs:
           - { label: macos/arm64, runs-on: macos-15, out: i2pd, artifact: router-macos-arm64 }
           - { label: macos/x86_64, runs-on: macos-15-intel, out: i2pd, artifact: router-macos-x86_64 }
     steps:
-      - uses: msys2/setup-msys2@v2
-        if: runner.os == 'Windows'
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            base-devel
-            git
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-boost
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-zlib
-
       - uses: actions/checkout@v7
         with:
           submodules: recursive
@@ -98,13 +85,26 @@ jobs:
           git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
             git -C third_party/i2pd fetch --quiet --tags origin
           git -C third_party/i2pd describe --tags
+          echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      # The router is the same binary for the same pinned revision, and that pin
+      # only moves when e2e proves delivery — so building it five times per
+      # release was five idle waits (4-11 minutes each) that everything
+      # downstream sat behind. Keyed like the Android one: revision plus
+      # everything that changes the output.
+      - name: restore cached router
+        id: router-cache
+        uses: actions/cache@v6
+        with:
+          path: third_party/i2pd/${{ matrix.out }}
+          key: i2pd-${{ matrix.artifact }}-${{ env.I2PD_REV }}-${{ hashFiles('.github/scripts/build-i2pd-macos.sh') }}-v1
 
       # Built from third_party/i2pd, not downloaded: a release must be
       # reproducible from this repository, and an upstream binary would also be
       # a binary nobody here reviewed. See docs/i2p-transport-evaluation.md for
       # why the router changed at all — go-i2p never delivered a message.
       - name: build (linux, static musl)
-        if: runner.os == 'Linux'
+        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
             apk add --no-cache build-base git make g++ \
@@ -123,7 +123,7 @@ jobs:
       # submodule, so the shipped router can be tied back to the revision the
       # e2e job proved delivers.
       - name: verify version stamp (linux)
-        if: runner.os == 'Linux'
+        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
           EXPECTED="$(git -C third_party/i2pd describe --tags)"
           ACTUAL="$(third_party/i2pd/i2pd --version | head -1)"
@@ -134,8 +134,21 @@ jobs:
             *) echo "version check: FAILED — binary is not the pinned source"; exit 1 ;;
           esac
 
+      - uses: msys2/setup-msys2@v2
+        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-zlib
+
       - name: build (windows)
-        if: runner.os == 'Windows'
+        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           cd third_party/i2pd
@@ -155,13 +168,13 @@ jobs:
       # Static against Homebrew's boost/openssl, stripped, ad-hoc signed, and
       # checked to link nothing outside the OS — shared with i2pd-build.yml.
       - name: build (macos)
-        if: runner.os == 'macOS'
+        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
         run: .github/scripts/build-i2pd-macos.sh
 
       # Shrink the bundled router. Linux only: UPX-packed Windows executables
       # routinely trip antivirus false positives.
       - name: compress router (UPX)
-        if: runner.os == 'Linux'
+        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update && sudo apt-get install -y upx-ucl
           # A static-pie binary is something UPX has historically refused; keep
@@ -601,8 +614,26 @@ jobs:
           echo "$tc" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: 'aarch64-linux-android,armv7-linux-androideabi' }
+      # The Rust side of the APK is the same workspace the desktop builds, and
+      # it was recompiled from zero every release.
+      - uses: Swatinem/rust-cache@v2
+        with: { key: android }
+      # Gradle downloads its own world; without this it does so every time.
+      - name: cache gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('core/gen/android/**/*.gradle*', 'core/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+      # `cargo install tauri-cli` compiles it from source — minutes, every run.
+      # cargo-binstall fetches the release binary and falls back to building.
+      - uses: cargo-bins/cargo-binstall@main
       - name: install tauri-cli
-        run: cargo install tauri-cli --version '^2' --locked
+        run: cargo binstall -y --locked tauri-cli@^2 || cargo install tauri-cli --version '^2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
       - name: configure Android signing
