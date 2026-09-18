@@ -1,11 +1,11 @@
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { Api, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
-import type { Message } from './api';
+import type { Message, LinkStats } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
 import { icon } from './icons';
 import { onAvatarsChanged } from './avatars';
-import { View, h, avatar, fmtTime, fmtDate, fmtAgo, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
+import { View, h, avatar, fmtTime, fmtDate, fmtAgo, fmtMs, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
 import { PinnedBanner, EditInline, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
 import { ContactModal } from './contact';
@@ -48,6 +48,7 @@ export class ChatView extends View {
   private promptEl: HTMLElement;
   private unreachableNote: HTMLElement;
   private caffeineBar: HTMLElement;
+  private linkStrip: HTMLElement;
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
@@ -233,6 +234,16 @@ export class ChatView extends View {
       this.unreachableNote.classList.toggle('hidden', !hit);
     }, true);
 
+    // What the channel is doing, in the user's own terms. Groups have no
+    // single channel — each member collects somewhere else — so this is a
+    // one-to-one readout only.
+    this.linkStrip = h('div', { class: 'link-strip hidden' });
+    if (target.kind === 'contact') {
+      void this.paintLinkStrip();
+      this.sub(store.linkRtt, () => void this.paintLinkStrip());
+      this.sub(store.unreachable, () => void this.paintLinkStrip());
+    }
+
     this.caffeineBar = h('div', { class: 'caffeine-bar hidden' },
       icon('coffee', 18),
       h('div', { class: 'caffeine-text' },
@@ -264,6 +275,7 @@ export class ChatView extends View {
         ),
         headerRight,
       ),
+      this.linkStrip,
       this.unreachableNote,
       this.pinnedBanner.el,
       this.logWrap,
@@ -1002,6 +1014,52 @@ export class ChatView extends View {
   /** Leaving «кофеин» costs the profile passphrase — that is the whole point
    * of it. The check goes through the vault, so a duress passphrase still does
    * what it does and a wrong one still counts towards the attempt limit. */
+  /** Draw the link readout.
+   *
+   * Every number here is measured or read from the running session; nothing is
+   * a placeholder. Until one message has been acknowledged there is no round
+   * trip to show, and the tile says so instead of inventing a figure. */
+  private async paintLinkStrip(): Promise<void> {
+    if (this.target.kind !== 'contact') return;
+    let stats: LinkStats;
+    try {
+      stats = await Api.linkStats(this.target.id as number);
+    } catch {
+      this.linkStrip.classList.add('hidden');
+      return;
+    }
+    const rtt = stats.rtt_ms ?? this.store.linkRtt.get().get(this.target.id as number) ?? null;
+    const route = stats.route === 'relay'
+      ? (rtt === null ? 'релей' : `релей ${fmtMs(rtt)}`)
+      : stats.route === 'archive' ? 'архив' : 'нет пути';
+    const routeTitle = stats.route === 'relay'
+      ? 'Письмо идёт на релей, с которого собеседник его забирает. Время — измеренный оборот до подтверждения.'
+      : stats.route === 'archive'
+        ? 'Релей собеседника молчит, письмо лежит в сети релеев до 7 дней, пока он не вернётся.'
+        : 'Ни релея собеседника, ни сети релеев сейчас нет — письмо ждёт здесь.';
+
+    this.linkStrip.replaceChildren(
+      h('div', { class: 'stats link-stats' },
+        h('div', { class: 'stat', title: 'Столько промежуточных узлов у нашего исходящего туннеля и у входящего туннеля релея собеседника. Каждая сторона отвечает за своё плечо.' },
+          h('div', { class: 'stat-value' }, `${stats.our_hops} + ${stats.their_hops}`),
+          h('div', { class: 'stat-label' }, 'хопа чесночной маршрутизации'),
+        ),
+        h('div', { class: 'stat', title: stats.padded
+          ? 'Сообщение добивается до одного из фиксированных размеров, поэтому наблюдателю не виден его настоящий объём.'
+          : 'Сообщение уходит как есть: быстрее, но наблюдателю виден его точный размер.' },
+          h('div', { class: 'stat-value' }, stats.padded ? 'средний' : 'выключен'),
+          h('div', { class: 'stat-label' }, 'уровень шума'),
+        ),
+        h('div', { class: 'stat', title: routeTitle },
+          h('div', { class: 'stat-value' }, route),
+          h('div', { class: 'stat-label' }, 'доставка'),
+        ),
+      ),
+      h('div', { class: 'link-verdict' }, 'Уровень безопасности избыточный'),
+    );
+    this.linkStrip.classList.remove('hidden');
+  }
+
   private async leaveCaffeine(): Promise<void> {
     const pass = await this.app.prompt(
       'Выйти из кофеина',

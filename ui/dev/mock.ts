@@ -191,6 +191,11 @@ mockIPC((cmd, payload) => {
       if ((a ?? {}).key === 'avatars') avatars = String((a ?? {}).json ?? '{}');
       return null;
     case 'get_dht_status': return { peers: 14, items: 37, bytes: 912_384, joined: !relayStarting, stores: true, seeds: 1 };
+    // Contact 2 is the unreachable one, so it shows the «архив» wording and
+    // has no round trip to report — both branches of the readout on one page.
+    case 'link_stats': return num(a, 'contactId') === 2
+      ? { our_hops: 3, their_hops: 3, padded: true, route: 'archive', rtt_ms: null }
+      : { our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: 1840 };
     case 'get_contact': return contacts.find((c) => c.id === num(a, 'id')) ?? null;
     case 'list_groups': return groups;
     case 'list_group_members': return members;

@@ -174,6 +174,10 @@ export class Store {
   relayInfo = new Signal<RelayInfo | null>(null);
   /** Contacts whose relay has been silent for a while with mail waiting. */
   unreachable = new Signal<Set<number>>(new Set());
+  /** Median round trip per contact, in milliseconds, as the core measures it.
+   * Only ever a measurement: a contact we have not heard back from is absent
+   * from the map rather than shown as zero. */
+  linkRtt = new Signal<Map<number, number>>(new Map());
   private lastSeenMs: Map<number, number> = new Map();
   private onlineTickTimer: number | null = null;
   private static readonly ONLINE_WINDOW_MS = 60_000;
@@ -561,6 +565,7 @@ export class Store {
     this.consoleMode.set(new Set());
     this.relayInfo.set(null);
     this.unreachable.set(new Set());
+    this.linkRtt.set(new Map());
     this.bootStage.set('unlocking');
     void this.stopCaffeine();
     this.bootSteps.set(freshBootSteps());
@@ -1103,6 +1108,9 @@ export class Store {
         if (unreachable) n.add(contact_id); else n.delete(contact_id);
         return n;
       });
+    } else if ('LinkRtt' in e) {
+      const { contact_id, ms } = e.LinkRtt;
+      this.linkRtt.update((m) => new Map(m).set(contact_id, ms));
     } else if ('AgentModeChanged' in e) {
       this.agentMode.set(e.AgentModeChanged.master);
       if (!e.AgentModeChanged.master) {
