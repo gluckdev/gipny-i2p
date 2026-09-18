@@ -234,19 +234,19 @@ impl RouterHandle {
             None => resolve_router_bin()?,
         };
         match settings.yggdrasil {
-            Yggdrasil::On => Self::spawn(data_dir, &bin, settings, true, progress).await,
-            Yggdrasil::Off => Self::spawn(data_dir, &bin, settings, false, progress).await,
+            Yggdrasil::On => Self::spawn(data_dir, &bin, settings, true, progress, None).await,
+            Yggdrasil::Off => Self::spawn(data_dir, &bin, settings, false, progress, None).await,
             // Try the ordinary way first; only reach for the mesh if the router
             // could not come up at all. This catches a blocked start, which is
             // the case a user cannot work around on their own. It does not catch
             // a router that opens SAM and then fails to find peers — SAM comes up
             // regardless of whether the network is reachable — so "auto" is a
             // fallback for a dead start, not a general connectivity doctor.
-            Yggdrasil::Auto => match Self::spawn(data_dir, &bin, settings, false, progress.clone()).await {
+            Yggdrasil::Auto => match Self::spawn(data_dir, &bin, settings, false, progress.clone(), None).await {
                 Ok(h) => Ok(h),
                 Err(e) => {
                     note(&progress, "router", format!("router did not come up ({e:?}); retrying over yggdrasil"));
-                    Self::spawn(data_dir, &bin, settings, true, progress).await
+                    Self::spawn(data_dir, &bin, settings, true, progress, None).await
                 }
             },
         }
@@ -258,6 +258,10 @@ impl RouterHandle {
         settings: RouterSettings,
         yggdrasil: bool,
         progress: Option<BootProgress>,
+        // Keep the SAM port across a restart: everything already running —
+        // the client's session, the built-in relay — was handed that number
+        // and reconnects to it by itself.
+        preferred_sam_port: Option<u16>,
     ) -> Result<Self> {
         let router_dir = data_dir.join("i2p").join("router");
         std::fs::create_dir_all(&router_dir)
@@ -286,7 +290,7 @@ impl RouterHandle {
 
         // Always run our own router on private, free ports so the profile is
         // self-contained and we never route through an untrusted foreign router.
-        let sam_port = pick_free_port(DEFAULT_SAM_PORT);
+        let sam_port = pick_free_port(preferred_sam_port.unwrap_or(DEFAULT_SAM_PORT));
         let http_proxy_port = pick_free_port(DEFAULT_HTTP_PROXY_PORT);
 
         note(&progress, "router", format!("launching router {} (SAM 127.0.0.1:{sam_port}); first run may take 1-3 min...", bin.display()));
@@ -383,6 +387,37 @@ impl RouterHandle {
     /// failed requests.
     pub async fn attach_with_proxy(sam_port: u16, http_proxy_port: Option<u16>) -> Result<Self> {
         Self::attach_with_progress(sam_port, http_proxy_port, None).await
+    }
+
+    /// Does the router still answer? A dead router looks exactly like a
+    /// network problem from above — every dial fails with "connection
+    /// refused" — so somebody has to ask this question out loud.
+    pub async fn alive(&self) -> bool {
+        probe_sam(self.sam_port).await
+    }
+
+    /// Replace a router that stopped answering, on the same SAM port.
+    ///
+    /// Nothing supervised the child before: when i2pd died mid-session (killed
+    /// for memory, crashed, stopped by hand) the app kept dialling a port with
+    /// nothing behind it, forever, and every contact looked unreachable
+    /// (seen on the owner's machine, 2026-09-18).
+    pub async fn restart(
+        &mut self,
+        data_dir: &Path,
+        settings: RouterSettings,
+        progress: Option<BootProgress>,
+    ) -> Result<()> {
+        self.kill_child();
+        let bin = resolve_router_bin()?;
+        let yggdrasil = matches!(settings.yggdrasil, Yggdrasil::On);
+        let replacement = Self::spawn(data_dir, &bin, settings, yggdrasil, progress, Some(self.sam_port)).await?;
+        let port = replacement.sam_port;
+        *self = replacement;
+        if port != self.sam_port {
+            eprintln!("[i2p] router restarted on a different SAM port ({port})");
+        }
+        Ok(())
     }
 
     /// SAM TCP port the router is listening on.

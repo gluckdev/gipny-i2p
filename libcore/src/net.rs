@@ -137,8 +137,11 @@ pub struct I2pNode {
     relay_fail_count: AtomicU32,
     last_recreate_at: Mutex<Option<Instant>>,
     recreate_lock: Mutex<()>,
-    /// Owns the router child process; dropping it tears the router down.
-    _router: RouterHandle,
+    /// Owns the router child process; dropping it tears the router down. Also
+    /// what `ensure_router` restarts when the child dies under us.
+    router: Mutex<RouterHandle>,
+    /// Kept so a restarted router gets the profile's own settings.
+    router_settings: crate::router::RouterSettings,
 }
 
 impl I2pNode {
@@ -219,7 +222,8 @@ impl I2pNode {
             relay_fail_count: AtomicU32::new(0),
             last_recreate_at: Mutex::new(None),
             recreate_lock: Mutex::new(()),
-            _router: router,
+            router: Mutex::new(router),
+            router_settings: settings,
         })
     }
 
@@ -228,7 +232,7 @@ impl I2pNode {
             h.abort();
             let _ = h.await;
         }
-        // The router child is torn down when `self._router` (this node) drops.
+        // The router child is torn down when `self.router` (this node) drops.
     }
 
     /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
@@ -336,6 +340,34 @@ impl I2pNode {
         }
     }
 
+    /// Make sure there is still a router behind our SAM port, and start a new
+    /// one if there is not.
+    ///
+    /// Rebuilding the SAM session is pointless when the process that serves SAM
+    /// is gone: every rebuild fails with "connection refused" and the app sits
+    /// there forever with every contact unreachable. Checked before each session
+    /// rebuild rather than on a timer, so an idle app costs nothing.
+    async fn ensure_router(&self) -> bool {
+        {
+            let router = self.router.lock().await;
+            if router.alive().await {
+                return true;
+            }
+        }
+        eprintln!("[i2p] SAM has stopped answering — restarting the router");
+        let mut router = self.router.lock().await;
+        match router.restart(&self.data_dir, self.router_settings, None).await {
+            Ok(()) => {
+                eprintln!("[i2p] router restarted");
+                true
+            }
+            Err(e) => {
+                eprintln!("[i2p] router restart failed: {e:?}");
+                false
+            }
+        }
+    }
+
     async fn maybe_recreate(&self, fail_count: u32) {
         if fail_count < RECREATE_AFTER_FAILURES { return; }
         if self.created_at.elapsed() < RECREATE_MIN_AGE { return; }
@@ -349,6 +381,9 @@ impl I2pNode {
         eprintln!("[i2p] {} consecutive relay failures past {}s mark, rebuilding SAM session",
             fail_count, RECREATE_MIN_AGE.as_secs());
         *self.last_recreate_at.lock().await = Some(Instant::now());
+        if !self.ensure_router().await {
+            return;
+        }
         match self.recreate().await {
             Ok(()) => {
                 self.relay_fail_count.store(0, Ordering::Relaxed);
