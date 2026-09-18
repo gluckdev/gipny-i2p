@@ -235,6 +235,9 @@ jobs:
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
       - name: stage bundled router
@@ -290,6 +293,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: core/relay
       - name: fetch the router built above
         uses: actions/download-artifact@v8
@@ -338,6 +343,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fetch the router built above
         uses: actions/download-artifact@v8
         with:
@@ -628,6 +636,8 @@ jobs:
       # it was recompiled from zero every release.
       - uses: Swatinem/rust-cache@v2
         with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           key: android-${{ matrix.abi }}
       # Gradle downloads its own world; without this it does so every time.
       - name: cache gradle

@@ -39,6 +39,9 @@ jobs:
             libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # tauri-build calls copy_resources() unconditionally and tauri-utils errors
       # on a glob with no match, so "resources/i2pd*" must match something even
       # for a compile check. A placeholder is deliberate: this job proves our code
@@ -78,6 +81,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
       - name: stage router placeholder (tauri.conf resources glob needs a match)
@@ -110,6 +116,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # pipefail: GitHub runs `bash -e` without it, so `cargo test | tee` took
       # tee's exit status and this step could never fail, whatever the tests did.
       - name: run libcore tests
@@ -193,7 +202,10 @@ jobs:
       # The APK job compiled the whole workspace and tauri-cli from scratch on
       # every push — the slowest job in CI by a wide margin.
       - uses: Swatinem/rust-cache@v2
-        with: { key: android }
+        with:
+          key: android
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cache gradle
         uses: actions/cache@v6
         with:
