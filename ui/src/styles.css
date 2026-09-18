@@ -2025,6 +2025,28 @@ body::before { background: none; }
 .trust-2 { background: var(--danger-soft); color: var(--danger); }
 .chat-notice { border-radius: 12px; margin: 8px 16px 0; border: none; background: rgba(230, 150, 20, 0.12); color: var(--text); font-size: 13px; }
 
+/* The link readout. Quiet by default — it is reference, not news — and the
+   tiles are the same ones the settings page uses for the relay network. */
+.link-strip { padding: 8px 16px 0; }
+.link-strip.hidden { display: none; }
+.link-stats { margin: 0; gap: 6px; }
+.link-stats .stat { padding: 6px 10px; border-radius: 10px; background: var(--surface); }
+.link-stats .stat-value { font-size: 13px; font-weight: 600; }
+.link-stats .stat-label { font-size: 11px; }
+.link-verdict { margin-top: 4px; font-size: 12px; color: var(--text-dim); }
+/* Lowered protection is not decoration: it stays legible and it stays visible
+   for as long as it is true. */
+.link-verdict.lowered { color: var(--danger); font-weight: 600; }
+
+.btn-fast { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; letter-spacing: 0.04em; }
+.btn-fast.hidden { display: none; }
+
+/* At phone width three tiles side by side leave no room for their labels. */
+@media (max-width: 560px) {
+  .link-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .link-stats .stat:last-child { grid-column: 1 / -1; }
+}
+
 .chat-log { padding: 16px 20px; gap: 4px; }
 .msg, .msg.in, .msg.out {
   padding: 0; border: none; background: none; box-shadow: none;

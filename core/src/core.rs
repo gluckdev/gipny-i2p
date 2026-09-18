@@ -47,6 +47,10 @@ const SETTING_RELAY_MODE: &str = "relay_mode";
 /// is queued, is reported to the user: with built-in relays it most likely
 /// means the contact restarted and collects somewhere else now.
 const CONTACT_UNREACHABLE_AFTER: Duration = Duration::from_secs(600);
+/// Beyond this a round trip is not a slow link but a message that sat in the
+/// retry queue, or a clock that moved. Ten minutes is already far past the
+/// worst honest case (a cold router rebuilding tunnels).
+const MAX_PLAUSIBLE_RTT_MS: i64 = 600_000;
 const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// Default on: absent or anything but `"0"` means auto-update stays on,
 /// matching `attachment_privacy`'s convention.
@@ -155,6 +159,11 @@ pub enum CoreEvent {
     },
     MessageSent { message_id: i64 },
     MessageDelivered { message_id: i64 },
+    /// Median round trip to this contact, in milliseconds, after a fresh
+    /// measurement. Drives the link readout above the chat.
+    LinkRtt { contact_id: i64, ms: u32 },
+    /// The speed/anonymity trade changed, and the tunnels with it.
+    LaneChanged { lane: Lane },
     Typing {
         contact_id: Option<i64>,
         group_id: Option<String>,
@@ -258,7 +267,7 @@ fn hex_bytes(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
-use gipny_libcore::session::{WirePin, WireReply, encode_payload, decode_payload, pad_payload, unpad_payload};
+use gipny_libcore::session::{WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Some(unpadded) = unpad_payload(pt) {
@@ -311,6 +320,113 @@ pub struct Core {
     /// When we last asked the network where a contact collects, so a contact
     /// whose relay is down does not start a lookup on every send tick.
     dht_addr_asked: Arc<Mutex<HashMap<i64, Instant>>>,
+    /// Measured round trip per contact: how long the last few messages took
+    /// from leaving here to their acknowledgement coming back. Kept in memory
+    /// on purpose — it describes this link right now, and a number from last
+    /// week would only mislead.
+    rtt: Arc<Mutex<HashMap<i64, Rtt>>>,
+    /// The speed/anonymity trade currently in force. Global, not per contact:
+    /// tunnel length belongs to the session, and one set of tunnels carries
+    /// everything.
+    lane: Arc<Mutex<Lane>>,
+}
+
+/// How much anonymity the user has agreed to trade for speed.
+///
+/// Named for what each one does, not for what its button says: the interface
+/// calls these «кокаин» and «нитро», and a button can be renamed without
+/// anybody having to work out what the code meant. Nothing moves between them
+/// without somebody pressing something and being told the price.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lane {
+    /// Three hops, padded to size buckets. What i2p recommends and what every
+    /// conversation uses until somebody says otherwise.
+    #[default]
+    Normal,
+    /// Two hops and no padding. One less stranger between us and the network,
+    /// and messages sent at their true size.
+    Fast,
+}
+
+impl Lane {
+    pub fn hops(self) -> u8 {
+        match self {
+            Self::Normal => gipny_libcore::net::DEFAULT_HOPS,
+            Self::Fast => gipny_libcore::net::MIN_HOPS,
+        }
+    }
+
+    /// Whether messages are still padded to fixed size buckets.
+    ///
+    /// Padding costs nothing on a short message and a great deal on a long
+    /// one: the buckets step 4 KiB → 16 KiB → 64 KiB, so five kilobytes of
+    /// voice travels as sixteen. That is three times the bytes down a narrow
+    /// tunnel, which is three times the wait — so the fast lanes drop it, and
+    /// an observer gets to see exactly how much was said.
+    pub fn padded(self) -> bool {
+        matches!(self, Self::Normal)
+    }
+}
+
+/// How a letter to this contact leaves right now.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkRoute {
+    /// Straight to the relay they collect from.
+    Relay,
+    /// Their relay is silent; the network holds the letter until they return.
+    Archive,
+    /// Nowhere to put it — their relay is unknown and we are not in the
+    /// network either.
+    None,
+}
+
+/// The channel to one contact, as the readout above the chat shows it.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LinkStats {
+    /// Which trade is in force right now.
+    pub lane: Lane,
+    /// Hops on our outbound tunnel — our leg, our exposure.
+    pub our_hops: u8,
+    /// Hops on the inbound tunnel of the relay they collect from — their leg.
+    pub their_hops: u8,
+    /// Whether messages are still padded to fixed size buckets.
+    pub padded: bool,
+    pub route: LinkRoute,
+    /// Median of the last few measured round trips, absent until one message
+    /// has been acknowledged.
+    pub rtt_ms: Option<u32>,
+}
+
+/// The last handful of round trips to one contact.
+///
+/// The median, not the mean: one message that waited out a tunnel rebuild
+/// would drag an average somewhere it has never been, and the number exists to
+/// tell the user what the link feels like.
+#[derive(Default, Clone)]
+pub struct Rtt {
+    samples: Vec<u32>,
+}
+
+impl Rtt {
+    const KEEP: usize = 7;
+
+    fn push(&mut self, ms: u32) {
+        self.samples.push(ms);
+        if self.samples.len() > Self::KEEP {
+            self.samples.remove(0);
+        }
+    }
+
+    pub fn median_ms(&self) -> Option<u32> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let mut sorted = self.samples.clone();
+        sorted.sort_unstable();
+        Some(sorted[sorted.len() / 2])
+    }
 }
 
 impl Core {
@@ -354,6 +470,8 @@ impl Core {
             unreachable_reported: Arc::new(Mutex::new(HashSet::new())),
             dht: dht_client::new_node(node.clone(), db.clone()),
             dht_addr_asked: Arc::new(Mutex::new(HashMap::new())),
+            rtt: Arc::new(Mutex::new(HashMap::new())),
+            lane: Arc::new(Mutex::new(Lane::Normal)),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
@@ -1974,6 +2092,102 @@ impl Core {
     /// The sender's relay and name, which every payload may carry.
     /// Anything from a contact proves they can reach us, so the address
     /// announcement for them has arrived and stops repeating.
+    /// Time one message's journey, from the moment it actually left to the
+    /// moment its acknowledgement arrived.
+    ///
+    /// `last_attempt_at` is written by `mark_sent` at the point of
+    /// transmission, which is the only honest start: `sent_at` is when the
+    /// message was composed, and a message that waited for a tunnel or sat in
+    /// the retry queue was composed long before it went anywhere.
+    ///
+    /// A retry muddies this — the clock restarts on each attempt, so what we
+    /// time is the attempt that worked, which is the right thing to show.
+    /// Anything implausible is dropped rather than smoothed: a device whose
+    /// clock jumped would otherwise poison the number for the whole session.
+    async fn note_round_trip(self: &Arc<Self>, contact_id: i64, msg: &gipny_libcore::db::Message) {
+        let Some(sent_at) = msg.last_attempt_at else { return };
+        let elapsed = now_ms() - sent_at;
+        if elapsed <= 0 || elapsed > MAX_PLAUSIBLE_RTT_MS {
+            return;
+        }
+        let ms = elapsed as u32;
+        let median = {
+            let mut all = self.rtt.lock().await;
+            let entry = all.entry(contact_id).or_default();
+            entry.push(ms);
+            entry.median_ms()
+        };
+        if let Some(median) = median {
+            eprintln!("[link] contact {contact_id} round trip {ms} ms (median {median} ms)");
+            let _ = self.events.try_send(CoreEvent::LinkRtt { contact_id, ms: median });
+        }
+    }
+
+    /// What the channel to this contact is doing right now, for the readout
+    /// above the chat.
+    ///
+    /// There is no single «connection» to describe: a letter travels our
+    /// outbound tunnel into their relay's inbound tunnel, and each side owns
+    /// its own leg. So the readout names both, and says «архив» when their
+    /// relay is silent and the network is holding the letter instead.
+    pub async fn link_stats(self: &Arc<Self>, contact_id: i64) -> LinkStats {
+        let route = match self.db.get_contact(contact_id).ok().flatten() {
+            Some(contact) => match self.route_for(&contact).await {
+                Some(Route::Relay(_)) => LinkRoute::Relay,
+                Some(Route::Dht) => LinkRoute::Archive,
+                None => LinkRoute::None,
+            },
+            None => LinkRoute::None,
+        };
+        let lane = *self.lane.lock().await;
+        let their_hops = self.node.hops();
+        LinkStats {
+            our_hops: their_hops,
+            their_hops: self.hosted_hops().unwrap_or(their_hops),
+            padded: lane.padded(),
+            lane,
+            route,
+            rtt_ms: self.rtt.lock().await.get(&contact_id).and_then(Rtt::median_ms),
+        }
+    }
+
+    fn hosted_hops(&self) -> Option<u8> {
+        self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().map(|r| r.hops())
+    }
+
+    /// Move to a different speed/anonymity trade.
+    ///
+    /// Both legs are ours, which is why nothing is negotiated with the other
+    /// side: our outbound tunnels carry what we send, and our own relay's
+    /// inbound tunnels carry what we receive. Shortening either exposes us and
+    /// nobody else, so consent is ours to give and the contact simply gets a
+    /// faster correspondent.
+    ///
+    /// The client session is rebuilt first and awaited, because until it is up
+    /// nothing can be sent at all. The relay is told afterwards and not waited
+    /// for: a published destination needs its LeaseSet found again, which takes
+    /// a minute or two, and blocking the caller on that would freeze the
+    /// interface for no reason — mail keeps arriving at the old tunnels until
+    /// the new ones take over.
+    pub async fn set_lane(self: &Arc<Self>, lane: Lane) -> Result<()> {
+        {
+            let mut current = self.lane.lock().await;
+            if *current == lane {
+                return Ok(());
+            }
+            *current = lane;
+        }
+        eprintln!("[lane] switching to {lane:?} ({} hops, padding {})",
+            lane.hops(), if lane.padded() { "on" } else { "off" });
+        let outcome = self.node.set_hops(lane.hops()).await;
+        if let Some(relay) = self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            relay.set_hops(lane.hops());
+        }
+        let _ = self.events.try_send(CoreEvent::LaneChanged { lane });
+        outcome.map_err(CoreError::Net)
+    }
+
+
     async fn note_heard_from(self: &Arc<Self>, contact_id: i64) {
         if self.announce_pending.lock().await.remove(&contact_id) {
             self.announce_sent_at.lock().await.remove(&contact_id);
@@ -2070,6 +2284,7 @@ impl Core {
                 if belongs && matches!(msg.direction, Direction::Out) {
                     let _ = self.db.pending_outbound_remove(local_id, contact_id);
                     self.db.mark_delivered(local_id)?;
+                    self.note_round_trip(contact_id, &msg).await;
                     let _ = self.events.try_send(CoreEvent::MessageDelivered { message_id: local_id });
                 }
             }
@@ -2645,7 +2860,7 @@ impl Core {
             }
             return Err(CoreError::State);
         }
-        let pt = pad_payload(&raw);
+        let pt = pack_payload(&raw, self.lane.lock().await.padded());
         let (header, ct) = {
             let mut sess = self.sessions.lock().await;
             let state = sess.get_mut(&contact.id).ok_or(CoreError::State)?;

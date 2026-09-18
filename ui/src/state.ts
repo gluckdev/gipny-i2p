@@ -1,7 +1,8 @@
-import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus } from './api';
+import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus, Lane } from './api';
 import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 
 const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF]);
+
 
 function isConsoleEvent(kind: number | null): boolean {
   return kind != null && CONSOLE_KINDS.has(kind);
@@ -174,6 +175,16 @@ export class Store {
   relayInfo = new Signal<RelayInfo | null>(null);
   /** Contacts whose relay has been silent for a while with mail waiting. */
   unreachable = new Signal<Set<number>>(new Set());
+  /** Median round trip per contact, in milliseconds, as the core measures it.
+   * Only ever a measurement: a contact we have not heard back from is absent
+   * from the map rather than shown as zero. */
+  linkRtt = new Signal<Map<number, number>>(new Map());
+  /** The speed/anonymity trade in force, as the core reports it. */
+  lane = new Signal<Lane>('normal');
+  /** True while tunnels are being rebuilt. Nothing sends during this, so the
+   * interface says so rather than looking frozen — the same lesson the unlock
+   * screen taught. */
+  laneSwitching = new Signal<boolean>(false);
   private lastSeenMs: Map<number, number> = new Map();
   private onlineTickTimer: number | null = null;
   private static readonly ONLINE_WINDOW_MS = 60_000;
@@ -365,15 +376,44 @@ export class Store {
     if (status.stage === 'relay' && status.state === 'done') this.enterMain();
   }
 
-  /** Pin the app to this chat and keep the screen on. */
+  /** Pin the app to this chat and keep the screen on.
+   *
+   * «Кофеин» and nothing more: it touches the screen and the chat list, never
+   * the network. Trading anonymity for speed lives inside it, behind its own
+   * button, so that sitting on one chat with the screen lit is not silently
+   * also a decision about how exposed you are. */
   async startCaffeine(target: ChatTarget): Promise<void> {
     this.caffeine.set(target);
     await this.acquireWakeLock();
   }
 
+  /** «Кокаин»: two hops and no padding. Only from inside «кофеин». */
+  async startFast(): Promise<void> {
+    if (!this.caffeine.get() || this.lane.get() !== 'normal') return;
+    this.laneSwitching.set(true);
+    try {
+      await Api.setLane('fast');
+      this.lane.set('fast');
+    } catch {
+      this.lane.set('normal');
+    } finally {
+      this.laneSwitching.set(false);
+    }
+  }
+
   /** Let go — the caller has already checked the passphrase. */
   async stopCaffeine(): Promise<void> {
     this.caffeine.set(null);
+    if (this.lane.get() !== 'normal') {
+      this.laneSwitching.set(true);
+      // Back to three hops, whatever happens: this is the safe direction, and
+      // reporting failure by leaving the fast lane on would be the one lie
+      // this feature cannot afford.
+      try { await Api.setLane('normal'); } finally {
+        this.lane.set('normal');
+        this.laneSwitching.set(false);
+      }
+    }
     await this.releaseWakeLock();
   }
 
@@ -561,6 +601,7 @@ export class Store {
     this.consoleMode.set(new Set());
     this.relayInfo.set(null);
     this.unreachable.set(new Set());
+    this.linkRtt.set(new Map());
     this.bootStage.set('unlocking');
     void this.stopCaffeine();
     this.bootSteps.set(freshBootSteps());
@@ -1103,6 +1144,9 @@ export class Store {
         if (unreachable) n.add(contact_id); else n.delete(contact_id);
         return n;
       });
+    } else if ('LinkRtt' in e) {
+      const { contact_id, ms } = e.LinkRtt;
+      this.linkRtt.update((m) => new Map(m).set(contact_id, ms));
     } else if ('AgentModeChanged' in e) {
       this.agentMode.set(e.AgentModeChanged.master);
       if (!e.AgentModeChanged.master) {

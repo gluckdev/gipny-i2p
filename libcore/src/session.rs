@@ -508,6 +508,23 @@ pub fn pad_payload(pt: &[u8]) -> Vec<u8> {
     out
 }
 
+/// As [`pad_payload`], but the padding is optional.
+///
+/// The length prefix is written either way, so the receiver does not care and
+/// does not need to be told: an unpadded payload is simply one whose bucket
+/// happened to equal its length, and `unpad_payload` reads it unchanged. That
+/// is what lets the fast lanes drop padding without a protocol change and
+/// without breaking anyone running an older build.
+pub fn pack_payload(pt: &[u8], padded: bool) -> Vec<u8> {
+    if padded {
+        return pad_payload(pt);
+    }
+    let mut out = Vec::with_capacity(4 + pt.len());
+    out.extend_from_slice(&(pt.len() as u32).to_be_bytes());
+    out.extend_from_slice(pt);
+    out
+}
+
 pub fn unpad_payload(padded: &[u8]) -> Option<Vec<u8>> {
     if padded.len() < 4 { return None; }
     let len = u32::from_be_bytes(padded[0..4].try_into().ok()?) as usize;
@@ -1893,5 +1910,34 @@ mod wire_tests {
         p.console = Some(WireConsole::new(200));
         let back = decode_payload(&encode_payload(&p).unwrap()).unwrap();
         assert_eq!(back.console.map(|c| c.kind), Some(200));
+    }
+
+    /// The fast lanes stop padding, and nobody is told. This is what makes
+    /// that safe: both shapes come back through the same unpack, so a peer on
+    /// an older build reads an unpadded message without knowing there was
+    /// anything to know.
+    #[test]
+    fn an_unpadded_payload_unpacks_like_a_padded_one() {
+        let body = b"who is going to be at the thing on friday";
+        let padded = pack_payload(body, true);
+        let bare = pack_payload(body, false);
+
+        assert_eq!(unpad_payload(&padded).as_deref(), Some(&body[..]));
+        assert_eq!(unpad_payload(&bare).as_deref(), Some(&body[..]));
+        assert_eq!(padded.len(), 256, "a short message still fills the smallest bucket");
+        assert_eq!(bare.len(), 4 + body.len(), "unpadded is the length prefix and the message");
+    }
+
+    /// The whole reason for dropping padding: the buckets step by fours, so a
+    /// payload just over one becomes three times the bytes on the wire, and on
+    /// a narrow tunnel that is three times the wait.
+    #[test]
+    fn padding_is_cheap_for_text_and_expensive_for_voice() {
+        let text = vec![0u8; 40];
+        assert_eq!(pack_payload(&text, true).len(), 256);
+
+        let voice = vec![0u8; 5 * 1024];
+        assert_eq!(pack_payload(&voice, true).len(), 16_384);
+        assert_eq!(pack_payload(&voice, false).len(), 4 + voice.len());
     }
 }
