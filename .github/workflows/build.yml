@@ -166,14 +166,14 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
       # obsolete `tools` package was removed from Google's SDK repository —
-      # sdkmanager exits 1 with "Failed to find package 'tools'" and the job dies
-      # before anything is built. Every NDK and system image this repo needs is
-      # installed explicitly below.
+      # the job dies with "Failed to find package 'tools'" before anything is
+      # built. Everything this job needs is named here instead, which also keeps
+      # us off `sdkmanager` directly — Google deprecated that CLI, and every run
+      # said so.
       - uses: android-actions/setup-android@v4
-        with: { packages: 'platform-tools' }
-      - name: install NDK
+        with: { packages: 'platform-tools ndk;27.3.13750724' }
+      - name: point at the NDK and shim the binutils names
         run: |
-          sdkmanager --install "ndk;27.3.13750724"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.3.13750724" >> "$GITHUB_ENV"
           # openssl-src's Android build expects binutils-style `<triple>-ranlib`/
           # `<triple>-ar`; NDK r23+ ships only the llvm-* names. Shim them.
@@ -285,14 +285,14 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
       # obsolete `tools` package was removed from Google's SDK repository —
-      # sdkmanager exits 1 with "Failed to find package 'tools'" and the job dies
-      # before anything is built. Every NDK and system image this repo needs is
-      # installed explicitly below.
+      # the job dies with "Failed to find package 'tools'" before anything is
+      # built. Everything this job needs is named here instead, which also keeps
+      # us off `sdkmanager` directly — Google deprecated that CLI, and every run
+      # said so.
       - uses: android-actions/setup-android@v4
-        with: { packages: 'platform-tools' }
-      - name: install emulator system image
+        with: { packages: 'platform-tools emulator system-images;android-33;google_apis;x86_64' }
+      - name: create the avd
         run: |
-          sdkmanager --install "emulator" "system-images;android-33;google_apis;x86_64"
           echo "no" | avdmanager create avd \
             -n smoke \
             -k "system-images;android-33;google_apis;x86_64" \

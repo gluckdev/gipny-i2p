@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 
 use crate::core::{AgentMaster, Core, PendingAttachment};
@@ -55,7 +55,7 @@ fn log_enabled(base_dir: &std::path::Path) -> bool {
 #[cfg(unix)]
 fn install_log_capture(base_dir: &std::path::Path) {
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::io::{AsRawFd, FromRawFd};
+    use std::os::unix::io::FromRawFd;
 
     let log_path = base_dir.join("debug.log");
     // Keep the previous run's log: a crash is only readable afterwards, and
@@ -650,6 +650,7 @@ async fn boot(
     // reach. Resolving here means the bundled router is always found.
     #[cfg(not(target_os = "android"))]
     if std::env::var_os("GIPNY_I2P_BIN").is_none() {
+        use tauri::Manager;
         if let Ok(res) = app.path().resource_dir() {
             let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
             for cand in [res.join(name), res.join("resources").join(name)] {
