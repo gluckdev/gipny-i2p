@@ -2038,13 +2038,8 @@ body::before { background: none; }
    for as long as it is true. */
 .link-verdict.lowered { color: var(--danger); font-weight: 600; }
 
-/* НИТРО is the green button, and the bar turns green with it so the state is
-   readable without reading. */
-.btn-fast, .btn-nitro { font-weight: 700; letter-spacing: 0.04em; color: #fff; }
-.btn-fast { background: var(--accent); border-color: var(--accent); }
-.btn-nitro { background: var(--success); border-color: var(--success); }
-.btn-fast.hidden, .btn-nitro.hidden { display: none; }
-.caffeine-bar.nitro { background: linear-gradient(90deg, rgba(31, 157, 85, 0.22), rgba(31, 157, 85, 0.06)); }
+.btn-fast { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; letter-spacing: 0.04em; }
+.btn-fast.hidden { display: none; }
 
 /* At phone width three tiles side by side leave no room for their labels. */
 @media (max-width: 560px) {

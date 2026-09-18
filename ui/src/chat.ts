@@ -52,8 +52,6 @@ export class ChatView extends View {
   private turboTitle: HTMLElement;
   private turboHint: HTMLElement;
   private fastBtn: HTMLButtonElement;
-  private nitroBtn: HTMLButtonElement;
-  private nitroTick: number;
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
@@ -257,16 +255,10 @@ export class ChatView extends View {
       title: 'КОКАИН: на один узел короче путь и без выравнивания размера сообщений',
       onClick: () => void this.enterFast(),
     }, 'КОКАИН') as HTMLButtonElement;
-    this.nitroBtn = h('button', {
-      class: 'btn btn-sm btn-nitro',
-      title: 'НИТРО: один узел. Держится минуту после последнего сообщения.',
-      onClick: () => void this.enterNitro(),
-    }, 'НИТРО') as HTMLButtonElement;
     this.caffeineBar = h('div', { class: 'caffeine-bar hidden' },
       icon('coffee', 18),
       h('div', { class: 'caffeine-text' }, this.turboTitle, this.turboHint),
       this.fastBtn,
-      this.nitroBtn,
       h('button', { class: 'btn btn-sm', onClick: () => void this.leaveCaffeine() }, 'Выйти'),
     );
     this.sub(store.caffeine, (on) => {
@@ -276,12 +268,6 @@ export class ChatView extends View {
     }, true);
     this.sub(store.lane, () => this.paintTurboBar());
     this.sub(store.laneSwitching, () => this.paintTurboBar());
-    this.sub(store.nitroUntil, () => this.paintTurboBar());
-    // The countdown has to move between events, or a minute of silence looks
-    // like a frozen number.
-    this.nitroTick = window.setInterval(() => {
-      if (this.store.nitroUntil.get() !== null) this.paintTurboBar();
-    }, 1000);
 
     this.el = h('div', { class: 'chat' },
       this.caffeineBar,
@@ -370,7 +356,6 @@ export class ChatView extends View {
   }
 
   destroy(): void {
-    window.clearInterval(this.nitroTick);
     document.removeEventListener('paste', this.pasteHandler);
     if (this.typingStopTimer != null) window.clearTimeout(this.typingStopTimer);
     if (this.typingActive) {
@@ -993,7 +978,6 @@ export class ChatView extends View {
   private async send(): Promise<void> {
     const body = this.input.value.trim();
     if (!body && this.pending.length === 0) return;
-    this.store.bumpNitro();
     const paths = this.pending.map((f) => f.path);
     const consoleMode = this.target.kind === 'contact' && this.store.isConsoleMode(this.target);
     if (consoleMode) {
@@ -1084,9 +1068,7 @@ export class ChatView extends View {
         ),
       ),
       h('div', { class: 'link-verdict' + (stats.lane === 'normal' ? '' : ' lowered') },
-        stats.lane === 'normal' ? 'Уровень безопасности избыточный'
-          : stats.lane === 'fast' ? 'Уровень безопасности понижен: КОКАИН'
-            : 'Уровень безопасности понижен до предела: НИТРО'),
+        stats.lane === 'normal' ? 'Уровень безопасности избыточный' : 'Уровень безопасности понижен: КОКАИН'),
     );
     this.linkStrip.classList.remove('hidden');
   }
@@ -1107,52 +1089,24 @@ export class ChatView extends View {
     await this.store.startFast();
   }
 
-  /** Enter НИТРО, having said what it costs — which is more. */
-  private async enterNitro(): Promise<void> {
-    const ok = await this.app.confirm('Включить НИТРО',
-      'Один узел вместо трёх. Короче уже некуда: он один будет знать и наш адрес, и адрес, куда мы пишем.\n\n'
-      + 'Держится минуту после последнего сообщения. Идёт разговор — держится; замолчали — само вернётся в КОКАИН.\n\n'
-      + 'Сказанное в НИТРО не сохраняется: при возврате в КОКАИН эти сообщения исчезнут у обеих сторон, '
-      + 'а на их месте в переписке останется пропуск. Сам пропуск скрыть нельзя — он показывает, что разговор был.',
-      true);
-    if (!ok) return;
-    await this.store.startNitro();
-  }
-
-  /** The «кофеин» bar: what is on, what can be turned on next, and how long
-   * «нитро» has left. */
+  /** The «кофеин» bar: what is on, and what can be turned on next. */
   private paintTurboBar(): void {
     const lane = this.store.lane.get();
-    const switching = this.store.laneSwitching.get();
-    this.caffeineBar.classList.toggle('nitro', lane === 'fastest');
-
-    if (switching) {
+    if (this.store.laneSwitching.get()) {
       this.turboTitle.textContent = 'Перестраиваю туннели…';
       this.turboHint.textContent = 'пока они строятся, ничего не отправляется — это десятки секунд';
       this.fastBtn.classList.add('hidden');
-      this.nitroBtn.classList.add('hidden');
-      return;
-    }
-    if (lane === 'fastest') {
-      const until = this.store.nitroUntil.get();
-      const left = until === null ? 0 : Math.max(0, Math.ceil((until - Date.now()) / 1000));
-      this.turboTitle.textContent = 'НИТРО';
-      this.turboHint.textContent = `один узел · сказанное не сохранится · вернусь в КОКАИН через ${left} с молчания`;
-      this.fastBtn.classList.add('hidden');
-      this.nitroBtn.classList.add('hidden');
       return;
     }
     if (lane === 'fast') {
       this.turboTitle.textContent = 'КОКАИН';
       this.turboHint.textContent = 'два узла, без выравнивания размера · экран не гаснет, чат не переключается';
       this.fastBtn.classList.add('hidden');
-      this.nitroBtn.classList.remove('hidden');
       return;
     }
     this.turboTitle.textContent = 'Кофеин включён';
     this.turboHint.textContent = 'экран не гаснет, чат не переключается';
     this.fastBtn.classList.remove('hidden');
-    this.nitroBtn.classList.add('hidden');
   }
 
   private async leaveCaffeine(): Promise<void> {

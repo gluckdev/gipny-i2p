@@ -56,10 +56,14 @@ const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
 /// Hops in each tunnel, as i2p builds them by default and as this app has
 /// always asked for them.
 pub const DEFAULT_HOPS: u8 = 3;
-/// The shortest tunnel we will build. Zero hops would hand our address
-/// straight to whoever we talk to; one still puts a stranger in between, and
-/// that is the floor we are willing to offer.
-pub const MIN_HOPS: u8 = 1;
+/// The shortest tunnel we will build.
+///
+/// Two, not one: a single hop is both our first and our last, so it learns our
+/// address and where the letter went in the same breath, and one stranger's
+/// notes are enough to undo us. Two keeps somebody in the middle who knows only
+/// half. The floor lives here rather than at the call site so no future caller
+/// can talk the transport below it by passing a smaller number.
+pub const MIN_HOPS: u8 = 2;
 
 /// Monotonic counter making each SAM session nickname unique, so a rebuilt
 /// session never collides (`DUPLICATED_ID`) with one the router hasn't dropped.

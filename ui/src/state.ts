@@ -3,10 +3,6 @@ import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE
 
 const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF]);
 
-/** How long НИТРО survives without a word being said. A minute is long enough
- * that a pause to think does not drop it and short enough that a window left
- * open does not sit on one hop all evening. */
-const NITRO_IDLE_MS = 60_000;
 
 function isConsoleEvent(kind: number | null): boolean {
   return kind != null && CONSOLE_KINDS.has(kind);
@@ -189,9 +185,6 @@ export class Store {
    * interface says so rather than looking frozen — the same lesson the unlock
    * screen taught. */
   laneSwitching = new Signal<boolean>(false);
-  /** When the current НИТРО stint lapses if nothing is said. Null outside it. */
-  nitroUntil = new Signal<number | null>(null);
-  private nitroTimer: number | null = null;
   private lastSeenMs: Map<number, number> = new Map();
   private onlineTickTimer: number | null = null;
   private static readonly ONLINE_WINDOW_MS = 60_000;
@@ -408,51 +401,9 @@ export class Store {
     }
   }
 
-  /** Drop to one hop for a minute of quiet.
-   *
-   * НИТРО is not a mode you leave by hand: it lapses. Every message either way
-   * pushes the deadline out, so an actual conversation stays in it and a
-   * forgotten window does not. */
-  async startNitro(): Promise<void> {
-    if (this.lane.get() !== 'fast') return;
-    this.laneSwitching.set(true);
-    try {
-      await Api.setLane('fastest');
-      this.lane.set('fastest');
-      this.bumpNitro();
-    } catch {
-      this.lane.set('fast');
-    } finally {
-      this.laneSwitching.set(false);
-    }
-  }
-
-  /** Push the НИТРО deadline out — called on every message in either
-   * direction. Outside НИТРО it does nothing. */
-  bumpNitro(): void {
-    if (this.lane.get() !== 'fastest') return;
-    this.nitroUntil.set(Date.now() + NITRO_IDLE_MS);
-    if (this.nitroTimer !== null) window.clearTimeout(this.nitroTimer);
-    this.nitroTimer = window.setTimeout(() => void this.endNitro(), NITRO_IDLE_MS);
-  }
-
-  /** Fall back one step, to «кокаин». */
-  async endNitro(): Promise<void> {
-    if (this.nitroTimer !== null) { window.clearTimeout(this.nitroTimer); this.nitroTimer = null; }
-    this.nitroUntil.set(null);
-    if (this.lane.get() !== 'fastest') return;
-    this.laneSwitching.set(true);
-    try { await Api.setLane('fast'); } finally {
-      this.lane.set('fast');
-      this.laneSwitching.set(false);
-    }
-  }
-
   /** Let go — the caller has already checked the passphrase. */
   async stopCaffeine(): Promise<void> {
     this.caffeine.set(null);
-    if (this.nitroTimer !== null) { window.clearTimeout(this.nitroTimer); this.nitroTimer = null; }
-    this.nitroUntil.set(null);
     if (this.lane.get() !== 'normal') {
       this.laneSwitching.set(true);
       // Back to three hops, whatever happens: this is the safe direction, and
@@ -1018,9 +969,6 @@ export class Store {
     if (!e || typeof e !== 'object') return;
     if ('IncomingMessage' in e) {
       const m = e.IncomingMessage;
-      // Either direction counts as talking, so a conversation where the other
-      // person is doing the talking keeps НИТРО alive just the same.
-      this.bumpNitro();
       const target: ChatTarget | null = m.group_id
         ? { kind: 'group', id: m.group_id }
         : m.contact_id != null ? { kind: 'contact', id: m.contact_id } : null;

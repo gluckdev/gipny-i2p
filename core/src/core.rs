@@ -347,18 +347,13 @@ pub enum Lane {
     /// Two hops and no padding. One less stranger between us and the network,
     /// and messages sent at their true size.
     Fast,
-    /// One hop. The single hop we pick learns our address and where our letters
-    /// go; in exchange the path is as short as it can be without handing our
-    /// address to the far end outright.
-    Fastest,
 }
 
 impl Lane {
     pub fn hops(self) -> u8 {
         match self {
             Self::Normal => gipny_libcore::net::DEFAULT_HOPS,
-            Self::Fast => 2,
-            Self::Fastest => gipny_libcore::net::MIN_HOPS,
+            Self::Fast => gipny_libcore::net::MIN_HOPS,
         }
     }
 

@@ -180,7 +180,7 @@ export interface BootStatus {
  *
  * Named for what each one does. The buttons say «КОКАИН» and «НИТРО»; those
  * are labels, and labels change. */
-export type Lane = 'normal' | 'fast' | 'fastest';
+export type Lane = 'normal' | 'fast';
 
 /** The channel to one contact, as the strip above the chat shows it.
  *

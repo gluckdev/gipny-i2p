@@ -151,9 +151,9 @@ let avatars = '{}';
 // The lane the preview is in, so ТУРБО and НИТРО can actually be pressed and
 // the readout follows. Round trip drops with the hop count, roughly as it does
 // in life: most of the wait is the hops.
-let lane: 'normal' | 'fast' | 'fastest' = 'normal';
+let lane: 'normal' | 'fast' = 'normal';
 let hops = 3;
-const laneRtt = (): number => (lane === 'normal' ? 1840 : lane === 'fast' ? 1120 : 480);
+const laneRtt = (): number => (lane === 'normal' ? 1840 : 1120);
 
 mockWindows('main');
 mockIPC(async (cmd, payload) => {
@@ -205,8 +205,8 @@ mockIPC(async (cmd, payload) => {
     // Rebuilding tunnels really does take tens of seconds; the preview waits a
     // beat so the «перестраиваю туннели» state is something you can look at.
     case 'set_lane':
-      lane = String((a ?? {}).lane ?? 'normal') as 'normal' | 'fast' | 'fastest';
-      hops = lane === 'normal' ? 3 : lane === 'fast' ? 2 : 1;
+      lane = String((a ?? {}).lane ?? 'normal') as 'normal' | 'fast';
+      hops = lane === 'normal' ? 3 : 2;
       await new Promise((r) => setTimeout(r, 1200));
       return null;
     case 'get_contact': return contacts.find((c) => c.id === num(a, 'id')) ?? null;

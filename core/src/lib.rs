@@ -840,7 +840,6 @@ async fn set_lane(lane: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     let lane = match lane.as_str() {
         "normal" => crate::core::Lane::Normal,
         "fast" => crate::core::Lane::Fast,
-        "fastest" => crate::core::Lane::Fastest,
         other => return Err(format!("unknown lane {other}")),
     };
     core_of(&ctx).await?.set_lane(lane).await.map_err(err)
