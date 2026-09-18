@@ -1,0 +1,88 @@
+# Housekeeping for Actions storage.
+#
+# Every release uploads the router, the bundles and the APKs as artifacts so the
+# next job can pick them up; once the release page exists, those same files live
+# there and the artifacts are duplicates. They were kept for GitHub's default 90
+# days, and by 0.4.6 the repository held 1132 of them — 29.6 GB — plus caches
+# pressed against the 10 GB ceiling, where they start evicting each other and
+# the router cache stops paying for itself.
+name: cleanup
+
+on:
+  schedule:
+    # Sunday night, after nothing is building.
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      artifact_days:
+        description: 'Delete build artifacts older than this many days'
+        default: '7'
+      cache_days:
+        description: 'Delete caches unused for this many days'
+        default: '21'
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: cleanup
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: delete stale artifacts and caches
+    runs-on: ubuntu-latest
+    steps:
+      - name: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.artifact_days || '7' }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d "-${DAYS} days" +%s)"
+          freed=0
+          count=0
+          # --paginate walks every page; expired ones are already gone from
+          # storage and only clutter the listing.
+          gh api --paginate repos/${{ github.repository }}/actions/artifacts \
+            -q '.artifacts[] | select(.expired == false) | "\(.id) \(.created_at) \(.size_in_bytes) \(.name)"' > /tmp/artifacts.txt || true
+          while read -r id created size name; do
+            [ -n "${id:-}" ] || continue
+            age="$(date -u -d "$created" +%s)"
+            if [ "$age" -lt "$cutoff" ]; then
+              if gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" >/dev/null 2>&1; then
+                freed=$((freed + size))
+                count=$((count + 1))
+              else
+                echo "could not delete $id ($name)"
+              fi
+            fi
+          done < /tmp/artifacts.txt
+          echo "deleted $count artifacts, $((freed / 1048576)) MiB"
+          {
+            echo "### Cleanup"
+            echo
+            echo "- artifacts deleted: **$count** (~$((freed / 1048576)) MiB)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.cache_days || '21' }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d "-${DAYS} days" +%s)"
+          count=0
+          gh api --paginate "repos/${{ github.repository }}/actions/caches?per_page=100" \
+            -q '.actions_caches[] | "\(.id) \(.last_accessed_at) \(.key)"' > /tmp/caches.txt || true
+          while read -r id accessed key; do
+            [ -n "${id:-}" ] || continue
+            age="$(date -u -d "$accessed" +%s)"
+            if [ "$age" -lt "$cutoff" ]; then
+              gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" >/dev/null 2>&1 \
+                && count=$((count + 1)) || echo "could not delete cache $key"
+            fi
+          done < /tmp/caches.txt
+          echo "deleted $count caches"
+          echo "- caches deleted: **$count**" >> "$GITHUB_STEP_SUMMARY"
