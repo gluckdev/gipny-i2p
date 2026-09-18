@@ -1,0 +1,16 @@
+# Windows: silence LNK4099 from the vendored OpenSSL.
+#
+# SQLCipher comes in through rusqlite's `bundled-sqlcipher-vendored-openssl`,
+# which builds OpenSSL from source. openssl-src compiles those objects with a
+# reference to `ossl_static.pdb`, and openssl-sys does not copy that file next
+# to the rlib — so the final link prints 802 lines of
+#
+#   libopenssl_sys-….rlib(…​.obj) : warning LNK4099: PDB 'ossl_static.pdb' was
+#   not found …; linking object as if no debug info
+#
+# one per object file. It is upstream's to fix, the binary is unaffected, and
+# the wall of text is how a warning that matters gets missed. LNK4099 only ever
+# means "no debug info for this object", so ignoring that one code hides
+# nothing else.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-Clink-arg=/ignore:4099"]
