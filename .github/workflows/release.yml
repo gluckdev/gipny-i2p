@@ -568,27 +568,32 @@ jobs:
   #    points), the `stageI2pdJniLibs` Gradle task drops it into jniLibs, and
   #    GipnyService.kt loads and starts it on service start.
   # ---------------------------------------------------------------------------
+  # One job per ABI. Together they were the longest thing in the release
+  # (~15 minutes), and they share nothing: two ABIs, two toolchains, two APKs.
   android:
-    name: android
+    name: android (${{ matrix.abi }})
     needs: android-router
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # flavor: what tauri calls it. abi: what the APK carries.
+          # suffix: what the file on the release page is called.
+          - { abi: arm64-v8a, flavor: arm64, target: aarch64, rust: aarch64-linux-android, suffix: arm64 }
+          - { abi: armeabi-v7a, flavor: arm, target: armv7, rust: armv7-linux-androideabi, suffix: armv7 }
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: stage the embedded router (arm64-v8a)
+      - name: stage the embedded router
         uses: actions/download-artifact@v8
         with:
-          name: router-android-arm64-v8a
-          path: android-router/prebuilt/arm64-v8a
-      - name: stage the embedded router (armeabi-v7a)
-        uses: actions/download-artifact@v8
-        with:
-          name: router-android-armeabi-v7a
-          path: android-router/prebuilt/armeabi-v7a
+          name: router-android-${{ matrix.abi }}
+          path: android-router/prebuilt/${{ matrix.abi }}
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
+          targets: ${{ matrix.rust }}
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
@@ -619,7 +624,8 @@ jobs:
       # The Rust side of the APK is the same workspace the desktop builds, and
       # it was recompiled from zero every release.
       - uses: Swatinem/rust-cache@v2
-        with: { key: android }
+        with:
+          key: android-${{ matrix.abi }}
       # Gradle downloads its own world; without this it does so every time.
       - name: cache gradle
         uses: actions/cache@v6
@@ -654,14 +660,15 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # The two ABIs the release ships. Without this Gradle also asks for
-          # x86_64, and fails by design: no prebuilt library for it here.
-          ORG_GRADLE_PROJECT_routerAbis: arm64-v8a,armeabi-v7a
+          # Only this job's ABI: Gradle otherwise asks for x86_64 too and fails
+          # by design (no prebuilt library here), and staging the other ABI
+          # would be work this job's APK throws away.
+          ORG_GRADLE_PROJECT_routerAbis: ${{ matrix.abi }}
         # --split-per-abi: one APK per ABI, so a 64-bit phone does not download
         # the 32-bit libraries it will never load. It also keeps each APK to
         # its own ABI: Tauri's per-arch flavors filter jniLibs, while the
         # universal flavor would pack every ABI staged in jniLibs.
-        run: cd core && cargo tauri android build --apk --split-per-abi --target aarch64 --target armv7
+        run: cd core && cargo tauri android build --apk --split-per-abi --target ${{ matrix.target }}
       - name: verify signed APKs
         run: |
           # apksigner is not on PATH — pick the newest build-tools copy.
@@ -671,7 +678,7 @@ jobs:
           out=core/gen/android/app/build/outputs/apk
           mkdir -p dist
           # <flavor> <abi in the APK> <name users see>
-          for spec in "arm64 arm64-v8a arm64" "arm armeabi-v7a armv7"; do
+          for spec in "${{ matrix.flavor }} ${{ matrix.abi }} ${{ matrix.suffix }}"; do
             set -- $spec
             apk="$(find "$out/$1" -type f -name '*.apk' -print -quit)"
             test -n "$apk" || { echo "no APK for $2"; exit 1; }
@@ -694,7 +701,7 @@ jobs:
           ls -lh dist
       - uses: actions/upload-artifact@v7
         with:
-          name: gipny-android
+          name: gipny-android-${{ matrix.suffix }}
           path: dist/*.apk
           if-no-files-found: error
 
