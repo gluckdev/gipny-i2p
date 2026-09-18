@@ -4,6 +4,7 @@ import { targetKey } from './state';
 import { h, busy, short } from './view';
 import type { App } from './app';
 
+import { icon } from './icons';
 export class GroupModal {
   el: HTMLElement;
   private unsub: (() => void) | null = null;
@@ -94,7 +95,7 @@ export class GroupModal {
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, g.name),
-        h('button', { class: 'icon-btn', onClick: closeWrapped }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: closeWrapped }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'card-label' }, 'id'),
@@ -148,7 +149,7 @@ export class CreateGroupModal {
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, 'Новая группа'),
-        h('button', { class: 'icon-btn', onClick: close }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'field' }, h('label', null, 'name'), nameI),
@@ -157,7 +158,7 @@ export class CreateGroupModal {
         err,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Отмена'),
         (() => {
           const b = h('button', {
             class: 'btn',
@@ -171,7 +172,7 @@ export class CreateGroupModal {
                 close();
               } catch (e) { err.textContent = 'err: ' + String(e); }
             }),
-          }, 'Create') as HTMLButtonElement;
+          }, 'Создать') as HTMLButtonElement;
           return b;
         })(),
       ),

@@ -2122,6 +2122,88 @@ body::before { background: none; }
 .art-network { position: absolute; right: -10px; top: -6px; opacity: 0.55; pointer-events: none; }
 .about-hero > :not(.art) { position: relative; }
 
+/* --- «Кофеин»: one chat, screen on, passphrase to leave ---------------------- */
+.main.caffeine { grid-template-columns: minmax(0, 1fr); }
+.main.caffeine > .sidebar { display: none; }
+.caffeine-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px;
+  background: linear-gradient(90deg, rgba(230, 150, 20, 0.16), rgba(230, 150, 20, 0.06));
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.caffeine-text { flex: 1; min-width: 0; }
+.caffeine-title { font-size: 14px; font-weight: 600; }
+.caffeine-hint { font-size: 12px; color: var(--text-dim); }
+
+/* --- Log viewer -------------------------------------------------------------- */
+.log-view {
+  margin-top: 10px; padding: 10px 12px;
+  max-height: 320px; overflow: auto;
+  background: var(--surface-3); border-radius: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+  white-space: pre-wrap; word-break: break-word;
+  user-select: text;
+}
+
+/* --- QR: sharing a card and reading one ------------------------------------- */
+.card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
+.card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
+.card-qr .hint { text-align: center; max-width: 280px; }
+.qr-slot { margin-bottom: 10px; }
+.qr-scan { position: relative; border-radius: 14px; overflow: hidden; background: #000; }
+.qr-video { width: 100%; max-height: 320px; object-fit: cover; display: block; }
+.qr-frame {
+  position: absolute; inset: 50% auto auto 50%;
+  width: 62%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.85); border-radius: 16px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.qr-hint {
+  position: absolute; left: 0; right: 0; bottom: 8px;
+  text-align: center; color: #fff; font-size: 13px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+/* --- Opening a profile ------------------------------------------------------ */
+.boot-card { max-width: 460px; width: 100%; }
+.boot-steps { display: grid; gap: 2px; margin: 18px 0 10px; }
+.boot-step {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 10px; border-radius: 12px;
+  color: var(--text-faint);
+  transition: background 0.15s, color 0.15s;
+}
+.boot-step.boot-active { background: var(--accent-soft); color: var(--text); }
+.boot-step.boot-done { color: var(--text-dim); }
+.boot-step.boot-failed { background: var(--danger-soft); color: var(--danger); }
+.boot-mark { width: 18px; text-align: center; font-size: 15px; flex-shrink: 0; }
+.boot-step.boot-done .boot-mark { color: var(--success); }
+.boot-step.boot-active .boot-mark { color: var(--accent); animation: boot-pulse 1.1s ease-in-out infinite; }
+@keyframes boot-pulse { 50% { opacity: 0.35; } }
+.boot-step-main { flex: 1; min-width: 0; }
+.boot-step-label { font-size: 14px; font-weight: 600; }
+.boot-step-hint { font-size: 12px; color: var(--text-faint); }
+.boot-step.boot-active .boot-step-hint { color: var(--text-dim); }
+.boot-step-ms { font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.boot-foot { align-items: center; gap: 8px; }
+.boot-elapsed { font-size: 13px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.boot-enter { padding: 6px 12px; font-size: 13px; }
+.boot-details { margin-top: 12px; }
+.boot-details summary { cursor: pointer; font-size: 13px; color: var(--text-dim); }
+.boot-details summary:hover { color: var(--text); }
+.boot-log {
+  margin-top: 8px; padding: 10px 12px;
+  max-height: 160px; overflow: auto;
+  background: var(--surface-3); border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+  white-space: pre-wrap; word-break: break-word;
+  user-select: text;
+}
+
 /* --- About ----------------------------------------------------------------- */
 .about .modal-body { display: grid; gap: 12px; background: var(--bg); }
 .about-hero {

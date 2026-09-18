@@ -11,6 +11,7 @@ function kv(label: string, value: string): HTMLElement {
 }
 
 import { avatarPicker } from './avatar-picker';
+import { icon } from './icons';
 export class IdentityModal {
   el: HTMLElement;
   constructor(store: Store, close: () => void) {
@@ -40,18 +41,37 @@ export class IdentityModal {
         await navigator.clipboard.writeText(cardBlock.textContent ?? '');
         store.showToast('card copied');
       },
-    }, 'Copy card') as HTMLButtonElement;
+    }, 'Скопировать карточку') as HTMLButtonElement;
     const cardNote = h('div', { class: 'hint', style: { marginTop: '6px' } });
+    // The card is ~600 characters; nobody dictates that. A QR on screen is how
+    // two people standing next to each other exchange cards.
+    const qrSlot = h('div', { class: 'card-qr' });
+    let qrFor = '';
+    const paintQr = (card: string): void => {
+      if (card === qrFor) return;
+      qrFor = card;
+      if (!card) { qrSlot.replaceChildren(); return; }
+      Api.qrSvg(card)
+        .then((svg) => {
+          if (qrFor !== card) return;
+          qrSlot.innerHTML = svg;
+          qrSlot.appendChild(h('div', { class: 'hint' }, 'дайте отсканировать этот код — «добавить контакт» → «сканировать»'));
+        })
+        .catch(() => { qrSlot.replaceChildren(h('div', { class: 'hint' }, 'QR построить не удалось')); });
+    };
     const updateCard = (): void => {
       const name = nameI.value.trim();
       copyBtn.disabled = waiting;
       if (waiting) {
         cardBlock.textContent = 'встроенный релей запускается — карточка появится здесь через минуту-две…';
+        paintQr('');
         return;
       }
-      cardBlock.textContent = id
+      const card = id
         ? encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay)
         : '';
+      cardBlock.textContent = card;
+      paintQr(card);
     };
     const paintRelay = (info: RelayInfo | null): void => {
       const builtin = info?.mode === 'builtin';
@@ -91,12 +111,12 @@ export class IdentityModal {
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, 'Моя карточка'),
-        h('button', { class: 'icon-btn', onClick: close }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         id && avatarPicker(id.card.sign_pk, 'Ваша аватарка на этом устройстве; собеседники видят свою', (e) => store.showToast(String(e), true)),
         h('div', { class: 'field' },
-          h('label', null, 'display name'),
+          h('label', null, 'Имя, которое видят собеседники'),
           h('div', { class: 'row' },
             nameI,
             h('button', {
@@ -105,20 +125,21 @@ export class IdentityModal {
                 try {
                   await store.updateDisplayName(nameI.value.trim());
                   updateCard();
-                  store.showToast('name saved');
+                  store.showToast('Имя сохранено');
                 } catch (e) { store.showToast(String(e), true); }
               },
-            }, 'Save'),
+            }, 'Сохранить'),
           ),
-          h('div', { class: 'hint' }, 'embedded in shared card'),
+          h('div', { class: 'hint' }, 'едет внутри карточки и внутри каждого сообщения'),
         ),
-        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'i2p address (full)'),
+        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'Адрес i2p (полный)'),
         h('div', { class: 'card-block' }, id?.onion ?? ''),
-        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'i2p address (b32)'),
+        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'Адрес i2p (b32)'),
         b32Slot,
-        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'fingerprint'),
+        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'Отпечаток ключа'),
         h('div', { class: 'card-block fp' }, id ? fmtFp(id.fingerprint) : ''),
-        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'card (share this)'),
+        h('div', { class: 'card-label', style: { marginTop: '14px' } }, 'Карточка — этим делятся'),
+        qrSlot,
         cardBlock,
         cardNote,
         h('div', { class: 'row', style: { marginTop: '10px' } },
@@ -128,7 +149,7 @@ export class IdentityModal {
         bundleSlot,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, 'Close'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Закрыть'),
       ),
     );
   }

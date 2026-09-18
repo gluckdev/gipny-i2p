@@ -11,14 +11,15 @@
 | `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
 | `src/view.ts` | Основа: `View` (подписки `sub`), `h()` для создания элементов, `avatar()` (инициалы и цвет от ключа), форматтеры (`fmtTime`, `fmtAgo`, `short`, `humanSize`, `trustLabel`…), `logo` |
 | `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal` |
-| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting` |
+| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `BOOT_LABELS` — подписи, `bootSteps`/`bootLog`/`bootCanEnter` в `state.ts` — данные |
 | `src/profile.ts` | Выбор профиля `ProfileSelect` |
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
 | `src/actions.ts` | Контекстные меню (`ContextMenu`, `attachContextMenu`, `messageMenuItems`), `PinnedBanner`, `EditInline` |
-| `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки) |
+| `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки и **сканирование QR** камерой через `QrScanner`) |
+| `src/qr-scan.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением |
 | `src/group.ts` | `GroupModal`, `CreateGroupModal` |
-| `src/identity.ts` | `IdentityModal` — «моя карточка» |
+| `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
 | `src/settings.ts` | `SettingsModal`: релей, роутер, приватность вложений, автообновление, агент, бэкап, отладочный лог |
 | `src/about.ts` | `AboutModal` — «О gipny и безопасности». Каждое утверждение должно совпадать с кодом (ссылки в комментарии к классу) |
 | `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `AVATARS` |
@@ -28,6 +29,7 @@
 | `src/styles.css` | Все стили; цвета — токены в `:root` и `:root[data-theme="dark"]`. Текущий облик — блок «Messenger look» перед адаптивной частью; адаптивные правила — последними |
 | `public/sounds/` | Звуки уведомлений |
 | `dev/mock.ts` | Мок Tauri IPC: ответы на все команды и фикстуры (неудобные намеренно) |
+| Сцена `boot` в превью | `dev/mock.ts`: `vault_unlock` не отвечает, а `boot_status` эмитится по сценарию — так экран загрузки видно без бэкенда |
 | `dev/preview.html`, `dev/frame.html` | Превью приложения на ширинах телефона, планшета и десктопа с проверкой горизонтального переполнения |
 
 ## Куда вносить правки
@@ -48,6 +50,7 @@
 | Раскладка на телефоне | `styles.css` + проверка в `dev/preview.html` |
 | Модалка обновления | `app.ts` (`openUpdateModal`) + обработка `Update*` в `state.ts` |
 | Экраны входа | `auth.ts`, `profile.ts` |
+| Новый этап при запуске | `BOOT_STEPS` и `BootStep` в `state.ts` + `BOOT_LABELS` в `auth.ts` + `boot_status` в `core/src/lib.rs` |
 
 ## Что менять вместе
 

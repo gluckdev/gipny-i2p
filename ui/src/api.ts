@@ -167,6 +167,15 @@ export interface Bundle {
   one_time_id: number | null;
 }
 
+/** One step of opening a profile, from the backend's `boot_status` event.
+ * `stage` is a stable id the interface turns into its own wording; `detail` is
+ * the technical line, shown under «технические подробности». */
+export interface BootStatus {
+  stage: 'vault' | 'router' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht';
+  state: 'active' | 'done' | 'failed';
+  detail: string;
+}
+
 export interface UpdateInfo {
   version: string;
   notes: string;
@@ -217,6 +226,11 @@ export class Api {
   }
   static vaultUnlock(profile: string, pass: string): Promise<string | null> {
     return invoke('vault_unlock', { profile, pass });
+  }
+  /** Checks the profile passphrase without restarting anything. Resolves
+   * 'ok', 'wiped' (a duress passphrase wiped the profile), or rejects. */
+  static verifyPassphrase(pass: string): Promise<string> {
+    return invoke('verify_passphrase', { pass });
   }
   static vaultLock(): Promise<void> {
     return invoke('vault_lock');
@@ -517,6 +531,10 @@ export class Api {
   static setAutoUpdate(enabled: boolean): Promise<void> {
     return invoke('set_auto_update', { enabled });
   }
+  /** The card (or any short text) as an SVG QR picture. */
+  static qrSvg(text: string): Promise<string> {
+    return invoke('qr_svg', { text });
+  }
   static currentVersion(): Promise<string> {
     return invoke('current_version');
   }
@@ -526,14 +544,26 @@ export class Api {
   static downloadApk(arch: string, destPath: string): Promise<void> {
     return invoke('download_apk', { arch, destPath });
   }
+  static readPreviousLog(): Promise<string> {
+    return invoke('read_previous_log');
+  }
+  static logSettings(): Promise<{ enabled: boolean; path: string }> {
+    return invoke('log_settings');
+  }
+  static setLogEnabled(enabled: boolean): Promise<void> {
+    return invoke('set_log_enabled', { enabled });
+  }
+  static clearDebugLog(): Promise<void> {
+    return invoke('clear_debug_log');
+  }
   static readDebugLog(): Promise<string> {
     return invoke('read_debug_log');
   }
   static onEvent(handler: (e: CoreEvent) => void): Promise<UnlistenFn> {
     return listen<CoreEvent>('core_event', (ev) => handler(ev.payload));
   }
-  static onBootStatus(handler: (s: string) => void): Promise<UnlistenFn> {
-    return listen<string>('boot_status', (ev) => handler(ev.payload));
+  static onBootStatus(handler: (s: BootStatus) => void): Promise<UnlistenFn> {
+    return listen<BootStatus>('boot_status', (ev) => handler(ev.payload));
   }
 }
 

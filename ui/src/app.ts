@@ -61,10 +61,13 @@ export class App extends View {
   }
 
   /** Ask for one line of text; resolves null when cancelled. */
-  prompt(title: string, label: string, initial = '', action = 'Сохранить'): Promise<string | null> {
+  prompt(title: string, label: string, initial = '', action = 'Сохранить', password = false): Promise<string | null> {
     return new Promise((resolve) => {
       this.openModal((close) => {
-        const input = h('input', { class: 'input', value: initial, maxlength: '80' });
+        const input = h('input', {
+          class: 'input', value: initial, maxlength: '80',
+          ...(password ? { type: 'password' } : {}),
+        });
         const done = (v: string | null) => { close(); resolve(v); };
         const submit = () => { const v = input.value.trim(); if (v) done(v); };
         input.addEventListener('keydown', (e) => {
@@ -178,7 +181,7 @@ export class App extends View {
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateError.set(null); },
-      }, 'Close'),
+      }, 'Закрыть'),
     );
   }
 
@@ -279,6 +282,9 @@ class MainView extends View {
     );
     chatSlot.appendChild(empty);
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
+    // In «кофеин» there is one chat and no way around it: the list, and with it
+    // settings and lock, are not on screen at all.
+    this.sub(store.caffeine, (on) => main.classList.toggle('caffeine', !!on), true);
 
     // Relay status. Nothing in the UI used to show it at all, so a client that
     // could not send looked identical to one that could — and with no relay

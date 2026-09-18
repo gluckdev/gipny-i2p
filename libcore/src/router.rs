@@ -10,6 +10,7 @@
 //! already-listening SAM port instead of spawning a child.
 
 use std::net::TcpListener as StdTcpListener;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -112,6 +113,24 @@ impl TransitProfile {
     }
 }
 
+/// Where startup progress goes while the caller is blocked.
+///
+/// libcore knows nothing about interfaces: it calls this with a stable stage
+/// id and one line for a person to read, and whoever started the node decides
+/// what to do with them. Without it, the minutes spent waiting for SAM are
+/// visible only as `eprintln!` in a log nobody has open — which is exactly how
+/// unlocking a profile came to look like a freeze.
+pub type BootProgress = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// Report one step, and keep the log line it replaced.
+pub(crate) fn note(progress: &Option<BootProgress>, stage: &str, detail: impl AsRef<str>) {
+    let detail = detail.as_ref();
+    eprintln!("[i2p] {detail}");
+    if let Some(p) = progress {
+        p(stage, detail);
+    }
+}
+
 /// How long to wait for the router to come up. First run reseeds and builds
 /// tunnels, which can take a couple of minutes.
 const START_TIMEOUT: Duration = Duration::from_secs(180);
@@ -199,24 +218,35 @@ impl RouterHandle {
         bin: Option<PathBuf>,
         settings: RouterSettings,
     ) -> Result<Self> {
+        Self::start_with_progress(data_dir, bin, settings, None).await
+    }
+
+    /// As [`Self::start`], reporting each step through `progress` — the
+    /// caller is blocked here for anything from a second to three minutes.
+    pub async fn start_with_progress(
+        data_dir: &Path,
+        bin: Option<PathBuf>,
+        settings: RouterSettings,
+        progress: Option<BootProgress>,
+    ) -> Result<Self> {
         let bin = match bin {
             Some(b) => b,
             None => resolve_router_bin()?,
         };
         match settings.yggdrasil {
-            Yggdrasil::On => Self::spawn(data_dir, &bin, settings, true).await,
-            Yggdrasil::Off => Self::spawn(data_dir, &bin, settings, false).await,
+            Yggdrasil::On => Self::spawn(data_dir, &bin, settings, true, progress, None).await,
+            Yggdrasil::Off => Self::spawn(data_dir, &bin, settings, false, progress, None).await,
             // Try the ordinary way first; only reach for the mesh if the router
             // could not come up at all. This catches a blocked start, which is
             // the case a user cannot work around on their own. It does not catch
             // a router that opens SAM and then fails to find peers — SAM comes up
             // regardless of whether the network is reachable — so "auto" is a
             // fallback for a dead start, not a general connectivity doctor.
-            Yggdrasil::Auto => match Self::spawn(data_dir, &bin, settings, false).await {
+            Yggdrasil::Auto => match Self::spawn(data_dir, &bin, settings, false, progress.clone(), None).await {
                 Ok(h) => Ok(h),
                 Err(e) => {
-                    eprintln!("[i2p] router did not come up ({e:?}); retrying over yggdrasil");
-                    Self::spawn(data_dir, &bin, settings, true).await
+                    note(&progress, "router", format!("router did not come up ({e:?}); retrying over yggdrasil"));
+                    Self::spawn(data_dir, &bin, settings, true, progress, None).await
                 }
             },
         }
@@ -227,6 +257,11 @@ impl RouterHandle {
         bin: &Path,
         settings: RouterSettings,
         yggdrasil: bool,
+        progress: Option<BootProgress>,
+        // Keep the SAM port across a restart: everything already running —
+        // the client's session, the built-in relay — was handed that number
+        // and reconnects to it by itself.
+        preferred_sam_port: Option<u16>,
     ) -> Result<Self> {
         let router_dir = data_dir.join("i2p").join("router");
         std::fs::create_dir_all(&router_dir)
@@ -241,13 +276,13 @@ impl RouterHandle {
         // If it answers nothing, it is stuck: stop it and start fresh.
         match previous_router(&router_dir).await {
             Some(Previous::Serving { sam_port, http_proxy_port }) => {
-                eprintln!("[i2p] a router from an earlier run is still serving SAM on {sam_port}; using it");
+                note(&progress, "router-reused", format!("a router from an earlier run is still serving SAM on {sam_port}; using it"));
                 let mut handle = Self { child: None, sam_port, http_proxy_port, router_dir: None };
-                handle.await_ready().await?;
+                handle.await_ready(&progress).await?;
                 return Ok(handle);
             }
             Some(Previous::Stuck { pid }) => {
-                eprintln!("[i2p] a router from an earlier run (pid {pid}) holds the data directory but does not answer; stopping it");
+                note(&progress, "router", format!("a router from an earlier run (pid {pid}) holds the data directory but does not answer; stopping it"));
                 stop_pid(pid).await;
             }
             None => {}
@@ -255,13 +290,10 @@ impl RouterHandle {
 
         // Always run our own router on private, free ports so the profile is
         // self-contained and we never route through an untrusted foreign router.
-        let sam_port = pick_free_port(DEFAULT_SAM_PORT);
+        let sam_port = pick_free_port(preferred_sam_port.unwrap_or(DEFAULT_SAM_PORT));
         let http_proxy_port = pick_free_port(DEFAULT_HTTP_PROXY_PORT);
 
-        eprintln!(
-            "[i2p] launching router {} (SAM 127.0.0.1:{sam_port}); first run may take 1-3 min...",
-            bin.display()
-        );
+        note(&progress, "router", format!("launching router {} (SAM 127.0.0.1:{sam_port}); first run may take 1-3 min...", bin.display()));
         // Everything but SAM and the HTTP proxy is switched off: gipny talks
         // SAMv3 over loopback for messaging, and the HTTP proxy (with an
         // outproxy) only for the update checker's GitHub requests — no HTTP
@@ -312,8 +344,8 @@ impl RouterHandle {
         let _ = std::fs::write(router_dir.join(RUNTIME_FILE), format!("{} {sam_port} {http_proxy_port}\n", child.id()));
 
         let mut handle = Self { child: Some(child), sam_port, http_proxy_port: Some(http_proxy_port), router_dir: Some(router_dir.clone()) };
-        handle.await_ready().await?;
-        eprintln!("[i2p] router ready (SAM up on {sam_port})");
+        handle.await_ready(&progress).await?;
+        note(&progress, "tunnels-done", format!("router ready (SAM up on {sam_port})"));
         Ok(handle)
     }
 
@@ -324,12 +356,19 @@ impl RouterHandle {
         Self::attach_with_proxy(sam_port, None).await
     }
 
-    /// Attach, and use `http_proxy_port` for anything that needs plain HTTP
-    /// out of i2p (the updater). The port is *checked*, not trusted: an older
-    /// foreground service, or a router somebody else configured, may not have
-    /// a proxy at all, and the updater must see "unavailable" rather than
-    /// failed requests.
-    pub async fn attach_with_proxy(sam_port: u16, http_proxy_port: Option<u16>) -> Result<Self> {
+    /// Attach with progress, for the Android path where the foreground service
+    /// owns the router and the app still has to wait for its SAM.
+    pub async fn attach_with_progress(
+        sam_port: u16,
+        http_proxy_port: Option<u16>,
+        progress: Option<BootProgress>,
+    ) -> Result<Self> {
+        let mut handle = Self::attach_prepared(sam_port, http_proxy_port).await;
+        handle.await_ready(&progress).await?;
+        Ok(handle)
+    }
+
+    async fn attach_prepared(sam_port: u16, http_proxy_port: Option<u16>) -> Self {
         let http_proxy_port = match http_proxy_port {
             Some(port) if TcpStream::connect(("127.0.0.1", port)).await.is_ok() => Some(port),
             Some(port) => {
@@ -338,9 +377,47 @@ impl RouterHandle {
             }
             None => None,
         };
-        let mut handle = Self { child: None, sam_port, http_proxy_port, router_dir: None };
-        handle.await_ready().await?;
-        Ok(handle)
+        Self { child: None, sam_port, http_proxy_port, router_dir: None }
+    }
+
+    /// Attach, and use `http_proxy_port` for anything that needs plain HTTP
+    /// out of i2p (the updater). The port is *checked*, not trusted: an older
+    /// foreground service, or a router somebody else configured, may not have
+    /// a proxy at all, and the updater must see "unavailable" rather than
+    /// failed requests.
+    pub async fn attach_with_proxy(sam_port: u16, http_proxy_port: Option<u16>) -> Result<Self> {
+        Self::attach_with_progress(sam_port, http_proxy_port, None).await
+    }
+
+    /// Does the router still answer? A dead router looks exactly like a
+    /// network problem from above — every dial fails with "connection
+    /// refused" — so somebody has to ask this question out loud.
+    pub async fn alive(&self) -> bool {
+        probe_sam(self.sam_port).await
+    }
+
+    /// Replace a router that stopped answering, on the same SAM port.
+    ///
+    /// Nothing supervised the child before: when i2pd died mid-session (killed
+    /// for memory, crashed, stopped by hand) the app kept dialling a port with
+    /// nothing behind it, forever, and every contact looked unreachable
+    /// (seen on the owner's machine, 2026-09-18).
+    pub async fn restart(
+        &mut self,
+        data_dir: &Path,
+        settings: RouterSettings,
+        progress: Option<BootProgress>,
+    ) -> Result<()> {
+        self.kill_child();
+        let bin = resolve_router_bin()?;
+        let yggdrasil = matches!(settings.yggdrasil, Yggdrasil::On);
+        let replacement = Self::spawn(data_dir, &bin, settings, yggdrasil, progress, Some(self.sam_port)).await?;
+        let port = replacement.sam_port;
+        *self = replacement;
+        if port != self.sam_port {
+            eprintln!("[i2p] router restarted on a different SAM port ({port})");
+        }
+        Ok(())
     }
 
     /// SAM TCP port the router is listening on.
@@ -353,11 +430,24 @@ impl RouterHandle {
         self.http_proxy_port
     }
 
-    async fn await_ready(&mut self) -> Result<()> {
-        let deadline = Instant::now() + START_TIMEOUT;
+    /// Wait for SAM, telling `progress` roughly once a second how long it has
+    /// been. This is the longest wait in the whole startup — on a cold router
+    /// it is minutes — so silence here is what made unlocking look frozen.
+    async fn await_ready(&mut self, progress: &Option<BootProgress>) -> Result<()> {
+        let started = Instant::now();
+        let deadline = started + START_TIMEOUT;
+        let mut last_note = Instant::now();
         loop {
             if probe_sam(self.sam_port).await {
                 return Ok(());
+            }
+            if progress.is_some() && last_note.elapsed() >= Duration::from_secs(1) {
+                last_note = Instant::now();
+                note(progress, "tunnels", format!(
+                    "waiting for SAM: {}s of {}s",
+                    started.elapsed().as_secs(),
+                    START_TIMEOUT.as_secs(),
+                ));
             }
             // If the child we own has already died, surface it instead of spinning.
             if let Some(child) = self.child.as_mut() {

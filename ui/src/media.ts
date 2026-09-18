@@ -3,6 +3,7 @@ import { Api, type MediaItem } from './api';
 import type { Store, ChatTarget } from './state';
 import { h, fmtDate, fmtTime, humanSize, mimeFromName } from './view';
 
+import { icon } from './icons';
 export class MediaModal {
   el: HTMLElement;
   private store: Store;
@@ -22,7 +23,7 @@ export class MediaModal {
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, 'Медиа и файлы'),
-        h('button', { class: 'icon-btn', onClick: close }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         this.status,
@@ -76,7 +77,7 @@ export class MediaModal {
             this.store.showToast('save failed: ' + String(e), true);
           }
         },
-      }, 'Save'));
+      }, 'Сохранить'));
       tile.addEventListener('click', () => this.openInChat(it));
       if (isImage) void this.fillPreview(preview, it.id, mime);
       this.grid.appendChild(tile);

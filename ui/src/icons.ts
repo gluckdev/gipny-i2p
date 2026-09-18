@@ -15,6 +15,7 @@ const PATHS = {
   chevronRight: '<path d="m9 18 6-6-6-6"/>',
   more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
   block: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
+  coffee: '<path d="M4 9h13v6a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5z"/><path d="M17 10h1.6a2.4 2.4 0 0 1 0 5H17"/><path d="M7 2c0 1.2-1 1.5-1 2.6S7 6 7 7M11 2c0 1.2-1 1.5-1 2.6S11 6 11 7M15 2c0 1.2-1 1.5-1 2.6S15 6 15 7"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
 } as const;
 

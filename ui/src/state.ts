@@ -1,4 +1,4 @@
-import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo } from './api';
+import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus } from './api';
 import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 
 const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF]);
@@ -35,6 +35,22 @@ export class Signal<T> {
 
 export type ViewKind = 'profile-select' | 'auth-create' | 'auth-unlock' | 'auth-booting' | 'main';
 
+/** Steps of opening a profile, in the order they happen. The ids match the
+ * backend's `boot_status` stages; `dht` is last and never blocks the way in. */
+export const BOOT_STEPS = ['vault', 'router', 'tunnels', 'session', 'core', 'relay', 'dht'] as const;
+export type BootStepId = typeof BOOT_STEPS[number];
+
+export interface BootStep {
+  id: BootStepId;
+  state: 'idle' | 'active' | 'done' | 'failed';
+  /** When this step became active, so the screen can keep counting between
+   * messages from the backend — a three-minute step must not look stuck. */
+  startedAt: number;
+  /** Milliseconds a finished step took. */
+  ms: number;
+  detail: string;
+}
+
 export type BootStage = 'unlocking' | 'i2p' | 'relay' | 'done';
 
 export type ChatTarget =
@@ -62,9 +78,27 @@ export interface UpdateProgress {
   pct: number;
 }
 
+function freshBootSteps(): BootStep[] {
+  return BOOT_STEPS.map((id) => ({ id, state: 'idle' as const, startedAt: 0, ms: 0, detail: '' }));
+}
+
 export class Store {
   view = new Signal<ViewKind>('profile-select');
   bootStage = new Signal<BootStage>('unlocking');
+  /** Live progress of opening a profile; the unlock screen renders it. */
+  bootSteps = new Signal<BootStep[]>(freshBootSteps());
+  /** The technical lines behind those steps, newest last. */
+  bootLog = new Signal<string[]>([]);
+  /** «Кофеин»: the app is pinned to this chat and the screen is kept awake
+   * until someone types the profile passphrase. */
+  caffeine = new Signal<ChatTarget | null>(null);
+  private wakeLock: { release: () => Promise<void> } | null = null;
+
+  /** Set when the core is up and only the relay is still coming. */
+  bootCanEnter = new Signal<boolean>(false);
+  private bootStartedAt = 0;
+  private bootStepStartedAt = 0;
+  private unsubBoot: (() => void) | null = null;
   profiles = new Signal<string[]>([]);
   currentProfile = new Signal<string | null>(null);
   contacts = new Signal<Contact[]>([]);
@@ -288,11 +322,96 @@ export class Store {
     this.view.set(this.profiles.get().length > 0 ? 'profile-select' : 'auth-create');
   }
 
+  /** Start listening for boot progress and show the loading screen. Called
+   * before `vault_unlock`, because that call is where the minutes go. */
+  async beginBoot(profile: string): Promise<void> {
+    this.currentProfile.set(profile);
+    this.bootSteps.set(freshBootSteps());
+    this.bootLog.set([]);
+    this.bootCanEnter.set(false);
+    this.bootStage.set('unlocking');
+    this.bootStartedAt = Date.now();
+    this.bootStepStartedAt = this.bootStartedAt;
+    this.view.set('auth-booting');
+    this.unsubBoot?.();
+    this.unsubBoot = await Api.onBootStatus((s) => this.onBootStatus(s));
+  }
+
+  /** Give up on this attempt (wrong passphrase, failed router). */
+  endBoot(): void {
+    this.unsubBoot?.();
+    this.unsubBoot = null;
+  }
+
+  private onBootStatus(status: BootStatus): void {
+    const now = Date.now();
+    this.bootLog.update((lines) => [...lines, `${((now - this.bootStartedAt) / 1000).toFixed(1)}s  ${status.detail}`].slice(-200));
+    const idx = BOOT_STEPS.indexOf(status.stage);
+    if (idx < 0) return;
+    this.bootSteps.update((steps) => steps.map((step, i) => {
+      if (i < idx && (step.state === 'idle' || step.state === 'active')) {
+        // A step we never saw finish is over by the time a later one speaks.
+        return { ...step, state: 'done' as const, ms: step.ms || (step.startedAt ? now - step.startedAt : 0) };
+      }
+      if (i !== idx) return step;
+      const startedAt = step.startedAt || this.bootStepStartedAt || now;
+      const ms = status.state === 'active' ? step.ms : now - startedAt;
+      return { ...step, state: status.state, startedAt, ms, detail: status.detail };
+    }));
+    if (status.state !== 'active') this.bootStepStartedAt = now;
+    // Once the core is up, the chats are readable even while the relay builds
+    // its tunnels — offer the way in rather than holding the screen hostage.
+    if (status.stage === 'core' && status.state === 'done') this.bootCanEnter.set(true);
+    if (status.stage === 'relay' && status.state === 'done') this.enterMain();
+  }
+
+  /** Pin the app to this chat and keep the screen on. */
+  async startCaffeine(target: ChatTarget): Promise<void> {
+    this.caffeine.set(target);
+    await this.acquireWakeLock();
+  }
+
+  /** Let go — the caller has already checked the passphrase. */
+  async stopCaffeine(): Promise<void> {
+    this.caffeine.set(null);
+    await this.releaseWakeLock();
+  }
+
+  /** The screen lock is the system's, not ours: the browser API is all we
+   * have, and it is dropped whenever the window goes away, so it is taken
+   * again every time the window comes back. */
+  private async acquireWakeLock(): Promise<void> {
+    type Sentinel = { release: () => Promise<void> };
+    const nav = navigator as unknown as { wakeLock?: { request: (t: string) => Promise<Sentinel> } };
+    if (!nav.wakeLock) return;
+    try {
+      this.wakeLock = await nav.wakeLock.request('screen');
+      document.addEventListener('visibilitychange', this.reacquireWakeLock);
+    } catch { /* refused or unsupported: the chat still stays pinned */ }
+  }
+
+  private reacquireWakeLock = (): void => {
+    if (document.visibilityState !== 'visible' || !this.caffeine.get()) return;
+    void this.acquireWakeLock();
+  };
+
+  private async releaseWakeLock(): Promise<void> {
+    document.removeEventListener('visibilitychange', this.reacquireWakeLock);
+    const lock = this.wakeLock;
+    this.wakeLock = null;
+    try { await lock?.release(); } catch { /* already gone */ }
+  }
+
+  /** Leave the loading screen for the chats. */
+  enterMain(): void {
+    this.bootStage.set('done');
+    if (this.view.get() === 'auth-booting') this.view.set('main');
+  }
+
   async onUnlocked(profile: string): Promise<void> {
     this.currentProfile.set(profile);
     this.bootStage.set('i2p');
     this.relayConnected.set(false);
-    this.view.set('auth-booting');
     const [card, onion, fingerprint, displayName] = await Promise.all([
       Api.myCard(), Api.myOnion(), Api.myFingerprint(), Api.getDisplayName(),
     ]);
@@ -335,23 +454,30 @@ export class Store {
     // user to configure, only a minute or two to wait.
     this.relayUnconfigured.set(info?.mode !== 'builtin' && configured.trim() === '');
     if (info?.mode === 'builtin' && info.hosted.state !== 'ready') {
-      // Do not hold the boot screen for the relay's tunnels; the banner says
-      // what is happening and messages queue meanwhile.
-      this.bootStage.set('done');
-      if (this.view.get() === 'auth-booting') this.view.set('main');
+      // Stay on the loading screen while the relay builds its tunnels — it is
+      // a real step and the screen now shows it moving — but never as a
+      // prison: the screen offers «Открыть чаты сейчас», and the timeout below
+      // lets us in anyway. Reading old chats works without a relay.
+      this.bootCanEnter.set(true);
+      this.armBootTimeout();
       return;
     }
     if (this.relayUnconfigured.get()) {
-      this.bootStage.set('done');
-      if (this.view.get() === 'auth-booting') this.view.set('main');
+      this.enterMain();
       return;
     }
+    if (info?.mode === 'builtin' && info.hosted.state === 'ready') {
+      this.enterMain();
+      return;
+    }
+    this.armBootTimeout();
+  }
+
+  /** However slow the relay is, the app becomes usable eventually. */
+  private armBootTimeout(): void {
     if (this.bootTimer != null) window.clearTimeout(this.bootTimer);
     this.bootTimer = window.setTimeout(() => {
-      if (this.view.get() === 'auth-booting') {
-        this.bootStage.set('done');
-        this.view.set('main');
-      }
+      if (this.view.get() === 'auth-booting') this.enterMain();
     }, Store.BOOT_RELAY_TIMEOUT_MS);
   }
 
@@ -436,6 +562,11 @@ export class Store {
     this.relayInfo.set(null);
     this.unreachable.set(new Set());
     this.bootStage.set('unlocking');
+    void this.stopCaffeine();
+    this.bootSteps.set(freshBootSteps());
+    this.bootLog.set([]);
+    this.bootCanEnter.set(false);
+    this.endBoot();
     this.updateAvailable.set(null);
     this.updateProgress.set(null);
     this.updateReadyPath.set(null);
@@ -550,6 +681,9 @@ export class Store {
   async refreshGroups(): Promise<void> { await this.refreshAll(); }
 
   async selectChat(target: ChatTarget | null): Promise<void> {
+    // In «кофеин» the chat does not change, whatever gets tapped.
+    const pinnedTo = this.caffeine.get();
+    if (pinnedTo && !sameTarget(pinnedTo, target)) return;
     this.selectedChat.set(target);
     if (!target) return;
     await this.loadMessages(target);

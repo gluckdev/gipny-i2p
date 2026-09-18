@@ -137,8 +137,11 @@ pub struct I2pNode {
     relay_fail_count: AtomicU32,
     last_recreate_at: Mutex<Option<Instant>>,
     recreate_lock: Mutex<()>,
-    /// Owns the router child process; dropping it tears the router down.
-    _router: RouterHandle,
+    /// Owns the router child process; dropping it tears the router down. Also
+    /// what `ensure_router` restarts when the child dies under us.
+    router: Mutex<RouterHandle>,
+    /// Kept so a restarted router gets the profile's own settings.
+    router_settings: crate::router::RouterSettings,
 }
 
 impl I2pNode {
@@ -152,13 +155,25 @@ impl I2pNode {
     /// Ignored on Android and when attaching to a router somebody else started,
     /// since those settings belong to whoever launched it.
     pub async fn start(data_dir: &Path, settings: crate::router::RouterSettings) -> Result<Self> {
+        Self::start_with_progress(data_dir, settings, None).await
+    }
+
+    /// As [`Self::start`], reporting each step through `progress`. The app uses
+    /// it to keep the unlock screen moving: everything here takes from a second
+    /// to three minutes and used to happen in complete silence.
+    pub async fn start_with_progress(
+        data_dir: &Path,
+        settings: crate::router::RouterSettings,
+        progress: Option<crate::router::BootProgress>,
+    ) -> Result<Self> {
+        use crate::router::note;
         #[cfg(target_os = "android")]
         let router = {
             let _ = settings; // the foreground service owns the router's config
             // The service configures i2pd's HTTP proxy on the default port so
             // update checks go out over i2p here too; `attach_with_proxy`
             // verifies it is actually listening.
-            RouterHandle::attach_with_proxy(DEFAULT_SAM_PORT, Some(DEFAULT_HTTP_PROXY_PORT)).await?
+            RouterHandle::attach_with_progress(DEFAULT_SAM_PORT, Some(DEFAULT_HTTP_PROXY_PORT), progress.clone()).await?
         };
         // GIPNY_SAM_PORT attaches to a router someone else already started
         // instead of spawning our own — the e2e harness uses it to put every
@@ -172,21 +187,22 @@ impl I2pNode {
                 let port = raw.trim().parse::<u16>().map_err(|e| {
                     NetError::I2p(format!("GIPNY_SAM_PORT={raw:?} is not a valid port: {e}"))
                 })?;
-                RouterHandle::attach(port).await?
+                RouterHandle::attach_with_progress(port, None, progress.clone()).await?
             }
-            Err(_) => RouterHandle::start(data_dir, None, settings).await?,
+            Err(_) => RouterHandle::start_with_progress(data_dir, None, settings, progress.clone()).await?,
         };
 
         let sam_port = router.sam_port();
         let http_proxy_port = router.http_proxy_port();
-        eprintln!("[i2p] generating ephemeral destination for this session...");
+        note(&progress, "session", "generating ephemeral destination for this session...");
         let (address, privkey) = RouterApi::new(sam_port)
             .generate_destination()
             .await
             .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?;
-        eprintln!("[i2p] destination = {}", short_addr(&address));
+        note(&progress, "session", format!("destination = {}", short_addr(&address)));
 
         let session = build_session(sam_port, &privkey).await?;
+        note(&progress, "session-done", "SAM session open");
         let session = Arc::new(Mutex::new(session));
 
         let (tx, rx) = mpsc::channel::<Connection>(INBOX_CAPACITY);
@@ -206,7 +222,8 @@ impl I2pNode {
             relay_fail_count: AtomicU32::new(0),
             last_recreate_at: Mutex::new(None),
             recreate_lock: Mutex::new(()),
-            _router: router,
+            router: Mutex::new(router),
+            router_settings: settings,
         })
     }
 
@@ -215,7 +232,7 @@ impl I2pNode {
             h.abort();
             let _ = h.await;
         }
-        // The router child is torn down when `self._router` (this node) drops.
+        // The router child is torn down when `self.router` (this node) drops.
     }
 
     /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
@@ -323,6 +340,34 @@ impl I2pNode {
         }
     }
 
+    /// Make sure there is still a router behind our SAM port, and start a new
+    /// one if there is not.
+    ///
+    /// Rebuilding the SAM session is pointless when the process that serves SAM
+    /// is gone: every rebuild fails with "connection refused" and the app sits
+    /// there forever with every contact unreachable. Checked before each session
+    /// rebuild rather than on a timer, so an idle app costs nothing.
+    async fn ensure_router(&self) -> bool {
+        {
+            let router = self.router.lock().await;
+            if router.alive().await {
+                return true;
+            }
+        }
+        eprintln!("[i2p] SAM has stopped answering — restarting the router");
+        let mut router = self.router.lock().await;
+        match router.restart(&self.data_dir, self.router_settings, None).await {
+            Ok(()) => {
+                eprintln!("[i2p] router restarted");
+                true
+            }
+            Err(e) => {
+                eprintln!("[i2p] router restart failed: {e:?}");
+                false
+            }
+        }
+    }
+
     async fn maybe_recreate(&self, fail_count: u32) {
         if fail_count < RECREATE_AFTER_FAILURES { return; }
         if self.created_at.elapsed() < RECREATE_MIN_AGE { return; }
@@ -336,6 +381,9 @@ impl I2pNode {
         eprintln!("[i2p] {} consecutive relay failures past {}s mark, rebuilding SAM session",
             fail_count, RECREATE_MIN_AGE.as_secs());
         *self.last_recreate_at.lock().await = Some(Instant::now());
+        if !self.ensure_router().await {
+            return;
+        }
         match self.recreate().await {
             Ok(()) => {
                 self.relay_fail_count.store(0, Ordering::Relaxed);

@@ -25,23 +25,96 @@ struct AppCtx {
     core: Mutex<Option<Arc<Core>>>,
 }
 
-#[cfg(target_os = "android")]
+/// Where the level lives. Not a profile setting: capture starts before any
+/// vault is open, and a log that only begins after unlocking would miss the
+/// part people actually need — the router, the boot, the crash before that.
+fn log_level_path(base_dir: &std::path::Path) -> std::path::PathBuf {
+    base_dir.join("log.conf")
+}
+
+/// `true` unless the person turned it off. The default changed (2026-09-18, the
+/// owner's call): when something goes wrong there has to be something to read,
+/// and "reproduce it with the env var set" is not an answer for a phone.
+fn log_enabled(base_dir: &std::path::Path) -> bool {
+    if std::env::var_os("GIPNY_DEBUG_LOG").is_some() {
+        return true;
+    }
+    !matches!(
+        std::fs::read_to_string(log_level_path(base_dir)).map(|s| s.trim().to_ascii_lowercase()),
+        Ok(ref v) if v == "off"
+    )
+}
+
+/// Redirect this process's stderr into a file, one timestamped line at a time.
+///
+/// Unix only: it is a `dup2`, and Windows has no equivalent that survives the
+/// way Tauri starts up. stderr goes into a pipe rather than straight into the
+/// file so every line can be stamped — without that, a log of "relay failed"
+/// and "router ready" says nothing about *when*, which is most of what one
+/// needs from it.
+#[cfg(unix)]
 fn install_log_capture(base_dir: &std::path::Path) {
-    use std::os::unix::io::AsRawFd;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+
     let log_path = base_dir.join("debug.log");
-    let _ = std::fs::OpenOptions::new()
-        .create(true).write(true).truncate(true)
-        .open(&log_path)
-        .ok()
-        .and_then(|file| {
-            unsafe {
-                if libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) >= 0 {
-                    std::mem::forget(file);
-                    Some(())
-                } else { None }
-            }
-        });
-    eprintln!("[gipny] log capture installed: {}", log_path.display());
+    // Keep the previous run's log: a crash is only readable afterwards, and
+    // truncating on start threw away exactly the interesting one.
+    let _ = std::fs::rename(&log_path, base_dir.join("debug.prev.log"));
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&log_path) else {
+        return;
+    };
+
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    let (read_fd, write_fd) = (fds[0], fds[1]);
+    if unsafe { libc::dup2(write_fd, libc::STDERR_FILENO) } < 0 {
+        unsafe {
+            libc::close(read_fd);
+            libc::close(write_fd);
+        }
+        return;
+    }
+    unsafe { libc::close(write_fd) };
+
+    std::thread::spawn(move || {
+        let reader = BufReader::new(unsafe { std::fs::File::from_raw_fd(read_fd) });
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            let _ = writeln!(file, "{} {line}", log_stamp());
+            let _ = file.flush();
+        }
+    });
+    eprintln!("log capture installed: {}", log_path.display());
+    eprintln!("gipny {} on {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS);
+}
+
+/// `HH:MM:SS.mmm` in local time — enough to line our log up against i2pd's,
+/// which stamps the same way, without dragging in a date library.
+#[cfg(unix)]
+fn log_stamp() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = now.as_secs() as i64;
+    let ms = now.subsec_millis();
+    let local = secs + local_utc_offset_secs();
+    let tod = local.rem_euclid(86_400);
+    format!("{:02}:{:02}:{:02}.{:03}", tod / 3600, (tod % 3600) / 60, tod % 60, ms)
+}
+
+/// The offset `localtime_r` reports for now, in seconds.
+#[cfg(unix)]
+fn local_utc_offset_secs() -> i64 {
+    unsafe {
+        let mut t: libc::time_t = 0;
+        libc::time(&mut t);
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return 0;
+        }
+        tm.tm_gmtoff as i64
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -61,7 +134,12 @@ fn register_aumid() {}
 /// on a duress/attempt-limit wipe so no plaintext log survives outside the
 /// per-profile dir that `secure_wipe_dir` scrubs.
 fn scrub_debug_log(base_dir: &std::path::Path) {
-    let p = base_dir.join("debug.log");
+    scrub_one_log(&base_dir.join("debug.prev.log"));
+    scrub_one_log(&base_dir.join("debug.log"));
+}
+
+fn scrub_one_log(p: &std::path::Path) {
+    let p = p.to_path_buf();
     if let Ok(meta) = std::fs::metadata(&p) {
         if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&p) {
             use std::io::Write;
@@ -84,8 +162,8 @@ pub fn run() {
     // base dir (outside the per-profile dir that duress-wipe scrubs). Off by
     // default in release so no transport/app traces survive at rest; opt in with
     // GIPNY_DEBUG_LOG=1 (or any debug build) when you actually need it.
-    #[cfg(target_os = "android")]
-    if cfg!(debug_assertions) || std::env::var_os("GIPNY_DEBUG_LOG").is_some() {
+    #[cfg(unix)]
+    if log_enabled(&base_dir) {
         install_log_capture(&base_dir);
     }
     let ctx = AppCtx {
@@ -110,9 +188,9 @@ pub fn run() {
         .manage(ctx)
         .invoke_handler(tauri::generate_handler![
             list_profiles, delete_profile,
-            vault_status, vault_create, vault_unlock, vault_lock,
+            vault_status, vault_create, vault_unlock, vault_lock, verify_passphrase,
             change_passphrase, set_duress, set_max_attempts,
-            my_card, my_onion, my_b32, my_fingerprint, my_bundle,
+            my_card, my_onion, my_b32, my_fingerprint, my_bundle, qr_svg,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
             get_relay_info, get_dht_status, set_relay_mode, get_ui_data, set_ui_data, list_unreachable_contacts,
@@ -139,7 +217,7 @@ pub fn run() {
             pin_chat, unpin_chat,
             check_update, install_update, update_installs_itself, restart_app, dismiss_update, get_auto_update, set_auto_update, current_version,
             list_apk_artifacts, download_apk,
-            read_debug_log,
+            read_debug_log, read_previous_log, log_settings, set_log_enabled, clear_debug_log,
             export_identity, import_identity_to_profile,
             send_typing,
             play_notify_sound,
@@ -495,6 +573,40 @@ async fn vault_unlock(
     boot(&ctx, app, vault, &pass, &profile, &dir).await
 }
 
+/// One step of opening a profile, for the screen that would otherwise show a
+/// disabled button for three minutes. `stage` is a stable id the interface
+/// turns into its own wording; `detail` is the technical line (the same one
+/// that goes to stderr), shown under «технические подробности».
+#[derive(Clone, serde::Serialize)]
+struct BootStatus {
+    stage: &'static str,
+    state: &'static str,
+    detail: String,
+}
+
+fn boot_status(app: &AppHandle, stage: &'static str, state: &'static str, detail: impl Into<String>) {
+    let _ = app.emit("boot_status", BootStatus { stage, state, detail: detail.into() });
+}
+
+/// The callback libcore reports router and SAM progress through. Stage ids come
+/// from there (`router`, `router-reused`, `tunnels`, `tunnels-done`, `session`,
+/// `session-done`); anything unknown still reaches the technical log.
+fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
+    let app = app.clone();
+    Arc::new(move |stage: &str, detail: &str| {
+        let (stage, state) = match stage {
+            "router" => ("router", "active"),
+            "router-reused" => ("router", "done"),
+            "tunnels" => ("tunnels", "active"),
+            "tunnels-done" => ("tunnels", "done"),
+            "session" => ("session", "active"),
+            "session-done" => ("session", "done"),
+            _ => ("router", "active"),
+        };
+        boot_status(&app, stage, state, detail);
+    })
+}
+
 async fn boot(
     ctx: &State<'_, AppCtx>, app: AppHandle, vault: Arc<Vault>,
     pass: &str, profile: &str, dir: &std::path::Path,
@@ -504,7 +616,13 @@ async fn boot(
     // Windows update means the app closes and reopens once here, rather than
     // after the user has sat through both of those for nothing.
     gipny_libcore::update::apply_staged_windows_installer(dir);
-    let outcome = vault.unlock(pass).map_err(err)?;
+    boot_status(&app, "vault", "active", "unlocking the vault (argon2id)");
+    // Argon2id with 256 MiB takes a second or three on a desktop and longer on
+    // a tired laptop, at 100% of a core. Saying so beats a frozen button.
+    let outcome = vault.unlock(pass).map_err(|e| {
+        boot_status(&app, "vault", "failed", format!("{e}"));
+        err(e)
+    })?;
     // The decoy key is freshly random and unrelated to the primary master key,
     // so it cannot open data.db — SQLCipher rejects it and the unlock screen
     // showed a "bad key" error, in front of whoever was applying the coercion.
@@ -522,6 +640,7 @@ async fn boot(
         }
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join(db_name), &mk).map_err(err)?);
+    boot_status(&app, "vault", "done", format!("profile opened ({db_name})"));
     // Point the transport at the bundled i2pd shipped as a Tauri resource. On
     // desktop it's spawned as a child; on Android the router is started
     // in-process by the foreground service, so this is a no-op there.
@@ -560,12 +679,45 @@ async fn boot(
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let node = Arc::new(I2pNode::start(dir, settings).await.map_err(err)?);
+    let node = Arc::new(
+        I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
+            .await
+            .map_err(|e| {
+                boot_status(&app, "router", "failed", format!("{e:?}"));
+                err(e)
+            })?,
+    );
     let warning: Option<String> = None;
-    let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
+    boot_status(&app, "core", "active", "starting the messenger core");
+    let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(|e| {
+        boot_status(&app, "core", "failed", format!("{e:?}"));
+        err(e)
+    })?;
+    boot_status(&app, "core", "done", "core running");
     let app2 = app.clone();
     tokio::spawn(async move {
         while let Some(e) = events.recv().await {
+            // The unlock screen waits for the relay and the network, and those
+            // only exist as core events. Mirror the two it needs so it does not
+            // depend on the main view's listener being attached yet.
+            match &e {
+                crate::core::CoreEvent::RelayInfoChanged { info } => match &info.hosted {
+                    crate::core::HostedRelayState::Ready { address } => {
+                        boot_status(&app2, "relay", "done", format!("built-in relay ready at {}", &address[..address.len().min(16)]));
+                    }
+                    crate::core::HostedRelayState::Failed { reason } => {
+                        boot_status(&app2, "relay", "failed", reason.clone());
+                    }
+                    crate::core::HostedRelayState::Starting => {
+                        boot_status(&app2, "relay", "active", "building the relay's tunnels");
+                    }
+                    crate::core::HostedRelayState::Off => {}
+                },
+                crate::core::CoreEvent::DhtJoined { peers } => {
+                    boot_status(&app2, "dht", "done", format!("relay network: {peers} node(s) known"));
+                }
+                _ => {}
+            }
             let _ = app2.emit("core_event", &e);
         }
     });
@@ -573,6 +725,25 @@ async fn boot(
     *ctx.vault.lock().await = Some(vault);
     *ctx.core.lock().await = Some(core);
     Ok(warning)
+}
+
+/// Check the profile's passphrase without touching the running session.
+///
+/// Used by «кофеин» to let someone out of a locked-to-one-chat screen. It goes
+/// through the real `Vault::unlock`, so the attempt counter, the wipe limit and
+/// the duress passphrase all behave exactly as they do on the unlock screen —
+/// a mode that could be left with a password the vault does not honour would be
+/// a second, weaker door.
+#[tauri::command]
+async fn verify_passphrase(pass: String, ctx: State<'_, AppCtx>) -> Result<String, String> {
+    let vault = ctx.vault.lock().await.clone().ok_or("no profile open")?;
+    match vault.unlock(&pass).map_err(err)? {
+        UnlockOutcome::Primary(_) => Ok("ok".into()),
+        // The real profile is already open on screen, so a decoy cannot hide
+        // anything here; treat it as the wrong password rather than pretend.
+        UnlockOutcome::Decoy(_) => Err("invalid passphrase".into()),
+        UnlockOutcome::Wiped => Ok("wiped".into()),
+    }
 }
 
 #[tauri::command]
@@ -1395,6 +1566,28 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<Option<serde_json::Value
 /// Whether this build can put an update in place itself. False on Android
 /// (the system installer owns that) and on packages we do not manage (.deb,
 /// macOS) — the interface then offers the file instead of a button that lies.
+/// A contact card as a QR picture, so two people can exchange cards by
+/// pointing one phone at another instead of copying 500 characters. Rendered
+/// here (pure Rust) rather than in the interface: one small dependency instead
+/// of a JavaScript one. Returns an SVG that scales to whatever box it is put in.
+#[tauri::command]
+fn qr_svg(text: String) -> Result<String, String> {
+    // A v2 card is ~600 characters, comfortably inside QR's limits at the
+    // lowest correction level; anything much larger is not a card.
+    if text.is_empty() || text.len() > 2000 {
+        return Err("nothing to encode".into());
+    }
+    let code = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L)
+        .map_err(|e| format!("qr: {e}"))?;
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .quiet_zone(true)
+        .min_dimensions(240, 240)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build())
+}
+
 /// Restart into the version that was just installed. Desktop only: on
 /// Android the system owns the process lifecycle, and on a package we do not
 /// manage there is nothing new to restart into.
@@ -1463,11 +1656,47 @@ async fn download_apk(arch: String, dest_path: String, ctx: State<'_, AppCtx>) -
 
 #[tauri::command]
 fn read_debug_log(ctx: State<'_, AppCtx>) -> Result<String, String> {
-    let p = ctx.base_dir.join("debug.log");
-    let raw = std::fs::read_to_string(&p).unwrap_or_else(|_| String::from("(no log)"));
+    read_log_file(&ctx.base_dir.join("debug.log"))
+}
+
+/// The log of the run before this one — where a crash left its last words.
+#[tauri::command]
+fn read_previous_log(ctx: State<'_, AppCtx>) -> Result<String, String> {
+    read_log_file(&ctx.base_dir.join("debug.prev.log"))
+}
+
+fn read_log_file(p: &std::path::Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(p).unwrap_or_else(|_| String::from("(журнал пуст)"));
     let lines: Vec<&str> = raw.lines().collect();
-    let take = lines.len().saturating_sub(500);
+    let take = lines.len().saturating_sub(2000);
     Ok(lines[take..].join("\n"))
+}
+
+/// Whether the log is being written, and where it is.
+#[tauri::command]
+fn log_settings(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "enabled": log_enabled(&ctx.base_dir),
+        "path": ctx.base_dir.join("debug.log").display().to_string(),
+    }))
+}
+
+/// Takes effect at the next launch: the capture replaces this process's stderr
+/// once, at startup, and there is no way back to a file descriptor that is gone.
+#[tauri::command]
+fn set_log_enabled(enabled: bool, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    std::fs::write(log_level_path(&ctx.base_dir), if enabled { "debug" } else { "off" }).map_err(err)?;
+    if !enabled {
+        scrub_debug_log(&ctx.base_dir);
+    }
+    Ok(())
+}
+
+/// Wipe what has been written so far, for handing the app to someone else.
+#[tauri::command]
+fn clear_debug_log(ctx: State<'_, AppCtx>) -> Result<(), String> {
+    scrub_debug_log(&ctx.base_dir);
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
