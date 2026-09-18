@@ -176,6 +176,12 @@ export interface BootStatus {
   detail: string;
 }
 
+/** Which speed/anonymity trade is in force.
+ *
+ * Named for what each one does. The buttons say «КОКАИН» and «НИТРО»; those
+ * are labels, and labels change. */
+export type Lane = 'normal' | 'fast' | 'fastest';
+
 /** The channel to one contact, as the strip above the chat shows it.
  *
  * Two hop counts, not one: a letter goes out through our tunnel and arrives
@@ -183,6 +189,7 @@ export interface BootStatus {
  * Each side owns its own leg, and shortening a leg exposes the side that
  * shortened it — which is why they are counted separately. */
 export interface LinkStats {
+  lane: Lane;
   our_hops: number;
   their_hops: number;
   padded: boolean;
@@ -222,7 +229,8 @@ export type CoreEvent =
   | { ConsoleActivity: { contact_id: number } }
   | { RelayInfoChanged: { info: RelayInfo } }
   | { ContactReachability: { contact_id: number; unreachable: boolean } }
-  | { LinkRtt: { contact_id: number; ms: number } };
+  | { LinkRtt: { contact_id: number; ms: number } }
+  | { LaneChanged: { lane: Lane } };
 
 export interface PendingAttachment { name: string; data: string; }
 
@@ -545,6 +553,10 @@ export class Api {
   }
   static linkStats(contactId: number): Promise<LinkStats> {
     return invoke('link_stats', { contactId });
+  }
+  /** Rebuilds tunnels; takes tens of seconds and rejects if it could not. */
+  static setLane(lane: Lane): Promise<void> {
+    return invoke('set_lane', { lane });
   }
   static getAutoUpdate(): Promise<boolean> {
     return invoke('get_auto_update');

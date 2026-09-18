@@ -148,9 +148,15 @@ let folders = JSON.stringify([
 ]);
 
 let avatars = '{}';
+// The lane the preview is in, so ТУРБО and НИТРО can actually be pressed and
+// the readout follows. Round trip drops with the hop count, roughly as it does
+// in life: most of the wait is the hops.
+let lane: 'normal' | 'fast' | 'fastest' = 'normal';
+let hops = 3;
+const laneRtt = (): number => (lane === 'normal' ? 1840 : lane === 'fast' ? 1120 : 480);
 
 mockWindows('main');
-mockIPC((cmd, payload) => {
+mockIPC(async (cmd, payload) => {
   const a = payload as Args;
   switch (cmd) {
     case 'list_profiles': return scene === 'auth' ? [] : ['ops'];
@@ -194,8 +200,15 @@ mockIPC((cmd, payload) => {
     // Contact 2 is the unreachable one, so it shows the «архив» wording and
     // has no round trip to report — both branches of the readout on one page.
     case 'link_stats': return num(a, 'contactId') === 2
-      ? { our_hops: 3, their_hops: 3, padded: true, route: 'archive', rtt_ms: null }
-      : { our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: 1840 };
+      ? { lane, our_hops: hops, their_hops: hops, padded: lane === 'normal', route: 'archive', rtt_ms: null }
+      : { lane, our_hops: hops, their_hops: hops, padded: lane === 'normal', route: 'relay', rtt_ms: laneRtt() };
+    // Rebuilding tunnels really does take tens of seconds; the preview waits a
+    // beat so the «перестраиваю туннели» state is something you can look at.
+    case 'set_lane':
+      lane = String((a ?? {}).lane ?? 'normal') as 'normal' | 'fast' | 'fastest';
+      hops = lane === 'normal' ? 3 : lane === 'fast' ? 2 : 1;
+      await new Promise((r) => setTimeout(r, 1200));
+      return null;
     case 'get_contact': return contacts.find((c) => c.id === num(a, 'id')) ?? null;
     case 'list_groups': return groups;
     case 'list_group_members': return members;
