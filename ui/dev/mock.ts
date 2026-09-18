@@ -11,7 +11,7 @@
  * Not part of the production bundle: Vite builds from index.html only.
  *
  * Query parameters of /dev/frame.html:
- *   scene = list | chat | console | settings | identity | agent | auth
+ *   scene = list | chat | console | settings | identity | agent | auth | boot
  *   theme = light | dark
  */
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
@@ -22,7 +22,9 @@ const params = new URLSearchParams(location.search);
 const scene = params.get('scene') ?? 'list';
 const theme = params.get('theme');
 // ?relay=starting shows the app before its built-in relay has an address.
-const relayStarting = params.get('relay') === 'starting';
+// The `boot` scene is the loading screen itself: the relay is still coming up,
+// and vault_unlock takes as long as it does in life instead of resolving at once.
+const relayStarting = params.get('relay') === 'starting' || scene === 'boot';
 
 const DEST = 'q7Hk2-~Lm9XzRt'.repeat(37).slice(0, 516) + 'AAAA';
 const RELAY = 'Vb8~nP3-sQw1YeUi'.repeat(33).slice(0, 516) + 'AAAA';
@@ -153,7 +155,7 @@ mockIPC((cmd, payload) => {
   switch (cmd) {
     case 'list_profiles': return scene === 'auth' ? [] : ['ops'];
     case 'vault_status': return { exists: true, unlocked: false };
-    case 'vault_unlock': return null;
+    case 'vault_unlock': return scene === 'boot' ? new Promise(() => {}) : null;
     case 'my_card': return { sign_pk: hex('00'), dh_pk: hex('01') };
     case 'my_onion': return DEST;
     case 'my_fingerprint': return hex('5e');
@@ -226,11 +228,35 @@ async function drive(): Promise<void> {
   if (scene === 'auth') return;
   // profile-select → unlock → main
   (await waitFor(() => byText('.auth-card button', /\bops$/)))?.click();
-  const pass = await waitFor(() => document.querySelector<HTMLInputElement>('input[placeholder="enter passphrase"]'));
+  const pass = await waitFor(() => document.querySelector<HTMLInputElement>('input[placeholder="пароль"]'));
   if (pass) {
     (pass as HTMLInputElement).value = 'preview';
-    byText('.auth-card button', 'Unlock')?.click();
+    byText('.auth-card button', 'Открыть')?.click();
   }
+  const { emit: emitBoot } = await import('@tauri-apps/api/event');
+  // The boot screen is driven by `boot_status`; replay a plausible sequence so
+  // it can be looked at without a backend. The `boot` scene stops here.
+  const script: [string, string, string, number][] = [
+    ['vault', 'active', 'unlocking the vault (argon2id)', 0],
+    ['vault', 'done', 'profile opened (data.db)', 900],
+    ['router', 'active', 'launching router /usr/lib/gipny-i2p/resources/i2pd (SAM 127.0.0.1:7656)', 200],
+    ['tunnels', 'active', 'waiting for SAM: 1s of 180s', 1200],
+    ['tunnels', 'active', 'waiting for SAM: 6s of 180s', 1500],
+    ['tunnels', 'done', 'router ready (SAM up on 7656)', 1500],
+    ['session', 'active', 'generating ephemeral destination for this session...', 300],
+    ['session', 'done', 'SAM session open', 1200],
+    ['core', 'active', 'starting the messenger core', 200],
+    ['core', 'done', 'core running', 700],
+    ['relay', 'active', 'building the relay\'s tunnels', 200],
+  ];
+  for (const [stage, state, detail, wait] of script) {
+    await sleep(wait);
+    await emitBoot('boot_status', { stage, state, detail });
+  }
+  if (scene === 'boot') return;
+  await sleep(900);
+  await emitBoot('boot_status', { stage: 'relay', state: 'done', detail: 'built-in relay ready at 5AyDtqoCoahb' });
+  await emitBoot('boot_status', { stage: 'dht', state: 'done', detail: 'relay network: 3 node(s) known' });
   // The app waits for the relay before leaving the boot screen; the real core
   // announces it on `core_event`. Poll, because the listener is attached a few
   // awaits after the unlock resolves.

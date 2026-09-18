@@ -495,6 +495,40 @@ async fn vault_unlock(
     boot(&ctx, app, vault, &pass, &profile, &dir).await
 }
 
+/// One step of opening a profile, for the screen that would otherwise show a
+/// disabled button for three minutes. `stage` is a stable id the interface
+/// turns into its own wording; `detail` is the technical line (the same one
+/// that goes to stderr), shown under «технические подробности».
+#[derive(Clone, serde::Serialize)]
+struct BootStatus {
+    stage: &'static str,
+    state: &'static str,
+    detail: String,
+}
+
+fn boot_status(app: &AppHandle, stage: &'static str, state: &'static str, detail: impl Into<String>) {
+    let _ = app.emit("boot_status", BootStatus { stage, state, detail: detail.into() });
+}
+
+/// The callback libcore reports router and SAM progress through. Stage ids come
+/// from there (`router`, `router-reused`, `tunnels`, `tunnels-done`, `session`,
+/// `session-done`); anything unknown still reaches the technical log.
+fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
+    let app = app.clone();
+    Arc::new(move |stage: &str, detail: &str| {
+        let (stage, state) = match stage {
+            "router" => ("router", "active"),
+            "router-reused" => ("router", "done"),
+            "tunnels" => ("tunnels", "active"),
+            "tunnels-done" => ("tunnels", "done"),
+            "session" => ("session", "active"),
+            "session-done" => ("session", "done"),
+            _ => ("router", "active"),
+        };
+        boot_status(&app, stage, state, detail);
+    })
+}
+
 async fn boot(
     ctx: &State<'_, AppCtx>, app: AppHandle, vault: Arc<Vault>,
     pass: &str, profile: &str, dir: &std::path::Path,
@@ -504,7 +538,13 @@ async fn boot(
     // Windows update means the app closes and reopens once here, rather than
     // after the user has sat through both of those for nothing.
     gipny_libcore::update::apply_staged_windows_installer(dir);
-    let outcome = vault.unlock(pass).map_err(err)?;
+    boot_status(&app, "vault", "active", "unlocking the vault (argon2id)");
+    // Argon2id with 256 MiB takes a second or three on a desktop and longer on
+    // a tired laptop, at 100% of a core. Saying so beats a frozen button.
+    let outcome = vault.unlock(pass).map_err(|e| {
+        boot_status(&app, "vault", "failed", format!("{e}"));
+        err(e)
+    })?;
     // The decoy key is freshly random and unrelated to the primary master key,
     // so it cannot open data.db — SQLCipher rejects it and the unlock screen
     // showed a "bad key" error, in front of whoever was applying the coercion.
@@ -522,6 +562,7 @@ async fn boot(
         }
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join(db_name), &mk).map_err(err)?);
+    boot_status(&app, "vault", "done", format!("profile opened ({db_name})"));
     // Point the transport at the bundled i2pd shipped as a Tauri resource. On
     // desktop it's spawned as a child; on Android the router is started
     // in-process by the foreground service, so this is a no-op there.
@@ -560,12 +601,45 @@ async fn boot(
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let node = Arc::new(I2pNode::start(dir, settings).await.map_err(err)?);
+    let node = Arc::new(
+        I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
+            .await
+            .map_err(|e| {
+                boot_status(&app, "router", "failed", format!("{e:?}"));
+                err(e)
+            })?,
+    );
     let warning: Option<String> = None;
-    let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(err)?;
+    boot_status(&app, "core", "active", "starting the messenger core");
+    let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(|e| {
+        boot_status(&app, "core", "failed", format!("{e:?}"));
+        err(e)
+    })?;
+    boot_status(&app, "core", "done", "core running");
     let app2 = app.clone();
     tokio::spawn(async move {
         while let Some(e) = events.recv().await {
+            // The unlock screen waits for the relay and the network, and those
+            // only exist as core events. Mirror the two it needs so it does not
+            // depend on the main view's listener being attached yet.
+            match &e {
+                crate::core::CoreEvent::RelayInfoChanged { info } => match &info.hosted {
+                    crate::core::HostedRelayState::Ready { address } => {
+                        boot_status(&app2, "relay", "done", format!("built-in relay ready at {}", &address[..address.len().min(16)]));
+                    }
+                    crate::core::HostedRelayState::Failed { reason } => {
+                        boot_status(&app2, "relay", "failed", reason.clone());
+                    }
+                    crate::core::HostedRelayState::Starting => {
+                        boot_status(&app2, "relay", "active", "building the relay's tunnels");
+                    }
+                    crate::core::HostedRelayState::Off => {}
+                },
+                crate::core::CoreEvent::DhtJoined { peers } => {
+                    boot_status(&app2, "dht", "done", format!("relay network: {peers} node(s) known"));
+                }
+                _ => {}
+            }
             let _ = app2.emit("core_event", &e);
         }
     });

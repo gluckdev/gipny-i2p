@@ -21,7 +21,11 @@
 
 **`core.rs` по областям:**
 
-- **Запуск:** `Core::start` поднимает циклы и встроенный релей.
+- **Запуск:** `Core::start` поднимает циклы и встроенный релей. Прогресс открытия
+  профиля идёт наружу событием `boot_status` (`boot_status`/`boot_progress` в
+  `lib.rs`): этапы `vault | router | tunnels | session | core | relay | dht`, их
+  показывает экран загрузки. Релей и вход в сеть зеркалятся туда из `CoreEvent`
+  в пересылке событий, чтобы экран не зависел от того, подписался ли уже главный вид.
 - **Свой релей:** `relay_mode`/`set_relay_mode`, `start_hosted_relay`/`run_hosted_relay`, `flush_relay_announcements` (адрес объявляется повторно, пока контакт не ответит — `note_heard_from`; контакт из списка не выбрасывается).
 - **Соединения с релеями:** `spawn_relay_loop` (свой релей), `relay_for` (релей контакта, пул `peer_relays`), `run_recv_loop`, `handle_relay_frame`.
 - **Приём:** `handle_incoming_envelope` (X3dhInit / Ratchet) → `persist_incoming`. Контакт-запрос обрабатывает `persist_from_requester`, имя и адрес отправителя — `apply_contact_hints`.

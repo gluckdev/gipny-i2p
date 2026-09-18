@@ -152,13 +152,25 @@ impl I2pNode {
     /// Ignored on Android and when attaching to a router somebody else started,
     /// since those settings belong to whoever launched it.
     pub async fn start(data_dir: &Path, settings: crate::router::RouterSettings) -> Result<Self> {
+        Self::start_with_progress(data_dir, settings, None).await
+    }
+
+    /// As [`Self::start`], reporting each step through `progress`. The app uses
+    /// it to keep the unlock screen moving: everything here takes from a second
+    /// to three minutes and used to happen in complete silence.
+    pub async fn start_with_progress(
+        data_dir: &Path,
+        settings: crate::router::RouterSettings,
+        progress: Option<crate::router::BootProgress>,
+    ) -> Result<Self> {
+        use crate::router::note;
         #[cfg(target_os = "android")]
         let router = {
             let _ = settings; // the foreground service owns the router's config
             // The service configures i2pd's HTTP proxy on the default port so
             // update checks go out over i2p here too; `attach_with_proxy`
             // verifies it is actually listening.
-            RouterHandle::attach_with_proxy(DEFAULT_SAM_PORT, Some(DEFAULT_HTTP_PROXY_PORT)).await?
+            RouterHandle::attach_with_progress(DEFAULT_SAM_PORT, Some(DEFAULT_HTTP_PROXY_PORT), progress.clone()).await?
         };
         // GIPNY_SAM_PORT attaches to a router someone else already started
         // instead of spawning our own — the e2e harness uses it to put every
@@ -172,21 +184,22 @@ impl I2pNode {
                 let port = raw.trim().parse::<u16>().map_err(|e| {
                     NetError::I2p(format!("GIPNY_SAM_PORT={raw:?} is not a valid port: {e}"))
                 })?;
-                RouterHandle::attach(port).await?
+                RouterHandle::attach_with_progress(port, None, progress.clone()).await?
             }
-            Err(_) => RouterHandle::start(data_dir, None, settings).await?,
+            Err(_) => RouterHandle::start_with_progress(data_dir, None, settings, progress.clone()).await?,
         };
 
         let sam_port = router.sam_port();
         let http_proxy_port = router.http_proxy_port();
-        eprintln!("[i2p] generating ephemeral destination for this session...");
+        note(&progress, "session", "generating ephemeral destination for this session...");
         let (address, privkey) = RouterApi::new(sam_port)
             .generate_destination()
             .await
             .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?;
-        eprintln!("[i2p] destination = {}", short_addr(&address));
+        note(&progress, "session", format!("destination = {}", short_addr(&address)));
 
         let session = build_session(sam_port, &privkey).await?;
+        note(&progress, "session-done", "SAM session open");
         let session = Arc::new(Mutex::new(session));
 
         let (tx, rx) = mpsc::channel::<Connection>(INBOX_CAPACITY);

@@ -1,5 +1,5 @@
 import { Api } from './api';
-import type { Store, BootStage } from './state';
+import type { Store, BootStep, BootStepId } from './state';
 import { View, h, busy, logo } from './view';
 
 export class AuthCreate extends View {
@@ -96,12 +96,15 @@ export class AuthCreate extends View {
     if (pass !== conf) { this.err.textContent = 'passphrases do not match'; return; }
     if (duress && duress === pass) { this.err.textContent = 'duress must differ from primary'; return; }
 
-    this.err.textContent = 'генерация ключей, запуск i2p-роутера... (1-3 мин при первом запуске)';
+    this.err.textContent = '';
+    await this.store.beginBoot(profile);
     try {
       await Api.vaultCreate(profile, pass, display, duress || null, wipe, max);
       await this.store.onUnlocked(profile);
     } catch (e) {
-      this.err.textContent = `err: ${String(e)}`;
+      this.store.endBoot();
+      this.store.view.set('auth-create');
+      this.err.textContent = `Не удалось создать профиль: ${String(e)}`;
     }
   }
 }
@@ -114,25 +117,25 @@ export class AuthUnlock extends View {
   constructor(private store: Store) {
     super();
     const profile = store.currentProfile.get() ?? 'unknown';
-    this.passI = h('input', { class: 'input', type: 'password', placeholder: 'enter passphrase', autofocus: true });
+    this.passI = h('input', { class: 'input', type: 'password', placeholder: 'пароль', autofocus: true });
     this.err = h('div', { class: 'err' });
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
-        h('div', { class: 'auth-title' }, `Unlock · ${profile}`),
-        h('div', { class: 'auth-sub' }, h('span', { class: 'blink' }, '>'), ' awaiting key'),
-        h('div', { class: 'field' }, h('label', null, 'passphrase'), this.passI),
+        h('div', { class: 'auth-title' }, profile),
+        h('div', { class: 'auth-sub' }, 'Введите пароль профиля'),
+        h('div', { class: 'field' }, h('label', null, 'Пароль'), this.passI),
         this.err,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, 'Back'),
+          }, 'Назад'),
           (() => {
             const b = h('button', {
               class: 'btn', style: { flex: '1' },
               onClick: () => busy(b, () => this.unlock()),
-            }, 'Unlock') as HTMLButtonElement;
+            }, 'Открыть') as HTMLButtonElement;
             this.passI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.unlock());
             });
@@ -146,205 +149,133 @@ export class AuthUnlock extends View {
   private async unlock(): Promise<void> {
     this.err.textContent = '';
     const profile = this.store.currentProfile.get();
-    if (!profile) { this.err.textContent = 'no profile selected'; return; }
+    if (!profile) { this.err.textContent = 'Профиль не выбран'; return; }
     const pass = this.passI.value;
-    if (!pass) { this.err.textContent = 'passphrase required'; return; }
-    this.err.textContent = '';
+    if (!pass) { this.err.textContent = 'Введите пароль'; return; }
+    // The loading screen goes up *before* the call: everything slow (argon2id,
+    // the router, tunnels) happens inside it, and this used to be a disabled
+    // button and nothing else for up to three minutes.
+    await this.store.beginBoot(profile);
     try {
       const warning = await Api.vaultUnlock(profile, pass);
       await this.store.onUnlocked(profile);
       if (warning) this.store.showToast(warning, true);
     } catch (e) {
       const msg = String(e);
-      if (msg.includes('wiped')) this.err.textContent = 'vault wiped';
-      else if (msg.includes('invalid passphrase')) this.err.textContent = 'invalid passphrase';
-      else this.err.textContent = msg;
-      this.passI.value = '';
+      this.store.endBoot();
+      this.store.view.set('auth-unlock');
+      if (msg.includes('wiped')) this.store.showToast('Профиль стёрт', true);
+      else if (msg.includes('invalid passphrase')) this.store.showToast('Неверный пароль', true);
+      else this.store.showToast(msg, true);
     }
   }
 }
 
 export class AuthBooting extends View {
   el: HTMLElement;
-  private stageRouter: HTMLElement;
-  private stageRelay: HTMLElement;
-  private statusLine: HTMLElement;
-  private log: HTMLElement;
+  private rows = new Map<BootStepId, HTMLElement>();
+  private elapsedEl: HTMLElement;
+  private logEl: HTMLElement;
+  private enterBtn: HTMLButtonElement;
   private startedAt = Date.now();
-  private timerHandle: number | null = null;
-  private logTimer: number | null = null;
-  private logLines = [
-    '> запуск i2p-роутера...',
-    '> обновление netdb (reseed)...',
-    '> строим входящие/исходящие туннели...',
-    '> генерация destination...',
-    '> открытие SAM-сессии...',
-    '> i2p-адрес зарезервирован.',
-    '> подключение к релею через i2p...',
-    '> аутентификация ed25519...',
-  ];
-  private logIdx = 0;
+  private timer: number | null = null;
 
-  constructor(store: Store) {
+  constructor(private store: Store) {
     super();
 
-    this.stageRouter = this.makeStage('[ ] i2p router', 'building tunnels');
-    this.stageRelay = this.makeStage('[ ] relay connect', 'authenticating');
+    const list = h('div', { class: 'boot-steps' });
+    for (const [id, label, hint] of BOOT_LABELS) {
+      const row = this.makeRow(label, hint);
+      this.rows.set(id, row);
+      list.appendChild(row);
+    }
 
-    this.statusLine = h('div', {
-      class: 'hint',
-      style: { marginTop: '12px', textAlign: 'center' },
-    }, '0s elapsed · anonymity > speed · hang tight');
-
-    this.log = h('pre', {
-      style: {
-        marginTop: '18px',
-        padding: '12px',
-        background: 'rgba(51,255,102,0.04)',
-        border: '1px solid rgba(51,255,102,0.25)',
-        color: '#33ff66',
-        fontSize: '11px',
-        lineHeight: '1.6',
-        maxHeight: '140px',
-        overflow: 'hidden',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-all',
-      },
-    }, '');
+    this.elapsedEl = h('div', { class: 'boot-elapsed' }, 'прошло 0.0 с');
+    this.logEl = h('pre', { class: 'boot-log' }, '');
+    this.enterBtn = h('button', {
+      class: 'btn btn-ghost boot-enter hidden',
+      onClick: () => store.enterMain(),
+    }, 'Открыть чаты сейчас') as HTMLButtonElement;
 
     this.el = h('div', { class: 'auth' },
-      h('div', { class: 'auth-card', style: { maxWidth: '560px' } },
+      h('div', { class: 'auth-card boot-card' },
         logo(),
-        h('div', { class: 'auth-title' }, 'Building i2p tunnels'),
-        h('div', { class: 'auth-sub', style: { textAlign: 'center' } },
-          'this may take ',
-          h('span', { style: { color: '#ffb000' } }, '30 seconds to 10 minutes'),
-          ' on first unlock',
-        ),
-        h('div', { class: 'stack', style: { gap: '10px', marginTop: '20px' } },
-          this.stageRouter,
-          this.stageRelay,
-        ),
-        this.statusLine,
-        this.log,
-        h('div', { class: 'hint', style: { marginTop: '14px', textAlign: 'center', opacity: '0.7' } },
-          'once connected, subsequent sessions are fast',
+        h('div', { class: 'auth-title' }, 'Открываю профиль'),
+        h('div', { class: 'auth-sub' },
+          'Первый запуск занимает минуты: роутер ищет узлы i2p и строит туннели. Дальше быстрее.'),
+        list,
+        h('div', { class: 'row-between boot-foot' }, this.elapsedEl, this.enterBtn),
+        h('details', { class: 'boot-details' },
+          h('summary', null, 'Технические подробности'),
+          this.logEl,
         ),
       ),
     );
 
-    this.sub(store.bootStage, (s) => this.updateStages(s));
-
-    this.timerHandle = window.setInterval(() => this.tickTimer(), 1000);
-    this.logTimer = window.setInterval(() => this.appendLog(), 1400);
-    this.appendLog();
+    this.sub(store.bootSteps, (steps) => this.paint(steps));
+    this.sub(store.bootLog, (lines) => {
+      this.logEl.textContent = lines.join('\n');
+      this.logEl.scrollTop = this.logEl.scrollHeight;
+    });
+    this.sub(store.bootCanEnter, (can) => this.enterBtn.classList.toggle('hidden', !can));
+    this.timer = window.setInterval(() => this.tick(), 500);
   }
 
-  private makeStage(label: string, sub: string): HTMLElement {
-    return h('div', {
-      class: 'card-block',
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '10px 14px',
-        border: '1px solid rgba(51,255,102,0.3)',
-      },
-    },
-      h('span', { class: 'stage-spinner', style: { width: '14px', display: 'inline-block' } }, '·'),
-      h('div', { style: { flex: '1' } },
-        h('div', { class: 'stage-label', style: { fontSize: '13px' } }, label),
-        h('div', { class: 'hint', style: { fontSize: '11px' } }, sub),
+  private makeRow(label: string, hint: string): HTMLElement {
+    return h('div', { class: 'boot-step' },
+      h('span', { class: 'boot-mark' }, '○'),
+      h('div', { class: 'boot-step-main' },
+        h('div', { class: 'boot-step-label' }, label),
+        h('div', { class: 'boot-step-hint' }, hint),
       ),
+      h('div', { class: 'boot-step-ms' }, ''),
     );
   }
 
-  private updateStages(stage: BootStage): void {
-    const spinFrames = ['|', '/', '─', '\\'];
-    const setStage = (el: HTMLElement, state: 'idle' | 'active' | 'done') => {
-      const label = el.querySelector('.stage-label') as HTMLElement;
-      const spinner = el.querySelector('.stage-spinner') as HTMLElement;
-      const text = label.textContent ?? '';
-      const rest = text.replace(/^\[.\] /, '');
-      if (state === 'done') {
-        label.textContent = `[✓] ${rest}`;
-        label.style.color = '#33ff66';
-        spinner.textContent = '✓';
-        spinner.style.color = '#33ff66';
-        el.style.borderColor = 'rgba(51,255,102,0.6)';
-      } else if (state === 'active') {
-        label.textContent = `[.] ${rest}`;
-        label.style.color = '#ffb000';
-        spinner.style.color = '#ffb000';
-        el.style.borderColor = 'rgba(255,176,0,0.6)';
-        el.dataset.spinning = '1';
-        this.startSpinner(spinner, spinFrames);
-      } else {
-        label.textContent = `[ ] ${rest}`;
-        label.style.color = '';
-        spinner.textContent = '·';
-        spinner.style.color = 'rgba(51,255,102,0.4)';
-        delete el.dataset.spinning;
-      }
-    };
-
-    switch (stage) {
-      case 'unlocking':
-        setStage(this.stageRouter, 'idle');
-        setStage(this.stageRelay, 'idle');
-        break;
-      case 'i2p':
-        setStage(this.stageRouter, 'active');
-        setStage(this.stageRelay, 'idle');
-        break;
-      case 'relay':
-        setStage(this.stageRouter, 'done');
-        setStage(this.stageRelay, 'active');
-        break;
-      case 'done':
-        setStage(this.stageRouter, 'done');
-        setStage(this.stageRelay, 'done');
-        break;
+  private paint(steps: BootStep[]): void {
+    for (const step of steps) {
+      const row = this.rows.get(step.id);
+      if (!row) continue;
+      const mark = row.querySelector('.boot-mark') as HTMLElement;
+      const ms = row.querySelector('.boot-step-ms') as HTMLElement;
+      const hint = row.querySelector('.boot-step-hint') as HTMLElement;
+      row.className = `boot-step boot-${step.state}`;
+      mark.textContent = step.state === 'done' ? '✓' : step.state === 'failed' ? '✕' : step.state === 'active' ? '◐' : '○';
+      ms.textContent = step.state === 'active' && step.startedAt
+        ? fmtSecs(Date.now() - step.startedAt)
+        : step.ms > 0 ? fmtSecs(step.ms) : '';
+      if (step.state === 'failed' && step.detail) hint.textContent = step.detail;
     }
   }
 
-  private startSpinner(el: HTMLElement, frames: string[]): void {
-    if (el.dataset.spinActive === '1') return;
-    el.dataset.spinActive = '1';
-    let i = 0;
-    const tick = () => {
-      if (!el.isConnected || el.dataset.spinActive !== '1') return;
-      el.textContent = frames[i % frames.length] ?? '·';
-      i++;
-      setTimeout(tick, 120);
-    };
-    tick();
-  }
-
-  private tickTimer(): void {
-    const secs = Math.floor((Date.now() - this.startedAt) / 1000);
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    const label = m > 0 ? `${m}m ${s}s` : `${s}s`;
-    this.statusLine.textContent = `${label} elapsed · anonymity > speed · hang tight`;
-  }
-
-  private appendLog(): void {
-    if (this.logIdx >= this.logLines.length) {
-      this.log.textContent += `\n> still routing... hold on (${Math.floor((Date.now() - this.startedAt) / 1000)}s)`;
-      this.log.scrollTop = this.log.scrollHeight;
-      this.logIdx++;
-      return;
-    }
-    const line = this.logLines[this.logIdx];
-    this.log.textContent += (this.logIdx === 0 ? '' : '\n') + line;
-    this.log.scrollTop = this.log.scrollHeight;
-    this.logIdx++;
+  private tick(): void {
+    this.elapsedEl.textContent = `прошло ${fmtSecs(Date.now() - this.startedAt)}`;
+    // The active step's own clock keeps moving between backend messages, so a
+    // long tunnel build never looks stuck.
+    const active = this.store.bootSteps.get().find((s) => s.state === 'active');
+    if (!active?.startedAt) return;
+    const ms = this.rows.get(active.id)?.querySelector('.boot-step-ms') as HTMLElement | null;
+    if (ms) ms.textContent = fmtSecs(Date.now() - active.startedAt);
   }
 
   destroy(): void {
-    if (this.timerHandle != null) clearInterval(this.timerHandle);
-    if (this.logTimer != null) clearInterval(this.logTimer);
+    if (this.timer != null) clearInterval(this.timer);
     super.destroy();
   }
+}
+
+/** What each backend stage is called on screen, and what it is doing. */
+const BOOT_LABELS: [BootStepId, string, string][] = [
+  ['vault', 'Расшифровываю профиль', 'argon2id, это нагружает процессор'],
+  ['router', 'Запускаю роутер i2p', 'он живёт рядом с приложением'],
+  ['tunnels', 'Строю туннели', 'самая долгая часть первого запуска'],
+  ['session', 'Получаю адрес в сети', 'новый на каждый запуск'],
+  ['core', 'Готовлю переписку', 'ключи, база, очереди'],
+  ['relay', 'Поднимаю свой релей', 'через него вам пишут'],
+  ['dht', 'Вхожу в сеть релеев', 'нужна для доставки в офлайне'],
+];
+
+function fmtSecs(ms: number): string {
+  const s = Math.max(0, ms) / 1000;
+  return s < 10 ? `${s.toFixed(1)} с` : `${Math.round(s)} с`;
 }

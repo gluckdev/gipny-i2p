@@ -167,6 +167,9 @@ pub enum CoreEvent {
     ContactUpdated { contact_id: i64 },
     /// Someone we do not know introduced themselves.
     ContactRequest { contact_id: i64 },
+    /// Joined the relay network (or tried to): how many nodes answered. The
+    /// unlock screen shows this as its last step.
+    DhtJoined { peers: usize },
     GroupUpdated { group_id: String },
     /// A newer version exists and auto-update is off — the UI's manual
     /// install prompt is the only path from here.
@@ -493,6 +496,7 @@ impl Core {
                     let this = self.clone();
                     let join = tokio::spawn(async move {
                         dht_client::join(&dht, &db, &identity, &address).await;
+                        let _ = this.events.try_send(CoreEvent::DhtJoined { peers: this.dht.peer_count() });
                         this.publish_bundle_to_dht().await;
                         // Anything left for us while we were away.
                         this.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;

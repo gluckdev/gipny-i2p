@@ -167,6 +167,15 @@ export interface Bundle {
   one_time_id: number | null;
 }
 
+/** One step of opening a profile, from the backend's `boot_status` event.
+ * `stage` is a stable id the interface turns into its own wording; `detail` is
+ * the technical line, shown under «технические подробности». */
+export interface BootStatus {
+  stage: 'vault' | 'router' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht';
+  state: 'active' | 'done' | 'failed';
+  detail: string;
+}
+
 export interface UpdateInfo {
   version: string;
   notes: string;
@@ -532,8 +541,8 @@ export class Api {
   static onEvent(handler: (e: CoreEvent) => void): Promise<UnlistenFn> {
     return listen<CoreEvent>('core_event', (ev) => handler(ev.payload));
   }
-  static onBootStatus(handler: (s: string) => void): Promise<UnlistenFn> {
-    return listen<string>('boot_status', (ev) => handler(ev.payload));
+  static onBootStatus(handler: (s: BootStatus) => void): Promise<UnlistenFn> {
+    return listen<BootStatus>('boot_status', (ev) => handler(ev.payload));
   }
 }
 
