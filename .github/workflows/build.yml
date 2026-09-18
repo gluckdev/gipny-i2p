@@ -256,11 +256,13 @@ jobs:
         with:
           name: gipny-android-debug-apk-no-router
           path: dist/arm64/*.apk
+          retention-days: 3
           if-no-files-found: error
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-debug-apk-x86_64-no-router
           path: dist/x86_64/*.apk
+          retention-days: 3
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------

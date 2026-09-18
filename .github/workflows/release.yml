@@ -195,6 +195,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
+          retention-days: 5
           path: third_party/i2pd/${{ matrix.out }}
 
   # ---------------------------------------------------------------------------
@@ -255,6 +256,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
+          retention-days: 5
           # The app crate is a workspace member — cargo's target dir is at the
           # repo root, not under core/.
           if-no-files-found: error
@@ -311,6 +313,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-relay-linux-${{ matrix.arch }}
+          retention-days: 5
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -437,6 +440,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-agent-linux-${{ matrix.arch }}
+          retention-days: 5
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -559,6 +563,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: router-android-${{ matrix.abi }}
+          retention-days: 5
           path: staged/libi2pd.so
           if-no-files-found: error
 
@@ -702,6 +707,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-${{ matrix.suffix }}
+          retention-days: 5
           path: dist/*.apk
           if-no-files-found: error
 
@@ -755,6 +761,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-page-preview
+          retention-days: 5
           path: |
             notes.md
             dist/SHA256SUMS.txt
