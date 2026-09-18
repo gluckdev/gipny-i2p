@@ -526,6 +526,10 @@ export class Api {
   static setAutoUpdate(enabled: boolean): Promise<void> {
     return invoke('set_auto_update', { enabled });
   }
+  /** The card (or any short text) as an SVG QR picture. */
+  static qrSvg(text: string): Promise<string> {
+    return invoke('qr_svg', { text });
+  }
   static currentVersion(): Promise<string> {
     return invoke('current_version');
   }

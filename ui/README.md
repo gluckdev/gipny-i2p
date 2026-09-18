@@ -16,9 +16,10 @@
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
 | `src/actions.ts` | Контекстные меню (`ContextMenu`, `attachContextMenu`, `messageMenuItems`), `PinnedBanner`, `EditInline` |
-| `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки) |
+| `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки и **сканирование QR** камерой через `QrScanner`) |
+| `src/qr-scan.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением |
 | `src/group.ts` | `GroupModal`, `CreateGroupModal` |
-| `src/identity.ts` | `IdentityModal` — «моя карточка» |
+| `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
 | `src/settings.ts` | `SettingsModal`: релей, роутер, приватность вложений, автообновление, агент, бэкап, отладочный лог |
 | `src/about.ts` | `AboutModal` — «О gipny и безопасности». Каждое утверждение должно совпадать с кодом (ссылки в комментарии к классу) |
 | `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `AVATARS` |

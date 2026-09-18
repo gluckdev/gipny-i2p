@@ -5,6 +5,7 @@ import { h, fmtFp } from './view';
 import type { App } from './app';
 
 import { avatarPicker } from './avatar-picker';
+import { QrScanner } from './qr-scan';
 import { icon } from './icons';
 export class ContactModal {
   el: HTMLElement;
@@ -93,19 +94,63 @@ export class AddContactModal {
   constructor(store: Store, close: () => void) {
     const pasteI = h('textarea', {
       class: 'textarea',
-      placeholder: 'paste contact card\n(gipny:v1:<onion>:<sign_pk_hex>:<dh_pk_hex>[:name])',
+      placeholder: 'вставьте карточку контакта\n(gipny:v2:…)',
       rows: '4',
     }) as HTMLTextAreaElement;
     const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
-    const onionI = h('input', { class: 'input', placeholder: 'i2p destination (b64) or abc...xyz.b32.i2p' });
+    const onionI = h('input', { class: 'input', placeholder: 'destination (b64) или abc…xyz.b32.i2p' });
     const relayI = h('input', {
       class: 'input',
-      placeholder: 'relay of this contact — leave empty to use your own',
+      placeholder: 'пусто — будет использован ваш',
       'aria-label': 'contact relay destination',
     }) as HTMLInputElement;
     const signI = h('input', { class: 'input', placeholder: 'sign_pk (64 hex)' });
     const dhI = h('input', { class: 'input', placeholder: 'dh_pk (64 hex)' });
     let cardName = '';
+
+    const applyCard = (text: string): boolean => {
+      const parsed = decodeCard(text);
+      if (!parsed) return false;
+      onionI.value = parsed.onion;
+      signI.value = parsed.signPk;
+      dhI.value = parsed.dhPk;
+      relayI.value = parsed.relay ?? '';
+      cardName = parsed.name?.trim() ?? '';
+      err.textContent = '';
+      return true;
+    };
+
+    // Reading a card off someone's screen instead of copying 600 characters.
+    const scanSlot = h('div', { class: 'qr-slot hidden' });
+    let scanner: QrScanner | null = null;
+    const stopScan = (): void => {
+      scanner?.stop();
+      scanner = null;
+      scanSlot.replaceChildren();
+      scanSlot.classList.add('hidden');
+      scanBtn.textContent = 'Сканировать QR';
+    };
+    const startScan = (): void => {
+      err.textContent = '';
+      scanner = new QrScanner(
+        (text) => {
+          const ok = applyCard(text);
+          pasteI.value = text;
+          stopScan();
+          if (ok) store.showToast('Карточка распознана — проверьте и нажмите «Добавить»');
+          else err.textContent = 'В коде не карточка gipny';
+        },
+        (message) => { err.textContent = message; stopScan(); },
+      );
+      scanSlot.replaceChildren(scanner.el);
+      scanSlot.classList.remove('hidden');
+      scanBtn.textContent = 'Остановить';
+      void scanner.start();
+    };
+    const scanBtn = h('button', {
+      class: 'btn btn-ghost',
+      onClick: () => (scanner ? stopScan() : startScan()),
+    }, 'Сканировать QR');
 
     pasteI.addEventListener('input', () => {
       const parsed = decodeCard(pasteI.value);
@@ -124,15 +169,17 @@ export class AddContactModal {
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, 'Добавить контакт'),
-        h('button', { class: 'icon-btn', onClick: close }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'field' }, h('label', null, 'paste card'), pasteI),
+        h('div', { class: 'field' }, h('label', null, 'Карточка контакта'), pasteI),
+        h('div', { class: 'row', style: { marginBottom: '8px' } }, scanBtn),
+        scanSlot,
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           'имя контакта приходит из его карточки и потом обновляется автоматически из его сообщений. локально не задаётся — каждый сам себя называет.'),
-        h('div', { class: 'divider-text' }, 'manual entry'),
-        h('div', { class: 'field' }, h('label', null, 'i2p address'), onionI),
-        h('div', { class: 'field' }, h('label', null, 'relay'), relayI),
+        h('div', { class: 'divider-text' }, 'Вручную'),
+        h('div', { class: 'field' }, h('label', null, 'Адрес i2p'), onionI),
+        h('div', { class: 'field' }, h('label', null, 'Релей контакта'), relayI),
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           'релей — это где контакт забирает почту. приходит из его карточки; ' +
           'пусто — используется твой.'),
@@ -141,7 +188,7 @@ export class AddContactModal {
         err,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Отмена'),
         h('button', {
           class: 'btn',
           onClick: async () => {
@@ -150,24 +197,24 @@ export class AddContactModal {
             const dh = dhI.value.trim().toLowerCase();
             const name = cardName || `${sign.slice(0, 16)}`;
             if (!isValidI2pAddress(onion)) {
-              err.textContent = 'expected a 52-character .b32.i2p address or a full base64 destination';
+              err.textContent = 'Нужен адрес .b32.i2p (52 символа) или полный destination в base64';
               return;
             }
-            if (!/^[0-9a-f]{64}$/.test(sign)) { err.textContent = 'sign_pk must be 64 hex'; return; }
-            if (!/^[0-9a-f]{64}$/.test(dh)) { err.textContent = 'dh_pk must be 64 hex'; return; }
+            if (!/^[0-9a-f]{64}$/.test(sign)) { err.textContent = 'sign_pk — 64 шестнадцатеричных символа'; return; }
+            if (!/^[0-9a-f]{64}$/.test(dh)) { err.textContent = 'dh_pk — 64 шестнадцатеричных символа'; return; }
             const relay = relayI.value.trim();
             if (relay && !isValidI2pAddress(relay)) {
-              err.textContent = 'relay must be a .b32.i2p address or a full base64 destination';
+              err.textContent = 'Релей — адрес .b32.i2p или полный destination в base64';
               return;
             }
             try {
               await Api.addContact(onion, sign, dh, name, relay || undefined);
               await store.refreshContacts();
-              store.showToast('contact added');
+              store.showToast('Контакт добавлен');
               close();
-            } catch (e) { err.textContent = 'err: ' + String(e); }
+            } catch (e) { err.textContent = 'Не удалось добавить: ' + String(e); }
           },
-        }, 'Add'),
+        }, 'Добавить'),
       ),
     );
   }

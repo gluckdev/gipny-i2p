@@ -112,7 +112,7 @@ pub fn run() {
             list_profiles, delete_profile,
             vault_status, vault_create, vault_unlock, vault_lock,
             change_passphrase, set_duress, set_max_attempts,
-            my_card, my_onion, my_b32, my_fingerprint, my_bundle,
+            my_card, my_onion, my_b32, my_fingerprint, my_bundle, qr_svg,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
             get_relay_info, get_dht_status, set_relay_mode, get_ui_data, set_ui_data, list_unreachable_contacts,
@@ -1469,6 +1469,28 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<Option<serde_json::Value
 /// Whether this build can put an update in place itself. False on Android
 /// (the system installer owns that) and on packages we do not manage (.deb,
 /// macOS) — the interface then offers the file instead of a button that lies.
+/// A contact card as a QR picture, so two people can exchange cards by
+/// pointing one phone at another instead of copying 500 characters. Rendered
+/// here (pure Rust) rather than in the interface: one small dependency instead
+/// of a JavaScript one. Returns an SVG that scales to whatever box it is put in.
+#[tauri::command]
+fn qr_svg(text: String) -> Result<String, String> {
+    // A v2 card is ~600 characters, comfortably inside QR's limits at the
+    // lowest correction level; anything much larger is not a card.
+    if text.is_empty() || text.len() > 2000 {
+        return Err("nothing to encode".into());
+    }
+    let code = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L)
+        .map_err(|e| format!("qr: {e}"))?;
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .quiet_zone(true)
+        .min_dimensions(240, 240)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build())
+}
+
 /// Restart into the version that was just installed. Desktop only: on
 /// Android the system owns the process lifecycle, and on a package we do not
 /// manage there is nothing new to restart into.

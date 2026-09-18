@@ -11,7 +11,7 @@
  * Not part of the production bundle: Vite builds from index.html only.
  *
  * Query parameters of /dev/frame.html:
- *   scene = list | chat | console | settings | identity | agent | auth | boot
+ *   scene = list | chat | console | settings | identity | add-contact | agent | auth | boot
  *   theme = light | dark
  */
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
@@ -175,6 +175,8 @@ mockIPC((cmd, payload) => {
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };
     case 'check_update': return null;
     case 'update_installs_itself': return false;
+    case 'qr_svg': return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" shape-rendering="crispEdges">'
+      + '<rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0zM4 4h1v1H4zM6 5h1v1H6zM5 7h2v1H5z" fill="#000"/></svg>';
     case 'restart_app': return null;
     case 'list_contacts': return contacts;
     case 'get_ui_data': return (a ?? {}).key === 'contact_folders' ? folders : (a ?? {}).key === 'avatars' ? avatars : null;
@@ -278,8 +280,12 @@ async function drive(): Promise<void> {
     await openContact('gpu-worker-17');
     if (scene === 'console') (await waitFor(() => byText('.agent-controls button', 'console')))?.click();
   }
-  if (scene === 'settings') document.querySelector<HTMLElement>('.icon-btn[title="settings"]')?.click();
-  if (scene === 'identity') document.querySelector<HTMLElement>('.icon-btn[title="my identity"]')?.click();
+  if (scene === 'settings') document.querySelector<HTMLElement>('.icon-btn[title="Настройки"]')?.click();
+  if (scene === 'identity') document.querySelector<HTMLElement>('.sidebar-me')?.click();
+  if (scene === 'add-contact') {
+    document.querySelector<HTMLElement>('.icon-btn-accent')?.click();
+    (await waitFor(() => byText('.ctx-menu-item', 'Добавить контакт')))?.click();
+  }
 }
 
 await import('../src/main');

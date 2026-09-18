@@ -2122,6 +2122,26 @@ body::before { background: none; }
 .art-network { position: absolute; right: -10px; top: -6px; opacity: 0.55; pointer-events: none; }
 .about-hero > :not(.art) { position: relative; }
 
+/* --- QR: sharing a card and reading one ------------------------------------- */
+.card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
+.card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
+.card-qr .hint { text-align: center; max-width: 280px; }
+.qr-slot { margin-bottom: 10px; }
+.qr-scan { position: relative; border-radius: 14px; overflow: hidden; background: #000; }
+.qr-video { width: 100%; max-height: 320px; object-fit: cover; display: block; }
+.qr-frame {
+  position: absolute; inset: 50% auto auto 50%;
+  width: 62%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.85); border-radius: 16px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.qr-hint {
+  position: absolute; left: 0; right: 0; bottom: 8px;
+  text-align: center; color: #fff; font-size: 13px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
 /* --- Opening a profile ------------------------------------------------------ */
 .boot-card { max-width: 460px; width: 100%; }
 .boot-steps { display: grid; gap: 2px; margin: 18px 0 10px; }

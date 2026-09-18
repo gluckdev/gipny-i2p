@@ -7,6 +7,7 @@ import type { Store } from './state';
 import { h, busy, humanSize, short } from './view';
 import type { App } from './app';
 
+import { icon } from './icons';
 export class SettingsModal {
   el: HTMLElement;
   constructor(store: Store, app: App, close: () => void) {
@@ -95,7 +96,7 @@ export class SettingsModal {
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, `Настройки · ${store.currentProfile.get() ?? ''}`),
-        h('button', { class: 'icon-btn', onClick: closeWrapped }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: closeWrapped }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'card-label' }, 'Версия'),

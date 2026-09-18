@@ -2,6 +2,7 @@ import { Api, type SearchHit } from './api';
 import type { Store, ChatTarget } from './state';
 import { h, fmtTime, fmtDate } from './view';
 
+import { icon } from './icons';
 export class SearchModal {
   el: HTMLElement;
   private input: HTMLInputElement;
@@ -38,7 +39,7 @@ export class SearchModal {
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
         h('div', { class: 'modal-title' }, 'Поиск по сообщениям'),
-        h('button', { class: 'icon-btn', onClick: close }, 'x'),
+        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'field' }, this.input),
