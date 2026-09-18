@@ -140,11 +140,36 @@ fn ensure_crypto_provider() {
     });
 }
 
+/// TLS that trusts Mozilla's root list and nothing else.
+///
+/// Without this, `reqwest` verifies with `rustls-platform-verifier`, which on
+/// Android calls back into Java and aborts the whole process if it was never
+/// handed a JNI environment — `Expect rustls-platform-verifier to be
+/// initialized`, SIGABRT on a tokio worker, the app gone mid-sentence. It is
+/// reached the moment the update check opens its first connection, which is why
+/// the phone died on a timer rather than on anything the user did.
+///
+/// Pinning the bundled roots is also the better answer than initialising the
+/// platform verifier. This client talks to exactly one host, GitHub, through an
+/// i2p outproxy, and the device trust store is not ours: a CA added by an
+/// employer's MDM, by a user who tapped through a warning, or by malware would
+/// otherwise be trusted to sign the release we are about to install.
+fn webpki_tls() -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+}
+
 impl Updater {
     pub fn new(node: Arc<TorNode>, component: Component) -> Self {
         ensure_crypto_provider();
         let client = node.http_proxy_port().and_then(|port| {
             reqwest::Client::builder()
+                // `Some(..)`: reqwest downcasts to `Option<ClientConfig>` and a
+                // bare config silently falls through to "unknown TLS backend".
+                .use_preconfigured_tls(Some(webpki_tls()))
                 .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).ok()?)
                 .timeout(Duration::from_secs(1800))
                 .user_agent("gipny-i2p-updater")

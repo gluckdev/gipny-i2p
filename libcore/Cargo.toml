@@ -36,6 +36,10 @@ libc = { workspace = true }
 # are not set up for; ring is already in this tree and already cross-builds.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# Named directly, not just through reqwest's feature: the client is handed a
+# rustls config built from these roots, because reqwest's own default is the
+# platform verifier, which aborts the process on Android. See `webpki_tls()`.
+webpki-roots = "1"
 flate2 = "1"
 tar = "0.4"
 [dev-dependencies]
