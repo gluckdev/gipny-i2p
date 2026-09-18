@@ -493,6 +493,9 @@ export class Api {
   static restartApp(): Promise<void> {
     return invoke('restart_app');
   }
+  static updateAsksForRoot(): Promise<boolean> {
+    return invoke('update_asks_for_root');
+  }
   static installUpdate(): Promise<void> {
     return invoke('install_update');
   }
