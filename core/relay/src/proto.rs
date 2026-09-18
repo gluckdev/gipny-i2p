@@ -38,7 +38,6 @@ pub enum RelayToClient {
     Dht(Vec<u8>),
 }
 
-pub const HS_PORT: u16 = 443;
 pub const HS_NICKNAME: &str = "gipny-relay";
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
