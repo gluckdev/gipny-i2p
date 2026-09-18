@@ -215,7 +215,7 @@ pub fn run() {
             pin_contact_message, unpin_contact_message, list_pinned_contact,
             pin_group_message, unpin_group_message, list_pinned_group,
             pin_chat, unpin_chat,
-            check_update, install_update, update_installs_itself, restart_app, dismiss_update, get_auto_update, set_auto_update, current_version,
+            check_update, install_update, update_installs_itself, update_asks_for_root, restart_app, dismiss_update, get_auto_update, set_auto_update, current_version,
             list_apk_artifacts, download_apk,
             read_debug_log, read_previous_log, log_settings, set_log_enabled, clear_debug_log,
             export_identity, import_identity_to_profile,
@@ -1598,7 +1598,17 @@ fn restart_app(app: AppHandle) {
 
 #[tauri::command]
 fn update_installs_itself() -> bool {
-    cfg!(target_os = "windows") || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
+    cfg!(target_os = "windows")
+        || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
+        || gipny_libcore::update::is_deb_install()
+}
+
+/// Whether installing will ask for the administrator password (a .deb goes
+/// through the package manager). The interface says so instead of letting a
+/// polkit dialog appear out of nowhere.
+#[tauri::command]
+fn update_asks_for_root() -> bool {
+    gipny_libcore::update::is_deb_install()
 }
 
 #[tauri::command]

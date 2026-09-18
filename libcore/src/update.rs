@@ -272,6 +272,9 @@ impl Updater {
                 if cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some() {
                     install_appimage_now(downloaded)?;
                     Ok(InstallOutcome::InstalledNow)
+                } else if is_deb_install() {
+                    install_deb_now(downloaded)?;
+                    Ok(InstallOutcome::StagedForNextLaunch)
                 } else if cfg!(target_os = "windows") {
                     stage_windows_installer(downloaded, data_dir)?;
                     Ok(InstallOutcome::StagedForNextLaunch)
@@ -292,6 +295,63 @@ impl Updater {
     }
 }
 
+/// Are we running from a distribution package rather than an AppImage?
+///
+/// The binary then lives under /usr and belongs to dpkg, so replacing files by
+/// hand would leave the package database lying about what is installed. The
+/// update is handed to the package manager instead (`install_deb_now`).
+#[cfg(target_os = "linux")]
+pub fn is_deb_install() -> bool {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else { return false };
+    exe.starts_with("/usr/") && Path::new("/usr/lib/gipny-i2p").exists()
+}
+#[cfg(not(target_os = "linux"))]
+pub fn is_deb_install() -> bool {
+    false
+}
+
+/// Install a downloaded .deb through the package manager, asking for the
+/// administrator password with the desktop's own dialog (`pkexec`).
+///
+/// dpkg needs root, and a messenger has no business holding root itself — so
+/// this is the one update path that asks a question. It returns as soon as the
+/// package is in; like every other platform, the new version runs at the next
+/// launch.
+#[cfg(target_os = "linux")]
+fn install_deb_now(downloaded: &Path) -> Result<()> {
+    // A .deb must keep its name: apt refuses a path that does not look like a
+    // package, and the downloaded file is already named by the release.
+    let path = downloaded.to_string_lossy().to_string();
+    let out = std::process::Command::new("pkexec")
+        .arg("apt-get")
+        .arg("install")
+        .arg("-y")
+        .arg("--reinstall")
+        .arg("--allow-downgrades")
+        .arg(&path)
+        .output()
+        .map_err(|e| UpdateError::Unsupported(format!("pkexec: {e}")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // 126/127 are polkit's "refused"/"no agent": that is a person saying no,
+    // not a broken update.
+    let code = out.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(UpdateError::Unsupported(match code {
+        126 => "установка отменена".into(),
+        127 => "нет графического запроса пароля (polkit) — поставьте пакет вручную".into(),
+        _ => format!("apt-get: {}", stderr.trim()),
+    }))
+}
+#[cfg(not(target_os = "linux"))]
+fn install_deb_now(_: &Path) -> Result<()> {
+    Err(UpdateError::Unsupported("deb install only on linux".into()))
+}
+
 /// Which release assets belong to this component's platform: assets are named
 /// `<prefix><version><suffix>` (e.g. `gipny-i2p_0.4.2_amd64.AppImage`), so
 /// matching on prefix+suffix does not need to know the version. `None` means
@@ -304,6 +364,11 @@ fn target_suffix(component: Component) -> Option<(&'static str, &'static str)> {
             Some(("gipny-i2p_", if arch == "aarch64" { "_aarch64.AppImage" } else { "_amd64.AppImage" }))
         }
         Component::App if cfg!(target_os = "windows") => Some(("gipny-i2p_", "_x64-setup.exe")),
+        // Installed from a package: update with a package, through the package
+        // manager — see `install_deb_now`.
+        Component::App if is_deb_install() => {
+            Some(("gipny-i2p_", if arch == "aarch64" { "_arm64.deb" } else { "_amd64.deb" }))
+        }
         // Android can check and download over i2p, but installing an APK is
         // the system installer's business, not ours — see `install`.
         Component::App if cfg!(target_os = "android") => {

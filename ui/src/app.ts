@@ -228,12 +228,21 @@ export class App extends View {
         // Android and unmanaged packages cannot install themselves; offering
         // the button would download into a directory nobody can reach.
         Api.updateInstallsItself().then((can: boolean) => {
-          if (can) return;
-          b.remove();
-          if (this.updateStatusEl) {
-            this.updateStatusEl.textContent +=
-              ' · установка вручную: Настройки → Android-приложение (или страница релизов)';
+          if (!can) {
+            b.remove();
+            if (this.updateStatusEl) {
+              this.updateStatusEl.textContent +=
+                ' · установка вручную: Настройки → Android-приложение (или страница релизов)';
+            }
+            return;
           }
+          // A .deb goes through the package manager, which asks for the
+          // administrator password — say so before the dialog appears.
+          void Api.updateAsksForRoot().then((asks: boolean) => {
+            if (asks && this.updateStatusEl) {
+              this.updateStatusEl.textContent += ' · потребуется пароль администратора';
+            }
+          }).catch(() => {});
         }).catch(() => {});
         return b;
       })(),

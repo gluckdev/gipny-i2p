@@ -1292,11 +1292,14 @@ impl Core {
             }
         }
         *self.pending_update.lock().await = Some(info.clone());
-        // Android never installs by itself: putting an APK in place is the
-        // system installer's job, and a file in our private directory is not
-        // something the person can even tap. So there it is always a notice,
-        // and Settings → «Android-приложение» saves the APK where they choose.
-        if self.auto_update_enabled() && !cfg!(target_os = "android") {
+        // Two places where installing needs a person: Android (putting an APK
+        // in place is the system installer's job, and a file in our private
+        // directory is not something anyone can tap) and a .deb install, where
+        // the package manager asks for the administrator password. A password
+        // dialog appearing by itself, with no context, is not an update — it is
+        // something people rightly refuse. Both get a notice and a button.
+        let needs_a_person = cfg!(target_os = "android") || gipny_libcore::update::is_deb_install();
+        if self.auto_update_enabled() && !needs_a_person {
             let this = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = this.install_update().await {
