@@ -178,6 +178,7 @@
 
 | Версия | Про что она | Заметки |
 |---|---|---|
+| [0.4.8](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.8) | «Назад» на Android прячет приложение, а не роняет его вместе с роутером | [0.4.8.md](docs/releases/0.4.8.md) |
 | [0.4.7](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.7) | Android больше не падает на проверке обновлений; обновление нельзя подменить чужим корневым сертификатом | [0.4.7.md](docs/releases/0.4.7.md) |
 | [0.4.6](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.6) | Видимый запуск профиля, отправка без ожидания своего релея, перезапуск умершего роутера, QR карточки, журнал работы, «кофеин» | [0.4.6.md](docs/releases/0.4.6.md) |
 | [0.4.5](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.5) | Доставка через сеть релеев, контакт не теряется при смене адреса, обязательные обновления | [0.4.5.md](docs/releases/0.4.5.md) |
