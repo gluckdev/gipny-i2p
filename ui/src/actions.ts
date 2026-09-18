@@ -88,11 +88,11 @@ export function messageMenuItems(
   const isPinned = pinnedList.some((p) => p.id === m.id);
   const items: MenuItem[] = [];
 
-  items.push({ label: 'Reply', onClick: onReply });
-  items.push({ label: 'Forward', onClick: onForward });
+  items.push({ label: 'Ответить', onClick: onReply });
+  items.push({ label: 'Переслать', onClick: onForward });
 
   items.push({
-    label: isPinned ? 'Unpin' : 'Pin',
+    label: isPinned ? 'Открепить' : 'Закрепить',
     onClick: () => {
       if (isPinned) store.unpinMessage(target, m.id).catch((e) => store.showToast('unpin failed: ' + e, true));
       else store.pinMessage(target, m.id).catch((e) => store.showToast('pin failed: ' + e, true));
@@ -100,12 +100,12 @@ export function messageMenuItems(
   });
 
   if (m.outgoing) {
-    items.push({ label: 'Edit', onClick: onEdit });
+    items.push({ label: 'Изменить', onClick: onEdit });
   }
 
   if (m.body) {
     items.push({
-      label: 'Copy',
+      label: 'Копировать',
       onClick: () => {
         navigator.clipboard.writeText(m.body).catch(() => store.showToast('copy failed', true));
       },
@@ -224,8 +224,8 @@ export class EditInline {
     this.el = h('div', { class: 'edit-inline' },
       this.textarea,
       h('div', { class: 'edit-inline-actions' },
-        h('button', { class: 'btn btn-ghost', onClick: () => this.onCancel() }, 'Cancel'),
-        h('button', { class: 'btn', onClick: () => this.save() }, 'Save'),
+        h('button', { class: 'btn btn-ghost', onClick: () => this.onCancel() }, 'Отмена'),
+        h('button', { class: 'btn', onClick: () => this.save() }, 'Сохранить'),
       ),
       h('div', { class: 'edit-inline-hint' }, 'enter = save · esc = cancel'),
     );

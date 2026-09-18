@@ -77,7 +77,7 @@ export class MediaModal {
             this.store.showToast('save failed: ' + String(e), true);
           }
         },
-      }, 'Save'));
+      }, 'Сохранить'));
       tile.addEventListener('click', () => this.openInChat(it));
       if (isImage) void this.fillPreview(preview, it.id, mime);
       this.grid.appendChild(tile);

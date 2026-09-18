@@ -57,13 +57,13 @@ export class AuthCreate extends View {
           hasProfiles && h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, 'Back'),
+          }, 'Назад'),
           (() => {
             const b = h('button', {
               class: 'btn',
               style: { flex: '1' },
               onClick: () => busy(b, () => this.create()),
-            }, 'Initialize') as HTMLButtonElement;
+            }, 'Создать профиль') as HTMLButtonElement;
             this.confirmI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.create());
             });

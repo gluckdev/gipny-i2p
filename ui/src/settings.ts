@@ -11,17 +11,17 @@ import { icon } from './icons';
 export class SettingsModal {
   el: HTMLElement;
   constructor(store: Store, app: App, close: () => void) {
-    const oldP = h('input', { class: 'input', type: 'password', placeholder: 'current passphrase' });
-    const newP = h('input', { class: 'input', type: 'password', placeholder: 'new passphrase' });
-    const newP2 = h('input', { class: 'input', type: 'password', placeholder: 'confirm new' });
+    const oldP = h('input', { class: 'input', type: 'password', placeholder: 'текущий пароль' });
+    const newP = h('input', { class: 'input', type: 'password', placeholder: 'новый пароль' });
+    const newP2 = h('input', { class: 'input', type: 'password', placeholder: 'ещё раз новый' });
     const passErr = h('div', { class: 'err' });
 
-    const currP = h('input', { class: 'input', type: 'password', placeholder: 'current passphrase' });
-    const duP = h('input', { class: 'input', type: 'password', placeholder: 'duress passphrase (empty = remove)' });
+    const currP = h('input', { class: 'input', type: 'password', placeholder: 'текущий пароль' });
+    const duP = h('input', { class: 'input', type: 'password', placeholder: 'пароль под принуждением (пусто — убрать)' });
     const duWipe = h('input', { type: 'checkbox', checked: true });
     const duErr = h('div', { class: 'err' });
 
-    const attP = h('input', { class: 'input', type: 'password', placeholder: 'current passphrase' });
+    const attP = h('input', { class: 'input', type: 'password', placeholder: 'текущий пароль' });
     const attN = h('input', { class: 'input', type: 'number', value: '10', min: '0' });
     const attErr = h('div', { class: 'err' });
 
@@ -175,7 +175,7 @@ export class SettingsModal {
                 + 'закрыто. Адрес постоянный — так надёжнее для агентов и для тех, кто редко в сети.',
             },
           ];
-          const relayI = h('input', { class: 'input', placeholder: 'i2p destination (b64) of the relay', 'aria-label': 'relay i2p destination' }) as HTMLInputElement;
+          const relayI = h('input', { class: 'input', placeholder: 'destination релея в base64', 'aria-label': 'relay i2p destination' }) as HTMLInputElement;
           const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
           const relayErr = h('div', { class: 'err' });
           const saveBtn = h('button', {
@@ -188,7 +188,7 @@ export class SettingsModal {
                 store.showToast('адрес релея сохранён — переподключусь в течение 20 секунд');
               } catch (e) { relayErr.textContent = String(e); }
             }),
-          }, 'Save relay address') as HTMLButtonElement;
+          }, 'Сохранить адрес релея') as HTMLButtonElement;
           const externalBox = h('div', null, h('div', { class: 'field' }, relayI), saveBtn);
 
           const radios = new Map<RelayMode, HTMLInputElement>();
@@ -490,7 +490,7 @@ export class SettingsModal {
               oldP.value = newP.value = newP2.value = '';
             } catch (e) { passErr.textContent = String(e); }
           },
-        }, 'Change'),
+        }, 'Изменить'),
 
         h('div', { class: 'divider-text' }, 'Пароль под принуждением'),
         h('div', { class: 'field' }, currP),
@@ -508,7 +508,7 @@ export class SettingsModal {
               currP.value = duP.value = '';
             } catch (e) { duErr.textContent = String(e); }
           },
-        }, 'Update duress'),
+        }, 'Сохранить'),
 
         h('div', { class: 'divider-text' }, 'Лимит попыток'),
         h('div', { class: 'field' }, attP),
@@ -524,7 +524,7 @@ export class SettingsModal {
               attP.value = '';
             } catch (e) { attErr.textContent = String(e); }
           },
-        }, 'Update'),
+        }, 'Сохранить'),
 
 
         h('div', { class: 'divider-text' }, 'Резервная копия'),
@@ -533,7 +533,7 @@ export class SettingsModal {
           'импорт на другом устройстве: profile-select → [ IMPORT BACKUP ]. ',
           'ВАЖНО: одна identity = одно активное устройство. После импорта закрой gipny на старом — иначе session ratchet поплывёт и сообщения начнут падать в resync.'),
         (() => {
-          const passI = h('input', { class: 'input', type: 'password', placeholder: 'backup passphrase (min 8)' }) as HTMLInputElement;
+          const passI = h('input', { class: 'input', type: 'password', placeholder: 'пароль копии (от 8 символов)' }) as HTMLInputElement;
           const errEl = h('div', { class: 'err' });
           const exportBtn = h('button', {
             class: 'btn btn-block',
@@ -559,31 +559,69 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'Отладка'),
+        h('div', { class: 'divider-text' }, 'Журнал работы'),
         (() => {
-          const out = h('pre', {
-            class: 'card-block',
-            style: { maxHeight: '300px', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '10px', display: 'none' },
+          const out = h('pre', { class: 'log-view hidden' });
+          const pathLine = h('div', { class: 'hint' }, '');
+          const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
+          let showing: 'current' | 'previous' = 'current';
+
+          const load = (which: 'current' | 'previous') => busy(showBtn, async () => {
+            showing = which;
+            try {
+              const txt = which === 'current' ? await Api.readDebugLog() : await Api.readPreviousLog();
+              out.textContent = txt || '(журнал пуст)';
+              out.classList.remove('hidden');
+              out.scrollTop = out.scrollHeight;
+            } catch (e) {
+              out.textContent = String(e);
+              out.classList.remove('hidden');
+            }
           });
-          const refreshBtn = h('button', {
-            class: 'btn btn-ghost',
-            onClick: () => busy(refreshBtn as HTMLButtonElement, async () => {
-              try {
-                const txt = await Api.readDebugLog();
-                out.textContent = txt || '(empty)';
-                (out as HTMLElement).style.display = '';
-              } catch (e) { out.textContent = String(e); (out as HTMLElement).style.display = ''; }
-            }),
-          }, 'Show debug log') as HTMLButtonElement;
+
+          const showBtn = h('button', { class: 'btn btn-ghost', onClick: () => void load('current') }, 'Показать журнал') as HTMLButtonElement;
+          const prevBtn = h('button', { class: 'btn btn-ghost', onClick: () => void load('previous') }, 'Прошлый запуск') as HTMLButtonElement;
           const copyBtn = h('button', {
             class: 'btn btn-ghost',
             onClick: () => {
-              navigator.clipboard.writeText(out.textContent ?? '').catch(() => store.showToast('copy failed', true));
-              store.showToast('copied');
+              navigator.clipboard.writeText(out.textContent ?? '')
+                .then(() => store.showToast('Журнал скопирован'))
+                .catch(() => store.showToast('Скопировать не удалось', true));
             },
-          }, 'Copy');
+          }, 'Скопировать');
+          const clearBtn = h('button', {
+            class: 'btn btn-ghost',
+            onClick: () => busy(clearBtn, async () => {
+              await Api.clearDebugLog().catch((e) => store.showToast(String(e), true));
+              out.textContent = '(журнал пуст)';
+              store.showToast('Журнал очищен');
+            }),
+          }, 'Очистить') as HTMLButtonElement;
+
+          Api.logSettings().then((s) => {
+            cb.checked = s.enabled;
+            pathLine.textContent = `Файл: ${s.path}`;
+          }).catch(() => { cb.checked = true; });
+          cb.addEventListener('change', () => {
+            Api.setLogEnabled(cb.checked)
+              .then(() => store.showToast(cb.checked
+                ? 'Журнал включён — начнёт писаться со следующего запуска'
+                : 'Журнал выключен и стёрт'))
+              .catch((e) => { store.showToast(String(e), true); cb.checked = !cb.checked; });
+          });
+
           return h('div', null,
-            h('div', { class: 'row' }, refreshBtn, copyBtn),
+            h('label', { class: 'opt', style: { alignItems: 'center' } },
+              cb,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, 'вести подробный журнал'),
+                h('span', { class: 'opt-blurb' },
+                  'по умолчанию включён: когда что-то ломается, должно остаться что почитать. '
+                  + 'В журнал попадают адреса релеев, ошибки и тайминги — но не тексты сообщений. '
+                  + 'Лежит на диске открытым; при стирании профиля под принуждением стирается тоже.')),
+            ),
+            pathLine,
+            h('div', { class: 'row', style: { marginTop: '8px', flexWrap: 'wrap' } }, showBtn, prevBtn, copyBtn, clearBtn),
             out,
           );
         })(),
@@ -592,15 +630,15 @@ export class SettingsModal {
         h('button', {
           class: 'btn btn-block btn-danger',
           onClick: async () => {
-            const ok = await app.confirm('lock vault', 'drop keys from memory and return to profile selection?');
+            const ok = await app.confirm('Заблокировать', 'Убрать ключи из памяти и вернуться к выбору профиля?');
             if (!ok) return;
             closeWrapped();
             await store.lock();
           },
-        }, 'Lock now'),
+        }, 'Заблокировать сейчас'),
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, 'Close'),
+        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, 'Закрыть'),
       ),
     );
   }

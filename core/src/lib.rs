@@ -25,10 +25,35 @@ struct AppCtx {
     core: Mutex<Option<Arc<Core>>>,
 }
 
-#[cfg(target_os = "android")]
+/// Where the level lives. Not a profile setting: capture starts before any
+/// vault is open, and a log that only begins after unlocking would miss the
+/// part people actually need — the router, the boot, the crash before that.
+fn log_level_path(base_dir: &std::path::Path) -> std::path::PathBuf {
+    base_dir.join("log.conf")
+}
+
+/// `true` unless the person turned it off. The default changed (2026-09-18, the
+/// owner's call): when something goes wrong there has to be something to read,
+/// and "reproduce it with the env var set" is not an answer for a phone.
+fn log_enabled(base_dir: &std::path::Path) -> bool {
+    if std::env::var_os("GIPNY_DEBUG_LOG").is_some() {
+        return true;
+    }
+    !matches!(
+        std::fs::read_to_string(log_level_path(base_dir)).map(|s| s.trim().to_ascii_lowercase()),
+        Ok(ref v) if v == "off"
+    )
+}
+
+/// Redirect this process's stderr into a file. Unix only: it is a `dup2`, and
+/// Windows has no equivalent that survives the way Tauri starts up.
+#[cfg(unix)]
 fn install_log_capture(base_dir: &std::path::Path) {
     use std::os::unix::io::AsRawFd;
     let log_path = base_dir.join("debug.log");
+    // Keep the previous run's log: a crash is only readable afterwards, and
+    // truncating on start threw away exactly the interesting one.
+    let _ = std::fs::rename(&log_path, base_dir.join("debug.prev.log"));
     let _ = std::fs::OpenOptions::new()
         .create(true).write(true).truncate(true)
         .open(&log_path)
@@ -61,7 +86,12 @@ fn register_aumid() {}
 /// on a duress/attempt-limit wipe so no plaintext log survives outside the
 /// per-profile dir that `secure_wipe_dir` scrubs.
 fn scrub_debug_log(base_dir: &std::path::Path) {
-    let p = base_dir.join("debug.log");
+    scrub_one_log(&base_dir.join("debug.prev.log"));
+    scrub_one_log(&base_dir.join("debug.log"));
+}
+
+fn scrub_one_log(p: &std::path::Path) {
+    let p = p.to_path_buf();
     if let Ok(meta) = std::fs::metadata(&p) {
         if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&p) {
             use std::io::Write;
@@ -84,8 +114,8 @@ pub fn run() {
     // base dir (outside the per-profile dir that duress-wipe scrubs). Off by
     // default in release so no transport/app traces survive at rest; opt in with
     // GIPNY_DEBUG_LOG=1 (or any debug build) when you actually need it.
-    #[cfg(target_os = "android")]
-    if cfg!(debug_assertions) || std::env::var_os("GIPNY_DEBUG_LOG").is_some() {
+    #[cfg(unix)]
+    if log_enabled(&base_dir) {
         install_log_capture(&base_dir);
     }
     let ctx = AppCtx {
@@ -139,7 +169,7 @@ pub fn run() {
             pin_chat, unpin_chat,
             check_update, install_update, update_installs_itself, restart_app, dismiss_update, get_auto_update, set_auto_update, current_version,
             list_apk_artifacts, download_apk,
-            read_debug_log,
+            read_debug_log, read_previous_log, log_settings, set_log_enabled, clear_debug_log,
             export_identity, import_identity_to_profile,
             send_typing,
             play_notify_sound,
@@ -1559,11 +1589,47 @@ async fn download_apk(arch: String, dest_path: String, ctx: State<'_, AppCtx>) -
 
 #[tauri::command]
 fn read_debug_log(ctx: State<'_, AppCtx>) -> Result<String, String> {
-    let p = ctx.base_dir.join("debug.log");
-    let raw = std::fs::read_to_string(&p).unwrap_or_else(|_| String::from("(no log)"));
+    read_log_file(&ctx.base_dir.join("debug.log"))
+}
+
+/// The log of the run before this one — where a crash left its last words.
+#[tauri::command]
+fn read_previous_log(ctx: State<'_, AppCtx>) -> Result<String, String> {
+    read_log_file(&ctx.base_dir.join("debug.prev.log"))
+}
+
+fn read_log_file(p: &std::path::Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(p).unwrap_or_else(|_| String::from("(журнал пуст)"));
     let lines: Vec<&str> = raw.lines().collect();
-    let take = lines.len().saturating_sub(500);
+    let take = lines.len().saturating_sub(2000);
     Ok(lines[take..].join("\n"))
+}
+
+/// Whether the log is being written, and where it is.
+#[tauri::command]
+fn log_settings(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "enabled": log_enabled(&ctx.base_dir),
+        "path": ctx.base_dir.join("debug.log").display().to_string(),
+    }))
+}
+
+/// Takes effect at the next launch: the capture replaces this process's stderr
+/// once, at startup, and there is no way back to a file descriptor that is gone.
+#[tauri::command]
+fn set_log_enabled(enabled: bool, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    std::fs::write(log_level_path(&ctx.base_dir), if enabled { "debug" } else { "off" }).map_err(err)?;
+    if !enabled {
+        scrub_debug_log(&ctx.base_dir);
+    }
+    Ok(())
+}
+
+/// Wipe what has been written so far, for handing the app to someone else.
+#[tauri::command]
+fn clear_debug_log(ctx: State<'_, AppCtx>) -> Result<(), String> {
+    scrub_debug_log(&ctx.base_dir);
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

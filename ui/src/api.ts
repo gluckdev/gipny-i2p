@@ -539,6 +539,18 @@ export class Api {
   static downloadApk(arch: string, destPath: string): Promise<void> {
     return invoke('download_apk', { arch, destPath });
   }
+  static readPreviousLog(): Promise<string> {
+    return invoke('read_previous_log');
+  }
+  static logSettings(): Promise<{ enabled: boolean; path: string }> {
+    return invoke('log_settings');
+  }
+  static setLogEnabled(enabled: boolean): Promise<void> {
+    return invoke('set_log_enabled', { enabled });
+  }
+  static clearDebugLog(): Promise<void> {
+    return invoke('clear_debug_log');
+  }
   static readDebugLog(): Promise<string> {
     return invoke('read_debug_log');
   }

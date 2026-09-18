@@ -158,7 +158,7 @@ export class CreateGroupModal {
         err,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Отмена'),
         (() => {
           const b = h('button', {
             class: 'btn',
@@ -172,7 +172,7 @@ export class CreateGroupModal {
                 close();
               } catch (e) { err.textContent = 'err: ' + String(e); }
             }),
-          }, 'Create') as HTMLButtonElement;
+          }, 'Создать') as HTMLButtonElement;
           return b;
         })(),
       ),

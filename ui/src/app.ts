@@ -178,7 +178,7 @@ export class App extends View {
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateError.set(null); },
-      }, 'Close'),
+      }, 'Закрыть'),
     );
   }
 

@@ -76,7 +76,7 @@ export class ProfileSelect extends View {
         errEl,
       ),
       h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+        h('button', { class: 'btn btn-ghost', onClick: close }, 'Отмена'),
         h('button', { class: 'btn', onClick: () => submit(close) }, 'Import'),
       ),
     ));

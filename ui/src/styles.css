@@ -2122,6 +2122,17 @@ body::before { background: none; }
 .art-network { position: absolute; right: -10px; top: -6px; opacity: 0.55; pointer-events: none; }
 .about-hero > :not(.art) { position: relative; }
 
+/* --- Log viewer -------------------------------------------------------------- */
+.log-view {
+  margin-top: 10px; padding: 10px 12px;
+  max-height: 320px; overflow: auto;
+  background: var(--surface-3); border-radius: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+  white-space: pre-wrap; word-break: break-word;
+  user-select: text;
+}
+
 /* --- QR: sharing a card and reading one ------------------------------------- */
 .card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
 .card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }

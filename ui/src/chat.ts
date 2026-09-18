@@ -877,7 +877,7 @@ export class ChatView extends View {
         class: 'btn btn-ghost',
         style: { marginLeft: '12px' },
         onClick: () => { scale = 1; tx = 0; ty = 0; apply(); },
-      }, 'Reset');
+      }, 'Сбросить');
       return h('div', {
         class: 'modal',
         style: { width: 'auto', maxWidth: '95vw', maxHeight: '95vh', padding: '0' },

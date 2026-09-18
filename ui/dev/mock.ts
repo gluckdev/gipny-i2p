@@ -175,6 +175,10 @@ mockIPC((cmd, payload) => {
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };
     case 'check_update': return null;
     case 'update_installs_itself': return false;
+    case 'read_previous_log': return '12:01:02 [i2p] router ready (SAM up on 7656)\n12:01:40 [relay-hosted] built-in relay ready\n12:09:55 [relay-client] peer relay 5AyDtq unreachable: Io';
+    case 'log_settings': return { enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
+    case 'set_log_enabled': return null;
+    case 'clear_debug_log': return null;
     case 'qr_svg': return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" shape-rendering="crispEdges">'
       + '<rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0zM4 4h1v1H4zM6 5h1v1H6zM5 7h2v1H5z" fill="#000"/></svg>';
     case 'restart_app': return null;

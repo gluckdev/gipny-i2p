@@ -41,7 +41,7 @@ export class IdentityModal {
         await navigator.clipboard.writeText(cardBlock.textContent ?? '');
         store.showToast('card copied');
       },
-    }, 'Copy card') as HTMLButtonElement;
+    }, 'Скопировать карточку') as HTMLButtonElement;
     const cardNote = h('div', { class: 'hint', style: { marginTop: '6px' } });
     // The card is ~600 characters; nobody dictates that. A QR on screen is how
     // two people standing next to each other exchange cards.
