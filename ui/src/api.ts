@@ -81,6 +81,8 @@ export interface RelayInfo {
   /** The address saved for external mode, whether or not it is in use. */
   external: string;
   hosted: HostedRelayState;
+  /** How the attempt to reach our own relay is going. */
+  dial: { attempts: number; last_error: string | null };
 }
 
 /** A contact that put this client into agent mode, from `get_agent_mode`. */
@@ -218,8 +220,10 @@ export type CoreEvent =
   | { ContactUpdated: { contact_id: number } }
   | { ContactRequest: { contact_id: number } }
   | { GroupUpdated: { group_id: string } }
-  | { PeerOnline: { contact_id: number } }
-  | { PeerOffline: { contact_id: number } }
+  // The only presence signal: something arrived from them, written at
+  // `at_ms` by their clock. Mail held on a relay for hours arrives with an
+  // old stamp, which is exactly how "online" tells itself from "delivered".
+  | { PeerSeen: { contact_id: number; at_ms: number } }
   | { UpdateAvailable: { version: string; notes: string; size: number } }
   | { UpdateProgress: { downloaded: number; total: number; pct: number } }
   | { UpdateStaged: { version: string } }

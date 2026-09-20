@@ -560,7 +560,13 @@ export class Store {
 
   private installVisibilityHook(): void {
     this.windowVisible = !document.hidden && document.hasFocus();
-    const update = (): void => { this.windowVisible = !document.hidden && document.hasFocus(); };
+    const update = (): void => {
+      this.windowVisible = !document.hidden && document.hasFocus();
+      // A hidden window's timers are throttled, and on a phone they stop
+      // altogether — so the dots were whatever they had been at the moment
+      // the app went away. Recompute the instant it comes back.
+      if (this.windowVisible) this.recomputeOnline();
+    };
     document.addEventListener('visibilitychange', update);
     window.addEventListener('focus', update);
     window.addEventListener('blur', update);
@@ -589,10 +595,15 @@ export class Store {
     }
   }
 
+  /** Remember when this contact was last heard from. `ts` is when *they*
+   * wrote, not when it reached us — so an old letter arriving now moves the
+   * "был(а) в сети" line and nothing else. Only something written inside the
+   * window lights the dot. */
   private markPeerActive(contactId: number, ts: number): void {
     const cur = this.lastSeenMs.get(contactId) ?? 0;
     if (ts > cur) this.lastSeenMs.set(contactId, ts);
-    if (!this.peerOnline.get().has(contactId)) {
+    const fresh = ts > Date.now() - Store.ONLINE_WINDOW_MS;
+    if (fresh && !this.peerOnline.get().has(contactId)) {
       this.peerOnline.update((s) => { const n = new Set(s); n.add(contactId); return n; });
     }
   }
@@ -672,8 +683,11 @@ export class Store {
     this.groups.set(groups);
     this.muted.set(new Set(mutedList));
     this.agentMode.set(agentMode);
+    // Merge, never overwrite: this runs on every contact change, and a plain
+    // `set` put the stored timestamp back over one we had just heard live,
+    // flipping a contact who was typing at that moment to "не в сети".
     for (const c of contacts) {
-      if (c.last_seen != null) this.lastSeenMs.set(c.id, c.last_seen);
+      if (c.last_seen != null) this.markPeerActive(c.id, c.last_seen);
     }
     this.recomputeOnline();
     const unread = new Map<string, number>();
@@ -1017,12 +1031,10 @@ export class Store {
       if (!target) return;
       const key = targetKey(target);
       this.bumpChatOrder(target, m.sent_at);
-      if (target.kind === 'contact') {
-        this.markPeerActive(target.id, Date.now());
-      } else if (m.sender_sign_pk) {
-        const sc = this.contacts.get().find((c) => c.sign_pk === m.sender_sign_pk);
-        if (sc) this.markPeerActive(sc.id, Date.now());
-      }
+      // Presence comes from `PeerSeen`, which carries when the letter was
+      // written. Stamping `Date.now()` here lit up every contact whose mail
+      // had been waiting on the relay — a whole list "в сети" after each
+      // reconnect, none of whom were.
       this.loadMessages(target);
       const selected = this.selectedChat.get();
       const isActiveChat = sameTarget(selected, target);
@@ -1081,7 +1093,6 @@ export class Store {
       for (const b of bumps) this.bumpChatOrder(b.target, b.ts);
     } else if ('MessageDelivered' in e) {
       const id = e.MessageDelivered.message_id;
-      const activeContacts: number[] = [];
       this.messages.update((m) => {
         const n = new Map(m);
         for (const [k, list] of n) {
@@ -1090,27 +1101,21 @@ export class Store {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, sent: true, delivered: true };
             n.set(k, copy);
-            const cid = copy[idx]!.contact_id;
-            if (cid != null) activeContacts.push(cid);
           }
         }
         return n;
       });
-      for (const cid of activeContacts) this.markPeerActive(cid, Date.now());
+      // Presence is not inferred here any more: the acknowledgement that
+      // produced this event already arrived as `PeerSeen`, with the peer's
+      // own timestamp and without depending on the chat being open.
     } else if ('Typing' in e) {
       const { contact_id, group_id, sender_sign_pk, typing } = e.Typing;
       const target: ChatTarget | null = group_id != null
         ? { kind: 'group', id: group_id }
         : contact_id != null ? { kind: 'contact', id: contact_id } : null;
       if (target) {
-        if (typing) {
-          if (target.kind === 'contact') {
-            this.markPeerActive(target.id, Date.now());
-          } else if (sender_sign_pk) {
-            const sc = this.contacts.get().find((c) => c.sign_pk === sender_sign_pk);
-            if (sc) this.markPeerActive(sc.id, Date.now());
-          }
-        }
+        // Presence, again, comes from `PeerSeen` — a typing flag reaches it
+        // like everything else.
         const key = targetKey(target);
         if (typing) {
           this.typing.update((m) => {
@@ -1206,10 +1211,10 @@ export class Store {
       Api.listGroupMembers(gid).then((members) => {
         this.groupMembers.update((m) => { const n = new Map(m); n.set(gid, members); return n; });
       }).catch(() => {});
-    } else if ('PeerOnline' in e) {
-      this.peerOnline.update((s) => { const n = new Set(s); n.add(e.PeerOnline.contact_id); return n; });
-    } else if ('PeerOffline' in e) {
-      this.peerOnline.update((s) => { const n = new Set(s); n.delete(e.PeerOffline.contact_id); return n; });
+    } else if ('PeerSeen' in e) {
+      const { contact_id, at_ms } = e.PeerSeen;
+      this.markPeerActive(contact_id, at_ms);
+      this.recomputeOnline();
     } else if ('UpdateAvailable' in e) {
       // Only fires when auto-update is off — the manual install prompt.
       this.updateAvailable.set(e.UpdateAvailable);

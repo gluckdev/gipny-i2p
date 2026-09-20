@@ -678,6 +678,21 @@ impl Db {
         self.with_conn(|c| { c.execute("UPDATE contacts SET last_seen = ?1 WHERE id = ?2", params![now_ms(), id])?; Ok(()) })
     }
 
+    /// Record that this contact was heard from at `at` — but never move the
+    /// mark backwards. Mail can arrive out of order and days late (the relay
+    /// holds it for three days, the archive for seven), and a letter written
+    /// on Monday must not make Monday the last time we heard from someone we
+    /// spoke to this morning.
+    pub fn note_last_seen(&self, id: i64, at: i64) -> Result<()> {
+        self.with_conn(|c| {
+            c.execute(
+                "UPDATE contacts SET last_seen = ?1 WHERE id = ?2 AND (last_seen IS NULL OR last_seen < ?1)",
+                params![at, id],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn set_contact_request_state(&self, id: i64, state: RequestState) -> Result<()> {
         self.with_conn(|c| {
             c.execute("UPDATE contacts SET request_state = ?2 WHERE id = ?1", params![id, state.to_i64()])?;

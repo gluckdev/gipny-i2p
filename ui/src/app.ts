@@ -309,14 +309,27 @@ class MainView extends View {
       const info = store.relayInfo.get();
       const builtin = info?.mode === 'builtin';
       banner.classList.toggle('warn', unconfigured || (builtin && info?.hosted.state === 'failed'));
+      // When the relay itself is up and we still cannot reach it, say what is
+      // actually happening. A line that never changes ("нет связи с релеем")
+      // is indistinguishable from a frozen app, and on a phone there is no
+      // log to open — so the attempt count and the transport's own words go
+      // on screen.
+      const dial = info?.dial;
+      const attempts = dial?.attempts ?? 0;
+      const why = dial?.last_error ? ` (${dial.last_error.slice(0, 120)})` : '';
+      const stuck = attempts > 0
+        ? `нет связи со своим релеем: попытка ${attempts}${why}. Сообщения ждут в очереди`
+        : 'нет связи с релеем — сообщения уйдут, когда связь восстановится';
       banner.replaceChildren(
         unconfigured
           ? 'внешний релей выбран, но адрес не задан — отправка недоступна. Настройки → relay'
           : builtin && info?.hosted.state === 'failed'
-            ? 'встроенный релей не поднялся, пробую снова — сообщения пока ждут в очереди'
+            ? `встроенный релей не поднялся, пробую снова${
+                info.hosted.reason ? ` (${info.hosted.reason.slice(0, 120)})` : ''
+              } — сообщения пока ждут в очереди`
             : builtin && info?.hosted.state !== 'ready'
               ? 'встроенный релей запускается — обычно 1–2 минуты. Сообщения уйдут, как только он будет готов'
-              : 'нет связи с релеем — сообщения уйдут, когда связь восстановится'
+              : stuck
       );
     };
     this.subs.push(store.relayConnected.subscribe(paintBanner, true));

@@ -159,6 +159,14 @@ pub enum CoreEvent {
     },
     MessageSent { message_id: i64 },
     MessageDelivered { message_id: i64 },
+    /// Something arrived from this contact that they wrote at `at_ms`.
+    ///
+    /// The only presence signal there is: nobody announces that they are
+    /// online, and nothing here asks. It carries *their* timestamp rather
+    /// than ours precisely because it also fires for mail that sat on a
+    /// relay for two hours — that is not someone being online, and the
+    /// interface must be able to tell the difference.
+    PeerSeen { contact_id: i64, at_ms: i64 },
     /// Median round trip to this contact, in milliseconds, after a fresh
     /// measurement. Drives the link readout above the chat.
     LinkRtt { contact_id: i64, ms: u32 },
@@ -249,6 +257,21 @@ pub struct RelayInfo {
     /// The address saved for external mode, whether or not it is in use.
     pub external: String,
     pub hosted: HostedRelayState,
+    pub dial: DialState,
+}
+
+/// How the attempt to reach our own relay is going.
+///
+/// Without this, "нет связи с релеем" was the whole story, forever, with no
+/// way to tell a relay that is still building tunnels from one that refuses
+/// us — on a phone, where there is no log to open, that is the difference
+/// between waiting and reinstalling.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DialState {
+    /// Failed attempts since the last time we were connected.
+    pub attempts: u32,
+    /// Why the last one failed, in the transport's own words.
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -307,6 +330,9 @@ pub struct Core {
     /// what keeps it serving; dropping it takes the destination away.
     hosted_relay: Arc<std::sync::Mutex<Option<gipny_libcore::EphemeralRelay>>>,
     hosted_state: Arc<std::sync::RwLock<HostedRelayState>>,
+    /// How our own relay connection is going, for the banner that used to say
+    /// only that there was none.
+    relay_dial: Arc<std::sync::RwLock<DialState>>,
     hosted_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     /// Contacts that have not been told this launch's relay address yet.
     announce_pending: Arc<Mutex<HashSet<i64>>>,
@@ -463,6 +489,7 @@ impl Core {
             agent_tx,
             hosted_relay: Arc::new(std::sync::Mutex::new(None)),
             hosted_state: Arc::new(std::sync::RwLock::new(HostedRelayState::Off)),
+            relay_dial: Arc::new(std::sync::RwLock::new(DialState::default())),
             hosted_task: Arc::new(std::sync::Mutex::new(None)),
             announce_pending: Arc::new(Mutex::new(HashSet::new())),
             announce_sent_at: Arc::new(Mutex::new(HashMap::new())),
@@ -530,7 +557,21 @@ impl Core {
             mode: self.relay_mode(),
             external: self.external_relay(),
             hosted: self.hosted_state.read().unwrap_or_else(|p| p.into_inner()).clone(),
+            dial: self.relay_dial.read().unwrap_or_else(|p| p.into_inner()).clone(),
         }
+    }
+
+    /// Record how the dial went and tell the interface, which is showing it.
+    fn note_relay_dial(&self, error: Option<String>) {
+        {
+            let mut d = self.relay_dial.write().unwrap_or_else(|p| p.into_inner());
+            match &error {
+                Some(_) => d.attempts = d.attempts.saturating_add(1),
+                None => d.attempts = 0,
+            }
+            d.last_error = error;
+        }
+        let _ = self.events.try_send(CoreEvent::RelayInfoChanged { info: self.relay_info() });
     }
 
     fn set_hosted_state(&self, state: HostedRelayState) {
@@ -1689,6 +1730,7 @@ impl Core {
                 match relay::connect(&this.node, &onion, &this.identity).await {
                     Ok(client) => {
                         eprintln!("[relay-client] connected & authed");
+                        this.note_relay_dial(None);
                         backoff = RECONNECT_INITIAL_MS;
                         *this.relay_out.write().await = Some(client.out_tx.clone());
                         let _ = this.events.try_send(CoreEvent::RelayConnected);
@@ -1703,7 +1745,10 @@ impl Core {
                         *this.relay_out.write().await = None;
                         let _ = this.events.try_send(CoreEvent::RelayDisconnected);
                     }
-                    Err(e) => eprintln!("[relay-client] connect fail: {:?}", e),
+                    Err(e) => {
+                        eprintln!("[relay-client] connect fail: {:?}", e);
+                        this.note_relay_dial(Some(format!("{e:?}")));
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(backoff)).await;
                 backoff = (backoff * 2).min(RECONNECT_MAX_MS);
@@ -2240,7 +2285,24 @@ impl Core {
         Ok(())
     }
 
+    /// One place for "we heard from them", whatever it was they sent.
+    ///
+    /// Everything from the peer passes through `persist_incoming` — a letter,
+    /// a typing flag, a bare acknowledgement — and before this, only letters
+    /// counted. A contact whose app was acking and typing all evening looked
+    /// last seen in the morning, and the online dot depended on whether their
+    /// chat happened to be open.
+    ///
+    /// Their clock is not ours, so a timestamp from the future is pulled back
+    /// to now: a peer running fast must not be permanently "online".
+    fn note_peer_seen(self: &Arc<Self>, contact_id: i64, sent_at: i64) {
+        let at = sent_at.min(now_ms());
+        let _ = self.db.note_last_seen(contact_id, at);
+        let _ = self.events.try_send(CoreEvent::PeerSeen { contact_id, at_ms: at });
+    }
+
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        self.note_peer_seen(contact_id, payload.sent_at);
         match self.db.get_contact(contact_id)?.map(|c| c.request_state) {
             Some(RequestState::Incoming) => return self.persist_from_requester(contact_id, payload).await,
             // Anything at all from them means our introduction arrived.
