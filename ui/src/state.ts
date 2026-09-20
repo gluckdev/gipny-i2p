@@ -146,6 +146,10 @@ export class Store {
   scrollToMessage = new Signal<{ target: ChatTarget; messageId: number; nonce: number } | null>(null);
   sidebarCollapsed = new Signal<boolean>(typeof localStorage !== 'undefined' && localStorage.getItem('gipny:sidebar-collapsed') === '1');
   onlineTick = new Signal<number>(0);
+  /** i2p built ahead of the password: 'off' until asked for, then 'building'
+   * while the tunnels come up, 'ready' once the session is open. */
+  prewarm = new Signal<'off' | 'building' | 'ready'>('off');
+  private prewarmTimer: number | null = null;
 
   toggleSidebar(): void {
     const next = !this.sidebarCollapsed.get();
@@ -311,6 +315,36 @@ export class Store {
     await this.refreshProfiles();
     const list = this.profiles.get();
     this.view.set(list.length === 0 ? 'auth-create' : 'profile-select');
+    // With one profile there is nothing to guess: start its tunnels now, so
+    // the minutes i2p needs are spent while the password is being typed.
+    const only = list.length === 1 ? list[0] : undefined;
+    if (only) this.beginPrewarm(only);
+  }
+
+  /** Ask the core to build i2p for `profile` and follow it until it is up.
+   *
+   * Deliberately quiet: a prewarm that fails is not something to report — the
+   * ordinary unlock path starts the router again and says so out loud there. */
+  beginPrewarm(profile: string): void {
+    Api.prewarmNetwork(profile).catch(() => {});
+    if (this.prewarmTimer != null) return;
+    this.prewarm.set('building');
+    const poll = () => {
+      Api.prewarmStatus().then((s) => {
+        this.prewarm.set(s);
+        if (s !== 'building' && this.prewarmTimer != null) {
+          clearInterval(this.prewarmTimer);
+          this.prewarmTimer = null;
+        }
+      }).catch(() => {});
+    };
+    this.prewarmTimer = setInterval(poll, 2_000) as unknown as number;
+    poll();
+  }
+
+  private stopPrewarmWatch(): void {
+    if (this.prewarmTimer != null) { clearInterval(this.prewarmTimer); this.prewarmTimer = null; }
+    this.prewarm.set('off');
   }
 
   async refreshProfiles(): Promise<void> {
@@ -320,6 +354,7 @@ export class Store {
   selectProfileForUnlock(profile: string): void {
     this.currentProfile.set(profile);
     this.view.set('auth-unlock');
+    this.beginPrewarm(profile);
   }
 
   goToCreate(): void {
@@ -336,6 +371,8 @@ export class Store {
   /** Start listening for boot progress and show the loading screen. Called
    * before `vault_unlock`, because that call is where the minutes go. */
   async beginBoot(profile: string): Promise<void> {
+    // From here the boot screen reports the same stages first-hand.
+    this.stopPrewarmWatch();
     this.currentProfile.set(profile);
     this.bootSteps.set(freshBootSteps());
     this.bootLog.set([]);
@@ -577,6 +614,7 @@ export class Store {
   }
 
   async lock(): Promise<void> {
+    const wasProfile = this.currentProfile.get();
     this.stopWatchdog();
     this.unsubEvents?.();
     this.unsubEvents = null;
@@ -613,6 +651,10 @@ export class Store {
     this.updateReadyPath.set(null);
     this.updateError.set(null);
     await this.cancelToProfileSelect();
+    // Locking killed the router with the session that held it. Start the next
+    // one now: signing back in is the case where the wait is least expected.
+    this.stopPrewarmWatch();
+    if (wasProfile) this.beginPrewarm(wasProfile);
   }
 
   async deleteProfile(profile: string): Promise<void> {

@@ -241,6 +241,15 @@ export class Api {
   static deleteProfile(profile: string): Promise<void> {
     return invoke('delete_profile', { profile });
   }
+  /** Start building i2p tunnels for this profile now, before the password.
+   * Nothing in the transport needs the vault, so the wait can happen while
+   * the unlock screen is on rather than after it. */
+  static prewarmNetwork(profile: string): Promise<void> {
+    return invoke('prewarm_network', { profile });
+  }
+  static prewarmStatus(): Promise<'building' | 'ready' | 'off'> {
+    return invoke('prewarm_status');
+  }
   static vaultStatus(profile: string): Promise<VaultStatus> {
     return invoke('vault_status', { profile });
   }

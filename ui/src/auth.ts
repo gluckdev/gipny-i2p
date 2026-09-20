@@ -113,12 +113,16 @@ export class AuthUnlock extends View {
   el: HTMLElement;
   private passI: HTMLInputElement;
   private err: HTMLElement;
+  /** What i2p is doing while the password is being typed. The tunnels are
+   * built ahead of it, so this is the minutes that used to come after. */
+  private net: HTMLElement;
 
   constructor(private store: Store) {
     super();
     const profile = store.currentProfile.get() ?? 'unknown';
     this.passI = h('input', { class: 'input', type: 'password', placeholder: 'пароль', autofocus: true });
     this.err = h('div', { class: 'err' });
+    this.net = h('div', { class: 'auth-net' });
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
@@ -126,6 +130,7 @@ export class AuthUnlock extends View {
         h('div', { class: 'auth-sub' }, 'Введите пароль профиля'),
         h('div', { class: 'field' }, h('label', null, 'Пароль'), this.passI),
         this.err,
+        this.net,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           h('button', {
             class: 'btn btn-ghost',
@@ -144,6 +149,12 @@ export class AuthUnlock extends View {
         ),
       ),
     );
+    this.sub(store.prewarm, (s) => {
+      this.net.textContent = s === 'building'
+        ? 'Сеть i2p: строятся туннели, не дожидайтесь — вводите пароль'
+        : s === 'ready' ? 'Сеть i2p: туннели построены' : '';
+      this.net.className = 'auth-net' + (s === 'ready' ? ' ok' : '');
+    });
   }
 
   private async unlock(): Promise<void> {
