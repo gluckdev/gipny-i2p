@@ -1437,17 +1437,32 @@ impl Core {
     /// before returning; the caller only ever needs to act on the result when
     /// auto-update is off.
     pub async fn check_and_emit_update(self: Arc<Self>) -> Result<Option<UpdateInfo>> {
-        let info = match self.updater.check(env!("CARGO_PKG_VERSION")).await {
-            Ok(Some(i)) => i,
-            Ok(None) => return Ok(None),
+        Ok(match self.check_update_detailed().await? {
+            gipny_libcore::update::CheckOutcome::Update(i) => Some(i),
+            _ => None,
+        })
+    }
+
+    /// The check a person pressed a button for: it reports what it found,
+    /// including each of the reasons there is nothing to install.
+    pub async fn check_update_detailed(self: Arc<Self>) -> Result<gipny_libcore::update::CheckOutcome> {
+        use gipny_libcore::update::CheckOutcome;
+        let outcome = match self.updater.check_detailed(env!("CARGO_PKG_VERSION")).await {
+            Ok(o) => o,
             Err(e) => {
                 eprintln!("[update] check err: {:?}", e);
                 return Err(e.into());
             }
         };
+        let info = match outcome {
+            CheckOutcome::Update(i) => i,
+            other => return Ok(other),
+        };
         if let Ok(Some(v)) = self.db.get_setting(SETTING_DISMISSED_UPDATE) {
             if String::from_utf8_lossy(&v) == info.version {
-                return Ok(None);
+                // Already offered and put aside. Not "up to date", and the
+                // interface should not claim it is.
+                return Ok(CheckOutcome::UpToDate { latest: info.version });
             }
         }
         *self.pending_update.lock().await = Some(info.clone());
@@ -1472,7 +1487,7 @@ impl Core {
                 size: info.asset.size,
             });
         }
-        Ok(Some(info))
+        Ok(CheckOutcome::Update(info))
     }
 
     /// Downloads and installs the pending update (from `check_and_emit_update`
@@ -1509,7 +1524,12 @@ impl Core {
                 let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
             }
             InstallOutcome::Unsupported(msg) => {
-                self.dismiss_update(info.version.clone()).await?;
+                // Downloaded, but nothing installed it — on Android the file
+                // sits in our own private directory, where the system
+                // installer cannot reach it. Marking the version dismissed
+                // here is how the phone stopped being offered anything ever
+                // again: the next check saw a version it had "already dealt
+                // with". It has not been dealt with, so it is not dismissed.
                 let _ = ev.send(CoreEvent::UpdateReady { path: msg }).await;
             }
         }
@@ -3148,9 +3168,25 @@ impl Core {
         let handle = tokio::spawn(async move {
             use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SECS};
             tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INITIAL_SECS)).await;
+            // A failed check is retried soon, not in six hours. The first one
+            // lands half a minute after start, when a freshly woken router
+            // often has no client tunnels yet and the request through the
+            // outproxy simply fails — and a phone rarely stays running long
+            // enough to see the next six-hourly attempt. So: a minute, five,
+            // twenty, an hour, and only then the ordinary rhythm.
+            const RETRY_SECS: [u64; 4] = [60, 300, 1_200, 3_600];
+            let mut failures = 0usize;
             loop {
-                let _ = this.clone().check_and_emit_update().await;
-                tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS)).await;
+                let ok = this.clone().check_and_emit_update().await.is_ok();
+                let wait = if ok {
+                    failures = 0;
+                    UPDATE_CHECK_INTERVAL_SECS
+                } else {
+                    let w = RETRY_SECS[failures.min(RETRY_SECS.len() - 1)];
+                    failures += 1;
+                    w
+                };
+                tokio::time::sleep(Duration::from_secs(wait)).await;
             }
         });
         self.tasks.lock().unwrap().push(handle);

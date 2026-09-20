@@ -135,13 +135,22 @@ export class SettingsModal {
                   onClick: () => busy(b, async () => {
                     updErr.textContent = '';
                     try {
-                      const info = await Api.checkUpdate();
-                      if (!info) {
-                        store.showToast('Установлена последняя версия');
-                        showPending(null);
+                      const res = await Api.checkUpdate();
+                      if (res.status === 'update') {
+                        store.showToast(`Найдена версия ${res.version}`);
+                        showPending({ version: res.version, size: res.size });
                       } else {
-                        store.showToast(`Найдена версия ${info.version}`);
-                        showPending({ version: info.version, size: info.size });
+                        showPending(null);
+                        store.showToast(
+                          res.status === 'current'
+                            ? `Установлена последняя версия (${res.latest})`
+                            : res.status === 'unavailable'
+                              ? 'Спросить не у кого: в этом запуске нет выхода в сеть для проверки'
+                              : res.status === 'unsupported'
+                                ? `Есть версия ${res.latest}, но эту установку приложение обновить не может — скачайте вручную`
+                                : `Есть версия ${res.latest}, но в релизе нет файла для этой системы (${res.wanted})`,
+                          res.status !== 'current',
+                        );
                       }
                     } catch (e) { updErr.textContent = String(e); }
                   }),

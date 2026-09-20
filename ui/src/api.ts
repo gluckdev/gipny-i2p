@@ -205,6 +205,16 @@ export interface UpdateInfo {
   size: number;
 }
 
+/** What a check found. Every "nothing to install" case has its own name:
+ * one sentence for all of them is how a .deb install spent three releases
+ * being told it was current. */
+export type CheckResult =
+  | { status: 'update'; version: string; notes: string; size: number }
+  | { status: 'current'; latest: string }
+  | { status: 'unavailable' }
+  | { status: 'unsupported'; latest: string }
+  | { status: 'no_asset'; latest: string; wanted: string };
+
 export interface ApkArtifact { arch: string; size: number; }
 export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 
@@ -520,7 +530,7 @@ export class Api {
   static listPinnedGroup(groupId: string): Promise<Message[]> {
     return invoke('list_pinned_group', { groupId });
   }
-  static checkUpdate(): Promise<UpdateInfo | null> {
+  static checkUpdate(): Promise<CheckResult> {
     return invoke('check_update');
   }
   static updateInstallsItself(): Promise<boolean> {

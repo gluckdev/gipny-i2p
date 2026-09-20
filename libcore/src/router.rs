@@ -363,21 +363,15 @@ impl RouterHandle {
         http_proxy_port: Option<u16>,
         progress: Option<BootProgress>,
     ) -> Result<Self> {
-        let mut handle = Self::attach_prepared(sam_port, http_proxy_port).await;
+        let mut handle = Self { child: None, sam_port, http_proxy_port: None, router_dir: None };
         handle.await_ready(&progress).await?;
+        // Only now ask about the proxy. The router binds its listeners as it
+        // starts, and this used to be asked *before* the wait for SAM — so on
+        // a phone, where the service and the app race each other, a port that
+        // was simply not bound yet disabled updates for the whole run, with
+        // nothing on screen but "автообновление недоступно".
+        handle.http_proxy_port = probe_proxy(http_proxy_port).await;
         Ok(handle)
-    }
-
-    async fn attach_prepared(sam_port: u16, http_proxy_port: Option<u16>) -> Self {
-        let http_proxy_port = match http_proxy_port {
-            Some(port) if TcpStream::connect(("127.0.0.1", port)).await.is_ok() => Some(port),
-            Some(port) => {
-                eprintln!("[i2p] no HTTP proxy on {port}; updates are unavailable this run");
-                None
-            }
-            None => None,
-        };
-        Self { child: None, sam_port, http_proxy_port, router_dir: None }
     }
 
     /// Attach, and use `http_proxy_port` for anything that needs plain HTTP
@@ -493,6 +487,21 @@ enum Previous {
     Serving { sam_port: u16, http_proxy_port: Option<u16> },
     /// Holds the data directory but does not answer: has to go.
     Stuck { pid: u32 },
+}
+
+/// Is the HTTP proxy there? Asked a few times over several seconds: the
+/// router opens SAM and its other listeners at slightly different moments,
+/// and a single "connection refused" is not evidence of absence.
+async fn probe_proxy(port: Option<u16>) -> Option<u16> {
+    let port = port?;
+    for _ in 0..10 {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return Some(port);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    eprintln!("[i2p] no HTTP proxy on {port}; updates are unavailable this run");
+    None
 }
 
 /// Ports of the router this process spawned, next to i2pd's own pid file.

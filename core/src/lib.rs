@@ -1782,14 +1782,25 @@ async fn update_configured(ctx: State<'_, AppCtx>) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn check_update(ctx: State<'_, AppCtx>) -> Result<Option<serde_json::Value>, String> {
+async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
+    use gipny_libcore::update::CheckOutcome;
     let core = core_of(&ctx).await?;
-    let info = core.check_and_emit_update().await.map_err(err)?;
-    Ok(info.map(|i| serde_json::json!({
-        "version": i.version,
-        "notes": i.notes,
-        "size": i.asset.size,
-    })))
+    // Every outcome is named. «Установлена последняя версия» used to be the
+    // answer to four different situations, one of which was "this install
+    // cannot be updated from here at all" — which is what a .deb was told
+    // while three releases went by without it.
+    Ok(match core.check_update_detailed().await.map_err(err)? {
+        CheckOutcome::Update(i) => serde_json::json!({
+            "status": "update",
+            "version": i.version,
+            "notes": i.notes,
+            "size": i.asset.size,
+        }),
+        CheckOutcome::UpToDate { latest } => serde_json::json!({ "status": "current", "latest": latest }),
+        CheckOutcome::NotConfigured => serde_json::json!({ "status": "unavailable" }),
+        CheckOutcome::UnsupportedInstall { latest } => serde_json::json!({ "status": "unsupported", "latest": latest }),
+        CheckOutcome::NoAsset { latest, wanted } => serde_json::json!({ "status": "no_asset", "latest": latest, "wanted": wanted }),
+    })
 }
 
 /// Whether this build can put an update in place itself. False on Android

@@ -162,6 +162,23 @@ fn webpki_tls() -> rustls::ClientConfig {
         .with_no_client_auth()
 }
 
+/// What a check found, with the four "nothing to do" cases kept apart so the
+/// interface can say which one it is.
+#[derive(Debug, Clone)]
+pub enum CheckOutcome {
+    Update(UpdateInfo),
+    /// No local HTTP proxy this run: there is no way to ask at all.
+    NotConfigured,
+    UpToDate { latest: String },
+    /// A newer version exists, but this install (macOS, a dev run) has no
+    /// file it could be updated from.
+    UnsupportedInstall { latest: String },
+    /// A newer version exists and this platform is supported, but that
+    /// release does not carry the file — a build that did not finish, or a
+    /// name that changed.
+    NoAsset { latest: String, wanted: String },
+}
+
 impl Updater {
     pub fn new(node: Arc<TorNode>, component: Component) -> Self {
         ensure_crypto_provider();
@@ -205,17 +222,38 @@ impl Updater {
     }
 
     /// `Some` when the latest release is newer than `current_version` and has
-    /// an asset for this component on this platform/arch.
+    /// an asset for this component on this platform/arch. The background loop
+    /// uses this; anything a person pressed a button for wants
+    /// [`Self::check_detailed`], which can say *why* there is nothing.
     pub async fn check(&self, current_version: &str) -> Result<Option<UpdateInfo>> {
-        if !self.is_configured() { return Ok(None); }
+        Ok(match self.check_detailed(current_version).await? {
+            CheckOutcome::Update(info) => Some(info),
+            _ => None,
+        })
+    }
+
+    /// The same check, with its reasons kept apart.
+    ///
+    /// Four different things used to come back as "no update": auto-update is
+    /// not available at all, you are on the newest version, this kind of
+    /// install cannot be updated from inside the app, and the release has no
+    /// file for this platform. The interface showed one sentence — «Установлена
+    /// последняя версия» — for all four, which is how a 0.4.5 deb spent three
+    /// releases telling its owner it was current.
+    pub async fn check_detailed(&self, current_version: &str) -> Result<CheckOutcome> {
+        if !self.is_configured() { return Ok(CheckOutcome::NotConfigured); }
         let release = self.latest_release().await?;
-        if !version_newer(&release.version, current_version) { return Ok(None); }
-        let Some((prefix, suffix)) = target_suffix(self.component) else { return Ok(None) };
+        if !version_newer(&release.version, current_version) {
+            return Ok(CheckOutcome::UpToDate { latest: release.version });
+        }
+        let Some((prefix, suffix)) = target_suffix(self.component) else {
+            return Ok(CheckOutcome::UnsupportedInstall { latest: release.version });
+        };
         let Some(asset) = release.assets.iter().find(|a| a.name.starts_with(prefix) && a.name.ends_with(suffix)).cloned() else {
-            return Ok(None);
+            return Ok(CheckOutcome::NoAsset { latest: release.version, wanted: format!("{prefix}<версия>{suffix}") });
         };
         let sha256 = find_sha256(self.client.as_ref().unwrap(), &release.assets, &asset.name).await;
-        Ok(Some(UpdateInfo { version: release.version, notes: release.notes, asset, sha256 }))
+        Ok(CheckOutcome::Update(UpdateInfo { version: release.version, notes: release.notes, asset, sha256 }))
     }
 
     /// Downloads `asset` into `dest_dir` (created if missing), verifying its
