@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -52,6 +52,18 @@ const INBOX_CAPACITY: usize = 64;
 const RECREATE_AFTER_FAILURES: u32 = 5;
 const RECREATE_COOLDOWN: Duration = Duration::from_secs(300);
 const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
+
+/// Hops in each tunnel, as i2p builds them by default and as this app has
+/// always asked for them.
+pub const DEFAULT_HOPS: u8 = 3;
+/// The shortest tunnel we will build.
+///
+/// Two, not one: a single hop is both our first and our last, so it learns our
+/// address and where the letter went in the same breath, and one stranger's
+/// notes are enough to undo us. Two keeps somebody in the middle who knows only
+/// half. The floor lives here rather than at the call site so no future caller
+/// can talk the transport below it by passing a smaller number.
+pub const MIN_HOPS: u8 = 2;
 
 /// Monotonic counter making each SAM session nickname unique, so a rebuilt
 /// session never collides (`DUPLICATED_ID`) with one the router hasn't dropped.
@@ -134,6 +146,14 @@ pub struct I2pNode {
     inbound: Arc<Mutex<mpsc::Receiver<Connection>>>,
     accept_task: Mutex<Option<JoinHandle<()>>>,
     created_at: Instant,
+    /// Hops each of our outbound tunnels is built with.
+    ///
+    /// This is our leg of the path and nobody else's: a letter leaves through
+    /// these hops and arrives through the inbound tunnel of the relay the
+    /// recipient collects from. Shortening it trades our own anonymity for
+    /// speed — the hop we pick learns both our address and where the letter
+    /// went — so it is only ever changed by an explicit, informed choice.
+    hops: AtomicU8,
     relay_fail_count: AtomicU32,
     last_recreate_at: Mutex<Option<Instant>>,
     recreate_lock: Mutex<()>,
@@ -201,7 +221,7 @@ impl I2pNode {
             .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?;
         note(&progress, "session", format!("destination = {}", short_addr(&address)));
 
-        let session = build_session(sam_port, &privkey).await?;
+        let session = build_session(sam_port, &privkey, DEFAULT_HOPS).await?;
         note(&progress, "session-done", "SAM session open");
         let session = Arc::new(Mutex::new(session));
 
@@ -219,6 +239,7 @@ impl I2pNode {
             inbound: Arc::new(Mutex::new(rx)),
             accept_task: Mutex::new(accept_task),
             created_at: Instant::now(),
+            hops: AtomicU8::new(DEFAULT_HOPS),
             relay_fail_count: AtomicU32::new(0),
             last_recreate_at: Mutex::new(None),
             recreate_lock: Mutex::new(()),
@@ -396,8 +417,45 @@ impl I2pNode {
     /// Rebuild the SAM session against the same persistent destination (the
     /// router keeps running). This is the i2p analogue of the old Tor client
     /// recreate — a fresh set of tunnels without changing our address.
+    /// How many hops our tunnels are built with right now.
+    pub fn hops(&self) -> u8 {
+        self.hops.load(Ordering::Relaxed)
+    }
+
+    /// Rebuild our tunnels at a different length.
+    ///
+    /// This is not a switch. i2p fixes tunnel length when the session is
+    /// created, and SAMv3 has no way to change it afterwards, so the session
+    /// has to be torn down and built again — tens of seconds of waiting, during
+    /// which nothing sends. The destination is kept, so nobody has to learn a
+    /// new address for us.
+    ///
+    /// On failure the old length is restored and the error returned: a caller
+    /// that asked for fewer hops and did not get them must not go on believing
+    /// it is faster, and one that asked to go back to three must not be left
+    /// thinking it is safe when it is not.
+    pub async fn set_hops(&self, hops: u8) -> Result<()> {
+        let hops = hops.clamp(MIN_HOPS, DEFAULT_HOPS);
+        let previous = self.hops.swap(hops, Ordering::Relaxed);
+        if previous == hops {
+            return Ok(());
+        }
+        eprintln!("[i2p] rebuilding tunnels: {previous} hops -> {hops}");
+        match self.recreate().await {
+            Ok(()) => {
+                eprintln!("[i2p] tunnels now {hops} hops");
+                Ok(())
+            }
+            Err(e) => {
+                self.hops.store(previous, Ordering::Relaxed);
+                eprintln!("[i2p] could not rebuild at {hops} hops, staying at {previous}: {e:?}");
+                Err(e)
+            }
+        }
+    }
+
     pub async fn recreate(&self) -> Result<()> {
-        let new_session = build_session(self.sam_port, self.privkey.as_str()).await?;
+        let new_session = build_session(self.sam_port, self.privkey.as_str(), self.hops()).await?;
 
         if let Some(old) = self.accept_task.lock().await.take() {
             old.abort();
@@ -411,7 +469,7 @@ impl I2pNode {
 }
 
 /// Build a SAMv3 STREAM session bound to our persistent destination.
-async fn build_session(sam_port: u16, privkey: &str) -> Result<Session<style::Stream>> {
+async fn build_session(sam_port: u16, privkey: &str, hops: u8) -> Result<Session<style::Stream>> {
     let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let opts = SessionOptions {
         nickname: format!("{NICKNAME}-{}-{}", std::process::id(), seq),
@@ -427,6 +485,10 @@ async fn build_session(sam_port: u16, privkey: &str) -> Result<Session<style::St
         // Payloads are already E2E-encrypted and padded to fixed buckets; SAM-level
         // gzip only burns CPU and would blur the uniform padding size classes.
         gzip: false,
+        // Our leg of the path. Longer is more anonymous and slower; the only
+        // thing that ever lowers it is a user who was told what it costs.
+        outbound_len: hops.clamp(MIN_HOPS, DEFAULT_HOPS) as usize,
+        inbound_len: hops.clamp(MIN_HOPS, DEFAULT_HOPS) as usize,
         ..Default::default()
     };
     Session::<style::Stream>::new(opts)

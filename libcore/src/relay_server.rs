@@ -22,7 +22,7 @@
 //! docs/relay-independence.md for what that does and does not cover.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -497,6 +497,13 @@ pub struct EphemeralRelay {
     address: String,
     store: Arc<MemStore>,
     tasks: Vec<JoinHandle<()>>,
+    /// Hops in this relay's inbound tunnels — the leg everyone writing to us
+    /// travels. Shared with the accept loop, which reads it every time it
+    /// opens a session.
+    hops: Arc<AtomicU8>,
+    /// Rung to make the accept loop drop the live session and open a new one
+    /// at whatever `hops` now says.
+    rebuild: Arc<tokio::sync::Notify>,
 }
 
 impl EphemeralRelay {
@@ -518,7 +525,9 @@ impl EphemeralRelay {
         // Kept in memory only, for rebuilding the session on the same address.
         // It is never written anywhere.
         let private_key = zeroize::Zeroizing::new(private_key);
-        let first = open_session(sam_port, &private_key).await?;
+        let hops = Arc::new(AtomicU8::new(crate::net::DEFAULT_HOPS));
+        let rebuild = Arc::new(tokio::sync::Notify::new());
+        let first = open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await?;
 
         let store = Arc::new(MemStore::new(limits));
         let connections: Connections = Arc::default();
@@ -531,6 +540,7 @@ impl EphemeralRelay {
             .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
         let accept = tokio::spawn({
             let store = store.clone();
+            let (hops, rebuild) = (hops.clone(), rebuild.clone());
             async move {
                 let mut session = Some(first);
                 let mut failures = 0u32;
@@ -538,7 +548,7 @@ impl EphemeralRelay {
                 loop {
                     let Some(live) = session.as_mut() else {
                         tokio::time::sleep(rebuild_backoff(failures)).await;
-                        match open_session(sam_port, &private_key).await {
+                        match open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await {
                             Ok(s) => session = Some(s),
                             Err(e) => {
                                 failures += 1;
@@ -569,6 +579,14 @@ impl EphemeralRelay {
                                 session = None;
                             }
                         },
+                        // A deliberate rebuild: the tunnel length changed. Drop
+                        // the session so the next turn opens one at the new
+                        // length, and clear the failure count — this is not a
+                        // failure, and it should not inherit anyone's backoff.
+                        () = rebuild.notified() => {
+                            failures = 0;
+                            session = None;
+                        }
                         // Reap finished clients so the set does not grow for the
                         // life of the relay.
                         Some(_) = clients.join_next(), if !clients.is_empty() => {}
@@ -589,12 +607,33 @@ impl EphemeralRelay {
             }
         });
 
-        Ok(Self { address, store, tasks: vec![accept, gc] })
+        Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild })
     }
 
     /// This relay's destination, for handing to whoever should deposit here.
     pub fn address(&self) -> &str {
         &self.address
+    }
+
+    /// Hops in the tunnels people reach this relay through.
+    pub fn hops(&self) -> u8 {
+        self.hops.load(Ordering::Relaxed)
+    }
+
+    /// Ask for the tunnels to be rebuilt at a different length.
+    ///
+    /// Returns immediately; the accept loop drops its session and opens a new
+    /// one at the next turn. A published destination has to build tunnels and
+    /// republish its LeaseSet before anyone can find it again, so this relay is
+    /// unreachable for a minute or two afterwards — letters sent meanwhile wait
+    /// at their senders and arrive when it is back.
+    pub fn set_hops(&self, hops: u8) {
+        let hops = hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS);
+        if self.hops.swap(hops, Ordering::Relaxed) == hops {
+            return;
+        }
+        eprintln!("[relay-server] rebuilding inbound tunnels at {hops} hops");
+        self.rebuild.notify_one();
     }
 
     pub fn stats(&self) -> StoreStats {
@@ -605,7 +644,7 @@ impl EphemeralRelay {
 /// A publishing STREAM session on `private_key`, under a nickname no other
 /// session on the router has: IDs are router-wide, and a rebuild can race the
 /// router's teardown of the session it replaces.
-async fn open_session(sam_port: u16, private_key: &str) -> Result<Session<style::Stream>, NetError> {
+async fn open_session(sam_port: u16, private_key: &str, hops: u8) -> Result<Session<style::Stream>, NetError> {
     let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let opts = SessionOptions {
         nickname: format!("gipny-relay-{}-{}", std::process::id(), seq),
@@ -614,6 +653,10 @@ async fn open_session(sam_port: u16, private_key: &str) -> Result<Session<style:
         publish: true,
         // Payloads are E2E-encrypted and padded to size buckets already.
         gzip: false,
+        // The leg everyone writing to us travels. Ours to shorten, and ours
+        // alone to pay for if we do.
+        inbound_len: hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS) as usize,
+        outbound_len: hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS) as usize,
         ..Default::default()
     };
     Session::<style::Stream>::new(opts)

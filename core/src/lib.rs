@@ -193,7 +193,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle, qr_svg,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
-            get_relay_info, get_dht_status, set_relay_mode, get_ui_data, set_ui_data, list_unreachable_contacts,
+            get_relay_info, get_dht_status, link_stats, set_lane, set_relay_mode, get_ui_data, set_ui_data, list_unreachable_contacts,
             get_attachment_privacy, set_attachment_privacy,
             update_configured,
             get_router_settings, set_router_settings,
@@ -823,6 +823,26 @@ async fn get_relay_info(ctx: State<'_, AppCtx>) -> Result<crate::core::RelayInfo
 #[tauri::command]
 async fn get_dht_status(ctx: State<'_, AppCtx>) -> Result<gipny_libcore::dht_client::DhtStatus, String> {
     Ok(core_of(&ctx).await?.dht_status())
+}
+
+/// The channel to one contact, for the readout above the chat.
+#[tauri::command]
+async fn link_stats(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<crate::core::LinkStats, String> {
+    Ok(core_of(&ctx).await?.link_stats(contact_id).await)
+}
+
+/// Trade anonymity for speed, or give it back.
+///
+/// Slow on purpose: tunnels are rebuilt, which takes tens of seconds, and the
+/// interface waits on it rather than pretending the change was instant.
+#[tauri::command]
+async fn set_lane(lane: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let lane = match lane.as_str() {
+        "normal" => crate::core::Lane::Normal,
+        "fast" => crate::core::Lane::Fast,
+        other => return Err(format!("unknown lane {other}")),
+    };
+    core_of(&ctx).await?.set_lane(lane).await.map_err(err)
 }
 
 #[tauri::command]

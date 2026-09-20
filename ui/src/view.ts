@@ -73,6 +73,16 @@ export function fmtDate(ts: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** A duration, in the unit a person would say it in.
+ *
+ * Milliseconds while they stay small enough to mean something, then seconds:
+ * «4200 мс» reads as a number, «4.2 с» reads as a wait. */
+export function fmtMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} мс`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)} с`;
+  return `${Math.round(ms / 1000)} с`;
+}
+
 export function fmtFp(hex: string): string {
   return (hex.match(/.{1,4}/g) ?? []).join(' ').toUpperCase();
 }
