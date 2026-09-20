@@ -178,6 +178,7 @@
 
 | Версия | Про что она | Заметки |
 |---|---|---|
+| [0.4.10](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.10) | Туннели строятся, пока набирается пароль; «в сети» больше не выдумывается; обновления доходят до Android | [0.4.10.md](docs/releases/0.4.10.md) |
 | [0.4.9](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.9) | Измеренное состояние канала над чатом; «кокаин» внутри «кофеина» — короче путь и без выравнивания размера | [0.4.9.md](docs/releases/0.4.9.md) |
 | [0.4.8](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.8) | «Назад» на Android прячет приложение, а не роняет его вместе с роутером | [0.4.8.md](docs/releases/0.4.8.md) |
 | [0.4.7](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.4.7) | Android больше не падает на проверке обновлений; обновление нельзя подменить чужим корневым сертификатом | [0.4.7.md](docs/releases/0.4.7.md) |
