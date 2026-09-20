@@ -23,6 +23,43 @@ struct AppCtx {
     profile: Mutex<Option<String>>,
     vault: Mutex<Option<Arc<Vault>>>,
     core: Mutex<Option<Arc<Core>>>,
+    /// The i2p node built ahead of the password, or being built right now.
+    ///
+    /// Nothing in the transport needs the vault: the destination is ephemeral
+    /// and the identity the relay routes by lives elsewhere. So the minutes
+    /// i2p takes are spent while the unlock screen is on, not after it.
+    prewarm: Mutex<Option<Prewarm>>,
+}
+
+/// A node started before any profile was opened, held for the profile it was
+/// started for. Exactly one of these exists at a time: a router left running
+/// beside the one `boot` spawns would be adopted through `previous_router`,
+/// and then killed under the running core when this slot was cleared.
+enum Prewarm {
+    Building {
+        profile: String,
+        settings: gipny_libcore::router::RouterSettings,
+        task: tokio::task::JoinHandle<Result<Arc<I2pNode>, String>>,
+    },
+    Ready {
+        profile: String,
+        settings: gipny_libcore::router::RouterSettings,
+        node: Arc<I2pNode>,
+    },
+}
+
+impl Prewarm {
+    fn profile(&self) -> &str {
+        match self {
+            Self::Building { profile, .. } | Self::Ready { profile, .. } => profile,
+        }
+    }
+
+    fn settings(&self) -> gipny_libcore::router::RouterSettings {
+        match self {
+            Self::Building { settings, .. } | Self::Ready { settings, .. } => *settings,
+        }
+    }
 }
 
 /// Where the level lives. Not a profile setting: capture starts before any
@@ -171,6 +208,7 @@ pub fn run() {
         profile: Mutex::new(None),
         vault: Mutex::new(None),
         core: Mutex::new(None),
+        prewarm: Mutex::new(None),
     };
     let builder = tauri::Builder::default();
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -187,7 +225,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(ctx)
         .invoke_handler(tauri::generate_handler![
-            list_profiles, delete_profile,
+            list_profiles, delete_profile, prewarm_network, prewarm_status,
             vault_status, vault_create, vault_unlock, vault_lock, verify_passphrase,
             change_passphrase, set_duress, set_max_attempts,
             my_card, my_onion, my_b32, my_fingerprint, my_bundle, qr_svg,
@@ -607,6 +645,186 @@ fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
     })
 }
 
+/// Point the transport at the bundled i2pd shipped as a Tauri resource.
+///
+/// `resource_dir()` is authoritative: the deb and AppImage put resources under
+/// `usr/lib/<product>/resources/`, which router.rs's relative probing does not
+/// reach. On Android the router is started in-process by the foreground
+/// service, so this is a no-op there.
+///
+/// Called before *any* router start — the prewarm below runs before `boot`,
+/// and a prewarm that could not find the binary would quietly do nothing on
+/// exactly the installs people use.
+fn resolve_bundled_router(app: &AppHandle) {
+    #[cfg(not(target_os = "android"))]
+    if std::env::var_os("GIPNY_I2P_BIN").is_none() {
+        use tauri::Manager;
+        if let Ok(res) = app.path().resource_dir() {
+            let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
+            for cand in [res.join(name), res.join("resources").join(name)] {
+                if cand.exists() {
+                    std::env::set_var("GIPNY_I2P_BIN", cand);
+                    break;
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "android")]
+    let _ = app;
+}
+
+/// Router knobs live in the encrypted database, which is unreadable until the
+/// password is typed — and the router has to start before that. So the last
+/// values used are left beside the profile in the clear.
+///
+/// Nothing new is disclosed: the router's own directory next to this file
+/// holds `i2pd.log`, which says far more about how it was started. The file is
+/// inside the profile directory, so a duress wipe takes it with everything else.
+fn router_hint_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("router.hint")
+}
+
+fn read_router_hint(dir: &std::path::Path) -> gipny_libcore::router::RouterSettings {
+    let raw = std::fs::read_to_string(router_hint_path(dir)).unwrap_or_default();
+    let mut it = raw.split_whitespace();
+    gipny_libcore::router::RouterSettings {
+        transit: gipny_libcore::router::TransitProfile::parse(it.next().unwrap_or_default()),
+        yggdrasil: gipny_libcore::router::Yggdrasil::parse(it.next().unwrap_or_default()),
+    }
+}
+
+fn write_router_hint(dir: &std::path::Path, s: gipny_libcore::router::RouterSettings) {
+    let _ = std::fs::write(
+        router_hint_path(dir),
+        format!("{} {}\n", s.transit.as_str(), s.yggdrasil.as_str()),
+    );
+}
+
+/// Whether a node started for `have` can be handed to a profile that wants
+/// `want`. On Android the settings are the foreground service's business and
+/// ours are ignored outright, so there is nothing to compare.
+fn router_settings_match(
+    have: gipny_libcore::router::RouterSettings,
+    want: gipny_libcore::router::RouterSettings,
+) -> bool {
+    if cfg!(target_os = "android") { return true; }
+    have == want
+}
+
+/// Start building i2p tunnels now, for the profile about to be opened.
+///
+/// The interface calls this as soon as it knows which profile that is — on the
+/// unlock screen, and again after a logout — so the router, its tunnels and
+/// the SAM session are up by the time the password is typed. If the guess was
+/// wrong (another profile is picked), the node is dropped and a new one built.
+#[tauri::command]
+async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle) -> Result<(), String> {
+    let dir = profile_dir(&ctx, &profile)?;
+    if !Vault::exists(&dir) { return Err("no such profile".into()); }
+    // A profile is already open: it owns the router, leave it alone.
+    if ctx.core.lock().await.is_some() { return Ok(()); }
+    let settings = read_router_hint(&dir);
+
+    let mut slot = ctx.prewarm.lock().await;
+    if let Some(p) = slot.as_ref() {
+        if p.profile() == profile && router_settings_match(p.settings(), settings) {
+            return Ok(());
+        }
+    }
+    // Strictly take-then-drop: two live routers for one profile mean the
+    // second adopts the first through `previous_router`, and then dies with it.
+    if let Some(old) = slot.take() {
+        drop_prewarm(old).await;
+    }
+    resolve_bundled_router(&app);
+    let app2 = app.clone();
+    let task = tokio::spawn(async move {
+        I2pNode::start_with_progress(&dir, settings, Some(boot_progress(&app2)))
+            .await
+            .map(Arc::new)
+            .map_err(|e| format!("{e:?}"))
+    });
+    *slot = Some(Prewarm::Building { profile, settings, task });
+    Ok(())
+}
+
+/// What the unlock screen shows while it waits: `building`, `ready`, `off`.
+#[tauri::command]
+async fn prewarm_status(ctx: State<'_, AppCtx>) -> Result<&'static str, String> {
+    let mut slot = ctx.prewarm.lock().await;
+    // A finished build is only noticed when someone looks; do that here so the
+    // state this reports is the real one.
+    if let Some(Prewarm::Building { task, .. }) = slot.as_ref() {
+        if !task.is_finished() { return Ok("building"); }
+        let Some(Prewarm::Building { profile, settings, task }) = slot.take() else { unreachable!() };
+        match task.await {
+            Ok(Ok(node)) => { *slot = Some(Prewarm::Ready { profile, settings, node }); }
+            // A failed prewarm is not an error the person has to act on: the
+            // ordinary boot path will try again, out loud, after the password.
+            _ => return Ok("off"),
+        }
+    }
+    Ok(match slot.as_ref() {
+        Some(Prewarm::Ready { .. }) => "ready",
+        Some(Prewarm::Building { .. }) => "building",
+        None => "off",
+    })
+}
+
+/// Tear a prewarmed node down and wait for its router to actually be gone:
+/// i2pd locks its data directory, and the next one refuses to start while the
+/// lock is held ("Could not lock pid file").
+async fn drop_prewarm(p: Prewarm) {
+    match p {
+        Prewarm::Building { task, .. } => {
+            task.abort();
+            let _ = task.await;
+        }
+        Prewarm::Ready { node, .. } => {
+            node.shutdown().await;
+            drop(node);
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+}
+
+/// The prewarmed node, if it fits this profile. Anything else is torn down
+/// here, so the caller can safely start its own.
+async fn take_prewarmed(
+    ctx: &State<'_, AppCtx>, app: &AppHandle, profile: &str,
+    settings: gipny_libcore::router::RouterSettings,
+) -> Option<Arc<I2pNode>> {
+    let taken = ctx.prewarm.lock().await.take()?;
+    if taken.profile() != profile || !router_settings_match(taken.settings(), settings) {
+        boot_status(&app, "router", "active", if taken.profile() != profile {
+            "the router was started for another profile; restarting it"
+        } else {
+            "the router was started with other settings; restarting it"
+        });
+        drop_prewarm(taken).await;
+        return None;
+    }
+    let node = match taken {
+        Prewarm::Ready { node, .. } => node,
+        Prewarm::Building { task, .. } => {
+            // Still building: wait for it rather than start a second router.
+            // Its progress is already reaching the same boot screen.
+            match task.await {
+                Ok(Ok(node)) => node,
+                _ => {
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    return None;
+                }
+            }
+        }
+    };
+    // The screen's own listener may have attached after these stages went by.
+    boot_status(app, "router", "done", "router ready (started before unlocking)");
+    boot_status(app, "tunnels", "done", "tunnels built before unlocking");
+    boot_status(app, "session", "done", "SAM session open");
+    Some(node)
+}
+
 async fn boot(
     ctx: &State<'_, AppCtx>, app: AppHandle, vault: Arc<Vault>,
     pass: &str, profile: &str, dir: &std::path::Path,
@@ -641,26 +859,7 @@ async fn boot(
     };
     let db = Arc::new(gipny_libcore::db::Db::open(&dir.join(db_name), &mk).map_err(err)?);
     boot_status(&app, "vault", "done", format!("profile opened ({db_name})"));
-    // Point the transport at the bundled i2pd shipped as a Tauri resource. On
-    // desktop it's spawned as a child; on Android the router is started
-    // in-process by the foreground service, so this is a no-op there.
-    //
-    // resource_dir() is authoritative: the deb and AppImage put resources under
-    // usr/lib/<product>/resources/, which router.rs's relative probing does not
-    // reach. Resolving here means the bundled router is always found.
-    #[cfg(not(target_os = "android"))]
-    if std::env::var_os("GIPNY_I2P_BIN").is_none() {
-        use tauri::Manager;
-        if let Ok(res) = app.path().resource_dir() {
-            let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
-            for cand in [res.join(name), res.join("resources").join(name)] {
-                if cand.exists() {
-                    std::env::set_var("GIPNY_I2P_BIN", cand);
-                    break;
-                }
-            }
-        }
-    }
+    resolve_bundled_router(&app);
     // Router knobs are per profile and read once, here: i2pd takes them on its
     // command line and exposes no way to change them afterwards.
     let settings = gipny_libcore::router::RouterSettings {
@@ -677,17 +876,23 @@ async fn boot(
             .map(|v| gipny_libcore::router::Yggdrasil::parse(&v))
             .unwrap_or_default(),
     };
+    // So the next launch can start the router before the password (the vault
+    // this was just read from is unreadable at that point).
+    write_router_hint(dir, settings);
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let node = Arc::new(
-        I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
-            .await
-            .map_err(|e| {
-                boot_status(&app, "router", "failed", format!("{e:?}"));
-                err(e)
-            })?,
-    );
+    let node = match take_prewarmed(ctx, &app, profile, settings).await {
+        Some(node) => node,
+        None => Arc::new(
+            I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
+                .await
+                .map_err(|e| {
+                    boot_status(&app, "router", "failed", format!("{e:?}"));
+                    err(e)
+                })?,
+        ),
+    };
     let warning: Option<String> = None;
     boot_status(&app, "core", "active", "starting the messenger core");
     let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(|e| {
@@ -1565,6 +1770,13 @@ async fn set_router_settings(
     db.set_setting(SETTING_ROUTER_TRANSIT, transit.as_str().as_bytes()).map_err(err)?;
     let ygg = gipny_libcore::router::Yggdrasil::parse(&settings.yggdrasil);
     db.set_setting(SETTING_ROUTER_YGGDRASIL, ygg.as_str().as_bytes()).map_err(err)?;
+    // Keep the plaintext hint in step, or the next launch prewarms a router
+    // with the old knobs and then throws it away once the vault says otherwise.
+    if let Some(p) = ctx.profile.lock().await.clone() {
+        if let Ok(dir) = profile_dir(&ctx, &p) {
+            write_router_hint(&dir, gipny_libcore::router::RouterSettings { transit, yggdrasil: ygg });
+        }
+    }
     Ok(())
 }
 
@@ -1574,14 +1786,26 @@ async fn update_configured(ctx: State<'_, AppCtx>) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn check_update(ctx: State<'_, AppCtx>) -> Result<Option<serde_json::Value>, String> {
+async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
+    use gipny_libcore::update::CheckOutcome;
     let core = core_of(&ctx).await?;
-    let info = core.check_and_emit_update().await.map_err(err)?;
-    Ok(info.map(|i| serde_json::json!({
-        "version": i.version,
-        "notes": i.notes,
-        "size": i.asset.size,
-    })))
+    // Every outcome is named. «Установлена последняя версия» used to be the
+    // answer to four different situations, one of which was "this install
+    // cannot be updated from here at all" — which is what a .deb was told
+    // while three releases went by without it.
+    Ok(match core.check_update_detailed().await.map_err(err)? {
+        CheckOutcome::Update(i) => serde_json::json!({
+            "status": "update",
+            "version": i.version,
+            "notes": i.notes,
+            "size": i.asset.size,
+        }),
+        CheckOutcome::UpToDate { latest } => serde_json::json!({ "status": "current", "latest": latest }),
+        CheckOutcome::Dismissed { version } => serde_json::json!({ "status": "dismissed", "version": version }),
+        CheckOutcome::NotConfigured => serde_json::json!({ "status": "unavailable" }),
+        CheckOutcome::UnsupportedInstall { latest } => serde_json::json!({ "status": "unsupported", "latest": latest }),
+        CheckOutcome::NoAsset { latest, wanted } => serde_json::json!({ "status": "no_asset", "latest": latest, "wanted": wanted }),
+    })
 }
 
 /// Whether this build can put an update in place itself. False on Android

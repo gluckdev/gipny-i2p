@@ -81,6 +81,8 @@ export interface RelayInfo {
   /** The address saved for external mode, whether or not it is in use. */
   external: string;
   hosted: HostedRelayState;
+  /** How the attempt to reach our own relay is going. */
+  dial: { attempts: number; last_error: string | null };
 }
 
 /** A contact that put this client into agent mode, from `get_agent_mode`. */
@@ -203,6 +205,17 @@ export interface UpdateInfo {
   size: number;
 }
 
+/** What a check found. Every "nothing to install" case has its own name:
+ * one sentence for all of them is how a .deb install spent three releases
+ * being told it was current. */
+export type CheckResult =
+  | { status: 'update'; version: string; notes: string; size: number }
+  | { status: 'current'; latest: string }
+  | { status: 'dismissed'; version: string }
+  | { status: 'unavailable' }
+  | { status: 'unsupported'; latest: string }
+  | { status: 'no_asset'; latest: string; wanted: string };
+
 export interface ApkArtifact { arch: string; size: number; }
 export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 
@@ -218,8 +231,10 @@ export type CoreEvent =
   | { ContactUpdated: { contact_id: number } }
   | { ContactRequest: { contact_id: number } }
   | { GroupUpdated: { group_id: string } }
-  | { PeerOnline: { contact_id: number } }
-  | { PeerOffline: { contact_id: number } }
+  // The only presence signal: something arrived from them, written at
+  // `at_ms` by their clock. Mail held on a relay for hours arrives with an
+  // old stamp, which is exactly how "online" tells itself from "delivered".
+  | { PeerSeen: { contact_id: number; at_ms: number } }
   | { UpdateAvailable: { version: string; notes: string; size: number } }
   | { UpdateProgress: { downloaded: number; total: number; pct: number } }
   | { UpdateStaged: { version: string } }
@@ -240,6 +255,15 @@ export class Api {
   }
   static deleteProfile(profile: string): Promise<void> {
     return invoke('delete_profile', { profile });
+  }
+  /** Start building i2p tunnels for this profile now, before the password.
+   * Nothing in the transport needs the vault, so the wait can happen while
+   * the unlock screen is on rather than after it. */
+  static prewarmNetwork(profile: string): Promise<void> {
+    return invoke('prewarm_network', { profile });
+  }
+  static prewarmStatus(): Promise<'building' | 'ready' | 'off'> {
+    return invoke('prewarm_status');
   }
   static vaultStatus(profile: string): Promise<VaultStatus> {
     return invoke('vault_status', { profile });
@@ -507,7 +531,7 @@ export class Api {
   static listPinnedGroup(groupId: string): Promise<Message[]> {
     return invoke('list_pinned_group', { groupId });
   }
-  static checkUpdate(): Promise<UpdateInfo | null> {
+  static checkUpdate(): Promise<CheckResult> {
     return invoke('check_update');
   }
   static updateInstallsItself(): Promise<boolean> {

@@ -76,7 +76,7 @@ export class ChatView extends View {
         statusEl.className = 'chat-status online';
         return;
       }
-      const ls = store.contacts.get().find((c) => c.id === cid)?.last_seen ?? null;
+      const ls = store.lastSeen(cid);
       statusEl.className = 'chat-status';
       statusEl.textContent = ls != null ? `был(а) в сети ${fmtAgo(ls)}` : 'не в сети';
     };

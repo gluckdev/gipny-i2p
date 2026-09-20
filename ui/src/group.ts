@@ -1,4 +1,5 @@
 import { Api } from './api';
+import type { GroupMember } from './api';
 import type { Store } from './state';
 import { targetKey } from './state';
 import { h, busy, short } from './view';
@@ -9,6 +10,7 @@ export class GroupModal {
   el: HTMLElement;
   private unsub: (() => void) | null = null;
   private unsubContacts: (() => void) | null = null;
+  private unsubOnline: (() => void) | null = null;
 
   constructor(store: Store, app: App, groupId: string, close: () => void) {
     const g = store.groups.get().find((x) => x.id === groupId);
@@ -36,12 +38,22 @@ export class GroupModal {
       const members = store.groupMembers.get().get(groupId) ?? [];
       list.replaceChildren();
       countLabel.textContent = `members (${members.length})`;
+      // Members are contacts, and presence is per contact — so it is the same
+      // dot as everywhere else. Before, only "me" ever lit up, which made the
+      // whole column look like decoration.
+      const online = store.peerOnline.get();
+      const bySign = new Map(store.contacts.get().map((c) => [c.sign_pk, c.id]));
+      const isOnline = (m: GroupMember): boolean => {
+        if (m.is_self) return true;
+        const id = bySign.get(m.sign_pk);
+        return id != null && online.has(id);
+      };
       for (const m of members) {
         list.appendChild(h('div', {
           class: 'contact',
           style: { cursor: 'default' },
         },
-          h('div', { class: 'contact-status' + (m.is_self ? ' online' : '') }),
+          h('div', { class: 'contact-status' + (isOnline(m) ? ' online' : '') }),
           h('div', { class: 'contact-info' },
             h('div', { class: 'contact-name' }, m.name, m.is_self ? ' (me)' : ''),
             h('div', { class: 'contact-sub' }, short(m.onion)),
@@ -53,6 +65,8 @@ export class GroupModal {
 
     this.unsub = store.groupMembers.subscribe(renderMembers, true);
     this.unsubContacts = store.contacts.subscribe(() => renderPicker(), false);
+    // The dots go stale on their own, so redraw when presence moves.
+    this.unsubOnline = store.peerOnline.subscribe(() => renderMembers(), false);
 
     if (!store.groupMembers.get().has(groupId)) {
       Api.listGroupMembers(groupId).then((members) => {
@@ -81,6 +95,7 @@ export class GroupModal {
     const closeWrapped = () => {
       this.unsub?.(); this.unsub = null;
       this.unsubContacts?.(); this.unsubContacts = null;
+      this.unsubOnline?.(); this.unsubOnline = null;
       close();
     };
 

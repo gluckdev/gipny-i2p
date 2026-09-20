@@ -146,6 +146,10 @@ export class Store {
   scrollToMessage = new Signal<{ target: ChatTarget; messageId: number; nonce: number } | null>(null);
   sidebarCollapsed = new Signal<boolean>(typeof localStorage !== 'undefined' && localStorage.getItem('gipny:sidebar-collapsed') === '1');
   onlineTick = new Signal<number>(0);
+  /** i2p built ahead of the password: 'off' until asked for, then 'building'
+   * while the tunnels come up, 'ready' once the session is open. */
+  prewarm = new Signal<'off' | 'building' | 'ready'>('off');
+  private prewarmTimer: number | null = null;
 
   toggleSidebar(): void {
     const next = !this.sidebarCollapsed.get();
@@ -311,6 +315,36 @@ export class Store {
     await this.refreshProfiles();
     const list = this.profiles.get();
     this.view.set(list.length === 0 ? 'auth-create' : 'profile-select');
+    // With one profile there is nothing to guess: start its tunnels now, so
+    // the minutes i2p needs are spent while the password is being typed.
+    const only = list.length === 1 ? list[0] : undefined;
+    if (only) this.beginPrewarm(only);
+  }
+
+  /** Ask the core to build i2p for `profile` and follow it until it is up.
+   *
+   * Deliberately quiet: a prewarm that fails is not something to report — the
+   * ordinary unlock path starts the router again and says so out loud there. */
+  beginPrewarm(profile: string): void {
+    Api.prewarmNetwork(profile).catch(() => {});
+    if (this.prewarmTimer != null) return;
+    this.prewarm.set('building');
+    const poll = () => {
+      Api.prewarmStatus().then((s) => {
+        this.prewarm.set(s);
+        if (s !== 'building' && this.prewarmTimer != null) {
+          clearInterval(this.prewarmTimer);
+          this.prewarmTimer = null;
+        }
+      }).catch(() => {});
+    };
+    this.prewarmTimer = setInterval(poll, 2_000) as unknown as number;
+    poll();
+  }
+
+  private stopPrewarmWatch(): void {
+    if (this.prewarmTimer != null) { clearInterval(this.prewarmTimer); this.prewarmTimer = null; }
+    this.prewarm.set('off');
   }
 
   async refreshProfiles(): Promise<void> {
@@ -320,6 +354,7 @@ export class Store {
   selectProfileForUnlock(profile: string): void {
     this.currentProfile.set(profile);
     this.view.set('auth-unlock');
+    this.beginPrewarm(profile);
   }
 
   goToCreate(): void {
@@ -336,6 +371,8 @@ export class Store {
   /** Start listening for boot progress and show the loading screen. Called
    * before `vault_unlock`, because that call is where the minutes go. */
   async beginBoot(profile: string): Promise<void> {
+    // From here the boot screen reports the same stages first-hand.
+    this.stopPrewarmWatch();
     this.currentProfile.set(profile);
     this.bootSteps.set(freshBootSteps());
     this.bootLog.set([]);
@@ -523,7 +560,13 @@ export class Store {
 
   private installVisibilityHook(): void {
     this.windowVisible = !document.hidden && document.hasFocus();
-    const update = (): void => { this.windowVisible = !document.hidden && document.hasFocus(); };
+    const update = (): void => {
+      this.windowVisible = !document.hidden && document.hasFocus();
+      // A hidden window's timers are throttled, and on a phone they stop
+      // altogether — so the dots were whatever they had been at the moment
+      // the app went away. Recompute the instant it comes back.
+      if (this.windowVisible) this.recomputeOnline();
+    };
     document.addEventListener('visibilitychange', update);
     window.addEventListener('focus', update);
     window.addEventListener('blur', update);
@@ -552,12 +595,28 @@ export class Store {
     }
   }
 
+  /** Remember when this contact was last heard from. `ts` is when *they*
+   * wrote, not when it reached us — so an old letter arriving now moves the
+   * "был(а) в сети" line and nothing else. Only something written inside the
+   * window lights the dot. */
   private markPeerActive(contactId: number, ts: number): void {
     const cur = this.lastSeenMs.get(contactId) ?? 0;
     if (ts > cur) this.lastSeenMs.set(contactId, ts);
-    if (!this.peerOnline.get().has(contactId)) {
+    const fresh = ts > Date.now() - Store.ONLINE_WINDOW_MS;
+    if (fresh && !this.peerOnline.get().has(contactId)) {
       this.peerOnline.update((s) => { const n = new Set(s); n.add(contactId); return n; });
     }
+  }
+
+  /** When this contact was last heard from, live or stored — whichever is
+   * later. The database copy only moves when a contact is refreshed, so on
+   * its own it lags behind what we have just heard. */
+  lastSeen(contactId: number): number | null {
+    const live = this.lastSeenMs.get(contactId) ?? null;
+    const stored = this.contacts.get().find((c) => c.id === contactId)?.last_seen ?? null;
+    if (live == null) return stored;
+    if (stored == null) return live;
+    return Math.max(live, stored);
   }
 
   private recomputeOnline(): void {
@@ -577,6 +636,7 @@ export class Store {
   }
 
   async lock(): Promise<void> {
+    const wasProfile = this.currentProfile.get();
     this.stopWatchdog();
     this.unsubEvents?.();
     this.unsubEvents = null;
@@ -613,6 +673,10 @@ export class Store {
     this.updateReadyPath.set(null);
     this.updateError.set(null);
     await this.cancelToProfileSelect();
+    // Locking killed the router with the session that held it. Start the next
+    // one now: signing back in is the case where the wait is least expected.
+    this.stopPrewarmWatch();
+    if (wasProfile) this.beginPrewarm(wasProfile);
   }
 
   async deleteProfile(profile: string): Promise<void> {
@@ -630,8 +694,11 @@ export class Store {
     this.groups.set(groups);
     this.muted.set(new Set(mutedList));
     this.agentMode.set(agentMode);
+    // Merge, never overwrite: this runs on every contact change, and a plain
+    // `set` put the stored timestamp back over one we had just heard live,
+    // flipping a contact who was typing at that moment to "не в сети".
     for (const c of contacts) {
-      if (c.last_seen != null) this.lastSeenMs.set(c.id, c.last_seen);
+      if (c.last_seen != null) this.markPeerActive(c.id, c.last_seen);
     }
     this.recomputeOnline();
     const unread = new Map<string, number>();
@@ -975,12 +1042,10 @@ export class Store {
       if (!target) return;
       const key = targetKey(target);
       this.bumpChatOrder(target, m.sent_at);
-      if (target.kind === 'contact') {
-        this.markPeerActive(target.id, Date.now());
-      } else if (m.sender_sign_pk) {
-        const sc = this.contacts.get().find((c) => c.sign_pk === m.sender_sign_pk);
-        if (sc) this.markPeerActive(sc.id, Date.now());
-      }
+      // Presence comes from `PeerSeen`, which carries when the letter was
+      // written. Stamping `Date.now()` here lit up every contact whose mail
+      // had been waiting on the relay — a whole list "в сети" after each
+      // reconnect, none of whom were.
       this.loadMessages(target);
       const selected = this.selectedChat.get();
       const isActiveChat = sameTarget(selected, target);
@@ -1039,7 +1104,6 @@ export class Store {
       for (const b of bumps) this.bumpChatOrder(b.target, b.ts);
     } else if ('MessageDelivered' in e) {
       const id = e.MessageDelivered.message_id;
-      const activeContacts: number[] = [];
       this.messages.update((m) => {
         const n = new Map(m);
         for (const [k, list] of n) {
@@ -1048,27 +1112,21 @@ export class Store {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, sent: true, delivered: true };
             n.set(k, copy);
-            const cid = copy[idx]!.contact_id;
-            if (cid != null) activeContacts.push(cid);
           }
         }
         return n;
       });
-      for (const cid of activeContacts) this.markPeerActive(cid, Date.now());
+      // Presence is not inferred here any more: the acknowledgement that
+      // produced this event already arrived as `PeerSeen`, with the peer's
+      // own timestamp and without depending on the chat being open.
     } else if ('Typing' in e) {
       const { contact_id, group_id, sender_sign_pk, typing } = e.Typing;
       const target: ChatTarget | null = group_id != null
         ? { kind: 'group', id: group_id }
         : contact_id != null ? { kind: 'contact', id: contact_id } : null;
       if (target) {
-        if (typing) {
-          if (target.kind === 'contact') {
-            this.markPeerActive(target.id, Date.now());
-          } else if (sender_sign_pk) {
-            const sc = this.contacts.get().find((c) => c.sign_pk === sender_sign_pk);
-            if (sc) this.markPeerActive(sc.id, Date.now());
-          }
-        }
+        // Presence, again, comes from `PeerSeen` — a typing flag reaches it
+        // like everything else.
         const key = targetKey(target);
         if (typing) {
           this.typing.update((m) => {
@@ -1164,10 +1222,10 @@ export class Store {
       Api.listGroupMembers(gid).then((members) => {
         this.groupMembers.update((m) => { const n = new Map(m); n.set(gid, members); return n; });
       }).catch(() => {});
-    } else if ('PeerOnline' in e) {
-      this.peerOnline.update((s) => { const n = new Set(s); n.add(e.PeerOnline.contact_id); return n; });
-    } else if ('PeerOffline' in e) {
-      this.peerOnline.update((s) => { const n = new Set(s); n.delete(e.PeerOffline.contact_id); return n; });
+    } else if ('PeerSeen' in e) {
+      const { contact_id, at_ms } = e.PeerSeen;
+      this.markPeerActive(contact_id, at_ms);
+      this.recomputeOnline();
     } else if ('UpdateAvailable' in e) {
       // Only fires when auto-update is off — the manual install prompt.
       this.updateAvailable.set(e.UpdateAvailable);

@@ -207,6 +207,16 @@ a:hover { text-decoration: underline; }
   letter-spacing: 0.02em;
 }
 .auth .ok { color: var(--phosphor); }
+/* What the network is doing while the password is being typed. Dim on
+   purpose: it is news about the wait, not something to act on. */
+.auth-net {
+  color: var(--text-dim);
+  font-size: 11px;
+  min-height: 14px;
+  margin-top: 8px;
+  letter-spacing: 0.02em;
+}
+.auth-net.ok { color: var(--phosphor); }
 
 .field { margin-bottom: 14px; }
 .field label {
