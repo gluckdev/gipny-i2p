@@ -796,7 +796,11 @@ async fn take_prewarmed(
 ) -> Option<Arc<I2pNode>> {
     let taken = ctx.prewarm.lock().await.take()?;
     if taken.profile() != profile || !router_settings_match(taken.settings(), settings) {
-        boot_status(&app, "router", "active", "the router was started with other settings; restarting it");
+        boot_status(&app, "router", "active", if taken.profile() != profile {
+            "the router was started for another profile; restarting it"
+        } else {
+            "the router was started with other settings; restarting it"
+        });
         drop_prewarm(taken).await;
         return None;
     }
@@ -1797,6 +1801,7 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, Strin
             "size": i.asset.size,
         }),
         CheckOutcome::UpToDate { latest } => serde_json::json!({ "status": "current", "latest": latest }),
+        CheckOutcome::Dismissed { version } => serde_json::json!({ "status": "dismissed", "version": version }),
         CheckOutcome::NotConfigured => serde_json::json!({ "status": "unavailable" }),
         CheckOutcome::UnsupportedInstall { latest } => serde_json::json!({ "status": "unsupported", "latest": latest }),
         CheckOutcome::NoAsset { latest, wanted } => serde_json::json!({ "status": "no_asset", "latest": latest, "wanted": wanted }),

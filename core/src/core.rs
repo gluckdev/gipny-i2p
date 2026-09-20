@@ -51,6 +51,11 @@ const CONTACT_UNREACHABLE_AFTER: Duration = Duration::from_secs(600);
 /// retry queue, or a clock that moved. Ten minutes is already far past the
 /// worst honest case (a cold router rebuilding tunnels).
 const MAX_PLAUSIBLE_RTT_MS: i64 = 600_000;
+/// How far a peer's clock may differ from ours before we stop calling their
+/// letter "just now". Generous on purpose: phones and laptops that have been
+/// asleep drift by minutes, and the alternative is a contact who is online
+/// and never shown as such.
+const LIVE_SKEW_MS: i64 = 5 * 60_000;
 const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// Default on: absent or anything but `"0"` means auto-update stays on,
 /// matching `attachment_privacy`'s convention.
@@ -1460,9 +1465,9 @@ impl Core {
         };
         if let Ok(Some(v)) = self.db.get_setting(SETTING_DISMISSED_UPDATE) {
             if String::from_utf8_lossy(&v) == info.version {
-                // Already offered and put aside. Not "up to date", and the
-                // interface should not claim it is.
-                return Ok(CheckOutcome::UpToDate { latest: info.version });
+                // Already offered and put aside — which is not the same as
+                // being current, and the interface no longer says it is.
+                return Ok(CheckOutcome::Dismissed { version: info.version });
             }
         }
         *self.pending_update.lock().await = Some(info.clone());
@@ -2316,7 +2321,13 @@ impl Core {
     /// Their clock is not ours, so a timestamp from the future is pulled back
     /// to now: a peer running fast must not be permanently "online".
     fn note_peer_seen(self: &Arc<Self>, contact_id: i64, sent_at: i64) {
-        let at = sent_at.min(now_ms());
+        let now = now_ms();
+        // Their clock is not ours. Anything written within the last few
+        // minutes is treated as "just now": a peer whose clock runs a minute
+        // slow would otherwise never light up at all, with nothing on screen
+        // to explain it. Beyond that the letter's own time stands — mail off
+        // a relay is hours old, and that is the case worth telling apart.
+        let at = if (now - sent_at).abs() < LIVE_SKEW_MS { now } else { sent_at.min(now) };
         let _ = self.db.note_last_seen(contact_id, at);
         let _ = self.events.try_send(CoreEvent::PeerSeen { contact_id, at_ms: at });
     }

@@ -144,6 +144,8 @@ export class SettingsModal {
                         store.showToast(
                           res.status === 'current'
                             ? `Установлена последняя версия (${res.latest})`
+                            : res.status === 'dismissed'
+                            ? `Версия ${res.version} уже предлагалась и отложена — она ждёт в разделе выше`
                             : res.status === 'unavailable'
                               ? 'Спросить не у кого: в этом запуске нет выхода в сеть для проверки'
                               : res.status === 'unsupported'

@@ -211,6 +211,7 @@ export interface UpdateInfo {
 export type CheckResult =
   | { status: 'update'; version: string; notes: string; size: number }
   | { status: 'current'; latest: string }
+  | { status: 'dismissed'; version: string }
   | { status: 'unavailable' }
   | { status: 'unsupported'; latest: string }
   | { status: 'no_asset'; latest: string; wanted: string };

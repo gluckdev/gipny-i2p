@@ -170,6 +170,9 @@ pub enum CheckOutcome {
     /// No local HTTP proxy this run: there is no way to ask at all.
     NotConfigured,
     UpToDate { latest: String },
+    /// A newer version was already offered and the person chose «Позже».
+    /// Not the same as being current, and must not be reported as it.
+    Dismissed { version: String },
     /// A newer version exists, but this install (macOS, a dev run) has no
     /// file it could be updated from.
     UnsupportedInstall { latest: String },

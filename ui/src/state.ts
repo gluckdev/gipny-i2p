@@ -608,6 +608,17 @@ export class Store {
     }
   }
 
+  /** When this contact was last heard from, live or stored — whichever is
+   * later. The database copy only moves when a contact is refreshed, so on
+   * its own it lags behind what we have just heard. */
+  lastSeen(contactId: number): number | null {
+    const live = this.lastSeenMs.get(contactId) ?? null;
+    const stored = this.contacts.get().find((c) => c.id === contactId)?.last_seen ?? null;
+    if (live == null) return stored;
+    if (stored == null) return live;
+    return Math.max(live, stored);
+  }
+
   private recomputeOnline(): void {
     const cutoff = Date.now() - Store.ONLINE_WINDOW_MS;
     const next = new Set<number>();
