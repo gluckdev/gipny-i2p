@@ -1053,6 +1053,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acking_while_mail_keeps_coming_pushes_nothing_twice() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        let mut a = rig.login(&alice).await;
+        const N: u8 = 60;
+        let sender = tokio::spawn(async move {
+            for i in 0..N {
+                send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![i; 10] }).await.unwrap();
+                assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+            }
+        });
+        // Bob acks each as it comes, so every deposit races an Ack's sweep.
+        let mut got = Vec::new();
+        while let Ok(Ok(frame)) = tokio::time::timeout(Duration::from_millis(500), recv::<_, RelayToClient>(&mut b)).await {
+            if let RelayToClient::Incoming { id, .. } = frame {
+                got.push(id);
+                send(&mut b, &ClientToRelay::Ack { id }).await.unwrap();
+            }
+        }
+        sender.await.unwrap();
+        let mut unique = got.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), N as usize, "every letter came");
+        assert_eq!(got.len(), N as usize, "none came twice: {got:?}");
+    }
+
+    #[tokio::test]
     async fn a_push_while_a_frame_is_half_read_loses_nothing() {
         use tokio::io::AsyncWriteExt;
         let rig = Rig::new();
