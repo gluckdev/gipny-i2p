@@ -1,0 +1,12 @@
+[package]
+name = "i2p-embed"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The i2pd router inside the process: no SAM, no local port."
+
+[dependencies]
+tokio = { workspace = true }
+
+[build-dependencies]
+cc = "1"

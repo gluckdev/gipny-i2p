@@ -2253,6 +2253,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2p-embed"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "tokio",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"

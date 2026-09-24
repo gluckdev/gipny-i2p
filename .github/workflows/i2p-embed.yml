@@ -1,0 +1,54 @@
+name: i2p-embed
+
+# libi2pd compiled into the process through our C shim (i2p-embed/): no SAM,
+# no local port. Builds it against the distro's boost/OpenSSL and runs the
+# live test — a router in the test process, two destinations, an echo over the
+# real i2p network. Runs on every push that touches the crate, on any branch,
+# so the C++ is checked without a PR (docs/plans/2026-09-24-embedded-i2pd.md).
+
+on:
+  push:
+    paths: [ 'i2p-embed/**', '.github/workflows/i2p-embed.yml' ]
+  pull_request:
+    paths: [ 'i2p-embed/**', '.github/workflows/i2p-embed.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: i2p-embed (in-process router, live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-embed
+      - name: build
+        run: cargo build --release -p i2p-embed --tests
+      - name: live test over i2p
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
+        run: |
+          set -o pipefail
+          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo '### i2p-embed live test'
+            echo '```'
+            grep -aE "ready in|connected in|echo in|test result|panicked|error" live.txt | head -40 || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
