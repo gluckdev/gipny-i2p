@@ -232,8 +232,10 @@ export class Sidebar extends View {
     const target: ChatTarget = { kind: 'contact', id: c.id };
     const pinned = c.pinned_at != null;
     const online = this.store.peerOnline.get().has(c.id);
+    const lost = this.store.lostForDays(c);
     const sub = c.request === 'outgoing' ? 'Ждёт подтверждения'
       : online ? 'В сети'
+      : lost != null ? `Нет связи ${lost} дн.`
       : c.is_bot ? 'Бот'
       : c.trust === 1 ? 'Проверенный контакт'
       : 'Не в сети';

@@ -78,7 +78,11 @@ export class ChatView extends View {
       }
       const ls = store.lastSeen(cid);
       statusEl.className = 'chat-status';
-      statusEl.textContent = ls != null ? `был(а) в сети ${fmtAgo(ls)}` : 'не в сети';
+      const contact = store.contacts.get().find((c) => c.id === cid);
+      const lost = contact ? store.lostForDays(contact) : null;
+      statusEl.textContent = lost != null
+        ? `нет связи ${lost} дн.: письма ждут в очереди. Если собеседник переустанавливал приложение — попросите свежую карточку, или удалите контакт`
+        : ls != null ? `был(а) в сети ${fmtAgo(ls)}` : 'не в сети';
     };
     renderStatus();
 

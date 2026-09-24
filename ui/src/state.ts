@@ -179,6 +179,19 @@ export class Store {
   relayInfo = new Signal<RelayInfo | null>(null);
   /** Contacts whose relay has been silent for a while with mail waiting. */
   unreachable = new Signal<Set<number>>(new Set());
+
+  /**
+   * Days since we last heard from a contact we cannot reach now, once it is
+   * three or more; otherwise null. A contact gone that long is usually one
+   * whose app was reinstalled or whose relay address both sides lost, and the
+   * person should be told rather than left with an eternal "не в сети".
+   */
+  lostForDays(c: { id: number; last_seen: number | null; created_at: number }): number | null {
+    if (!this.unreachable.get().has(c.id)) return null;
+    const since = c.last_seen ?? c.created_at;
+    const days = Math.floor((Date.now() - since) / 86_400_000);
+    return days >= 3 ? days : null;
+  }
   /** Median round trip per contact, in milliseconds, as the core measures it.
    * Only ever a measurement: a contact we have not heard back from is absent
    * from the map rather than shown as zero. */
