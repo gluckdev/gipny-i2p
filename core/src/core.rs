@@ -107,7 +107,8 @@ enum Route {
 enum PeerRelay {
     Ready(mpsc::Sender<ClientToRelay>),
     Connecting,
-    Failed { until: Instant },
+    /// `failures` in a row: the next wait is [`peer_relay_backoff`] of it.
+    Failed { until: Instant, failures: u32 },
 }
 
 /// How long to wait for another person's relay to answer before giving up on
@@ -126,10 +127,15 @@ fn wipe_key(contact_id: i64) -> String {
 }
 
 const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
-/// How long to leave a peer relay alone after a failed dial. The send loop runs
-/// every few seconds; without this it would rebuild tunnels to a dead relay on
-/// every tick.
-const PEER_RELAY_RETRY_BACKOFF: Duration = Duration::from_secs(120);
+/// How long to leave a peer relay alone after `failures` failed dials in a
+/// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
+/// 2 min, and the first dial often fails only because the relay's LeaseSet
+/// has not reached the floodfills yet — a contact added a moment after their
+/// relay came up then waited two minutes for nothing (e2e run 36033917903:
+/// an echo held 85 s behind it).
+fn peer_relay_backoff(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
+}
 const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
@@ -2101,18 +2107,23 @@ impl Core {
         // So: hand back a connection if we have one, otherwise start one in the
         // background and skip this contact for now. The send loop comes round
         // every few seconds and the message is still queued.
-        {
+        let failures = {
             let mut pool = self.peer_relays.lock().await;
             match pool.get(theirs) {
                 Some(PeerRelay::Ready(tx)) if !tx.is_closed() => return Some(tx.clone()),
                 // A dead sender means the recv loop is on its way out; let it
                 // finish cleaning up rather than racing a second connection.
                 Some(PeerRelay::Ready(_)) | Some(PeerRelay::Connecting) => return None,
-                Some(PeerRelay::Failed { until }) if Instant::now() < *until => return None,
+                Some(PeerRelay::Failed { until, .. }) if Instant::now() < *until => return None,
                 _ => {}
             }
+            let failures = match pool.get(theirs) {
+                Some(PeerRelay::Failed { failures, .. }) => *failures,
+                _ => 0,
+            };
             pool.insert(theirs.to_string(), PeerRelay::Connecting);
-        }
+            failures
+        };
 
         let this = self.clone();
         let key = theirs.to_string();
@@ -2136,7 +2147,7 @@ impl Core {
                     // tunnel building.
                     this.peer_relays.lock().await.insert(
                         key.clone(),
-                        PeerRelay::Failed { until: Instant::now() + PEER_RELAY_RETRY_BACKOFF },
+                        PeerRelay::Failed { until: Instant::now() + peer_relay_backoff(failures), failures: failures + 1 },
                     );
                     return;
                 }

@@ -38,14 +38,22 @@ impl From<bincode::Error> for SessionError { fn from(_: bincode::Error) -> Self 
 enum PeerRelay {
     Ready(mpsc::Sender<ClientToRelay>),
     Connecting,
-    Failed { until: std::time::Instant },
+    /// `failures` in a row: the next wait is [`peer_relay_backoff`] of it.
+    Failed { until: std::time::Instant, failures: u32 },
 }
 
 /// Give up on a peer relay's dial after this long: nothing below has a timeout,
 /// and opening an i2p destination means building tunnels.
 const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-/// Leave a failed peer relay alone this long instead of redialing every tick.
-const PEER_RELAY_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long to leave a peer relay alone after `failures` failed dials in a
+/// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
+/// 2 min, and the first dial often fails only because the relay's LeaseSet
+/// has not reached the floodfills yet — a contact added a moment after their
+/// relay came up then waited two minutes for nothing (e2e run 36033917903:
+/// an echo held 85 s behind it).
+fn peer_relay_backoff(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
+}
 
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
@@ -1199,16 +1207,21 @@ impl SessionManager {
             // Never dial on this path — see Core::relay_for. It runs inside the
             // send loop, and an unreachable relay has no timeout of its own, so
             // blocking here would stall delivery to every other contact.
-            {
+            let failures = {
                 let mut pool = self.peer_relays.lock().await;
                 match pool.get(theirs) {
                     Some(PeerRelay::Ready(tx)) if !tx.is_closed() => return Some(tx.clone()),
                     Some(PeerRelay::Ready(_)) | Some(PeerRelay::Connecting) => return None,
-                    Some(PeerRelay::Failed { until }) if std::time::Instant::now() < *until => return None,
+                    Some(PeerRelay::Failed { until, .. }) if std::time::Instant::now() < *until => return None,
                     _ => {}
                 }
+                let failures = match pool.get(theirs) {
+                    Some(PeerRelay::Failed { failures, .. }) => *failures,
+                    _ => 0,
+                };
                 pool.insert(theirs.to_string(), PeerRelay::Connecting);
-            }
+                failures
+            };
 
             let this = self.clone();
             let key = theirs.to_string();
@@ -1230,7 +1243,8 @@ impl SessionManager {
                         this.peer_relays.lock().await.insert(
                             key.clone(),
                             PeerRelay::Failed {
-                                until: std::time::Instant::now() + PEER_RELAY_RETRY_BACKOFF,
+                                until: std::time::Instant::now() + peer_relay_backoff(failures),
+                                failures: failures + 1,
                             },
                         );
                         return;
