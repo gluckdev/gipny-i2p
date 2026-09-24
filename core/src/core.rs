@@ -586,6 +586,13 @@ impl Core {
         Ok((core, events_rx))
     }
 
+    /// Keep a task to stop with the rest at shutdown; finished ones go.
+    fn track(&self, handle: JoinHandle<()>) {
+        let mut v = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        v.retain(|h| !h.is_finished());
+        v.push(handle);
+    }
+
     pub fn shutdown(&self) {
         let mut v = self.tasks.lock().unwrap();
         for h in v.drain(..) { h.abort(); }
@@ -2176,13 +2183,16 @@ impl Core {
                     // first letter then waited for a dial of its own (e2e run 36042483601:
                     // 7 s of a 16 s echo).
                     if let Some(wait) = peer_relay_redial_after(failures) {
-                        let this = this.clone();
-                        tokio::spawn(async move {
+                        // Tracked, so it stops with the session instead of dialling on
+                        // behalf of an instance already shut down.
+                        let again = this.clone();
+                        let handle = tokio::spawn(async move {
                             tokio::time::sleep(wait).await;
-                            if let Ok(Some(c)) = this.db.get_contact(contact_id) {
-                                let _ = this.relay_for(&c).await;
+                            if let Ok(Some(c)) = again.db.get_contact(contact_id) {
+                                let _ = again.relay_for(&c).await;
                             }
                         });
+                        this.track(handle);
                     }
                     return;
                 }
