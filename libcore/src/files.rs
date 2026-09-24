@@ -24,9 +24,10 @@ pub const INLINE_MAX: usize = 128 * 1024;
 /// relay network alike.
 pub const CHUNK_SIZE: u32 = 192 * 1024;
 /// Parts of one file sent to one recipient and not yet acknowledged, resends
-/// included: what can wait on their relay at once (well inside its per
-/// recipient limit, so nobody else's mail is pushed out).
-pub const WINDOW: u32 = 16;
+/// included: what can wait on their relay at once — ~8 MiB, a third of the
+/// built-in relay's per-recipient limit, so nobody else's mail is pushed out
+/// — spread over the lanes (session.rs `FILE_LANES`).
+pub const WINDOW: u32 = 32;
 /// Largest file sent in parts.
 pub const MAX_FILE_BYTES: u64 = 2 << 30;
 /// A receiver acknowledges at least this often, in parts.
@@ -344,7 +345,7 @@ mod tests {
 
     #[test]
     fn the_window_and_resends() {
-        let total = 40;
+        let total = 3 * WINDOW;
         let mut s = Sending::default();
         let first = s.due(total);
         assert_eq!(first, (0..WINDOW).collect::<Vec<_>>());
@@ -354,11 +355,12 @@ mod tests {
         s.on_ack(&WireFileAck { file_id: [0; 16], received_up_to: 10, missing: vec![10, 12] });
         let next = s.due(total);
         assert_eq!(&next[..2], &[10, 12], "lost parts first");
-        assert_eq!(next[2..], (16..26).collect::<Vec<_>>()[..], "then new ones up to acked + WINDOW");
+        assert_eq!(next[2..], (WINDOW..10 + WINDOW).collect::<Vec<_>>()[..], "then new ones up to acked + WINDOW");
 
-        s.on_ack(&WireFileAck { file_id: [0; 16], received_up_to: 26, missing: vec![] });
+        // Nothing heard for long: what is out goes again, before anything new.
         s.rewind();
-        assert!(s.due(total).is_empty() || s.acked == 26);
+        let again = s.due(total);
+        assert_eq!(&again[..], &(10..10 + WINDOW).collect::<Vec<_>>()[..]);
         while !s.done(total) {
             let d = s.due(total);
             let top = d.iter().max().copied().unwrap_or(s.acked);
