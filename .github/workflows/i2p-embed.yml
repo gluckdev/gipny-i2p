@@ -310,7 +310,7 @@ jobs:
           {
             echo '### e2e on the in-process router: ${{ matrix.what }}'
             echo '```'
-            grep -aE "router ready|relays up|relay-connect|RTT|big file|stopping with|started again|SUCCESS|Error|panicked" harness.log | head -30 || echo 'no output'
+            grep -aE "router ready|relays up|relay-connect|RTT|big file|window to contact|stopping with|started again|SUCCESS|Error|panicked" harness.log | head -30 || echo 'no output'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

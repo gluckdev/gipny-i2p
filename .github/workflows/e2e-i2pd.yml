@@ -189,7 +189,7 @@ jobs:
               echo '_harness log not available or timing block missing_'
             fi
             echo ''
-            grep -aE 'big file:|another connection to our relay' e2e-logs/harness.log 2>/dev/null | head -8 || true
+            grep -aE 'big file:|window to contact|another connection to our relay' e2e-logs/harness.log 2>/dev/null | head -8 || true
             echo ''
             if grep -q 'Maximum resident' e2e-logs/harness.log 2>/dev/null; then
               echo '**Peak RSS (harness process):**'

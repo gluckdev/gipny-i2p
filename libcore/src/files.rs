@@ -23,15 +23,18 @@ pub const INLINE_MAX: usize = 128 * 1024;
 /// top, a part fits the 256 KiB padding bucket — through any relay and the
 /// relay network alike.
 pub const CHUNK_SIZE: u32 = 192 * 1024;
-/// Parts of one file sent to one recipient and not yet acknowledged, resends
-/// included: what can wait on their relay at once — ~8 MiB, a third of the
-/// built-in relay's per-recipient limit, so nobody else's mail is pushed out
-/// — spread over the lanes (session.rs `FILE_LANES`).
+/// Most parts in flight to one recipient, across files, resends included: what
+/// can wait on their relay at once — ~8 MiB, a third of the built-in relay's
+/// per-recipient limit, so nobody else's mail is pushed out. [`Flow`] keeps
+/// the window under it, as large as the path carries.
 pub const WINDOW: u32 = 32;
 /// Largest file sent in parts.
 pub const MAX_FILE_BYTES: u64 = 2 << 30;
-/// A receiver acknowledges at least this often, in parts.
-pub const ACK_EVERY: u32 = 4;
+/// A receiver acknowledges at least this often, in parts: every one. The
+/// sender's window is timed by the acks, and one every few left a small
+/// window (after a loss) waiting out the timeout for an ack that was due
+/// only at the fourth part. An ack is a ~1 KiB letter against a 192 KiB part.
+pub const ACK_EVERY: u32 = 1;
 /// Holes named in one acknowledgement at most.
 const MAX_MISSING: usize = 64;
 /// AEAD tag each sealed part carries.
@@ -200,11 +203,14 @@ impl Received {
     }
 
     pub fn ack(&self, file_id: [u8; 16]) -> WireFileAck {
-        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing() }
+        let seen_to = (0..self.total).rev().find(|&i| self.has(i)).map_or(0, |i| i + 1);
+        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing(), seen_to }
     }
 }
 
-/// The sender's view of one file to one recipient.
+/// The sender's view of one file to one recipient; what the database keeps.
+/// How much goes at once and when a part counts as lost is [`Flow`]'s, kept
+/// per recipient in memory.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sending {
     /// Parts `0..next` have gone out at least once.
@@ -216,38 +222,230 @@ pub struct Sending {
 }
 
 impl Sending {
-    /// Take in an acknowledgement.
-    pub fn on_ack(&mut self, ack: &WireFileAck) {
+    /// Take in an acknowledgement. A hole it names is lost only once its
+    /// part is past the timeout: over several lanes parts overtake each
+    /// other, and a hole is most often a part still on its way.
+    pub fn on_ack(&mut self, ack: &WireFileAck, flow: &mut Flow, now: i64) {
+        let held = |i: u32| i < ack.received_up_to || (i < ack.seen_to && !ack.missing.contains(&i));
+        flow.on_held(ack.file_id, held, now);
         self.acked = self.acked.max(ack.received_up_to.min(self.next));
+        let mut lost = false;
         for &m in &ack.missing {
-            if m >= self.acked && m < self.next && !self.resend.contains(&m) {
+            if m >= self.acked && m < self.next && !self.resend.contains(&m) && flow.overdue(ack.file_id, m, now) {
+                flow.unsent(ack.file_id, m);
                 self.resend.push(m);
+                lost = true;
             }
+        }
+        if lost {
+            flow.on_loss(now);
         }
         self.resend.retain(|&m| m >= self.acked);
         self.resend.sort_unstable();
     }
 
-    /// What to send now: lost parts first, then new ones, never more than
-    /// [`WINDOW`] past what is acknowledged.
-    pub fn due(&mut self, total: u32) -> Vec<u32> {
-        let mut out: Vec<u32> = std::mem::take(&mut self.resend);
-        let limit = self.acked.saturating_add(WINDOW).min(total);
-        while self.next < limit && out.len() < WINDOW as usize {
+    /// What to send now: lost parts first, then new ones, as many as the
+    /// recipient's window has room for. Each is counted in flight from now.
+    pub fn due(&mut self, file_id: [u8; 16], total: u32, flow: &mut Flow, now: i64) -> Vec<u32> {
+        // Outstanding from before this run: in flight from now on, but for
+        // what is to go again anyway.
+        let resend = self.resend.clone();
+        flow.adopt(file_id, (self.acked..self.next).filter(|i| !resend.contains(i)), now);
+        // The tail: nothing after it came, so no ack names it a hole.
+        let mut lost = false;
+        for i in flow.overdue_parts(file_id, now) {
+            // Lost: no longer in flight, it goes again below.
+            flow.unsent(file_id, i);
+            if i >= self.acked && i < self.next && !self.resend.contains(&i) {
+                self.resend.push(i);
+                lost = true;
+            }
+        }
+        if lost {
+            flow.on_loss(now);
+        }
+        self.resend.sort_unstable();
+        let room = flow.room() as usize;
+        let take = room.min(self.resend.len());
+        let mut out: Vec<u32> = self.resend.drain(..take).collect();
+        let resent = out.len();
+        let limit = self.acked.saturating_add(MAX_SPAN).min(total);
+        while out.len() < room && self.next < limit {
             out.push(self.next);
             self.next += 1;
+        }
+        for (k, &i) in out.iter().enumerate() {
+            flow.on_sent(file_id, i, now, k < resent);
         }
         out
     }
 
     /// Nothing heard for long, though the recipient is alive: send what is
     /// outstanding again.
-    pub fn rewind(&mut self) {
+    pub fn rewind(&mut self, file_id: [u8; 16], flow: &mut Flow) {
         self.resend = (self.acked..self.next).collect();
+        flow.forget(file_id);
     }
 
     pub fn done(&self, total: u32) -> bool {
         self.acked >= total
+    }
+}
+
+/// Furthest a sender runs ahead of the recipient's first missing part.
+const MAX_SPAN: u32 = 4 * WINDOW;
+/// Parts in flight to a recipient at the start: grown as acks come on time.
+const FLOW_START: f64 = 4.0;
+/// Bounds of the timeout after which a part in flight counts as lost.
+const RTO_MIN_MS: i64 = 10_000;
+const RTO_MAX_MS: i64 = 120_000;
+/// The timeout before a single round trip has been measured.
+const RTO_FIRST_MS: i64 = 30_000;
+
+/// How parts go to one recipient, across all files: a window like TCP's.
+/// It opens by one part per part acknowledged until the first loss, then by
+/// one per window; a loss halves it, once per round trip. The round trip is
+/// measured on parts sent once (not on resends, whose ack could answer
+/// either copy), and a part in flight longer than `srtt + 4·rttvar` is lost.
+/// Every recipient's path is its own: a slow phone on three hops and a relay
+/// on a server each get the window their path carries.
+#[derive(Clone, Debug)]
+pub struct Flow {
+    cwnd: f64,
+    ssthresh: f64,
+    srtt: Option<f64>,
+    rttvar: f64,
+    last_cut: i64,
+    /// Parts in flight: when each went, and whether it was a resend.
+    sent: std::collections::HashMap<([u8; 16], u32), (i64, bool)>,
+    /// Files seen since this started (see [`Sending::due`]).
+    known: std::collections::HashSet<[u8; 16]>,
+}
+
+impl Default for Flow {
+    fn default() -> Self {
+        Self {
+            cwnd: FLOW_START,
+            ssthresh: WINDOW as f64,
+            srtt: None,
+            rttvar: 0.0,
+            last_cut: i64::MIN / 2,
+            sent: Default::default(),
+            known: Default::default(),
+        }
+    }
+}
+
+impl Flow {
+    /// Parts that may be in flight now.
+    pub fn window(&self) -> u32 {
+        (self.cwnd.floor() as u32).clamp(1, WINDOW)
+    }
+
+    pub fn in_flight(&self) -> u32 {
+        self.sent.len() as u32
+    }
+
+    fn room(&self) -> u32 {
+        self.window().saturating_sub(self.in_flight())
+    }
+
+    /// After this long in flight a part counts as lost.
+    pub fn rto_ms(&self) -> i64 {
+        match self.srtt {
+            None => RTO_FIRST_MS,
+            Some(s) => ((s + 4.0 * self.rttvar) as i64).clamp(RTO_MIN_MS, RTO_MAX_MS),
+        }
+    }
+
+    pub fn srtt_ms(&self) -> Option<i64> {
+        self.srtt.map(|s| s as i64)
+    }
+
+    fn adopt(&mut self, file_id: [u8; 16], outstanding: impl Iterator<Item = u32>, now: i64) {
+        if self.known.insert(file_id) {
+            for i in outstanding {
+                self.sent.entry((file_id, i)).or_insert((now, true));
+            }
+        }
+    }
+
+    fn on_sent(&mut self, file_id: [u8; 16], index: u32, now: i64, resend: bool) {
+        self.known.insert(file_id);
+        self.sent.insert((file_id, index), (now, resend));
+    }
+
+    /// A part that was counted in flight did not go after all.
+    pub fn unsent(&mut self, file_id: [u8; 16], index: u32) {
+        self.sent.remove(&(file_id, index));
+    }
+
+    fn on_held(&mut self, file_id: [u8; 16], held: impl Fn(u32) -> bool, now: i64) {
+        let arrived: Vec<(u32, i64, bool)> = self.sent.iter()
+            .filter(|((f, i), _)| *f == file_id && held(*i))
+            .map(|((_, i), (t, r))| (*i, *t, *r))
+            .collect();
+        for (i, at, resend) in arrived {
+            self.sent.remove(&(file_id, i));
+            if !resend {
+                self.sample((now - at).max(0) as f64);
+            }
+            if self.cwnd < self.ssthresh {
+                self.cwnd += 1.0;
+            } else {
+                self.cwnd += 1.0 / self.cwnd;
+            }
+            self.cwnd = self.cwnd.min(WINDOW as f64);
+        }
+    }
+
+    fn sample(&mut self, rtt: f64) {
+        match self.srtt {
+            None => {
+                self.srtt = Some(rtt);
+                self.rttvar = rtt / 2.0;
+            }
+            Some(s) => {
+                self.rttvar = 0.75 * self.rttvar + 0.25 * (s - rtt).abs();
+                self.srtt = Some(0.875 * s + 0.125 * rtt);
+            }
+        }
+    }
+
+    fn overdue(&self, file_id: [u8; 16], index: u32, now: i64) -> bool {
+        match self.sent.get(&(file_id, index)) {
+            Some((at, _)) => now - at >= self.rto_ms(),
+            // Not in flight as far as this run knows: already given up on.
+            None => true,
+        }
+    }
+
+    fn overdue_parts(&self, file_id: [u8; 16], now: i64) -> Vec<u32> {
+        let rto = self.rto_ms();
+        let mut v: Vec<u32> = self.sent.iter()
+            .filter(|((f, _), (at, _))| *f == file_id && now - at >= rto)
+            .map(|((_, i), _)| *i)
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    fn on_loss(&mut self, now: i64) {
+        // Once per round trip: the parts of one burst lost together are one
+        // sign the path is full, not several.
+        let rtt = self.srtt.map(|s| s as i64).unwrap_or(RTO_FIRST_MS);
+        if now - self.last_cut < rtt {
+            return;
+        }
+        self.last_cut = now;
+        self.ssthresh = (self.cwnd / 2.0).max(2.0);
+        self.cwnd = self.ssthresh;
+    }
+
+    /// A file done, cancelled or rewound: its parts are no longer in flight.
+    pub fn forget(&mut self, file_id: [u8; 16]) {
+        self.sent.retain(|(f, _), _| *f != file_id);
+        self.known.remove(&file_id);
     }
 }
 
@@ -343,29 +541,151 @@ mod tests {
         assert_eq!(back, r);
     }
 
+    fn ack(file: [u8; 16], up_to: u32, missing: Vec<u32>, seen_to: u32) -> WireFileAck {
+        WireFileAck { file_id: file, received_up_to: up_to, missing, seen_to }
+    }
+
+    const F: [u8; 16] = [1; 16];
+
     #[test]
-    fn the_window_and_resends() {
-        let total = 3 * WINDOW;
-        let mut s = Sending::default();
-        let first = s.due(total);
-        assert_eq!(first, (0..WINDOW).collect::<Vec<_>>());
-        assert!(s.due(total).is_empty(), "nothing past the window");
+    fn an_ack_says_where_the_held_parts_end() {
+        let mut r = Received::new(10);
+        assert_eq!(r.ack(F).seen_to, 0);
+        r.mark(0);
+        r.mark(6);
+        assert_eq!(r.ack(F).seen_to, 7);
+    }
 
-        // 0..10 arrived, 10 and 12 lost, 11 arrived.
-        s.on_ack(&WireFileAck { file_id: [0; 16], received_up_to: 10, missing: vec![10, 12] });
-        let next = s.due(total);
-        assert_eq!(&next[..2], &[10, 12], "lost parts first");
-        assert_eq!(next[2..], (WINDOW..10 + WINDOW).collect::<Vec<_>>()[..], "then new ones up to acked + WINDOW");
+    #[test]
+    fn the_window_starts_small_and_opens_as_acks_come() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        let first = s.due(F, 1000, &mut flow, 0);
+        assert_eq!(first, vec![0, 1, 2, 3], "four to start with");
+        assert!(s.due(F, 1000, &mut flow, 100).is_empty(), "nothing past the window");
+        s.on_ack(&ack(F, 4, vec![], 4), &mut flow, 4_000);
+        assert_eq!(flow.window(), 8, "one more per part acknowledged");
+        assert_eq!(s.due(F, 1000, &mut flow, 4_000).len(), 8);
+        assert_eq!(flow.srtt_ms(), Some(4_000));
+    }
 
-        // Nothing heard for long: what is out goes again, before anything new.
-        s.rewind();
-        let again = s.due(total);
-        assert_eq!(&again[..], &(10..10 + WINDOW).collect::<Vec<_>>()[..]);
-        while !s.done(total) {
-            let d = s.due(total);
-            let top = d.iter().max().copied().unwrap_or(s.acked);
-            s.on_ack(&WireFileAck { file_id: [0; 16], received_up_to: top + 1, missing: vec![] });
-        }
+    #[test]
+    fn a_hole_is_a_part_on_its_way_until_its_timeout() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        s.due(F, 1000, &mut flow, 0);
+        // 1 overtaken by 2 and 3 on other lanes: named, but only just sent.
+        s.on_ack(&ack(F, 1, vec![1], 4), &mut flow, 2_000);
+        assert!(s.resend.is_empty(), "not resent while it may still come");
+        let w = flow.window();
+        // Past the timeout it is lost: resent first, and the window halves.
+        let late = 2_000 + flow.rto_ms();
+        s.on_ack(&ack(F, 1, vec![1], 4), &mut flow, late);
+        assert_eq!(s.resend, vec![1]);
+        assert_eq!(flow.window(), w / 2);
+        assert_eq!(s.due(F, 1000, &mut flow, late).first(), Some(&1));
+    }
+
+    #[test]
+    fn the_last_parts_time_out_though_no_ack_names_them() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        let total = 3;
+        assert_eq!(s.due(F, total, &mut flow, 0), vec![0, 1, 2]);
+        s.on_ack(&ack(F, 2, vec![], 2), &mut flow, 1_000);
+        assert!(s.due(F, total, &mut flow, 1_500).is_empty());
+        let late = 1_000 + flow.rto_ms() + 1;
+        let again = s.due(F, total, &mut flow, late);
+        assert_eq!(again, vec![2]);
+        s.on_ack(&ack(F, 3, vec![], 3), &mut flow, 60_000);
         assert!(s.done(total));
+        assert_eq!(flow.in_flight(), 0);
+    }
+
+    #[test]
+    fn one_window_for_all_files_to_a_recipient() {
+        let (mut a, mut b, mut flow) = (Sending::default(), Sending::default(), Flow::default());
+        let g = [2; 16];
+        let x = a.due(F, 100, &mut flow, 0).len();
+        let y = b.due(g, 100, &mut flow, 0).len();
+        assert_eq!(x + y, 4);
+        assert_eq!(y, 0, "the second waits for room");
+        a.on_ack(&ack(F, 2, vec![], 2), &mut flow, 3_000);
+        assert!(!b.due(g, 100, &mut flow, 3_000).is_empty());
+    }
+
+    #[test]
+    fn a_resent_part_does_not_measure_the_round_trip() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        s.due(F, 1, &mut flow, 0);
+        let late = flow.rto_ms();
+        assert_eq!(s.due(F, 1, &mut flow, late), vec![0]);
+        // Its ack could answer either copy.
+        s.on_ack(&ack(F, 1, vec![], 1), &mut flow, late + 500);
+        assert_eq!(flow.srtt_ms(), None);
+    }
+
+    #[test]
+    fn the_timeout_follows_the_measured_round_trip() {
+        let mut flow = Flow::default();
+        assert_eq!(flow.rto_ms(), RTO_FIRST_MS);
+        flow.sample(5_000.0);
+        assert_eq!(flow.rto_ms(), 5_000 + 4 * 2_500);
+        // Steady round trips: the margin shrinks, to the floor at most.
+        for _ in 0..20 {
+            flow.sample(5_000.0);
+        }
+        assert_eq!(flow.rto_ms(), RTO_MIN_MS);
+        // A fast path still waits the floor, a slow one no more than the ceiling.
+        let mut fast = Flow::default();
+        fast.sample(100.0);
+        assert_eq!(fast.rto_ms(), RTO_MIN_MS);
+        let mut slow = Flow::default();
+        slow.sample(200_000.0);
+        assert_eq!(slow.rto_ms(), RTO_MAX_MS);
+    }
+
+    #[test]
+    fn several_losses_in_one_round_trip_halve_the_window_once() {
+        let mut flow = Flow::default();
+        flow.cwnd = 16.0;
+        flow.sample(5_000.0);
+        flow.on_loss(100_000);
+        flow.on_loss(101_000);
+        assert_eq!(flow.window(), 8);
+        flow.on_loss(100_000 + 6_000);
+        assert_eq!(flow.window(), 4);
+    }
+
+    #[test]
+    fn the_window_never_passes_its_cap() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        let mut now = 0;
+        while s.acked < 500 {
+            let d = s.due(F, 500, &mut flow, now);
+            assert!(flow.in_flight() <= WINDOW);
+            now += 1_000;
+            let top = d.iter().max().map_or(s.acked, |t| t + 1);
+            s.on_ack(&ack(F, top, vec![], top), &mut flow, now);
+        }
+        assert_eq!(flow.window(), WINDOW);
+    }
+
+    #[test]
+    fn after_a_restart_what_was_out_is_in_flight_again() {
+        // The database says 0..10 went and 0..4 arrived; this run knows nothing.
+        let mut s = Sending { next: 10, acked: 4, resend: vec![] };
+        let mut flow = Flow::default();
+        assert!(s.due(F, 100, &mut flow, 0).is_empty(), "six out already fill the window of four");
+        assert_eq!(flow.in_flight(), 6);
+        let again = s.due(F, 100, &mut flow, RTO_FIRST_MS);
+        assert_eq!(again, vec![4, 5], "they time out like any other, and the window halves");
+        assert_eq!(flow.in_flight(), 2);
+    }
+
+    #[test]
+    fn rewind_sends_what_is_out_again() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        s.due(F, 100, &mut flow, 0);
+        s.rewind(F, &mut flow);
+        assert_eq!(flow.in_flight(), 0);
+        assert_eq!(s.due(F, 100, &mut flow, 1), vec![0, 1, 2, 3]);
     }
 }

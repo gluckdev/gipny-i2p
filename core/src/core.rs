@@ -342,7 +342,7 @@ fn hex_bytes(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
-use gipny_libcore::session::{collect_lane_holds, collect_lane_wanted, ours_stands, peer_relay_backoff, peer_relay_redial_after, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
+use gipny_libcore::session::{collect_lane_holds, collect_lane_wanted, lanes_for, ours_stands, peer_relay_backoff, peer_relay_redial_after, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Some(unpadded) = unpad_payload(pt) {
@@ -395,6 +395,9 @@ pub struct Core {
     /// When the last file part came (ms), and the extra connections to our
     /// own relay taking them; see libcore's session.rs `spawn_collect_lanes`.
     part_seen: Arc<std::sync::atomic::AtomicI64>,
+    /// How parts go to each contact (window, round trip); see libcore's
+    /// files.rs `Flow`.
+    flows: Arc<std::sync::Mutex<HashMap<i64, gipny_libcore::files::Flow>>>,
     collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
     collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
@@ -569,6 +572,7 @@ impl Core {
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            flows: Arc::new(std::sync::Mutex::new(HashMap::new())),
             collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
@@ -3869,7 +3873,15 @@ impl Core {
         let Some(file) = self.db.file_out(&ack.file_id)? else { return Ok(()) };
         let total = files::chunk_count(file.attachment.size as u64, file.attachment.chunk_size.unwrap_or(1) as u32);
         let mut s = files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
-        s.on_ack(ack);
+        {
+            let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+            let flow = flows.entry(contact_id).or_default();
+            s.on_ack(ack, flow, now_ms());
+            if s.done(total) {
+                flow.forget(ack.file_id);
+                eprintln!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
+            }
+        }
         peer.acked = s.acked;
         peer.resend = s.resend.clone();
         peer.last_ack_at = Some(now_ms());
@@ -3899,6 +3911,9 @@ impl Core {
         for f in self.db.files_out_for_message(message_id)? {
             self.db.file_out_cancel(&f.file_id)?;
             for peer in self.db.file_peers_of(&f.file_id)? {
+                if let Some(flow) = self.flows.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&peer.contact_id) {
+                    flow.forget(f.file_id);
+                }
                 let id = f.file_id;
                 self.send_file_message(peer.contact_id, move |p| p.file_cancel = Some(id)).await;
             }
@@ -3940,7 +3955,7 @@ impl Core {
     /// The usual connection to this contact's relay and up to
     /// `FILE_LANES - 1` more, dialled in the background as needed: parts
     /// spread over several i2p streams go that many times faster.
-    async fn file_lanes(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, main: &mpsc::Sender<ClientToRelay>) -> Vec<mpsc::Sender<ClientToRelay>> {
+    async fn file_lanes(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, main: &mpsc::Sender<ClientToRelay>, want: usize) -> Vec<mpsc::Sender<ClientToRelay>> {
         let mut out = vec![main.clone()];
         let Some(relay) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return out };
         let relay = relay.to_string();
@@ -3950,8 +3965,8 @@ impl Core {
             v.retain(|tx| !tx.is_closed());
             v.clone()
         };
-        let want_more = live.len() + 1 < FILE_LANES;
-        out.extend(live);
+        let want_more = live.len() + 1 < want.min(FILE_LANES);
+        out.extend(live.into_iter().take(want.saturating_sub(1)));
         let dialling = !self.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).insert(relay.clone());
         if want_more && !dialling {
             let this = self.clone();
@@ -3979,7 +3994,9 @@ impl Core {
         use gipny_libcore::files;
         let now = now_ms();
         let Route::Relay(main) = route else { return Ok(()) };
-        let lanes = self.file_lanes(contact, main).await;
+        // As many lanes as the contact's window needs; see libcore `lanes_for`.
+        let window = self.flows.lock().unwrap_or_else(|p| p.into_inner()).entry(contact.id).or_default().window();
+        let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
         let mut lane = 0usize;
         let heard = self.heard.lock().unwrap_or_else(|p| p.into_inner()).get(&contact.id).copied();
         for mut peer in self.db.file_peers_for(contact.id)? {
@@ -4000,10 +4017,14 @@ impl Core {
                     continue;
                 }
                 if s.resend.is_empty() && s.next > s.acked && alive_since && no_ack_since && now - sent > FILE_RESEND_IDLE_MS {
-                    s.rewind();
+                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                    s.rewind(file.file_id, flows.entry(contact.id).or_default());
                 }
             }
-            let due = s.due(total);
+            let due = {
+                let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                s.due(file.file_id, total, flows.entry(contact.id).or_default(), now)
+            };
             if due.is_empty() {
                 continue;
             }
@@ -4018,7 +4039,12 @@ impl Core {
                 lane += 1;
                 if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &via).await {
                     eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
-                    s.resend.extend(due.iter().copied().filter(|i| i >= index));
+                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                    let flow = flows.entry(contact.id).or_default();
+                    for i in due.iter().copied().filter(|i| i >= index) {
+                        flow.unsent(file.file_id, i);
+                        s.resend.push(i);
+                    }
                     break;
                 }
                 sent_any = true;

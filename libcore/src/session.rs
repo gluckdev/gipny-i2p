@@ -68,6 +68,15 @@ pub fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
     (failures < PEER_RELAY_REDIALS).then(|| peer_relay_backoff(failures))
 }
 
+/// Parts in flight one lane carries well; a window of more spreads over more.
+const PARTS_PER_LANE: u32 = 8;
+
+/// Lanes to a contact's relay for a window of `window` parts: one stream
+/// until it would hold more than [`PARTS_PER_LANE`], at most `FILE_LANES`.
+pub fn lanes_for(window: u32) -> usize {
+    (window.div_ceil(PARTS_PER_LANE) as usize).clamp(1, FILE_LANES)
+}
+
 /// Whether to open one more connection to our own relay for file parts:
 /// it is elsewhere, parts came lately, and fewer than `FILE_LANES - 1` extra
 /// are open.
@@ -210,6 +219,9 @@ pub struct WireFileAck {
     pub file_id: [u8; 16],
     pub received_up_to: u32,
     pub missing: Vec<u32>,
+    /// One past the last part held: parts below it and not `missing` are
+    /// there, so the sender knows what it put in flight has arrived.
+    pub seen_to: u32,
 }
 
 impl WirePayload {
@@ -823,6 +835,8 @@ pub struct SessionManager {
     /// our own relay are open to take them: the relay deals new mail round
     /// every connection of a key, so parts come down several streams at once.
     part_seen: Arc<std::sync::atomic::AtomicI64>,
+    /// How parts go to each contact (window, round trip), by contact.
+    flows: Arc<std::sync::Mutex<HashMap<i64, crate::files::Flow>>>,
     collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
     collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
@@ -863,6 +877,7 @@ impl SessionManager {
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            flows: Arc::new(std::sync::Mutex::new(HashMap::new())),
             collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
@@ -2804,7 +2819,15 @@ impl SessionManager {
         let Some(file) = self.db.file_out(&ack.file_id)? else { return Ok(()) };
         let total = crate::files::chunk_count(file.attachment.size as u64, file.attachment.chunk_size.unwrap_or(1) as u32);
         let mut s = crate::files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
-        s.on_ack(ack);
+        {
+            let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+            let flow = flows.entry(contact_id).or_default();
+            s.on_ack(ack, flow, now_ms());
+            if s.done(total) {
+                flow.forget(ack.file_id);
+                eprintln!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
+            }
+        }
         peer.acked = s.acked;
         peer.resend = s.resend.clone();
         peer.last_ack_at = Some(now_ms());
@@ -2844,6 +2867,9 @@ impl SessionManager {
     pub async fn cancel_file(self: &Arc<Self>, file_id: [u8; 16]) -> Result<()> {
         self.db.file_out_cancel(&file_id)?;
         for peer in self.db.file_peers_of(&file_id)? {
+            if let Some(flow) = self.flows.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&peer.contact_id) {
+                flow.forget(file_id);
+            }
             self.send_file_message(peer.contact_id, |p| p.file_cancel = Some(file_id)).await;
         }
         Ok(())
@@ -2864,7 +2890,7 @@ impl SessionManager {
 
     /// Connections to carry parts to this contact's relay: the usual one and
     /// up to `FILE_LANES - 1` more, dialled in the background as needed.
-    async fn file_lanes(self: &Arc<Self>, contact: &Contact, main: &mpsc::Sender<ClientToRelay>) -> Vec<mpsc::Sender<ClientToRelay>> {
+    async fn file_lanes(self: &Arc<Self>, contact: &Contact, main: &mpsc::Sender<ClientToRelay>, want: usize) -> Vec<mpsc::Sender<ClientToRelay>> {
         let mut out = vec![main.clone()];
         let Some(relay) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return out };
         let relay = relay.to_string();
@@ -2874,8 +2900,8 @@ impl SessionManager {
             v.retain(|tx| !tx.is_closed());
             v.clone()
         };
-        let want_more = live.len() + 1 < FILE_LANES;
-        out.extend(live);
+        let want_more = live.len() + 1 < want.min(FILE_LANES);
+        out.extend(live.into_iter().take(want.saturating_sub(1)));
         let dialling = !self.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).insert(relay.clone());
         if want_more && !dialling {
             let this = self.clone();
@@ -2906,7 +2932,8 @@ impl SessionManager {
     async fn send_file_parts(self: &Arc<Self>, contact: &Contact, route: &Route) -> Result<()> {
         let now = now_ms();
         let Route::Relay(main) = route else { return Ok(()) };
-        let lanes = self.file_lanes(contact, main).await;
+        let window = self.flows.lock().unwrap_or_else(|p| p.into_inner()).entry(contact.id).or_default().window();
+        let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
         let mut lane = 0usize;
         let heard = self.heard.lock().unwrap_or_else(|p| p.into_inner()).get(&contact.id).copied();
         for mut peer in self.db.file_peers_for(contact.id)? {
@@ -2932,10 +2959,14 @@ impl SessionManager {
                 // gone somewhere. Send what is outstanding again — rarely,
                 // since an absent recipient cannot be told from a lost part.
                 if s.resend.is_empty() && s.next > s.acked && alive_since && no_ack_since && now - sent > FILE_RESEND_IDLE_MS {
-                    s.rewind();
+                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                    s.rewind(file.file_id, flows.entry(contact.id).or_default());
                 }
             }
-            let due = s.due(total);
+            let due = {
+                let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                s.due(file.file_id, total, flows.entry(contact.id).or_default(), now)
+            };
             if due.is_empty() {
                 continue;
             }
@@ -2952,7 +2983,12 @@ impl SessionManager {
                 if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &via).await {
                     eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
                     // What did not go goes again next time.
-                    s.resend.extend(due.iter().copied().filter(|i| i >= index));
+                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                    let flow = flows.entry(contact.id).or_default();
+                    for i in due.iter().copied().filter(|i| i >= index) {
+                        flow.unsent(file.file_id, i);
+                        s.resend.push(i);
+                    }
                     break;
                 }
                 sent_any = true;
@@ -3129,7 +3165,7 @@ mod wire_tests {
         assert_eq!(back.file_chunk, c.file_chunk);
 
         let mut a = WirePayload::simple(0, String::new(), Vec::new(), 1, None);
-        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6] });
+        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6], seen_to: 7 });
         a.file_cancel = Some([8; 16]);
         let back = decode_payload(&encode_payload(&a).unwrap()).unwrap();
         assert_eq!(back.file_ack, a.file_ack);
@@ -3168,6 +3204,15 @@ mod wire_tests {
     fn an_unreachable_relay_is_dialled_again_for_a_few_minutes_then_left() {
         let waits: Vec<Option<u64>> = (0..7).map(|n| peer_relay_redial_after(n).map(|d| d.as_secs())).collect();
         assert_eq!(waits, vec![Some(5), Some(10), Some(20), Some(40), Some(80), None, None]);
+    }
+
+    #[test]
+    fn lanes_follow_the_window() {
+        assert_eq!(lanes_for(1), 1);
+        assert_eq!(lanes_for(4), 1, "a starting window is one stream");
+        assert_eq!(lanes_for(PARTS_PER_LANE), 1);
+        assert_eq!(lanes_for(PARTS_PER_LANE + 1), 2);
+        assert_eq!(lanes_for(crate::files::WINDOW), FILE_LANES);
     }
 
     #[test]
