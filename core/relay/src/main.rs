@@ -17,7 +17,9 @@ use crate::dht::DhtHandler;
 use crate::proto::*;
 use crate::storage::Storage;
 
-type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
+/// Each key's live connection, with how far its mail has been pushed (moved
+/// by whoever enqueues a push; see the deposit in `client_loop`).
+type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>, Arc<tokio::sync::Mutex<i64>>)>>>;
 
 
 /// A relay-network connection is closed after this many requests, or when it
@@ -210,7 +212,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     if !owner {
         return client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &storage, &connections, cursor).await;
     }
-    connections.write().await.insert(sign_pk, push_tx.clone());
+    connections.write().await.insert(sign_pk, (push_tx.clone(), cursor.clone()));
 
     let storage_init = storage.clone();
     let push_tx_init = push_tx.clone();
@@ -264,7 +266,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     // would drop the new one and leave the recipient unreachable for live push.
     {
         let mut conns = connections.write().await;
-        if conns.get(&sign_pk).is_some_and(|tx| tx.same_channel(&push_tx)) {
+        if conns.get(&sign_pk).is_some_and(|(tx, _)| tx.same_channel(&push_tx)) {
             conns.remove(&sign_pk);
         }
     }
@@ -340,7 +342,13 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                         let id = storage.deposit(&to, &blob)?;
                         send_frame(&mut wr, &RelayToClient::Deposited { id: id as u64 }).await?;
                         let tx_opt = connections.read().await.get(&to).cloned();
-                        if let Some(tx) = tx_opt {
+                        if let Some((tx, cur)) = tx_opt {
+                            // Counted as pushed now, not when written: an Ack's
+                            // sweep in between would push it a second time.
+                            {
+                                let mut c = cur.lock().await;
+                                if id > *c { *c = id; }
+                            }
                             let pkt = RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob };
                             tokio::spawn(async move { let _ = tx.send(pkt).await; });
                         }
