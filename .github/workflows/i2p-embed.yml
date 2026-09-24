@@ -314,3 +314,48 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+
+  # The updater as an installed app runs it: the GitHub API and a release
+  # file through the i2p outproxy, from the router inside the process. The
+  # outproxy is someone else's service; a failure here is worth reading, and
+  # it gates nothing else.
+  updater:
+    name: updater through the outproxy (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-embed-e2e
+      - name: build the harness on the in-process router
+        run: cargo build --release -p e2e-harness
+      - name: run
+        env:
+          E2E_UPDATE_CHECK: '1'
+          E2E_TIMEOUT_SECS: '900'
+          E2E_WORK_DIR: ${{ runner.temp }}/e2e
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee harness.log
+          grep -q '\[e2e\] SUCCESS' harness.log
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo '### updater through the outproxy'
+            echo '```'
+            grep -aE "router ready|listens|local ports|latest release|check from|update from|downloaded|SUCCESS|Error|panicked" harness.log | head -20 || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

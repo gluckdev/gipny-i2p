@@ -44,8 +44,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # tauri-build calls copy_resources() unconditionally and tauri-utils errors
       # on a glob with no match, so "resources/i2pd*" must match something even
-      # for a compile check. A placeholder is deliberate: this job proves our code
-      # builds, and only release.yml ships a real router.
+      # for a compile check. In a release it is the netDb snapshot; here a
+      # placeholder, not named like it, so nothing tries to unpack it.
       - name: stage router placeholder (tauri.conf resources glob needs a match)
         run: |
           mkdir -p core/resources

@@ -6,7 +6,7 @@
 
 | Файл | За что отвечает |
 |---|---|
-| `src/main.rs` | `main` выбирает сценарий по переменным окружения. `start_bot` — клиент на `SessionManager`. `start_in_process_relays` — два личных `EphemeralRelay` в процессе. `run_agent_mode` — сценарий с настоящим `gipny-agent`. `run_dht_offline_mode` и `LiveBot` — сеть релеев, стороны уходят по очереди (сид кладётся в таблицу узлов бота через `put_seeds` перед каждым входом). `wait_for` и `compute_latencies` — ожидания и таймингы. Успех — строка `[e2e] SUCCESS`, тайминги — блок `[e2e-timing]` |
+| `src/main.rs` | `main` выбирает сценарий по переменным окружения. `start_bot` — клиент на `SessionManager`. `start_in_process_relays` — два личных `EphemeralRelay` в процессе. `run_agent_mode` — сценарий с настоящим `gipny-agent`. `run_dht_offline_mode` и `LiveBot` — сеть релеев, стороны уходят по очереди (сид кладётся в таблицу узлов бота через `put_seeds` перед каждым входом). `run_update_check_mode` — обновлятор через аутпрокси. `no_local_ports` (и `src/ports.rs`) — по `/proc` проверяет, что ни харнесс, ни агент не слушают loopback. `wait_for` и `compute_latencies` — ожидания и таймингы. Успех — строка `[e2e] SUCCESS`, тайминги — блок `[e2e-timing]` |
 
 **Переменные окружения:**
 
@@ -14,6 +14,7 @@
 - `E2E_IN_PROCESS_RELAYS=1` — релеи внутри процесса;
 - `E2E_AGENT_BIN` — путь к `gipny-agent`, включает режим агента;
 - `E2E_DHT_OFFLINE=1` и `E2E_DHT_SEED_DEST` — сценарий сети релеев и адрес сида (`gipny-relay --dht`, отдельный процесс со своим роутером);
+- `E2E_UPDATE_CHECK=1` — один роутер, обновлятор запрашивает последний релиз у GitHub через аутпрокси и скачивает самый маленький его файл;
 - `E2E_N_MESSAGES` — число сообщений;
 - `E2E_TIMEOUT_SECS` — таймаут;
 - `E2E_BOTH_FIRST=1` — бот B пишет первым одновременно с A: встречные X3dhInit;
@@ -28,6 +29,9 @@
 | `e2e (relays inside the bots)` | `E2E_IN_PROCESS_RELAYS=1` | Встроенный релей `libcore` работает по живой i2p |
 | `e2e (agent binary)` | `E2E_AGENT_BIN`, `E2E_IN_PROCESS_RELAYS=1` | Агент: GRANT, команды по очереди, загрузка файла, OFF → REVOKE |
 | `e2e (relay network, each side away in turn)` | `E2E_DHT_OFFLINE=1`, `E2E_DHT_SEED_DEST` | B уходит → A пишет и уходит → B возвращается на новом адресе, читает, отвечает, уходит → A возвращается, читает и знает новый адрес B |
+| `updater through the outproxy (live)` в `i2p-embed.yml` | `E2E_UPDATE_CHECK=1` | Обновлятор достаёт список релизов и файл с GitHub через аутпрокси i2p |
+
+Каждый сценарий, пока роутеры живы, проверяет, что процесс не слушает ни одного порта на loopback (Linux, `/proc`): у роутера нет ни SAM, ни HTTP-прокси, ни консоли. Слушать можно только наружу, как транспорт NTCP2.
 
 ## Куда вносить правки
 
