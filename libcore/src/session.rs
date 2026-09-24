@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -9,9 +9,11 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::crypto::{self, AttachmentCipher, Identity, PreKeyBundle, PreKeyPair, RatchetState, X3dhInitial, CryptoError};
-use crate::db::{Contact, Db, DbError, Direction, NewAttachment, PreKeyKind, TrustLevel};
+use crate::db::{Contact, Db, DbError, Direction, GroupMember, NewAttachment, PreKeyKind, TrustLevel};
+use crate::dht_client;
 use crate::net::{NetError, TorNode};
 use crate::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayError, RelayToClient, DEFAULT_RELAY};
+use crate::relay_server::DhtHandler;
 
 pub type Result<T> = std::result::Result<T, SessionError>;
 
@@ -64,6 +66,18 @@ const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
+const DHT_ADDRESS_LOOKUP_EVERY: Duration = Duration::from_secs(10 * 60);
+const DHT_COLLECT_EVERY: Duration = Duration::from_secs(10 * 60);
+const DHT_SEEN_TTL_MS: i64 = 8 * 24 * 3600 * 1000;
+const DHT_COLLECT_DAYS_FIRST: u32 = 7;
+const DHT_COLLECT_DAYS: u32 = 2;
+
+/// Where an outgoing envelope goes. A live relay is preferred; the relay
+/// network is the store-and-forward fallback when that relay is unavailable.
+enum Route {
+    Relay(mpsc::Sender<ClientToRelay>),
+    Dht,
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct WirePayload {
@@ -569,6 +583,9 @@ pub struct SessionManager {
     tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
+    dht: Arc<dht_client::Node>,
+    dht_addr_asked: Arc<Mutex<HashMap<i64, Instant>>>,
+    dht_kick: Arc<tokio::sync::Notify>,
     send_kick: Arc<tokio::sync::Notify>,
     events: mpsc::Sender<SessionEvent>,
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
@@ -582,6 +599,7 @@ impl SessionManager {
     ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
         std::fs::create_dir_all(data_dir.join(ATTACHMENTS_DIR))?;
         let identity = Arc::new(load_or_create_identity(&db)?);
+        let dht = dht_client::new_node(node.clone(), db.clone());
         let (events_tx, events_rx) = mpsc::channel(256);
         let this = Arc::new(Self {
             db: db.clone(),
@@ -595,6 +613,9 @@ impl SessionManager {
             tiebreaker_waits: Arc::new(Mutex::new(HashMap::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
+            dht,
+            dht_addr_asked: Arc::new(Mutex::new(HashMap::new())),
+            dht_kick: Arc::new(tokio::sync::Notify::new()),
             send_kick: Arc::new(tokio::sync::Notify::new()),
             events: events_tx,
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -603,6 +624,7 @@ impl SessionManager {
         this.clone().spawn_relay_loop();
         this.clone().spawn_send_loop();
         this.clone().spawn_bundle_refresh_loop();
+        this.clone().spawn_dht_loop();
         Ok((this, events_rx))
     }
 
@@ -613,6 +635,20 @@ impl SessionManager {
 
     pub fn my_card(&self) -> crate::crypto::IdentityCard { self.identity.card() }
     pub fn my_fingerprint(&self) -> [u8; 32] { self.identity.fingerprint() }
+
+    /// Handler installed on an embedded relay so this session can also serve
+    /// relay-network requests. The node itself is shared with all DHT fallback
+    /// delivery and collection performed by this manager.
+    pub fn dht_handler(&self) -> DhtHandler {
+        dht_client::handler(&self.dht)
+    }
+
+    /// Announce an embedded relay as this node's reachable DHT endpoint.
+    pub async fn join_dht(self: &Arc<Self>, address: &str) {
+        dht_client::join(&self.dht, &self.db, &self.identity, address).await;
+        self.publish_bundle_to_dht().await;
+        self.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
+    }
 
     pub fn display_name(&self) -> Result<String> {
         Ok(self.db.get_setting(SETTING_DISPLAY_NAME)?
@@ -645,6 +681,7 @@ impl SessionManager {
 
     pub fn set_relay_onion(&self, onion: &str) -> Result<()> {
         self.db.set_setting(SETTING_RELAY_ONION, onion.as_bytes())?;
+        self.dht_kick.notify_one();
         Ok(())
     }
 
@@ -662,6 +699,7 @@ impl SessionManager {
     ) -> Result<i64> {
         let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
         let _ = self.events.send(SessionEvent::ContactAdded { contact_id: id }).await;
+        self.dht_kick.notify_one();
         self.send_kick.notify_one();
         Ok(id)
     }
@@ -822,13 +860,22 @@ impl SessionManager {
                 None => continue,
             };
             if contact.trust == TrustLevel::Blocked { continue; }
+            self.db.pending_outbound_add(msg_id, contact.id)?;
             let mut payload = WirePayload::simple(
                 msg_id as u64, body.clone(), wire_atts.clone(), sent_at, None,
             );
             payload.group = Some(gref.clone());
             payload.buttons = buttons.clone();
             payload.notify_sound = notify_sound.clone();
-            let _ = self.send_to_contact(contact.id, &mut payload).await;
+            match self.send_to_contact(contact.id, &mut payload).await {
+                Ok(()) => {
+                    let _ = self.db.pending_outbound_remove(msg_id, contact.id);
+                }
+                Err(e) => eprintln!(
+                    "[session] group send to contact {} failed (msg {}): {:?}; queued",
+                    contact.id, msg_id, e
+                ),
+            }
         }
         Ok(msg_id)
     }
@@ -889,9 +936,9 @@ impl SessionManager {
 
     async fn send_to_contact(self: &Arc<Self>, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
-        let out = self.relay_for(&contact).await.ok_or(SessionError::State)?;
-        self.ensure_session_for(&contact, &out).await?;
-        self.send_payload_via_relay(&contact, payload, &out).await
+        let route = self.route_for(&contact).await.ok_or(SessionError::State)?;
+        self.ensure_session_for(&contact, &route).await?;
+        self.send_payload_via_relay(&contact, payload, &route).await
     }
 
     pub async fn send_pin_contact(
@@ -1059,6 +1106,50 @@ impl SessionManager {
             self.tasks.lock().unwrap().push(handle);
             None
         })
+    }
+
+    async fn route_for(self: &Arc<Self>, contact: &Contact) -> Option<Route> {
+        if let Some(tx) = self.relay_for(contact).await {
+            return Some(Route::Relay(tx));
+        }
+        (self.dht.peer_count() > 0).then_some(Route::Dht)
+    }
+
+    async fn deliver(
+        &self,
+        contact: &Contact,
+        blob: Vec<u8>,
+        route: &Route,
+        first_letter: bool,
+    ) -> Result<()> {
+        let their_sign = to_arr32(contact.identity_sign.clone())?;
+        let their_dh = to_arr32(contact.identity_dh.clone())?;
+        match route {
+            Route::Relay(out) => out
+                .send(ClientToRelay::Send { to: their_sign, blob })
+                .await
+                .map_err(|_| SessionError::State),
+            Route::Dht => {
+                let stored = if first_letter {
+                    dht_client::put_intro(&self.dht, &their_sign, &their_dh, &blob).await
+                } else {
+                    dht_client::put_mail(
+                        &self.dht,
+                        &self.identity,
+                        &their_sign,
+                        &their_dh,
+                        &blob,
+                    )
+                    .await
+                };
+                if stored {
+                    eprintln!("[dht/session] letter for contact {} left in the network", contact.id);
+                    Ok(())
+                } else {
+                    Err(SessionError::State)
+                }
+            }
+        }
     }
 
     /// `collecting_from` is set on the connection to our own relay: once the
@@ -1528,13 +1619,11 @@ impl SessionManager {
             console: None,
             relay_address: None,
         };
-        // The contact's relay, not ours: an ack left on our own relay is never
-        // collected by anyone.
-        let Some(out) = self.relay_for(contact).await else { return Ok(()) };
-        if self.ensure_session_for(contact, &out).await.is_err() {
+        let Some(route) = self.route_for(contact).await else { return Ok(()) };
+        if self.ensure_session_for(contact, &route).await.is_err() {
             return Ok(());
         }
-        let _ = self.send_payload_via_relay(contact, &mut payload, &out).await;
+        let _ = self.send_payload_via_relay(contact, &mut payload, &route).await;
         Ok(())
     }
 
@@ -1558,11 +1647,16 @@ impl SessionManager {
     }
 
     async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
-        // Our own relay must be up: replies come back there.
-        if self.relay_out.read().await.is_none() {
-            return Ok(());
-        }
-        for contact in self.db.list_contacts()? {
+        let contacts = self.db.list_contacts()?;
+        let groups_by_id: HashMap<Vec<u8>, String> = self
+            .db
+            .list_groups()?
+            .into_iter()
+            .map(|group| (group.id, group.name))
+            .collect();
+        let members_by_group: HashMap<Vec<u8>, Vec<GroupMember>> =
+            self.db.list_all_group_members()?;
+        for contact in contacts {
             if contact.trust == TrustLevel::Blocked { continue; }
             let pending = self.db.list_unsent_outgoing(contact.id, 50)?;
             let unacked = self.db.list_unacked_outgoing(
@@ -1572,14 +1666,34 @@ impl SessionManager {
                 && !self.sessions.lock().await.contains_key(&contact.id);
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
                 && self.sessions.lock().await.contains_key(&contact.id);
-            if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
-            // Deposit where this contact collects, not where we do.
-            let Some(out) = self.relay_for(&contact).await else { continue };
-            if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
+            let group_pending = self.db.pending_outbound_for_recipient(
+                contact.id,
+                now_ms(),
+                RETRY_BASE_BACKOFF_MS,
+                RETRY_MAX_BACKOFF_MS,
+                50,
+            )?;
+            if pending.is_empty()
+                && unacked.is_empty()
+                && group_pending.is_empty()
+                && !needs_session
+                && !needs_keepalive
+            {
+                continue;
+            }
+            let route = match self.relay_for(&contact).await {
+                Some(out) => Route::Relay(out),
+                None if self.dht.peer_count() > 0 => {
+                    self.maybe_look_up_address(&contact).await;
+                    Route::Dht
+                }
+                None => continue,
+            };
+            if self.ensure_session_for(&contact, &route).await.is_err() { continue; }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
                 payload.ack_for = Some(0);
-                if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
+                if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
                     eprintln!("[session] keepalive err to contact {}: {:?}", contact.id, e);
                 } else {
                     eprintln!("[session] keepalive sent to contact {} (DH-roll forced)", contact.id);
@@ -1587,7 +1701,7 @@ impl SessionManager {
             }
             for msg in pending {
                 let mut payload = self.build_payload_from_db(&msg)?;
-                if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
+                if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
                     eprintln!("[session] send err contact {}: {:?}", contact.id, e);
                     break;
                 }
@@ -1596,9 +1710,55 @@ impl SessionManager {
                 let mut payload = self.build_payload_from_db(&msg)?;
                 eprintln!("[session] retry unacked msg {} to contact {} (attempt {})",
                     msg.id, contact.id, msg.send_attempts + 1);
-                if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
+                self.db.record_send_attempt(msg.id)?;
+                if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
                     eprintln!("[session] retry err contact {}: {:?}", contact.id, e);
                     break;
+                }
+            }
+            for msg_id in group_pending {
+                let msg = match self.db.get_message(msg_id)? {
+                    Some(msg) => msg,
+                    None => {
+                        let _ = self.db.pending_outbound_remove(msg_id, contact.id);
+                        continue;
+                    }
+                };
+                let mut payload = self.build_payload_from_db(&msg)?;
+                if let Some(group_id) = &msg.group_id {
+                    let name = groups_by_id.get(group_id).cloned().unwrap_or_default();
+                    let members = members_by_group
+                        .get(group_id)
+                        .map(|members| {
+                            members
+                                .iter()
+                                .map(|member| WireMember {
+                                    sign_pk: member.sign_pk.clone(),
+                                    dh_pk: member.dh_pk.clone(),
+                                    onion: member.onion.clone(),
+                                    name: member.display_name.clone(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    payload.group = Some(WireGroupRef {
+                        id: group_id.clone(),
+                        name,
+                        members,
+                    });
+                }
+                self.db.pending_outbound_record_attempt(msg_id, contact.id)?;
+                match self.send_payload_via_relay(&contact, &mut payload, &route).await {
+                    Ok(()) => {
+                        let _ = self.db.pending_outbound_remove(msg_id, contact.id);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[session] retry group msg {} to contact {} failed: {:?}",
+                            msg_id, contact.id, e
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -1608,7 +1768,7 @@ impl SessionManager {
     async fn ensure_session_for(
         &self,
         contact: &Contact,
-        out: &mpsc::Sender<ClientToRelay>,
+        route: &Route,
     ) -> Result<()> {
         if self.sessions.lock().await.contains_key(&contact.id) { return Ok(()); }
         if let Some(blob) = self.db.get_session(contact.id)? {
@@ -1633,12 +1793,20 @@ impl SessionManager {
 
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&contact.identity_sign);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
-        out.send(ClientToRelay::GetBundle { pk }).await.map_err(|_| SessionError::State)?;
-        let bundle_bytes = tokio::time::timeout(Duration::from_millis(PENDING_REQ_TIMEOUT_MS), rx).await
-            .map_err(|_| SessionError::State)?
-            .map_err(|_| SessionError::State)?;
+        let bundle_bytes = match route {
+            Route::Relay(out) => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
+                out.send(ClientToRelay::GetBundle { pk }).await.map_err(|_| SessionError::State)?;
+                tokio::time::timeout(Duration::from_millis(PENDING_REQ_TIMEOUT_MS), rx).await
+                    .map_err(|_| SessionError::State)?
+                    .map_err(|_| SessionError::State)?
+            }
+            Route::Dht => {
+                let their_dh = to_arr32(contact.identity_dh.clone())?;
+                dht_client::find_bundle(&self.dht, &pk, &their_dh).await
+            }
+        };
         let bundle_bytes = bundle_bytes.ok_or(SessionError::NotFound)?;
         let bundle: PreKeyBundle = bincode::deserialize(&bundle_bytes)?;
 
@@ -1661,10 +1829,8 @@ impl SessionManager {
         self.db.put_session(contact.id, &state.to_bytes()?)?;
         self.sessions.lock().await.insert(contact.id, state);
         self.session_created_at.lock().await.insert(contact.id, now_ms());
-        let mut to = [0u8; 32];
-        to.copy_from_slice(&contact.identity_sign);
         let blob = bincode::serialize(&EnvelopeBlob::X3dhInit(init))?;
-        out.send(ClientToRelay::Send { to, blob }).await.map_err(|_| SessionError::State)?;
+        self.deliver(contact, blob, route, true).await?;
         eprintln!("[session] x3dh sent to contact {}", contact.id);
         Ok(())
     }
@@ -1673,7 +1839,7 @@ impl SessionManager {
         &self,
         contact: &Contact,
         payload: &mut WirePayload,
-        out: &mpsc::Sender<ClientToRelay>,
+        route: &Route,
     ) -> Result<()> {
         if payload.sender_name.is_none() {
             payload.sender_name = self.outgoing_sender_name();
@@ -1704,9 +1870,7 @@ impl SessionManager {
             r
         };
         let blob = bincode::serialize(&EnvelopeBlob::Ratchet { header, ciphertext: ct })?;
-        let mut to = [0u8; 32];
-        to.copy_from_slice(&contact.identity_sign);
-        out.send(ClientToRelay::Send { to, blob }).await.map_err(|_| SessionError::State)?;
+        self.deliver(contact, blob, route, false).await?;
         self.incoming_since_send.lock().await.insert(contact.id, 0);
         if payload.origin_msg_id > 0
             && payload.edit_of.is_none()
@@ -1760,6 +1924,175 @@ impl SessionManager {
         self.tasks.lock().unwrap().push(handle);
     }
 
+    fn spawn_dht_loop(self: Arc<Self>) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            // Bootstrap immediately. Otherwise a headless client configured
+            // with an external relay would wait 45 minutes before learning
+            // that the relay network exists.
+            dht_client::maintain(
+                &this.dht,
+                &this.db,
+                &this.identity,
+                nonempty(this.relay_onion()).as_deref(),
+            )
+            .await;
+            this.publish_bundle_to_dht().await;
+            this.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
+
+            let mut maintain = tokio::time::interval(dht_client::MAINTAIN_EVERY);
+            maintain.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            maintain.tick().await;
+            let mut collect = tokio::time::interval(DHT_COLLECT_EVERY);
+            collect.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            collect.tick().await;
+            let mut days = DHT_COLLECT_DAYS;
+            loop {
+                tokio::select! {
+                    _ = this.dht_kick.notified() => {
+                        let address = nonempty(this.relay_onion());
+                        dht_client::maintain(
+                            &this.dht,
+                            &this.db,
+                            &this.identity,
+                            address.as_deref(),
+                        ).await;
+                        this.publish_bundle_to_dht().await;
+                        this.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
+                        this.send_kick.notify_one();
+                    }
+                    _ = maintain.tick() => {
+                        let address = nonempty(this.relay_onion());
+                        dht_client::maintain(
+                            &this.dht,
+                            &this.db,
+                            &this.identity,
+                            address.as_deref(),
+                        ).await;
+                        this.publish_bundle_to_dht().await;
+                        let _ = this.db.dht_seen_purge(now_ms() - DHT_SEEN_TTL_MS);
+                    }
+                    _ = collect.tick() => {
+                        this.collect_from_dht(days).await;
+                        days = DHT_COLLECT_DAYS;
+                    }
+                }
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    async fn collect_from_dht(self: &Arc<Self>, days: u32) {
+        if self.dht.peer_count() == 0 {
+            return;
+        }
+        let Ok(contacts) = self.db.list_contacts() else { return };
+        let mut letters = Vec::new();
+        for contact in contacts {
+            if contact.trust == TrustLevel::Blocked {
+                continue;
+            }
+            let (Ok(their_sign), Ok(their_dh)) = (
+                to_arr32(contact.identity_sign),
+                to_arr32(contact.identity_dh),
+            ) else {
+                continue;
+            };
+            letters.extend(
+                dht_client::collect_mail(
+                    &self.dht,
+                    &self.identity,
+                    &their_sign,
+                    &their_dh,
+                    days,
+                )
+                .await,
+            );
+        }
+        letters.extend(dht_client::collect_intros(&self.dht, &self.identity, days).await);
+
+        for letter in letters {
+            let hash = dht_client::letter_hash(&letter.envelope);
+            match self.db.dht_seen_mark(&hash, now_ms()) {
+                Ok(true) => {}
+                _ => continue,
+            }
+            match self
+                .handle_incoming_envelope(&[0u8; 32], &letter.envelope)
+                .await
+            {
+                Ok(()) | Err(SessionError::StaleOpk) | Err(SessionError::SealedDrop) => {
+                    dht_client::drop_letter(&self.dht, &letter).await;
+                }
+                Err(e) => {
+                    eprintln!("[dht/session] letter did not open: {e:?}");
+                    let _ = self.db.dht_seen_forget(&hash);
+                }
+            }
+        }
+        self.send_kick.notify_one();
+    }
+
+    async fn maybe_look_up_address(self: &Arc<Self>, contact: &Contact) {
+        if self.dht.peer_count() == 0 {
+            return;
+        }
+        {
+            let mut asked = self.dht_addr_asked.lock().await;
+            let now = Instant::now();
+            if asked
+                .get(&contact.id)
+                .is_some_and(|then| now.duration_since(*then) < DHT_ADDRESS_LOOKUP_EVERY)
+            {
+                return;
+            }
+            asked.insert(contact.id, now);
+        }
+
+        let (Ok(their_sign), Ok(their_dh)) = (
+            to_arr32(contact.identity_sign.clone()),
+            to_arr32(contact.identity_dh.clone()),
+        ) else {
+            return;
+        };
+        let this = self.clone();
+        let id = contact.id;
+        let known = contact.relay_address.clone();
+        let handle = tokio::spawn(async move {
+            let Some((relay, _)) = dht_client::find_address(
+                &this.dht,
+                &this.identity,
+                &their_sign,
+                &their_dh,
+            )
+            .await
+            else {
+                return;
+            };
+            if relay.trim().is_empty() || known.as_deref() == Some(relay.as_str()) {
+                return;
+            }
+            eprintln!("[dht/session] contact {id} published a new relay address");
+            if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
+                if let Some(old) = known.as_deref() {
+                    this.peer_relays.lock().await.remove(old);
+                }
+                this.send_kick.notify_one();
+                let _ = this.events.send(SessionEvent::ContactUpdated { contact_id: id }).await;
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    async fn publish_bundle_to_dht(&self) {
+        if self.dht.peer_count() == 0 {
+            return;
+        }
+        let Ok(bundle) = self.my_bundle() else { return };
+        let Ok(bytes) = bincode::serialize(&bundle) else { return };
+        let _ = dht_client::publish_bundle(&self.dht, &self.identity, &bytes).await;
+    }
+
     async fn republish_bundle(&self) {
         let _ = self.ensure_prekeys().await;
         if let Some(tx) = self.relay_out.read().await.clone() {
@@ -1769,7 +2102,12 @@ impl SessionManager {
                 }
             }
         }
+        self.publish_bundle_to_dht().await;
     }
+}
+
+fn nonempty(value: String) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value)
 }
 
 fn ensure_group_session(db: &Arc<Db>, identity: &Arc<Identity>, gref: &WireGroupRef) -> Result<()> {

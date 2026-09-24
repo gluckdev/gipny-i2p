@@ -2695,7 +2695,17 @@ impl Core {
                 && !self.sessions.lock().await.contains_key(&contact.id);
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
                 && self.sessions.lock().await.contains_key(&contact.id);
-            if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
+            let group_pending = self.db.pending_outbound_for_recipient(
+                contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
+            )?;
+            if pending.is_empty()
+                && unacked.is_empty()
+                && group_pending.is_empty()
+                && !needs_session
+                && !needs_keepalive
+            {
+                continue;
+            }
             // Deposit on the relay this contact collects from, not on ours.
             let has_mail = !pending.is_empty() || !unacked.is_empty();
             eprintln!("[send] contact {} \"{}\": {} new, {} unacked, session={}, relay={}",
@@ -2758,9 +2768,6 @@ impl Core {
                     break;
                 }
             }
-            let group_pending = self.db.pending_outbound_for_recipient(
-                contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
-            )?;
             for msg_id in group_pending {
                 let msg = match self.db.get_message(msg_id)? { Some(m) => m, None => {
                     let _ = self.db.pending_outbound_remove(msg_id, contact.id);
