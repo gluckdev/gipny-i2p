@@ -1124,6 +1124,13 @@ impl Db {
             .query_row(params![group_id], |r| r.get(0))?))
     }
 
+    /// Every message in the 1:1 chat with `contact_id` (attachments go with
+    /// them by cascade). The contact itself stays.
+    pub fn delete_messages_for_contact(&self, contact_id: i64) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute(
+            "DELETE FROM messages WHERE contact_id = ?1 AND group_id IS NULL", params![contact_id])?))
+    }
+
     pub fn delete_message(&self, id: i64) -> Result<()> {
         self.with_conn(|c| { c.execute("DELETE FROM messages WHERE id = ?1", params![id])?; Ok(()) })
     }

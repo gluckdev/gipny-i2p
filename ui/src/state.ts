@@ -1184,6 +1184,13 @@ export class Store {
       this.refreshContacts();
     } else if ('ContactUpdated' in e) {
       this.refreshContacts();
+    } else if ('ContactWiped' in e) {
+      const { contact_id, name } = e.ContactWiped;
+      const sel = this.selectedChat.get();
+      if (sel?.kind === 'contact' && sel.id === contact_id) this.selectedChat.set(null);
+      void this.refreshContacts();
+      const who = name || 'Контакт';
+      this.showToast(`${who} удалил(а) переписку с вами — она удалена и здесь`);
     } else if ('ContactRequest' in e) {
       const id = e.ContactRequest.contact_id;
       void this.refreshContacts().then(() => {

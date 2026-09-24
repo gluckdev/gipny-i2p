@@ -109,6 +109,11 @@ pub struct WirePayload {
     pub console: Option<WireConsole>,
     #[serde(default)]
     pub relay_address: Option<String>,
+    /// "Forget me": the sender deleted this contact and asks the recipient to
+    /// delete the conversation and the contact too. Only ever honoured from
+    /// the contact itself, inside its ratchet session.
+    #[serde(default)]
+    pub wipe: Option<bool>,
 }
 
 impl WirePayload {
@@ -117,7 +122,7 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None, notify_sound: None, console: None, relay_address: None,
+            typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -265,6 +270,55 @@ struct WireV5 {
     reply_to: Option<WireReply>,
 }
 
+/// Everything before `wipe`: the full payload up to 0.4.13.
+#[derive(Serialize, Deserialize)]
+struct WireV8 {
+    origin_msg_id: u64,
+    body: String,
+    attachments: Vec<WireAttachment>,
+    sent_at: i64,
+    ttl_ms: Option<i64>,
+    group: Option<WireGroupRef>,
+    buttons: Option<Vec<Vec<WireButton>>>,
+    callback_data: Option<String>,
+    edit_of: Option<u64>,
+    pin: Option<WirePin>,
+    ack_for: Option<u64>,
+    sender_name: Option<String>,
+    reply_to: Option<WireReply>,
+    typing: Option<bool>,
+    notify_sound: Option<String>,
+    console: Option<WireConsole>,
+    relay_address: Option<String>,
+}
+
+impl From<&WirePayload> for WireV8 {
+    fn from(p: &WirePayload) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id, body: p.body.clone(), attachments: p.attachments.clone(),
+            sent_at: p.sent_at, ttl_ms: p.ttl_ms, group: p.group.clone(),
+            buttons: p.buttons.clone(), callback_data: p.callback_data.clone(),
+            edit_of: p.edit_of, pin: p.pin.clone(), ack_for: p.ack_for,
+            sender_name: p.sender_name.clone(), reply_to: p.reply_to.clone(),
+            typing: p.typing, notify_sound: p.notify_sound.clone(),
+            console: p.console.clone(), relay_address: p.relay_address.clone(),
+        }
+    }
+}
+
+impl From<WireV8> for WirePayload {
+    fn from(v: WireV8) -> Self {
+        Self {
+            origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
+            sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
+            buttons: v.buttons, callback_data: v.callback_data,
+            edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
+            reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound,
+            console: v.console, relay_address: v.relay_address, wipe: None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct WireV7 {
     origin_msg_id: u64,
@@ -336,7 +390,7 @@ impl From<WireV7> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound, console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         }
     }
 }
@@ -349,7 +403,7 @@ impl From<WireV6> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: None, console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         }
     }
 }
@@ -417,7 +471,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -429,7 +483,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -441,7 +495,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -453,7 +507,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -464,7 +518,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -476,13 +530,14 @@ impl From<WireV0> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
             edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
-    if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(p) }
+    if p.wipe.is_some()                                  { bincode::serialize(p) }
+    else if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(&WireV8::from(p)) }
     else if p.notify_sound.is_some()                    { bincode::serialize(&WireV7::from(p)) }
     else if p.typing.is_some()                     { bincode::serialize(&WireV6::from(p)) }
     else if p.reply_to.is_some()                   { bincode::serialize(&WireV5::from(p)) }
@@ -494,6 +549,7 @@ pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::
 
 pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Ok(v) = bincode::deserialize::<WirePayload>(pt) { return Ok(v); }
+    if let Ok(v) = bincode::deserialize::<WireV8>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV7>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV6>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV5>(pt)      { return Ok(v.into()); }
@@ -564,6 +620,9 @@ pub enum SessionEvent {
     MessageUnpinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
     ContactAdded { contact_id: i64 },
     ContactUpdated { contact_id: i64 },
+    /// The contact deleted us and asked for the chat to go; the contact and
+    /// every message with them are gone here now.
+    ContactWiped { contact_id: i64 },
     /// A relay answered with an error frame: a deposit or a publish it would
     /// not take. `reason` is the relay's text, e.g. [`crate::relay::ERR_NOT_SERVED`].
     RelayError { reason: String },
@@ -796,7 +855,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -825,7 +884,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -941,7 +1000,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -979,7 +1038,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1431,6 +1490,17 @@ impl SessionManager {
     }
 
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        // As in the app: a contact who deleted us asks for the chat to go.
+        if payload.wipe == Some(true) {
+            eprintln!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
+            self.db.delete_contact(contact_id)?;
+            self.sessions.lock().await.remove(&contact_id);
+            self.session_created_at.lock().await.remove(&contact_id);
+            self.tiebreaker_waits.lock().await.remove(&contact_id);
+            self.incoming_since_send.lock().await.remove(&contact_id);
+            let _ = self.events.send(SessionEvent::ContactWiped { contact_id }).await;
+            return Ok(());
+        }
         if let Some(name) = payload.sender_name.as_deref() {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
@@ -1665,7 +1735,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         let Some(route) = self.route_for(contact).await else { return Ok(()) };
         if self.ensure_session_for(contact, &route).await.is_err() {
@@ -2298,6 +2368,20 @@ mod wire_tests {
         let old: WireV7 = bincode::deserialize(&bytes).expect("trailing field tolerated");
         assert_eq!(old.body, "[agent on]");
         assert_eq!(old.sender_name.as_deref(), Some("laptop"));
+    }
+
+    #[test]
+    fn wipe_roundtrips_and_leaves_other_payloads_as_they_were() {
+        let mut p = sample();
+        p.relay_address = Some("relay".into());
+        // Without wipe: exactly the 0.4.13 bytes.
+        assert_eq!(encode_payload(&p).unwrap(), bincode::serialize(&WireV8::from(&p)).unwrap());
+        p.wipe = Some(true);
+        let bytes = encode_payload(&p).unwrap();
+        assert_eq!(decode_payload(&bytes).unwrap().wipe, Some(true));
+        // A 0.4.13 client reads its own newest shape and ignores the rest.
+        let old: WireV8 = bincode::deserialize(&bytes).expect("trailing field tolerated");
+        assert_eq!(old.relay_address.as_deref(), Some("relay"));
     }
 
     #[test]

@@ -1137,8 +1137,11 @@ async fn add_contact(
 
 #[tauri::command]
 async fn list_contacts(ctx: State<'_, AppCtx>) -> Result<Vec<ContactDto>, String> {
-    let list = core_of(&ctx).await?.db().list_contacts().map_err(err)?;
-    Ok(list.into_iter().map(ContactDto::from).collect())
+    let core = core_of(&ctx).await?;
+    let list = core.db().list_contacts().map_err(err)?;
+    // Contacts being deleted for both sides are gone as far as anyone looking
+    // is concerned; they stay in the database only to carry the request.
+    Ok(list.into_iter().filter(|c| core.wipe_pending_since(c.id).is_none()).map(ContactDto::from).collect())
 }
 
 #[tauri::command]
@@ -1191,8 +1194,13 @@ async fn send_agent_off(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<i64, 
 }
 
 #[tauri::command]
-async fn delete_contact(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.delete_contact(id).await.map_err(err)
+async fn delete_contact(id: i64, for_both: Option<bool>, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let core = core_of(&ctx).await?;
+    if for_both == Some(true) {
+        core.delete_contact_for_both(id).await.map_err(err)
+    } else {
+        core.delete_contact(id).await.map_err(err)
+    }
 }
 
 #[tauri::command]
