@@ -285,6 +285,8 @@ jobs:
       - name: run
         env:
           E2E_IN_PROCESS_RELAYS: '1'
+          # bot-b writes first too: the two sessions open at once and cross.
+          E2E_BOTH_FIRST: '1'
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: ${{ runner.temp }}/e2e

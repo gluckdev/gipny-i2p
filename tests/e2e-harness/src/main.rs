@@ -26,6 +26,9 @@
 //!   network while each side is away in turn. Needs `GIPNY_SAM_PORT` and
 //!   `E2E_DHT_SEED_DEST` (the destination of a `gipny-relay --dht` on the same
 //!   router). See [`run_dht_offline_mode`].
+//! * `E2E_BOTH_FIRST=1` — bot-b writes to bot-a at the same moment bot-a
+//!   writes to bot-b: two sessions are opened at once and their X3dhInits
+//!   cross (session.rs `ours_stands`). Its letter must arrive too.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -154,6 +157,9 @@ fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
     db.dht_peers_save(&peers)?;
     Ok(())
 }
+
+/// What bot-b writes first with E2E_BOTH_FIRST.
+const GREETING: &str = "hello from bot-b";
 
 async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
     // On the shared router over SAM, or on the router inside this process
@@ -922,12 +928,18 @@ async fn main() -> Result<()> {
     // Send times recorded by A: body → send_instant.
     let a_send_times: Arc<Mutex<HashMap<String, Instant>>> = Default::default();
 
+    // E2E_BOTH_FIRST: B's own first letter, as A received it.
+    let both_first = std::env::var("E2E_BOTH_FIRST").is_ok_and(|v| v == "1");
+    let a_greeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let a_greeted_notify = Arc::new(Notify::new());
+
     // Bot A event loop
     {
         let connect_notify = a_connect_notify.clone();
         let connect_at = a_connect_at.clone();
         let echoes = a_echoes.clone();
         let echo_notify = a_echo_notify.clone();
+        let (greeted, greeted_notify) = (a_greeted.clone(), a_greeted_notify.clone());
         tokio::spawn(async move {
             while let Some(ev) = a_events.recv().await {
                 match ev {
@@ -947,6 +959,9 @@ async fn main() -> Result<()> {
                         if payload.body.starts_with("echo:") {
                             echoes.lock().await.push((payload.body, Instant::now()));
                             echo_notify.notify_one();
+                        } else if payload.body == GREETING {
+                            greeted.store(true, std::sync::atomic::Ordering::SeqCst);
+                            greeted_notify.notify_one();
                         }
                     }
                     _ => {}
@@ -1057,6 +1072,15 @@ async fn main() -> Result<()> {
     // -----------------------------------------------------------------------
     // 5. A sends N messages to B (first message includes an attachment).
     // -----------------------------------------------------------------------
+    if both_first {
+        eprintln!("[e2e] bot-b writes first too, at the same moment: the sessions cross");
+        let b_session = b.session.clone();
+        tokio::spawn(async move {
+            if let Err(e) = b_session.send_message(contact_a_in_b, GREETING.into(), vec![], None, None, None).await {
+                eprintln!("[e2e] bot-b: greeting send error: {e}");
+            }
+        });
+    }
     eprintln!("[e2e] sending {n_messages} messages A→B...");
     {
         let mut send_times = a_send_times.lock().await;
@@ -1179,6 +1203,21 @@ async fn main() -> Result<()> {
     // -----------------------------------------------------------------------
     // 8. Assert and exit.
     // -----------------------------------------------------------------------
+    if both_first {
+        let left = timeout.saturating_sub(t_start.elapsed());
+        let arrived = tokio::time::timeout(left, async {
+            while !a_greeted.load(std::sync::atomic::Ordering::SeqCst) {
+                let n = a_greeted_notify.notified();
+                if a_greeted.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                n.await;
+            }
+        }).await.is_ok();
+        if !arrived {
+            bail!("crossing sessions: bot-b's own first letter never reached bot-a");
+        }
+        eprintln!("[e2e] crossing sessions: bot-b's own first letter arrived too");
+    }
+
     a.session.shutdown();
     b.session.shutdown();
 

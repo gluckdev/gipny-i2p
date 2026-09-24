@@ -139,7 +139,6 @@ const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
-const TIEBREAKER_TIMEOUT_MS: i64 = 10_000;
 const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 /// Unanswered introductions kept at once; the oldest goes first.
 const MAX_INCOMING_REQUESTS: usize = 50;
@@ -344,7 +343,13 @@ pub struct Core {
     peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<BundleWaiter>>>>,
     send_kick: Arc<tokio::sync::Notify>,
-    tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
+    /// Sessions we opened (contact → our init's ratchet key) not yet answered
+    /// on: an X3dhInit from them meanwhile crossed ours. See `ours_stands`.
+    own_inits: Arc<Mutex<HashMap<i64, [u8; 32]>>>,
+    /// Their inits that lost to ours (contact → that init's ratchet key): what
+    /// they sent on it cannot decrypt here, is no reason to resync, and is
+    /// resent by them on the session that stood.
+    lost_inits: Arc<Mutex<HashMap<i64, [u8; 32]>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
@@ -510,7 +515,8 @@ impl Core {
             peer_relays: Arc::new(Mutex::new(HashMap::new())),
             bundle_waiters: Arc::new(Mutex::new(HashMap::new())),
             send_kick: Arc::new(tokio::sync::Notify::new()),
-            tiebreaker_waits: Arc::new(Mutex::new(HashMap::new())),
+            own_inits: Arc::new(Mutex::new(HashMap::new())),
+            lost_inits: Arc::new(Mutex::new(HashMap::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             updater,
@@ -1044,7 +1050,7 @@ impl Core {
     /// The DB row deletion cascades to sessions/messages/attachments via
     /// `ON DELETE CASCADE`. This method additionally removes the five
     /// in-memory maps that would otherwise hold stale entries forever
-    /// (sessions, tiebreaker_waits, session_created_at, incoming_since_send,
+    /// (sessions, own_inits and lost_inits, session_created_at, incoming_since_send,
     /// and the bundle_waiters entry keyed on the contact's signing key).
     pub async fn delete_contact(self: &Arc<Self>, contact_id: i64) -> Result<()> {
         // Capture identity_sign before the DB row is gone so we can purge
@@ -1063,7 +1069,8 @@ impl Core {
         // Purge all in-memory state for this contact.
         self.sessions.lock().await.remove(&contact_id);
         self.session_created_at.lock().await.remove(&contact_id);
-        self.tiebreaker_waits.lock().await.remove(&contact_id);
+        self.own_inits.lock().await.remove(&contact_id);
+        self.lost_inits.lock().await.remove(&contact_id);
         self.incoming_since_send.lock().await.remove(&contact_id);
         if let Some(pk) = sign_pk {
             self.bundle_waiters.lock().await.remove(&pk);
@@ -1243,9 +1250,6 @@ impl Core {
             // without waiting for a first message.
             None => {
                 self.db.set_contact_request_state(id, RequestState::Outgoing)?;
-                // Nobody on their side knows us yet to open the session, so do
-                // not sit out the tiebreaker waiting for them.
-                self.tiebreaker_waits.lock().await.insert(id, now_ms() - TIEBREAKER_TIMEOUT_MS);
             }
             // Adding the card of someone who asked is accepting them.
             Some(RequestState::Incoming) => {
@@ -2291,9 +2295,31 @@ impl Core {
                     return Err(CoreError::State);
                 }
                 let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
+                let crossed = self.own_inits.lock().await.get(&contact.id).is_some()
+                    && self.sessions.lock().await.contains_key(&contact.id);
+                if crossed && ours_stands(&self.identity.card().sign_pk, &contact.identity_sign) {
+                    // Both opened a session at once. Ours stands; theirs is
+                    // read for what it says and set aside, and they take ours
+                    // when it reaches them.
+                    eprintln!("[relay-client] X3dhInit from contact {} crossed ours; ours stands", contact.id);
+                    let (_, plaintext) = self.accept_x3dh(&init, &ad).await?;
+                    self.lost_inits.lock().await.insert(contact.id, init.header.dh);
+                    let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
+                    self.persist_incoming(contact.id, payload).await?;
+                    if init.one_time_id.is_some() {
+                        self.republish_bundle().await;
+                    }
+                    return Ok(());
+                }
+                if crossed {
+                    // Theirs stands: what we sent on ours never decrypts there.
+                    eprintln!("[relay-client] X3dhInit from contact {} crossed ours; theirs stands, resending", contact.id);
+                    let _ = self.db.make_unacked_due(contact.id);
+                }
+                self.own_inits.lock().await.remove(&contact.id);
+                self.lost_inits.lock().await.remove(&contact.id);
                 self.sessions.lock().await.remove(&contact.id);
                 let _ = self.db.delete_session(contact.id);
-                self.tiebreaker_waits.lock().await.remove(&contact.id);
                 let (state, plaintext) = self.accept_x3dh(&init, &ad).await?;
                 self.sessions.lock().await.insert(contact.id, state);
                 self.session_created_at.lock().await.insert(contact.id, now_ms());
@@ -2350,6 +2376,10 @@ impl Core {
                             return Err(CoreError::SealedDrop);
                         }
                         if let Ok(Some(c)) = self.db.find_contact_by_sign_pk(from_pk) {
+                            if self.lost_inits.lock().await.get(&c.id) == Some(&header.dh) {
+                                eprintln!("[relay-client] letter from contact {} on its init that lost to ours; dropped, it resends", c.id);
+                                return Err(CoreError::SealedDrop);
+                            }
                             eprintln!("[relay-client] no session for contact {}, requesting resync", c.id);
                             let _ = self.request_resync(&c).await;
                         }
@@ -2357,6 +2387,9 @@ impl Core {
                     }
                 };
                 self.db.put_session(cid, &sb)?;
+                // They answered on this session: settled, and an init from
+                // them from now on is a new start, not a crossing.
+                self.own_inits.lock().await.remove(&cid);
                 let payload: WirePayload = decode_with_padding_fallback(&pt)?;
                 let is_keepalive = payload.ack_for == Some(0)
                     && payload.origin_msg_id == 0
@@ -2857,8 +2890,6 @@ impl Core {
             self.sessions.lock().await.remove(&contact.id);
             self.session_created_at.lock().await.remove(&contact.id);
             let _ = self.db.delete_session(contact.id);
-            let mut w = self.tiebreaker_waits.lock().await;
-            w.insert(contact.id, now_ms() - TIEBREAKER_TIMEOUT_MS - 1);
         }
         self.send_kick.notify_one();
         Ok(())
@@ -3107,22 +3138,8 @@ impl Core {
         }
         eprintln!("[relay-client] ensure_session: contact {} has NO session, will initiate X3DH", contact.id);
 
-        let me_sign = self.identity.card().sign_pk;
-        let should_initiate = me_sign.as_slice() < contact.identity_sign.as_slice();
-        if !should_initiate {
-            let waited_ms = {
-                let mut w = self.tiebreaker_waits.lock().await;
-                let now = now_ms();
-                let started = *w.entry(contact.id).or_insert(now);
-                now - started
-            };
-            if waited_ms < TIEBREAKER_TIMEOUT_MS {
-                eprintln!("[relay-client] tiebreaker: waiting for X3dhInit from contact {} ({}ms)", contact.id, waited_ms);
-                return Err(CoreError::State);
-            }
-            eprintln!("[relay-client] tiebreaker timeout, initiating anyway for contact {}", contact.id);
-        }
-        self.tiebreaker_waits.lock().await.remove(&contact.id);
+        // No waiting for the other side to go first (10 s on every new
+        // conversation): if both open at once, `ours_stands` picks one.
 
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&contact.identity_sign);
@@ -3179,6 +3196,8 @@ impl Core {
         }
         let pt = pad_payload(&encode_payload(&empty_payload)?);
         let (state, init) = crypto::x3dh_initiate(&self.identity, &bundle, &pt, &ad)?;
+        self.own_inits.lock().await.insert(contact.id, init.header.dh);
+        self.lost_inits.lock().await.remove(&contact.id);
         self.db.put_session(contact.id, &state.to_bytes()?)?;
         self.sessions.lock().await.insert(contact.id, state);
         self.session_created_at.lock().await.insert(contact.id, now_ms());
@@ -3548,6 +3567,13 @@ fn to_hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
     for x in b { s.push_str(&format!("{:02x}", x)); }
     s
+}
+
+/// When two X3dhInits cross, the session opened by the side with the lower
+/// signing key stands — the same answer on both ends (libcore's session.rs
+/// decides the same way).
+fn ours_stands(my_sign: &[u8], their_sign: &[u8]) -> bool {
+    my_sign < their_sign
 }
 
 fn hex_short(b: &[u8]) -> String {
