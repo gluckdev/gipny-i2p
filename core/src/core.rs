@@ -1802,9 +1802,27 @@ impl Core {
         if let Some(tx) = self.relay_for(contact).await {
             return Some(Route::Relay(tx));
         }
+        if self.peer_relay_settling(contact).await {
+            return None;
+        }
         // Their relay is down or unknown. The network holds the letter until
         // they come back, but only if we are in it.
         (self.dht.peer_count() > 0).then_some(Route::Dht)
+    }
+
+    /// Their relay is being dialled (or its old connection is still closing):
+    /// the letter waits in the queue for it rather than going to the network.
+    /// Otherwise the first letters of a burst would take the slow network
+    /// path while the later ones overtake them on the relay, and an agent
+    /// runs commands in the order they arrive.
+    async fn peer_relay_settling(&self, contact: &gipny_libcore::db::Contact) -> bool {
+        let Some(theirs) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else {
+            return false;
+        };
+        matches!(
+            self.peer_relays.lock().await.get(theirs),
+            Some(PeerRelay::Connecting) | Some(PeerRelay::Ready(_))
+        )
     }
 
     /// Hand one envelope to the contact by `route`.
@@ -2720,6 +2738,8 @@ impl Core {
                     self.note_reachability(&contact, true, has_mail).await;
                     Route::Relay(tx)
                 }
+                // Still dialling: the next round sends it there, in order.
+                None if self.peer_relay_settling(&contact).await => continue,
                 // Their relay is away. Leave it in the network, where it waits
                 // for them — and keep the contact marked unreachable, because
                 // nothing has been handed over yet.

@@ -1117,7 +1117,25 @@ impl SessionManager {
         if let Some(tx) = self.relay_for(contact).await {
             return Some(Route::Relay(tx));
         }
+        if self.peer_relay_settling(contact).await {
+            return None;
+        }
         (self.dht.peer_count() > 0).then_some(Route::Dht)
+    }
+
+    /// Their relay is being dialled (or its old connection is still closing):
+    /// the letter waits in the queue for it rather than going to the network.
+    /// Otherwise the first letters of a burst would take the slow network
+    /// path while the later ones overtake them on the relay, and an agent
+    /// runs commands in the order they arrive.
+    async fn peer_relay_settling(&self, contact: &Contact) -> bool {
+        let Some(theirs) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else {
+            return false;
+        };
+        matches!(
+            self.peer_relays.lock().await.get(theirs),
+            Some(PeerRelay::Connecting) | Some(PeerRelay::Ready(_))
+        )
     }
 
     async fn deliver(
@@ -1688,6 +1706,7 @@ impl SessionManager {
             }
             let route = match self.relay_for(&contact).await {
                 Some(out) => Route::Relay(out),
+                None if self.peer_relay_settling(&contact).await => continue,
                 None if self.dht.peer_count() > 0 => {
                     self.maybe_look_up_address(&contact).await;
                     Route::Dht
