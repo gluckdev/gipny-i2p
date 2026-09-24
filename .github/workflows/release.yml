@@ -604,7 +604,7 @@ jobs:
           path: staged/libi2pd.so
           # The jni tree is in the key: changing a compiler flag there must not
           # restore a library built without it.
-          key: i2pd-android-${{ matrix.abi }}-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-jni${{ hashFiles('android-router/jni/**') }}
+          key: i2pd-android-${{ matrix.abi }}-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-jni${{ hashFiles('android-router/jni/**', 'i2p-embed/shim/**') }}
 
       - uses: actions/setup-java@v6
         if: steps.cache.outputs.cache-hit != 'true'
@@ -679,8 +679,9 @@ jobs:
 
           LIB="android-router/libs/${{ matrix.abi }}/libi2pd.so"
           NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
-          for sym in Java_app_gipny_GipnyService_nativeStartSam \
-                     Java_app_gipny_GipnyService_nativeStopSam \
+          # The shim the Rust side links against, and the network callback.
+          for sym in gipny_router_init gipny_router_start gipny_dest_create \
+                     gipny_dest_connect gipny_stream_recv gipny_stream_send \
                      Java_app_gipny_GipnyService_nativeNetworkChanged; do
             # --dynamic: ndk-build strips the copy it installs into libs/, and
             # the dynamic table is what the JVM resolves against anyway.
@@ -728,18 +729,22 @@ jobs:
         with:
           name: router-android-${{ matrix.abi }}
           path: android-router/prebuilt/${{ matrix.abi }}
-      # Laid out as files: Gradle copies it into the APK's assets/netdb, and
-      # GipnyService copies that into an empty netDb (see copyAssetDir).
+      # Compiled into the Rust side (libcore's build.rs): the app lays it out
+      # into an empty netDb itself, with no file for it in the APK.
       - name: stage the network database snapshot
         uses: actions/download-artifact@v8
         with:
           name: netdb-seed
           path: android-router/netdb-seed-archive
-      - name: unpack the snapshot for the APK
+      # The Rust side links the libi2pd.so above (router and shim) instead of
+      # compiling the router, and compiles in the snapshot and the current
+      # reseed certificates.
+      - name: point the Rust build at the router, snapshot and certificates
         run: |
-          mkdir -p android-router/netdb-seed
-          tar -xzf android-router/netdb-seed-archive/i2pd-netdb-seed.tar.gz -C android-router/netdb-seed
-          echo "$(find android-router/netdb-seed -name 'routerInfo-*.dat' | wc -l) routers staged"
+          echo "I2P_EMBED_PREBUILT_DIR=$GITHUB_WORKSPACE/android-router/prebuilt/${{ matrix.abi }}" >> "$GITHUB_ENV"
+          echo "GIPNY_NETDB_SEED=$GITHUB_WORKSPACE/android-router/netdb-seed-archive/i2pd-netdb-seed.tar.gz" >> "$GITHUB_ENV"
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust }}
@@ -819,7 +824,7 @@ jobs:
         # the 32-bit libraries it will never load. It also keeps each APK to
         # its own ABI: Tauri's per-arch flavors filter jniLibs, while the
         # universal flavor would pack every ABI staged in jniLibs.
-        run: cd core && cargo tauri android build --apk --split-per-abi --target ${{ matrix.target }}
+        run: cd core && cargo tauri android build --apk --split-per-abi --target ${{ matrix.target }} --features embedded-i2p
       - name: verify signed APKs
         run: |
           # apksigner is not on PATH — pick the newest build-tools copy.
@@ -840,8 +845,11 @@ jobs:
             # downstream would catch.
             unzip -l "$apk" | grep -F "lib/$2/libi2pd.so"
             unzip -l "$apk" | grep -F "lib/$2/libgipny_lib.so"
-            unzip -l "$apk" | grep -qF 'assets/certificates/reseed/' \
-              || { echo "APK carries no reseed certificates — a fresh router cannot bootstrap"; exit 1; }
+            # The app must run the router it carries, not look for SAM: the
+            # Rust library links libi2pd.so.
+            unzip -p "$apk" "lib/$2/libgipny_lib.so" > "$RUNNER_TEMP/libgipny_lib.so"
+            "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$RUNNER_TEMP/libgipny_lib.so" \
+              | grep -F '[libi2pd.so]' || { echo "libgipny_lib.so does not link libi2pd.so"; exit 1; }
             # Exactly one ABI. A stray second one makes Android pick it as the
             # primary on a device that supports both, and load a directory
             # where libgipny_lib.so may not exist.

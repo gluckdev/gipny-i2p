@@ -1,14 +1,17 @@
-# Builds libi2pd.so: upstream i2pd plus gipny's two JNI entry points.
+# Builds libi2pd.so: the i2p router library (upstream libi2pd), gipny's C shim
+# over its api.h (i2p-embed/shim, the same one the desktop builds compile in),
+# and one JNI entry point for the network callback.
 #
-# Derived from third_party/i2pd-android/app/jni/Android.mk. Differences, both
-# deliberate: i2pd_android.cpp is replaced by gipny_i2pd_jni.cpp (so the library
-# exports Java_app_gipny_GipnyService_* and nothing else), and miniupnpc is
+# The app's Rust side links this library and starts the router itself, in
+# process: no daemon, no SAM, no proxies, no port. So libi2pd_client (SAM,
+# proxies, tunnels), the daemon and its web console, and i18n are not built.
+# Derived from third_party/i2pd-android/app/jni/Android.mk; miniupnpc is
 # dropped along with USE_UPNP.
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 LOCAL_MODULE := i2pd
 LOCAL_CPP_FEATURES := rtti exceptions
-LOCAL_C_INCLUDES += $(IFADDRS_PATH) $(LIB_SRC_PATH) $(LIB_CLIENT_SRC_PATH) $(LANG_SRC_PATH) $(DAEMON_SRC_PATH) $(UPSTREAM_JNI_PATH)
+LOCAL_C_INCLUDES += $(IFADDRS_PATH) $(LIB_SRC_PATH) $(SHIM_PATH)
 LOCAL_STATIC_LIBRARIES := \
 	boost_program_options \
 	crypto \
@@ -17,17 +20,10 @@ LOCAL_LDLIBS := -lz
 
 LOCAL_SRC_FILES := \
 	gipny_i2pd_jni.cpp \
-	$(UPSTREAM_JNI_PATH)/DaemonAndroid.cpp \
+	$(SHIM_PATH)/shim.cpp \
 	$(IFADDRS_PATH)/ifaddrs.cpp \
 	$(IFADDRS_PATH)/bionic_netlink.cpp \
-	$(wildcard $(LIB_SRC_PATH)/*.cpp) \
-	$(wildcard $(LIB_CLIENT_SRC_PATH)/*.cpp) \
-	$(wildcard $(LANG_SRC_PATH)/*.cpp) \
-	$(DAEMON_SRC_PATH)/Daemon.cpp \
-	$(DAEMON_SRC_PATH)/UPnP.cpp \
-	$(DAEMON_SRC_PATH)/HTTPServer.cpp \
-	$(DAEMON_SRC_PATH)/I2PControl.cpp \
-	$(DAEMON_SRC_PATH)/I2PControlHandlers.cpp
+	$(wildcard $(LIB_SRC_PATH)/*.cpp)
 
 include $(BUILD_SHARED_LIBRARY)
 

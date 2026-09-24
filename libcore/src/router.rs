@@ -626,16 +626,30 @@ pub(crate) fn seed_netdb(bin: &Path, router_dir: &Path) -> std::io::Result<usize
 
 /// As [`seed_netdb`], from the snapshot at `seed`.
 pub(crate) fn seed_netdb_from(seed: &Path, router_dir: &Path) -> std::io::Result<usize> {
-    let seed = seed.to_path_buf();
     if !seed.is_file() {
         return Ok(0);
     }
+    seed_netdb_reader(std::fs::File::open(seed)?, router_dir)
+}
+
+/// The snapshot compiled into this binary (`GIPNY_NETDB_SEED` at build time;
+/// the Android build, which has no file beside it that Rust could read).
+#[cfg_attr(not(feature = "embedded-i2p"), allow(dead_code))]
+pub(crate) fn compiled_in_seed() -> Option<&'static [u8]> {
+    #[cfg(gipny_netdb_seed)]
+    return Some(include_bytes!(env!("GIPNY_NETDB_SEED_PATH")));
+    #[cfg(not(gipny_netdb_seed))]
+    None
+}
+
+/// As [`seed_netdb`], from a gzipped tar of the snapshot.
+pub(crate) fn seed_netdb_reader(seed: impl std::io::Read, router_dir: &Path) -> std::io::Result<usize> {
     let netdb = router_dir.join("netDb");
     if count_router_infos(&netdb) >= SEED_BELOW_ROUTERS {
         return Ok(0);
     }
     std::fs::create_dir_all(&netdb)?;
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(std::fs::File::open(&seed)?));
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(seed));
     let mut written = 0;
     for entry in archive.entries()? {
         let mut entry = entry?;

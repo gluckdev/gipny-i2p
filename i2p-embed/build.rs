@@ -14,6 +14,9 @@
 //!                           (default: the checkout's contrib/certificates;
 //!                           CI passes upstream's current set, fetched by
 //!                           scripts/fresh-i2p-certs.sh)
+//!   I2P_EMBED_PREBUILT_DIR  link the libi2pd.so there (Android, where
+//!                           ndk-build compiles libi2pd with the shim) and
+//!                           compile nothing
 //!   I2P_EMBED_SKIP_NATIVE=1 compile nothing native (a `cargo check` of the
 //!                           Rust side on a machine without boost)
 
@@ -33,6 +36,18 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=I2P_EMBED_SKIP_NATIVE");
     if env::var_os("I2P_EMBED_SKIP_NATIVE").is_some_and(|v| v == "1") {
+        return;
+    }
+    // Android: libi2pd and the shim are one shared library built by ndk-build
+    // (android-router/jni, with the NDK's own boost and OpenSSL), packaged
+    // beside ours; link against it instead of compiling anything here.
+    println!("cargo:rerun-if-env-changed=I2P_EMBED_PREBUILT_DIR");
+    if let Some(dir) = env::var_os("I2P_EMBED_PREBUILT_DIR").filter(|v| !v.is_empty()) {
+        let dir = PathBuf::from(dir);
+        assert!(dir.join("libi2pd.so").is_file(), "no libi2pd.so in I2P_EMBED_PREBUILT_DIR={}", dir.display());
+        println!("cargo:rerun-if-changed={}", dir.join("libi2pd.so").display());
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-lib=dylib=i2pd");
         return;
     }
     let lib = i2pd.join("libi2pd");

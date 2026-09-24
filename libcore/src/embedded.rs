@@ -31,8 +31,13 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
     }
     let router_dir = data_dir.join("i2p").join("router");
     std::fs::create_dir_all(&router_dir).map_err(|e| NetError::I2p(format!("router data dir: {e}")))?;
-    if let Some(seed) = crate::router::bundled_seed() {
-        match crate::router::seed_netdb_from(&seed, &router_dir) {
+    let seeded = match (crate::router::compiled_in_seed(), crate::router::bundled_seed()) {
+        (Some(bytes), _) => Some(crate::router::seed_netdb_reader(bytes, &router_dir)),
+        (None, Some(seed)) => Some(crate::router::seed_netdb_from(&seed, &router_dir)),
+        (None, None) => None,
+    };
+    if let Some(seeded) = seeded {
+        match seeded {
             Ok(0) => {}
             Ok(n) => eprintln!("[i2p] laid out {n} known routers from the bundled snapshot"),
             Err(e) => eprintln!("[i2p] bundled network snapshot not used: {e}"),

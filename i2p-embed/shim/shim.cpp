@@ -118,6 +118,10 @@ void gipny_router_stop(void) {
 }
 
 void gipny_router_set_online(int online) {
+	// Before start (or after stop) there is nothing to tell, and a PeerTest
+	// on transports that are not running is not ours to risk: Android's
+	// network callback can fire before the app has started the router.
+	if (!running.load()) return;
 	i2p::transport::transports.SetOnline(online != 0);
 }
 

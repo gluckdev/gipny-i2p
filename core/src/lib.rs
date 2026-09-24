@@ -721,13 +721,14 @@ fn write_router_hint(dir: &std::path::Path, s: gipny_libcore::router::RouterSett
 }
 
 /// Whether a node started for `have` can be handed to a profile that wants
-/// `want`. On Android the settings are the foreground service's business and
-/// ours are ignored outright, so there is nothing to compare.
+/// `want`. On an Android build without the in-process router the settings
+/// are the foreground service's business and ours are ignored outright, so
+/// there is nothing to compare.
 fn router_settings_match(
     have: gipny_libcore::router::RouterSettings,
     want: gipny_libcore::router::RouterSettings,
 ) -> bool {
-    if cfg!(target_os = "android") { return true; }
+    if cfg!(target_os = "android") && !cfg!(feature = "embedded-i2p") { return true; }
     have == want
 }
 

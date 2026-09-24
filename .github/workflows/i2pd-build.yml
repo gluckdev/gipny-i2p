@@ -563,17 +563,18 @@ jobs:
           test -f "$LIB"
           NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
 
-          # The whole point of this leg: the library must export the two symbols
-          # GipnyService binds to. A library that builds but exports neither
-          # produces an APK that installs and silently never connects, which is
-          # exactly the failure this migration is ending.
+          # The whole point of this leg: the library must export the shim the
+          # app's Rust side links against, and the network callback
+          # GipnyService binds to. A library that builds without them produces
+          # an APK that does not load or never connects.
           #
           # --dynamic, because ndk-build strips the copy it installs into libs/
           # and a plain nm then reports "no symbols". The dynamic symbol table is
           # also the right thing to assert: it is what the JVM resolves against
           # at runtime, so this checks the artifact that actually ships.
-          for sym in Java_app_gipny_GipnyService_nativeStartSam \
-                     Java_app_gipny_GipnyService_nativeStopSam; do
+          for sym in gipny_router_init gipny_router_start gipny_dest_create \
+                     gipny_dest_connect gipny_stream_recv gipny_stream_send \
+                     Java_app_gipny_GipnyService_nativeNetworkChanged; do
             if ! "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym"; then
               echo "libi2pd.so does not export $sym"
               "$NM" --dynamic --defined-only "$LIB" | grep -i gipny || true
