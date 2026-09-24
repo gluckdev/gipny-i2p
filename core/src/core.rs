@@ -360,7 +360,13 @@ fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, b
     decode_payload(pt)
 }
 
-pub struct PendingAttachment { pub name: String, pub data: Vec<u8> }
+pub struct PendingAttachment {
+    pub name: String,
+    pub data: Vec<u8>,
+    /// Sent from this file instead of `data` (empty then): sealed in parts
+    /// straight from disk, never whole in memory.
+    pub from: Option<std::path::PathBuf>,
+}
 
 type BundleWaiter = tokio::sync::oneshot::Sender<Option<Vec<u8>>>;
 
@@ -1078,7 +1084,7 @@ impl Core {
             reply.console.exit_code, reply.console.duration_ms, reply.console.truncated,
         );
         let atts = reply.attachments.into_iter()
-            .map(|(name, data)| PendingAttachment { name, data })
+            .map(|(name, data)| PendingAttachment { name, data, from: None })
             .collect();
         match self.send_console(master.contact_id, reply.body, reply.console, atts).await {
             Ok(_) => { let _ = self.events.try_send(CoreEvent::ConsoleActivity { contact_id: master.contact_id }); }
@@ -1933,7 +1939,7 @@ impl Core {
             None => None,
         };
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
-            .filter(|a| a.data.len() <= gipny_libcore::files::INLINE_MAX)
+            .filter(|a| a.from.is_none() && a.data.len() <= gipny_libcore::files::INLINE_MAX)
             .map(|a| WireAttachment { name: a.name, data: a.data }).collect();
         let members = self.db.list_group_members(group_id)?;
         let recipients: Vec<i64> = members.iter()
@@ -3669,13 +3675,17 @@ impl Core {
         let mut stored = Vec::with_capacity(attachments.len());
         let mut parts = Vec::new();
         for a in attachments {
-            if a.data.len() > gipny_libcore::files::INLINE_MAX {
+            if a.from.is_some() || a.data.len() > gipny_libcore::files::INLINE_MAX {
                 let cipher = AttachmentCipher::generate();
                 let mut name = [0u8; 24];
                 fill_random(&mut name);
                 let hex = to_hex(&name);
                 let path = self.data_dir.join(ATTACHMENTS_DIR).join(&hex);
-                let (size, sha) = gipny_libcore::files::seal_from(&a.data[..], &path, &cipher, gipny_libcore::files::CHUNK_SIZE)?;
+                let cs = gipny_libcore::files::CHUNK_SIZE;
+                let (size, sha) = match &a.from {
+                    Some(src) => gipny_libcore::files::seal_from(std::io::BufReader::new(std::fs::File::open(src)?), &path, &cipher, cs)?,
+                    None => gipny_libcore::files::seal_from(&a.data[..], &path, &cipher, cs)?,
+                };
                 stored.push(NewAttachment {
                     name: a.name.clone(), size: size as i64, key: cipher.key().to_vec(), path: hex,
                     chunk_size: Some(gipny_libcore::files::CHUNK_SIZE as i64),

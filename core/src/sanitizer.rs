@@ -55,6 +55,19 @@ pub fn sanitize_attachment_data(filename: &str, data: &[u8]) -> Result<(String, 
     Ok((neutral_name(filename, &clean, canonical_ext, noun), clean))
 }
 
+/// Whether [`sanitize_attachment_data`] would pass this file through
+/// unchanged (only its name tidied), judged from its first bytes and name:
+/// then a large one can be sent from disk without reading it into memory.
+pub fn passes_through(filename: &str, head: &[u8]) -> bool {
+    let ext = extension(filename);
+    sniff(head).is_none() && !CLEANABLE_EXT.contains(&ext.as_str()) && !UNSUPPORTED_EXT.contains(&ext.as_str())
+}
+
+/// The name a file passed through keeps.
+pub fn passed_name(filename: &str) -> String {
+    strip_paste_prefix(filename).to_string()
+}
+
 fn unsupported(what: &str) -> String {
     format!("приватность вложений: из формата {what} метаданные удалить нельзя — конвертируйте в JPEG или PNG, либо {HINT}")
 }
@@ -434,6 +447,15 @@ fn clean_pdf(d: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_passes_through_can_go_from_disk() {
+        assert!(passes_through("backup.tar.gz", b"\x1f\x8b\x08\x00"));
+        assert!(passes_through("notes.bin", &[0, 1, 2, 3]));
+        assert!(!passes_through("photo.bin", b"\xff\xd8\xff\xe0"), "a JPEG by content, whatever the name");
+        assert!(!passes_through("scan.pdf", b"%PDF-1.7"));
+        assert!(!passes_through("fake.jpg", b"not really"), "a cleanable extension goes through the filter");
+    }
 
     fn contains(hay: &[u8], needle: &[u8]) -> bool {
         hay.windows(needle.len()).any(|w| w == needle)

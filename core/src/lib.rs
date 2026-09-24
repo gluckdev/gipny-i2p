@@ -1285,7 +1285,7 @@ async fn forward_message(
     let mut pending: Vec<PendingAttachment> = Vec::with_capacity(attachments.len());
     for a in &attachments {
         let data = core.read_attachment(a).map_err(err)?;
-        pending.push(PendingAttachment { name: a.name.clone(), data });
+        pending.push(PendingAttachment { name: a.name.clone(), data, from: None });
     }
     if let Some(cid) = contact_id {
         core.send_message(cid, src.body, pending, None, None).await.map_err(err)
@@ -1309,7 +1309,7 @@ async fn send_message(
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("file").to_string();
         let data_b64 = a.get("data").and_then(|v| v.as_str()).ok_or("bad attachment")?;
         let data = base64_decode(data_b64).ok_or("bad base64")?;
-        pending.push(PendingAttachment { name, data });
+        pending.push(PendingAttachment { name, data, from: None });
     }
     let ttl = ttl_secs.map(std::time::Duration::from_secs);
     core_of(&ctx).await?.send_message(contact_id, body, pending, ttl, reply_to).await.map_err(err)
@@ -1339,17 +1339,19 @@ async fn send_message_paths(
 }
 
 /// Past 128 KiB a file goes in parts (libcore::files), so the old 12 MiB cap
-/// (one letter) is gone; this one is what is read into memory to send.
+/// (one letter) is gone. Most large files are sent from disk (up to
+/// files::MAX_FILE_BYTES); this caps the ones read into memory to be
+/// cleaned of metadata (photos, PDF).
 const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024 * 1024;
 
 fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<PendingAttachment, String> {
     if sanitize {
         let (name, data) = sanitizer::sanitize_attachment_data(&name, &data)?;
-        Ok(PendingAttachment { name, data })
+        Ok(PendingAttachment { name, data, from: None })
     } else {
         // Console uploads are operational files: scripts, configs and command
         // arguments rely on the original name and exact bytes.
-        Ok(PendingAttachment { name, data })
+        Ok(PendingAttachment { name, data, from: None })
     }
 }
 
@@ -1363,6 +1365,28 @@ fn paste_dir() -> std::path::PathBuf {
 fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, String> {
     let path = std::path::PathBuf::from(p);
     let meta = std::fs::metadata(&path).map_err(err)?;
+    let name = path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "file".into());
+    // Large, and nothing the privacy filter would change: sent from disk in
+    // parts, never read whole (pasted copies stay the in-memory way: they are
+    // removed right after). Up to what files in parts carry.
+    if meta.len() > gipny_libcore::files::INLINE_MAX as u64 && !path.starts_with(paste_dir()) {
+        use std::io::Read;
+        let mut head = [0u8; 64];
+        let n = std::fs::File::open(&path).and_then(|mut f| f.read(&mut head)).map_err(err)?;
+        if !sanitize || sanitizer::passes_through(&name, &head[..n]) {
+            if meta.len() > gipny_libcore::files::MAX_FILE_BYTES {
+                return Err(format!(
+                    "файл слишком большой: {} ({} МБ, лимит {} МБ)",
+                    p, meta.len() / (1024 * 1024), gipny_libcore::files::MAX_FILE_BYTES / (1024 * 1024)
+                ));
+            }
+            let name = if sanitize { sanitizer::passed_name(&name) } else { name };
+            return Ok(PendingAttachment { name, data: Vec::new(), from: Some(path) });
+        }
+    }
     if meta.len() > MAX_ATTACHMENT_BYTES {
         return Err(format!(
             "файл слишком большой: {} ({} МБ, лимит {} МБ)",
@@ -1370,10 +1394,6 @@ fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, Str
         ));
     }
     let data = std::fs::read(&path).map_err(err)?;
-    let name = path.file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| "file".into());
     let attachment = prepare_attachment(name, data, sanitize)?;
 
     // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
@@ -1678,7 +1698,7 @@ async fn send_group_message(
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("file").to_string();
         let data_b64 = a.get("data").and_then(|v| v.as_str()).ok_or("bad attachment")?;
         let data = base64_decode(data_b64).ok_or("bad base64")?;
-        pending.push(PendingAttachment { name, data });
+        pending.push(PendingAttachment { name, data, from: None });
     }
     let ttl = ttl_secs.map(std::time::Duration::from_secs);
     core_of(&ctx).await?.send_to_group(&gid, body, pending, ttl, reply_to).await.map_err(err)
