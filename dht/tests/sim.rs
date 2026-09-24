@@ -174,11 +174,36 @@ async fn an_absent_node_is_waited_for_once() {
     let started = tokio::time::Instant::now();
     for i in 0..5u8 {
         let letter = stored(items::mail(&a.pair_with(&b), &b.sign_pk(), net.now(), &[i; 16]).unwrap());
-        assert!(alice.put(letter).await >= 2, "letter {i} was not stored elsewhere");
+        assert!(alice.put(letter).await >= 1, "letter {i} was not stored elsewhere");
     }
     let dials = net.dials.lock().unwrap().get("node-3").copied().unwrap_or(0);
     assert_eq!(dials, 1, "the silent node was dialled {dials} times");
     assert!(started.elapsed() < config().dial_timeout * 2, "took {:?}", started.elapsed());
+}
+
+/// A letter counts as in the network only once another node holds it; and a
+/// node whose only peer failed once still tries it rather than giving up.
+/// e2e run 35963073832: three answers "left in the network" in one
+/// millisecond, all on their writer, who then closed.
+#[tokio::test(start_paused = true)]
+async fn a_letter_is_in_the_network_only_when_someone_else_holds_it() {
+    let net = Net::new();
+    let seed = new_node(&net, Some("seed"), true);
+    let bob = new_node(&net, Some("bob"), true);
+    bob.add_candidates(&["seed".to_string()], true);
+    bob.bootstrap().await;
+    let (a, b) = (Person::new(), Person::new());
+    let letter = |n: u8| stored(items::mail(&a.pair_with(&b), &b.sign_pk(), net.now(), &[n; 16]).unwrap());
+
+    // The seed is away: our own copy is kept, but nothing is in the network.
+    net.offline.lock().unwrap().insert("seed".into());
+    assert_eq!(bob.put(letter(1)).await, 0, "a copy only we hold counted as stored");
+
+    // The seed is back. It failed once, and it is the only node we know: it
+    // must still be tried.
+    net.offline.lock().unwrap().remove("seed");
+    assert_eq!(bob.put(letter(2)).await, 1, "the only known node was not tried after one failure");
+    let _ = seed;
 }
 
 #[tokio::test]

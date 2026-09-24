@@ -243,13 +243,21 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     /// Nodes that failed their last exchange are left out until they answer
     /// again (`maintain` pings them): otherwise every lookup waits out the
     /// timeout on the same absent node, until it has failed `max_failures`
-    /// times — minutes per letter while a contact is away.
+    /// times — minutes per letter while a contact is away. Unless nothing else
+    /// is left: one slow try at a node that may be back beats no try at all,
+    /// and with a single known node (a seed) one failure would otherwise shut
+    /// this node out of the network until `maintain` (e2e run 35963073832).
     fn closest(&self, target: &DhtKey, n: usize, storing_only: bool) -> Vec<NodeInfo> {
-        let mut list: Vec<NodeInfo> = self.peers().values()
+        let peers = self.peers();
+        let usable = |p: &&Peer| !storing_only || p.info.stores;
+        let mut list: Vec<NodeInfo> = peers.values()
+            .filter(usable)
             .filter(|p| p.failures == 0)
-            .filter(|p| !storing_only || p.info.stores)
             .map(|p| p.info.clone())
             .collect();
+        if list.is_empty() {
+            list = peers.values().filter(usable).map(|p| p.info.clone()).collect();
+        }
         list.sort_by_key(|i| distance(&i.id(), target));
         list.truncate(n);
         list
@@ -416,16 +424,22 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     }
 
     /// Store an item on the `k` closest storing nodes (and here, if this node
-    /// stores). Returns how many copies exist now.
+    /// stores). Returns how many **other** nodes hold it now.
+    ///
+    /// Our own copy is kept but not counted. Whoever puts a letter is usually
+    /// about to leave — that is why it goes into the network at all — and a
+    /// copy that leaves with its writer is no copy. Counting it let a letter
+    /// be "in the network" while held by its sender alone, and lost when the
+    /// sender closed (e2e run 35963073832: three answers stored in the same
+    /// millisecond, all on the writer).
     pub async fn put(&self, item: StoredItem) -> usize {
         let now = self.now_ms();
-        let mut copies = 0;
-        if self.stores() && self.storage.put(item.clone(), now).is_ok() {
-            copies += 1;
+        if self.stores() {
+            let _ = self.storage.put(item.clone(), now);
         }
         let targets: Vec<NodeInfo> = self.lookup(&item.key).await.into_iter().filter(|n| n.stores).collect();
         let results = join_all(targets.iter().map(|n| self.store_at(n, &item))).await;
-        copies + results.into_iter().filter(|ok| *ok).count()
+        results.into_iter().filter(|ok| *ok).count()
     }
 
     async fn items_at(&self, node: &NodeInfo, key: &DhtKey) -> Option<Vec<StoredItem>> {
