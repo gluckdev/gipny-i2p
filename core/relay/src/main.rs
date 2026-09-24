@@ -26,6 +26,13 @@ type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>, Ar
 /// sits idle this long (same limits as libcore's relay_server).
 const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
+/// A client says something at least every 20 s (a ping, if nothing else); one
+/// silent this long is gone, though its close never came, and its connection
+/// is dropped rather than kept taking its mail into nowhere.
+#[cfg(not(test))]
+const CLIENT_SILENT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const CLIENT_SILENT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -322,10 +329,17 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     // middle of a frame for its length (as in libcore's relay_server.rs).
     let (rd, mut wr) = tokio::io::split(stream);
     let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let silent = tokio::time::sleep(CLIENT_SILENT);
+    tokio::pin!(silent);
     loop {
         tokio::select! {
+            () = &mut silent => {
+                eprintln!("[relay] client silent for {CLIENT_SILENT:?}, dropping it");
+                break;
+            }
             (rd, frame) = &mut reading => {
                 reading = Box::pin(read_frame(rd));
+                silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
                 let frame = frame?;
                 match frame {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {

@@ -54,6 +54,13 @@ pub type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>
 const PENDING_LIMIT: usize = 200;
 /// How often a connected client is re-offered messages it has not acked.
 const PUSH_REFRESH: Duration = Duration::from_secs(30);
+/// A client says something at least every 20 s (a ping, if nothing else); one
+/// silent this long is gone, though its close never came, and its connection
+/// is dropped rather than kept taking its mail into nowhere.
+#[cfg(not(test))]
+const CLIENT_SILENT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const CLIENT_SILENT: Duration = Duration::from_secs(2);
 const GC_INTERVAL: Duration = Duration::from_secs(600);
 const PUSH_CAPACITY: usize = 512;
 
@@ -475,10 +482,17 @@ where
     // pushed again).
     let (rd, mut wr) = tokio::io::split(stream);
     let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let silent = tokio::time::sleep(CLIENT_SILENT);
+    tokio::pin!(silent);
     loop {
         tokio::select! {
+            () = &mut silent => {
+                eprintln!("[relay-server] client silent for {CLIENT_SILENT:?}, dropping it");
+                break;
+            }
             (rd, frame) = &mut reading => {
                 reading = Box::pin(read_frame(rd));
+                silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
                 match frame? {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
                         send(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
@@ -966,6 +980,16 @@ mod tests {
         let mut got = vec![first];
         got.extend(drain(&mut b, Duration::from_millis(300)).await);
         assert_eq!(got.len(), 3, "each once: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_silent_client_is_dropped() {
+        let rig = Rig::new();
+        let bob = Identity::generate();
+        let _quiet = rig.login(&bob).await;
+        assert!(rig.connections.read().await.contains_key(&bob.card().sign_pk));
+        tokio::time::sleep(CLIENT_SILENT + Duration::from_millis(500)).await;
+        assert!(!rig.connections.read().await.contains_key(&bob.card().sign_pk), "no longer taking its mail");
     }
 
     #[tokio::test]
