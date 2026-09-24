@@ -1740,7 +1740,7 @@ impl SessionManager {
                 self.send_kick.notify_one();
             }
             EnvelopeBlob::Ratchet { header, ciphertext } => {
-                let mut decrypted: Option<(i64, Vec<u8>, Vec<u8>, Contact)> = None;
+                let mut decrypted: Option<(i64, Vec<u8>, Contact)> = None;
                 let candidates: Vec<Contact> = if sealed {
                     self.db.list_contacts()?.into_iter().filter(|c| c.trust != TrustLevel::Blocked).collect()
                 } else {
@@ -1764,14 +1764,24 @@ impl SessionManager {
                             None => continue,
                         },
                     };
+                    // Saved before the lock goes: two letters of one contact
+                    // read at once (several connections) must not write their
+                    // states back in the other order.
+                    let attempt = match attempt {
+                        Ok((pt, sb_res)) => {
+                            let sb = sb_res?;
+                            self.db.put_session(c.id, &sb)?;
+                            Ok(pt)
+                        }
+                        Err(e) => Err(e),
+                    };
                     drop(sess);
-                    if let Ok((pt, sb_res)) = attempt {
-                        let sb = sb_res?;
-                        decrypted = Some((c.id, pt, sb, c));
+                    if let Ok(pt) = attempt {
+                        decrypted = Some((c.id, pt, c));
                         break;
                     }
                 }
-                let (cid, pt, sb, contact) = match decrypted {
+                let (cid, pt, contact) = match decrypted {
                     Some(x) => x,
                     None => {
                         // On a session of theirs that lost to ours: sent before
@@ -1807,7 +1817,6 @@ impl SessionManager {
                         return Err(SessionError::Crypto(CryptoError::Mac));
                     }
                 };
-                self.db.put_session(cid, &sb)?;
                 // They answered on this session: it is settled, and an init
                 // from them from now on is a new start, not a crossing.
                 self.own_inits.lock().await.remove(&cid);
