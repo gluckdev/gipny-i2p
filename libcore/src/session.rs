@@ -584,6 +584,8 @@ pub struct SessionManager {
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     dht: Arc<dht_client::Node>,
+    /// Our own relay when it runs in this process: reached over a pipe.
+    local_relay: std::sync::Mutex<Option<Arc<crate::EphemeralRelay>>>,
     dht_addr_asked: Arc<Mutex<HashMap<i64, Instant>>>,
     dht_kick: Arc<tokio::sync::Notify>,
     send_kick: Arc<tokio::sync::Notify>,
@@ -614,6 +616,7 @@ impl SessionManager {
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             dht,
+            local_relay: std::sync::Mutex::new(None),
             dht_addr_asked: Arc::new(Mutex::new(HashMap::new())),
             dht_kick: Arc::new(tokio::sync::Notify::new()),
             send_kick: Arc::new(tokio::sync::Notify::new()),
@@ -646,6 +649,12 @@ impl SessionManager {
     /// Relay-network nodes that have answered us so far.
     pub fn dht_peer_count(&self) -> usize {
         self.dht.peer_count()
+    }
+
+    /// The relay this process hosts for us. While `relay_onion` names it, we
+    /// collect from it over a pipe instead of out through i2p and back.
+    pub fn set_local_relay(&self, relay: Arc<crate::EphemeralRelay>) {
+        *self.local_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(relay);
     }
 
     /// Announce an embedded relay as this node's reachable DHT endpoint.
@@ -1019,7 +1028,14 @@ impl SessionManager {
                     continue;
                 }
                 eprintln!("[session] relay connect {}", &onion[..16.min(onion.len())]);
-                match relay::connect(&this.node, &onion, &this.identity).await {
+                let local = this.local_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+                    .filter(|r| r.address() == onion)
+                    .map(|r| r.connect_local());
+                let connected = match local {
+                    Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
+                    None => relay::connect(&this.node, &onion, &this.identity).await,
+                };
+                match connected {
                     Ok(client) => {
                         eprintln!("[session] relay connected & authed");
                         backoff = RECONNECT_INITIAL_MS;

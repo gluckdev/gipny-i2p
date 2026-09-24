@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- GipnyService tells the embedded router when the default network changes. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Reading a contact's QR. The webview raises the runtime prompt itself
          (wry's RustWebChromeClient); the app never opens the camera otherwise. -->
     <uses-permission android:name="android.permission.CAMERA" />

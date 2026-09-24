@@ -175,6 +175,19 @@ pub async fn connect(
     }
 }
 
+/// Connect to our own relay running in this process, over the pipe
+/// [`crate::EphemeralRelay::connect_local`] hands out, instead of out through
+/// i2p and back. `address` is that relay's, for the `AuthV2` signature.
+pub async fn connect_local(
+    stream: std::pin::Pin<Box<dyn crate::net::DuplexStream>>,
+    address: &str,
+    identity: &Arc<Identity>,
+) -> Result<RelayClient> {
+    let hash = destination_hash(address)
+        .ok_or_else(|| RelayError::Proto("own relay's address does not decode".into()))?;
+    handshake(stream, identity, Some(&hash)).await
+}
+
 /// Connect to a contact's relay, to deposit a message where they collect.
 ///
 /// Unlike [`connect`], a failure here says nothing about our own session: a

@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -22,9 +24,11 @@ class GipnyService : Service() {
     // i2pd.conf written by `prepareDataDir` before the daemon starts.
     private external fun nativeStartSam(dataDir: String, samListen: String): String?
     private external fun nativeStopSam()
+    private external fun nativeNetworkChanged(online: Boolean)
 
     private val routerExecutor = Executors.newSingleThreadExecutor()
     private var samStarted = false
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var destroyed = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -75,6 +79,7 @@ class GipnyService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        unwatchNetwork()
         routerExecutor.execute { stopEmbeddedRouter() }
         routerExecutor.shutdown()
         super.onDestroy()
@@ -103,7 +108,51 @@ class GipnyService : Service() {
             }
             samStarted = true
             android.util.Log.i(TAG, "SAM bridge ready on port $SAM_PORT")
-            if (destroyed) stopEmbeddedRouter()
+            if (destroyed) stopEmbeddedRouter() else watchNetwork()
+        }
+    }
+
+    /**
+     * Tell the router when the phone's default network changes.
+     *
+     * Without it i2pd keeps what it measured on the network it started on: after
+     * a Wi-Fi/LTE switch or a long sleep it had no tunnels, could not publish
+     * itself, and our own relay was "not found" for as long as the app ran.
+     * A new default network is offline-then-online for the router, which makes
+     * it test how that network sees it; losing the default network is offline.
+     * Upstream i2pd-android does the same from its own NetworkCallback.
+     */
+    private fun watchNetwork() {
+        if (networkCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (!samStarted || destroyed) return
+                android.util.Log.i(TAG, "default network changed; router re-tests reachability")
+                nativeNetworkChanged(false)
+                nativeNetworkChanged(true)
+            }
+
+            override fun onLost(network: Network) {
+                if (!samStarted || destroyed) return
+                android.util.Log.i(TAG, "default network lost")
+                nativeNetworkChanged(false)
+            }
+        }
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        } catch (t: Throwable) {
+            android.util.Log.e(TAG, "cannot watch the network", t)
+        }
+    }
+
+    private fun unwatchNetwork() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(callback)
+        } catch (_: Throwable) {
         }
     }
 

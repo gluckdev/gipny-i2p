@@ -17,7 +17,7 @@
 | Новый флаг командной строки | `src/main.rs`: `Args`, `parse_args`, `usage` + раздел Options в `README.txt` внутри `release.yml` |
 | Что делает команда консоли, справка, таймауты, лимиты вывода | `libcore/src/agent.rs` (`handle_console_request`, `run_command`, `HELP_TEXT`) |
 | Разбор GRANT, REVOKE, OFF | `libcore/src/agent.rs` (`parse_control`) и цикл событий в `main` |
-| Встроенный и внешний релей агента | `main` в `src/main.rs` (`EphemeralRelay::start`, `set_relay_onion`) |
+| Встроенный и внешний релей агента | `main` в `src/main.rs` (`EphemeralRelay::start`, `set_local_relay` — свой релей читается по трубе, `set_relay_onion`, `join_dht` — вход в сеть релеев через узел самого `SessionManager`) |
 | Автообновление агента | `run_update_loop` + `libcore/src/update.rs` (`Component::Agent`, `install_agent_binary_now`) |
 | Приём и отправка сообщений агентом | `libcore/src/session.rs` |
 | Юнит systemd | `gipny-agent.service` |

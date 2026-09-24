@@ -516,6 +516,7 @@ impl Core {
         if core.relay_mode() == RelayMode::Builtin {
             core.start_hosted_relay();
         }
+        core.clone().warm_peer_relays();
         if let Some(m) = core.agent_master() {
             // Commands that arrived while the app was closed are on disk with
             // their pending markers; pick them up in order.
@@ -604,6 +605,38 @@ impl Core {
         // The open connection to the old relay notices at its next ping that
         // it is no longer the one to collect from, and the loop redials.
         Ok(())
+    }
+
+    /// Open the connections to the relays of the people written to most
+    /// recently, at start, while our own relay is still building.
+    ///
+    /// A contact's relay is dialled on first use, and finding its LeaseSet and
+    /// opening the stream costs 5–30 s — which the first letter after a start
+    /// used to wait for, or, when the dial had not finished, the letter went
+    /// the slow way through the relay network. They were dialled at start only
+    /// once our relay was up, to announce its address: 20–40 s later. This
+    /// learns nothing new about us — the announcement goes to every contact
+    /// anyway. `relay_for` dials in the background and never blocks.
+    fn warm_peer_relays(self: Arc<Self>) {
+        const WARM: usize = 5;
+        let Ok(mut contacts) = self.db.list_contacts() else { return };
+        contacts.retain(|c| {
+            c.trust != TrustLevel::Blocked
+                && c.request_state != RequestState::Incoming
+                && c.relay_address.as_deref().is_some_and(|r| !r.trim().is_empty())
+                && c.last_message_at.is_some()
+        });
+        contacts.sort_by_key(|c| std::cmp::Reverse(c.last_message_at));
+        contacts.truncate(WARM);
+        if contacts.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            for contact in &contacts {
+                let _ = self.relay_for(contact).await;
+            }
+            eprintln!("[relay-client] dialling the relays of {} recent contact(s) ahead of use", contacts.len());
+        });
     }
 
     /// Starts the relay this client hosts for itself, unless it is already
@@ -1752,7 +1785,16 @@ impl Core {
                     continue;
                 }
                 eprintln!("[relay-client] connecting to {}", &onion[..16.min(onion.len())]);
-                match relay::connect(&this.node, &onion, &this.identity).await {
+                // Our own built-in relay is in this process: talk to it over a
+                // pipe, not out through i2p and back in.
+                let local = this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+                    .filter(|r| r.address() == onion)
+                    .map(|r| r.connect_local());
+                let connected = match local {
+                    Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
+                    None => relay::connect(&this.node, &onion, &this.identity).await,
+                };
+                match connected {
                     Ok(client) => {
                         eprintln!("[relay-client] connected & authed");
                         this.note_relay_dial(None);

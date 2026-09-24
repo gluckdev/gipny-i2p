@@ -16,6 +16,7 @@
 #include <string>
 
 #include "DaemonAndroid.h"
+#include "Transports.h"
 
 namespace {
 
@@ -59,6 +60,20 @@ Java_app_gipny_GipnyService_nativeStartSam(JNIEnv *env, jobject /*thiz*/, jstrin
 JNIEXPORT void JNICALL
 Java_app_gipny_GipnyService_nativeStopSam(JNIEnv * /*env*/, jobject /*thiz*/) {
 	i2p::android::stop();
+}
+
+/*
+ * The phone's network changed: Wi-Fi to LTE and back, or out of sleep. The
+ * router is not told otherwise, and keeps the reachability it measured on the
+ * old network — on a phone that went away and came back, no tunnels and
+ * "Destination to connect not found" for our own relay (seen 2026-09-24 on a
+ * Realme after a Wi-Fi/LTE switch). Going offline and online again makes it
+ * test how the new network sees it (Transports::SetOnline → PeerTest), as
+ * upstream i2pd-android does from its NetworkCallback.
+ */
+JNIEXPORT void JNICALL
+Java_app_gipny_GipnyService_nativeNetworkChanged(JNIEnv * /*env*/, jobject /*thiz*/, jboolean online) {
+	i2p::transport::transports.SetOnline(online == JNI_TRUE);
 }
 
 } // extern "C"
