@@ -1,5 +1,5 @@
-# The bundled i2p router binary (i2pd[.exe]) is staged here at build time.
-# CI builds it from ../../third_party/i2pd; for local dev put a copy here, or
-# point GIPNY_I2P_BIN at one. tauri.conf.json bundles it via `resources/i2pd*`,
-# and that glob must match at least one file or tauri-build fails the build.
-# The binary itself is gitignored — only this placeholder keeps the dir present.
+# Files bundled with the desktop app are staged here at build time: now only
+# the network database snapshot, i2pd-netdb-seed.tar.gz (release.yml; the
+# router itself is compiled into the app). tauri.conf.json bundles
+# `resources/i2pd*`, and that glob must match at least one file or tauri-build
+# fails the build. Staged files are gitignored — this one keeps the dir.
