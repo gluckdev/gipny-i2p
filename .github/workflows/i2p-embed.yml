@@ -16,6 +16,13 @@ on:
 permissions:
   contents: read
 
+# One run per branch, the newest: a push to a branch with an open PR fired
+# both `push` and `pull_request`, two full runs of every job for one commit,
+# and an older commit's run went on after a newer one was pushed.
+concurrency:
+  group: i2p-embed-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   live:
     name: i2p-embed (in-process router, live)
