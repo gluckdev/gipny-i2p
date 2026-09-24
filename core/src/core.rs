@@ -147,7 +147,11 @@ const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
 /// prekey may be handed to someone else meanwhile, and an init on a spent one
 /// is dropped at the far end.
 const BUNDLE_PREFETCH_TTL: Duration = Duration::from_secs(120);
-const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
+/// The largest letter a relay frame carries once padded: the next padding
+/// bucket (16 MiB) plus the ratchet header and AEAD tag is over `MAX_FRAME`,
+/// so anything past the 4 MiB bucket never arrived (it was 14 MiB, and was
+/// dropped at the relay). Large files go in parts; see `files`.
+const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
@@ -186,6 +190,9 @@ pub enum CoreEvent {
     },
     MessageSent { message_id: i64 },
     MessageDelivered { message_id: i64 },
+    /// It will not go: too large for one letter (files go in parts; this is
+    /// a letter that could not). Marked sent so it is not retried forever.
+    MessageFailed { message_id: i64, reason: String },
     /// Something arrived from this contact that they wrote at `at_ms`.
     ///
     /// The only presence signal there is: nobody announces that they are
@@ -3295,7 +3302,7 @@ impl Core {
             eprintln!("[relay-client] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
             if payload.origin_msg_id > 0 {
                 let _ = self.db.mark_sent(payload.origin_msg_id as i64);
-                let _ = self.events.try_send(CoreEvent::MessageSent { message_id: payload.origin_msg_id as i64 });
+                let _ = self.events.try_send(CoreEvent::MessageFailed { message_id: payload.origin_msg_id as i64, reason: "too large for one letter".into() });
             }
             return Err(CoreError::State);
         }

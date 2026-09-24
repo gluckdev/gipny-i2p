@@ -77,7 +77,11 @@ const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
 const BUNDLE_PREFETCH_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
 const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
-const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
+/// The largest letter a relay frame carries once padded: the next padding
+/// bucket (16 MiB) plus the ratchet header and AEAD tag is over `MAX_FRAME`,
+/// so anything past the 4 MiB bucket never arrived (it was 14 MiB, and was
+/// dropped at the relay). Large files go in parts; see `files`.
+const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const DHT_ADDRESS_LOOKUP_EVERY: Duration = Duration::from_secs(10 * 60);
@@ -726,6 +730,9 @@ pub enum SessionEvent {
     Disconnected,
     IncomingPayload { contact_id: i64, payload: WirePayload, message_id: i64 },
     MessageDelivered { message_id: i64 },
+    /// It will not go: too large for one letter (files go in parts; this is
+    /// a letter that could not). Marked sent so it is not retried forever.
+    MessageFailed { message_id: i64, reason: String },
     MessageEdited { message_id: i64, new_body: String, buttons: Option<Vec<Vec<WireButton>>> },
     MessagePinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
     MessageUnpinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
@@ -2212,6 +2219,7 @@ impl SessionManager {
             eprintln!("[session] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
             if payload.origin_msg_id > 0 {
                 let _ = self.db.mark_sent(payload.origin_msg_id as i64);
+                let _ = self.events.send(SessionEvent::MessageFailed { message_id: payload.origin_msg_id as i64, reason: "too large for one letter".into() }).await;
             }
             return Err(SessionError::State);
         }

@@ -276,6 +276,7 @@ impl Bot {
                     SessionEvent::ContactUpdated { contact_id } => eprintln!("[bot] contact updated id={}", contact_id),
                     SessionEvent::ContactWiped { contact_id } => eprintln!("[bot] contact {} deleted us; chat removed", contact_id),
                     SessionEvent::MessageDelivered { message_id } => eprintln!("[bot] delivered mid={}", message_id),
+                    SessionEvent::MessageFailed { message_id, reason } => eprintln!("[bot] not sent mid={}: {}", message_id, reason),
                     SessionEvent::MessageEdited { message_id, .. } => eprintln!("[bot] edited mid={}", message_id),
                     SessionEvent::MessagePinned { message_id, .. } => eprintln!("[bot] pinned mid={}", message_id),
                     SessionEvent::MessageUnpinned { message_id, .. } => eprintln!("[bot] unpinned mid={}", message_id),

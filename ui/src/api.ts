@@ -226,6 +226,7 @@ export type CoreEvent =
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageSent: { message_id: number } }
   | { MessageDelivered: { message_id: number } }
+  | { MessageFailed: { message_id: number; reason: string } }
   | { Typing: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; typing: boolean } }
   | { ContactAdded: { contact_id: number } }
   | { ContactUpdated: { contact_id: number } }
