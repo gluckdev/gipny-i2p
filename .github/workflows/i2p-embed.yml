@@ -274,8 +274,9 @@ jobs:
           E2E_IN_PROCESS_RELAYS: '1'
           # bot-b writes first too: the two sessions open at once and cross.
           E2E_BOTH_FIRST: '1'
-          # Then a 5 MiB file, in parts, and its throughput in the log.
-          E2E_BIG_FILE: '5242880'
+          # Then a 20 MiB file, in parts, and its throughput in the log (one stream,
+          # window 16: 5 MiB at 210 KiB/s, run 36046190496).
+          E2E_BIG_FILE: '20971520'
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '2100'
           E2E_WORK_DIR: ${{ runner.temp }}/e2e
