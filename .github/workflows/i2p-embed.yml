@@ -25,6 +25,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: check out i2pd
         run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: install boost, OpenSSL, zlib
         run: |
           sudo apt-get update -qq

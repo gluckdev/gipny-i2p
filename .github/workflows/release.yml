@@ -302,6 +302,9 @@ jobs:
       - name: check out i2pd (compiled into the app)
         if: ${{ matrix.embedded }}
         run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        if: ${{ matrix.embedded }}
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -400,6 +403,8 @@ jobs:
           git submodule update --init --depth 1 third_party/i2pd
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: build and package
         run: |
           export I2P_EMBED_STATIC_LIBS=boost_program_options
@@ -444,6 +449,8 @@ jobs:
           git submodule update --init --depth 1 third_party/i2pd
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

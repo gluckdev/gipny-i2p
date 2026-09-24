@@ -10,6 +10,10 @@
 //!   I2P_EMBED_STATIC_LIBS   or only these, comma separated (e.g.
 //!                           "boost_program_options")
 //!   I2P_EMBED_I2PD_SRC      another i2pd checkout (default: the submodule)
+//!   I2P_EMBED_CERTS_DIR     the reseed/family certificates to compile in
+//!                           (default: the checkout's contrib/certificates;
+//!                           CI passes upstream's current set, fetched by
+//!                           scripts/fresh-i2p-certs.sh)
 //!   I2P_EMBED_SKIP_NATIVE=1 compile nothing native (a `cargo check` of the
 //!                           Rust side on a machine without boost)
 
@@ -21,7 +25,11 @@ fn main() {
     let i2pd = env::var_os("I2P_EMBED_I2PD_SRC")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest.join("../third_party/i2pd"));
-    certificates(&i2pd.join("contrib/certificates"));
+    println!("cargo:rerun-if-env-changed=I2P_EMBED_CERTS_DIR");
+    let certs = env::var_os("I2P_EMBED_CERTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| i2pd.join("contrib/certificates"));
+    certificates(&certs);
 
     println!("cargo:rerun-if-env-changed=I2P_EMBED_SKIP_NATIVE");
     if env::var_os("I2P_EMBED_SKIP_NATIVE").is_some_and(|v| v == "1") {
@@ -110,6 +118,11 @@ fn certificates(dir: &std::path::Path) {
         }
     }
     files.sort();
+    assert!(
+        files.iter().any(|(n, _)| n.starts_with("reseed/")),
+        "no reseed certificates under {} — a router could never bootstrap",
+        dir.display()
+    );
     let mut out = String::from("pub static CERTIFICATES: &[(&str, &[u8])] = &[\n");
     for (name, path) in &files {
         out.push_str(&format!("    ({name:?}, include_bytes!({:?})),\n", path.canonicalize().unwrap()));

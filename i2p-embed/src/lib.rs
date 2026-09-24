@@ -160,8 +160,18 @@ mod certs {
 }
 
 /// Lay out the certificates compiled in (i2pd's reseed and family ones)
-/// under `dir`, rewriting any that differ: they follow the binary.
+/// under `dir`, rewriting any that differ and removing any this build does
+/// not carry (a revoked one must not outlive the build that dropped it).
 pub fn write_certificates(dir: &std::path::Path) -> std::io::Result<usize> {
+    for sub in ["reseed", "family"] {
+        let Ok(entries) = std::fs::read_dir(dir.join(sub)) else { continue };
+        for entry in entries.flatten() {
+            let name = format!("{sub}/{}", entry.file_name().to_string_lossy());
+            if !certs::CERTIFICATES.iter().any(|(n, _)| *n == name) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
     let mut written = 0;
     for (name, bytes) in certs::CERTIFICATES {
         let path = dir.join(name);

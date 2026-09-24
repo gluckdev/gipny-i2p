@@ -73,6 +73,8 @@ jobs:
           else
             echo "no saved state: first run, a new destination"
           fi
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       # The relay compiles the i2p router in (i2p-embed) from the pinned
       # submodule: the same router the release ships, no i2pd beside it, no SAM,
       # no port.
