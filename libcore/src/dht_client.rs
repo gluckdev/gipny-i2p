@@ -114,8 +114,16 @@ fn add_candidates(node: &Arc<Node>, db: &Arc<Db>) {
     }
 }
 
+/// Replaces the saved table with the nodes that answered. Not when none did:
+/// that is a start before the tunnels are up, or no network at all, and
+/// saving then would erase every node remembered from earlier runs — the
+/// very ones the next start needs.
 fn save_peers(node: &Arc<Node>, db: &Arc<Db>) {
-    if let Err(e) = db.dht_peers_save(&node.known_peers()) {
+    let known = node.known_peers();
+    if known.is_empty() {
+        return;
+    }
+    if let Err(e) = db.dht_peers_save(&known) {
         eprintln!("[dht] saving the node table failed: {e}");
     }
 }

@@ -100,22 +100,8 @@ async fn start_bot(
         Db::open_plain(&db_path)
             .with_context(|| format!("{name}: Db::open_plain failed"))?,
     );
-    // Clients take seeds only from the build. The e2e seed goes where a node
-    // that answered before would be: the saved table the node reads at start.
     if !dht_seeds.is_empty() {
-        let peers: Vec<gipny_dht::node::KnownPeer> = dht_seeds
-            .iter()
-            .map(|d| gipny_dht::node::KnownPeer {
-                info: gipny_dht::proto::NodeInfo {
-                    destination: d.clone(),
-                    stores: true,
-                    version: gipny_dht::proto::PROTOCOL_VERSION,
-                },
-                first_seen_ms: 0,
-                last_ok_ms: 0,
-            })
-            .collect();
-        db.dht_peers_save(&peers).with_context(|| format!("{name}: seed the node table"))?;
+        put_seeds(&db, dht_seeds).with_context(|| format!("{name}: seed the node table"))?;
     }
 
     let (session, events) = SessionManager::start(data_dir, db, node)
@@ -147,6 +133,28 @@ async fn start_bot(
 /// then proves two things the unit tests cannot: that a contact's deposit names
 /// the key the relay was started for, and that the refusal does not get in the
 /// way of the owner's own traffic.
+/// Clients take seeds only from the build. The e2e seed goes where a node
+/// that answered before would be: the saved table the node reads when it
+/// joins. Unlike a built-in seed it is ordinary there, so a join that fails
+/// (the seed's tunnels still building) saves a table without it and the node
+/// forgets it after three failures; hence written again before every join.
+fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
+    let peers: Vec<gipny_dht::node::KnownPeer> = seeds
+        .iter()
+        .map(|d| gipny_dht::node::KnownPeer {
+            info: gipny_dht::proto::NodeInfo {
+                destination: d.clone(),
+                stores: true,
+                version: gipny_dht::proto::PROTOCOL_VERSION,
+            },
+            first_seen_ms: 0,
+            last_ok_ms: 0,
+        })
+        .collect();
+    db.dht_peers_save(&peers)?;
+    Ok(())
+}
+
 async fn start_in_process_relays(owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
     let port: u16 = std::env::var("GIPNY_SAM_PORT")
         .context("E2E_IN_PROCESS_RELAYS needs GIPNY_SAM_PORT, the shared router's SAM port")?
@@ -590,9 +598,13 @@ impl LiveBot {
         // instead of waiting out the 45-minute maintenance tick.
         let session = bot.session.clone();
         let address = relay_address.clone();
+        let seeds = seeds.to_vec();
         poll(budget, Duration::from_secs(10), || {
-            let (session, address) = (session.clone(), address.clone());
+            let (session, address, seeds) = (session.clone(), address.clone(), seeds.clone());
             async move {
+                if session.dht_peer_count() == 0 {
+                    let _ = put_seeds(&session.db, &seeds);
+                }
                 session.join_dht(&address).await;
                 session.dht_peer_count() > 0
             }
