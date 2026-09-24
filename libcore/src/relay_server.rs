@@ -55,7 +55,31 @@ pub type Connections = Arc<RwLock<HashMap<[u8; 32], Lanes>>>;
 pub struct Lanes {
     senders: Vec<mpsc::Sender<RelayToClient>>,
     next: std::sync::atomic::AtomicUsize,
-    cursor: Arc<Mutex<u64>>,
+    cursor: Arc<Mutex<Pushed>>,
+}
+
+/// What of a key's mail has been handed to one of its connections and not
+/// acked. Whoever marks a message first — its deposit, an Ack's sweep, the
+/// catch-up — is the one that pushes it. A plain high-water mark was set only
+/// after the deposit answered its sender, an i2p write that can take seconds;
+/// a sweep in between pushed it too (e2e run 36056012101: parts twice).
+#[derive(Default, Debug)]
+pub struct Pushed {
+    /// Every id above this has been looked at by a sweep or a deposit.
+    high: u64,
+    ids: std::collections::HashSet<u64>,
+}
+
+impl Pushed {
+    /// Mark `id` as handed out; false if it already was.
+    fn claim(&mut self, id: u64) -> bool {
+        self.high = self.high.max(id);
+        self.ids.insert(id)
+    }
+
+    fn acked(&mut self, id: u64) {
+        self.ids.remove(&id);
+    }
 }
 
 impl Lanes {
@@ -424,7 +448,7 @@ where
 
     let (push_tx, mut push_rx) = mpsc::channel::<RelayToClient>(PUSH_CAPACITY);
     if !owner {
-        let cursor = Arc::new(Mutex::new(0u64));
+        let cursor = Arc::new(Mutex::new(Pushed::default()));
         let mut given = std::collections::HashSet::new();
         let result = match send(&mut stream, &RelayToClient::AuthOk).await {
             Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &store, &connections, &cursor, &mut given).await,
@@ -437,14 +461,14 @@ where
         let lanes = conns.entry(sign_pk).or_insert_with(|| Lanes {
             senders: Vec::new(),
             next: std::sync::atomic::AtomicUsize::new(0),
-            cursor: Arc::new(Mutex::new(0)),
+            cursor: Arc::new(Mutex::new(Pushed::default())),
         });
         lanes.senders.retain(|t| !t.is_closed());
         let first = lanes.senders.is_empty();
         if first {
             // Nothing live for this key: whatever an earlier connection had
             // been pushed and not acked goes again.
-            lanes.cursor = Arc::new(Mutex::new(0));
+            lanes.cursor = Arc::new(Mutex::new(Pushed::default()));
         }
         lanes.senders.push(push_tx.clone());
         (lanes.cursor.clone(), first)
@@ -456,9 +480,8 @@ where
             // Another connection of this key is catching up already.
             if !first { return; }
             for (id, blob) in store.pending_above(&sign_pk, 0) {
-                {
-                    let mut c = cursor.lock().await;
-                    if id > *c { *c = id; }
+                if !cursor.lock().await.claim(id) {
+                    continue;
                 }
                 if push_tx.send(RelayToClient::Incoming { id, from: [0u8; 32], blob }).await.is_err() {
                     break;
@@ -477,8 +500,11 @@ where
                 // One connection of a key sweeps, not each of them.
                 let sweeps = connections.read().await.get(&sign_pk).is_some_and(|l| l.is_first(&push_tx));
                 if !sweeps { continue; }
-                let cur = *cursor.lock().await;
+                let cur = cursor.lock().await.high;
                 for (id, blob) in store.pending_above(&sign_pk, cur) {
+                    if !cursor.lock().await.claim(id) {
+                        continue;
+                    }
                     if push_tx.try_send(RelayToClient::Incoming { id, from: [0u8; 32], blob }).is_err() {
                         break;
                     }
@@ -530,7 +556,7 @@ async fn client_loop<S>(
     owner: bool,
     store: &Arc<MemStore>,
     connections: &Connections,
-    cursor: &Arc<Mutex<u64>>,
+    cursor: &Arc<Mutex<Pushed>>,
     given: &mut std::collections::HashSet<u64>,
 ) -> Result<(), RelayError>
 where
@@ -562,20 +588,16 @@ where
                     }
                     ClientToRelay::Send { to, blob } => match store.deposit(&to, &blob) {
                         Ok(id) => {
-                            send(&mut wr, &RelayToClient::Deposited { id }).await?;
+                            // Marked before the answer to its sender, which can wait
+                            // on i2p: an Ack's sweep meanwhile would push it too.
                             let online = match connections.read().await.get(&to) {
                                 Some(l) => match l.pick() {
-                                    // Counted as pushed now, not when it is written: an
-                                    // Ack's sweep in between would push it a second time.
-                                    Some(tx) => {
-                                        let mut c = l.cursor.lock().await;
-                                        if id > *c { *c = id; }
-                                        Some(tx)
-                                    }
-                                    None => None,
+                                    Some(tx) if l.cursor.lock().await.claim(id) => Some(tx),
+                                    _ => None,
                                 },
                                 None => None,
                             };
+                            send(&mut wr, &RelayToClient::Deposited { id }).await?;
                             if let Some(tx) = online {
                                 let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
                                 let conns = connections.clone();
@@ -598,11 +620,14 @@ where
                     ClientToRelay::Ack { id } => {
                         store.ack(&sign_pk, id);
                         given.remove(&id);
-                        let cur = *cursor.lock().await;
+                        let cur = {
+                            let mut c = cursor.lock().await;
+                            c.acked(id);
+                            c.high
+                        };
                         for (mid, blob) in store.pending_above(&sign_pk, cur) {
-                            {
-                                let mut c = cursor.lock().await;
-                                if mid > *c { *c = mid; }
+                            if !cursor.lock().await.claim(mid) {
+                                continue;
                             }
                             if push_tx.try_send(RelayToClient::Incoming { id: mid, from: [0u8; 32], blob }).is_err() {
                                 break;
@@ -616,8 +641,8 @@ where
             push = push_rx.recv() => {
                 let Some(msg) = push else { break };
                 if let RelayToClient::Incoming { id, .. } = &msg {
-                    let mut c = cursor.lock().await;
-                    if *id > *c { *c = *id; }
+                    // Claimed by whoever queued it; a redeal's is claimed already.
+                    cursor.lock().await.claim(*id);
                     given.insert(*id);
                 }
                 send(&mut wr, &msg).await?;
@@ -954,13 +979,21 @@ mod tests {
         }
 
         fn open(&self) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
-            let (client, server) = tokio::io::duplex(1 << 20);
+            self.open_with(1 << 20)
+        }
+
+        fn open_with(&self, buffer: usize) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
+            let (client, server) = tokio::io::duplex(buffer);
             let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone(), RIG_DESTINATION, self.dht.clone()));
             (client, task)
         }
 
         async fn login(&self, who: &Identity) -> DuplexStream {
-            let (mut c, _task) = self.open();
+            self.login_buffered(who, 1 << 20).await
+        }
+
+        async fn login_buffered(&self, who: &Identity, buffer: usize) -> DuplexStream {
+            let (mut c, _task) = self.open_with(buffer);
             let RelayToClient::Challenge(ch) = recv(&mut c).await.unwrap() else { panic!("no challenge") };
             let signature = who.sign(&crate::relay::auth_v2_message(&RIG_DESTINATION, &ch));
             let auth = ClientToRelay::AuthV2 { sign_pk: who.card().sign_pk, signature };
@@ -1079,6 +1112,37 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), N as usize, "every letter came");
         assert_eq!(got.len(), N as usize, "none came twice: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_deposit_slow_to_confirm_is_not_pushed_twice() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        // Alice's side takes two Deposited frames and then nothing, as an
+        // i2p stream with a full window would: the third deposit waits on
+        // its answer, with the letter already stored.
+        let a = rig.login_buffered(&alice, 40).await;
+        let to = bob.card().sign_pk;
+        let (mut ar, mut aw) = tokio::io::split(a);
+        let sender = tokio::spawn(async move {
+            for i in 0..3u8 {
+                send(&mut aw, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            }
+            aw
+        });
+        let first = match next(&mut b).await { RelayToClient::Incoming { id, .. } => id, f => panic!("{f:?}") };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Bob's Ack sweeps while the third deposit is still answering Alice.
+        send(&mut b, &ClientToRelay::Ack { id: first }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for _ in 0..3 {
+            let _: RelayToClient = tokio::time::timeout(Duration::from_secs(5), recv(&mut ar)).await.unwrap().unwrap();
+        }
+        let _aw = sender.await.unwrap();
+        let mut got = vec![first];
+        got.extend(drain(&mut b, Duration::from_millis(300)).await);
+        assert_eq!(got.len(), 3, "each once: {got:?}");
     }
 
     #[tokio::test]
