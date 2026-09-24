@@ -288,15 +288,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04,   router: router-linux-amd64,   rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux }
+          # Linux runs the router inside the app (i2p-embed): no i2pd binary, no
+          # SAM, no port. `embedded` stages no router and builds with the feature.
+          - { os: ubuntu-22.04,   router: router-linux-amd64,   rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux, embedded: true }
           # 22.04 like amd64, so the arm64 bundles carry the same glibc floor.
-          - { os: ubuntu-22.04-arm, router: router-linux-arm64, rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux-arm64 }
+          - { os: ubuntu-22.04-arm, router: router-linux-arm64, rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux-arm64, embedded: true }
           - { os: windows-latest, router: router-windows-amd64, rbin: i2pd.exe, bundles: 'nsis',         artifact: gipny-Windows }
           - { os: macos-15,       router: router-macos-arm64,   rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-arm64 }
           - { os: macos-15-intel, router: router-macos-x86_64,  rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: check out i2pd (compiled into the app)
+        if: ${{ matrix.embedded }}
+        run: git submodule update --init --depth 1 third_party/i2pd
       - name: system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -309,7 +314,12 @@ jobs:
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
             libunwind-dev libsoup-3.0-dev libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev \
+            libboost-dev libboost-program-options-dev zlib1g-dev
+          # The router is compiled into the app; boost linked in, OpenSSL and
+          # zlib from the system as every desktop has them.
+          echo "I2P_EMBED_STATIC_LIBS=boost_program_options" >> "$GITHUB_ENV"
+          echo "I2P_EMBED_LIB_DIRS=/usr/lib/$(gcc -dumpmachine)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -318,6 +328,7 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
       - name: stage bundled router
+        if: ${{ !matrix.embedded }}
         uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.router }}
@@ -330,7 +341,7 @@ jobs:
           path: core/resources
       # Artifacts do not keep the executable bit.
       - name: mark router executable
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && !matrix.embedded
         run: chmod +x core/resources/${{ matrix.rbin }}
       - name: build frontend
         run: cd ui && npm ci && npm run build
@@ -338,7 +349,7 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         with:
           projectPath: core
-          args: --bundles ${{ matrix.bundles }}
+          args: --bundles ${{ matrix.bundles }}${{ matrix.embedded && ' --features embedded-i2p' || '' }}
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
@@ -414,7 +425,7 @@ jobs:
   # ---------------------------------------------------------------------------
   agent:
     name: agent (linux ${{ matrix.arch }})
-    needs: router
+    needs: [router, netdb-seed]
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -424,32 +435,41 @@ jobs:
           - { arch: arm64, runs-on: ubuntu-22.04-arm, router: router-linux-arm64 }
     steps:
       - uses: actions/checkout@v7
+      # The router is compiled into the agent: no i2pd binary, no SAM, no port.
+      - name: check out i2pd and install what it builds against
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: fetch the router built above
+      - name: fetch the network database snapshot
         uses: actions/download-artifact@v8
         with:
-          name: ${{ matrix.router }}
-          path: router
+          name: netdb-seed
+          path: seed
       - name: build gipny-agent
-        run: cargo build --release -p gipny-agent
+        run: |
+          export I2P_EMBED_STATIC_LIBS=boost_program_options
+          export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
+          cargo build --release -p gipny-agent --features embedded-i2p
       - name: package
         run: |
           VERSION="$(jq -r .version core/tauri.conf.json)"
           name="gipny-agent_${VERSION}_linux-${{ matrix.arch }}"
           mkdir -p "dist/$name"
           install -m 0755 target/release/gipny-agent "dist/$name/"
-          install -m 0755 router/i2pd "dist/$name/"
+          install -m 0644 seed/i2pd-netdb-seed.tar.gz "dist/$name/"
           install -m 0644 agent/gipny-agent.service "dist/$name/"
           cat > "dist/$name/README.txt" << 'EOF'
           gipny-agent — headless console agent for gipny-i2p
 
           What is in this archive:
-            gipny-agent           the agent
-            i2pd                  the i2p router it starts (keep it next to gipny-agent)
+            gipny-agent             the agent, with the i2p router built in (no ports)
+            i2pd-netdb-seed.tar.gz  known i2p routers for a quick first start (keep it next to gipny-agent)
             gipny-agent.service   systemd unit
 
           The agent hosts a personal relay for itself at every start, the same
@@ -471,7 +491,8 @@ jobs:
           --data can also come from the GIPNY_AGENT_DATA environment variable.
 
           Install as a service (Linux, as root):
-            install -m 0755 gipny-agent i2pd /usr/local/bin/
+            install -m 0755 gipny-agent /usr/local/bin/
+            install -m 0644 i2pd-netdb-seed.tar.gz /usr/local/bin/
             install -m 0644 gipny-agent.service /etc/systemd/system/
             mkdir -p /var/lib/gipny-agent
             printf 'GIPNY_AGENT_ARGS=--master %s\n' 'gipny:v2:...' > /etc/gipny-agent.env
@@ -488,23 +509,19 @@ jobs:
             --name <name>      display name for this agent (default: hostname)
             --relay <dest>     external relay to collect from instead of the agent's own
                                built-in one
-            --sam <port>       attach to an already running SAM bridge instead of spawning i2pd
             --cwd <dir>        working directory for commands (default: home directory)
             --timeout <secs>   per-command timeout (default: 120)
           EOF
-          # Both binaries must run on the architecture this tarball is named for.
-          "dist/$name/i2pd" --version | head -1
-          file "dist/$name/gipny-agent" "dist/$name/i2pd"
+          # Must run on the architecture this tarball is named for.
+          file "dist/$name/gipny-agent"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
-      # The whole point of bundling i2pd: a clean host has none. Unpack the
-      # tarball somewhere fresh, make sure no i2pd is on PATH, start the agent
-      # with a syntactically valid throwaway master card and wait for it to
-      # print its own card — which it only does after it found and started
-      # the router next to itself, *and* its own built-in relay has tunnels
-      # (another 1-2 min on top of the router's own). v0.4.0 would have failed
-      # here.
-      - name: smoke test — the tarball starts with no system i2pd
+      # A clean host has no i2pd, and the agent needs none: the router is
+      # built in. Unpack the tarball somewhere fresh, make sure no i2pd is on
+      # PATH, start the agent with a syntactically valid throwaway master card
+      # and wait for it to print its own card — which it only does once its
+      # router runs *and* its own built-in relay has tunnels.
+      - name: smoke test — the tarball starts with no i2pd anywhere
         run: |
           if command -v i2pd >/dev/null; then echo "an i2pd on PATH would mask this test"; exit 1; fi
           smoke="$(mktemp -d)"
@@ -521,7 +538,7 @@ jobs:
           done
           kill -TERM -- -"$pid" 2>/dev/null || true; sleep 2; kill -KILL -- -"$pid" 2>/dev/null || true
           if grep -q "agent card:" "$smoke/agent.log"; then
-            echo "smoke: the agent started its router from the tarball and printed its card"
+            echo "smoke: the agent ran its built-in router and printed its card"
             grep -E "i2p address|agent card" "$smoke/agent.log"
           else
             echo "smoke: the agent did not come up from the tarball"; cat "$smoke/agent.log"
