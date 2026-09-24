@@ -228,6 +228,54 @@ jobs:
           path: third_party/i2pd/${{ matrix.out }}
 
   # ---------------------------------------------------------------------------
+  # 1b. A snapshot of the i2p network database, shipped with every client so a
+  #     first start does not have to reseed. The freshly built router runs a
+  #     few minutes on the runner (reseed, then exploration) and its netDb —
+  #     public RouterInfos of other routers, nothing of ours — is packed. A
+  #     client with an empty netDb lays it out before starting its router;
+  #     stale entries are dropped by the router itself, and with too few left
+  #     it still reseeds as usual. Never fails the release: a thin snapshot is
+  #     still shipped, an empty one is simply not used.
+  # ---------------------------------------------------------------------------
+  netdb-seed:
+    name: network database snapshot
+    needs: router
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v8
+        with: { name: router-linux-amd64, path: router }
+      - name: run the router and let it learn the network
+        run: |
+          chmod +x router/i2pd
+          mkdir -p seed-dir
+          ./router/i2pd --datadir="$PWD/seed-dir" --sam.enabled=false --http.enabled=false \
+            --httpproxy.enabled=false --socksproxy.enabled=false --upnp.enabled=false \
+            --notransit --log=file --logfile="$PWD/seed.log" &
+          pid=$!
+          for i in $(seq 1 36); do
+            sleep 10
+            n=$(find seed-dir/netDb -name 'routerInfo-*.dat' 2>/dev/null | wc -l)
+            echo "after $((i*10)) s: $n routers known"
+            [ "$n" -ge 2500 ] && break
+          done
+          kill "$pid"; sleep 5
+          n=$(find seed-dir/netDb -name 'routerInfo-*.dat' | wc -l)
+          echo "snapshot: $n routers"
+          tar -czf i2pd-netdb-seed.tar.gz -C seed-dir/netDb .
+          ls -lh i2pd-netdb-seed.tar.gz
+          {
+            echo "### network database snapshot"
+            echo "$n routers, $(du -h i2pd-netdb-seed.tar.gz | cut -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: netdb-seed
+          retention-days: 5
+          path: i2pd-netdb-seed.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # 2. Desktop: Linux amd64/arm64 (AppImage + deb), Windows (NSIS), macOS
   #    (dmg). Stages
   #    the matching router binary into core/resources so Tauri bundles it (see
@@ -235,7 +283,7 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop:
     name: desktop (${{ matrix.os }})
-    needs: router
+    needs: [router, netdb-seed]
     strategy:
       fail-fast: false
       matrix:
@@ -273,6 +321,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.router }}
+          path: core/resources
+      # Named i2pd-* so the existing resources glob picks it up.
+      - name: stage the network database snapshot
+        uses: actions/download-artifact@v8
+        with:
+          name: netdb-seed
           path: core/resources
       # Artifacts do not keep the executable bit.
       - name: mark router executable
@@ -628,7 +682,7 @@ jobs:
   # (~15 minutes), and they share nothing: two ABIs, two toolchains, two APKs.
   android:
     name: android (${{ matrix.abi }})
-    needs: android-router
+    needs: [android-router, netdb-seed]
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -647,6 +701,18 @@ jobs:
         with:
           name: router-android-${{ matrix.abi }}
           path: android-router/prebuilt/${{ matrix.abi }}
+      # Laid out as files: Gradle copies it into the APK's assets/netdb, and
+      # GipnyService copies that into an empty netDb (see copyAssetDir).
+      - name: stage the network database snapshot
+        uses: actions/download-artifact@v8
+        with:
+          name: netdb-seed
+          path: android-router/netdb-seed-archive
+      - name: unpack the snapshot for the APK
+        run: |
+          mkdir -p android-router/netdb-seed
+          tar -xzf android-router/netdb-seed-archive/i2pd-netdb-seed.tar.gz -C android-router/netdb-seed
+          echo "$(find android-router/netdb-seed -name 'routerInfo-*.dat' | wc -l) routers staged"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust }}

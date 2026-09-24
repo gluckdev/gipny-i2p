@@ -26,6 +26,11 @@ core/gen/android/build/
 core/gen/android/app/build/
 core/gen/android/app/src/main/jniLibs/
 core/gen/android/app/src/main/assets/certificates/
+# Network database snapshot, staged by release.yml.
+core/gen/android/app/src/main/assets/netdb/
+android-router/netdb-seed/
+android-router/netdb-seed-archive/
+core/resources/i2pd-netdb-seed.tar.gz
 # Prebuilt i2pd JNI libraries dropped in for local Android builds (CI artifacts).
 android-router/prebuilt/
 core/gen/android/buildSrc/build/

@@ -86,5 +86,16 @@ abstract class I2pdCertificatesTask : DefaultTask() {
         source.copyRecursively(dest, overwrite = true)
         val count = dest.walkTopDown().count { it.isFile }
         logger.lifecycle("staged $count i2pd certificates into assets")
+
+        // The network database snapshot release.yml stages (optional: a local
+        // or build.yml APK simply reseeds on first start, as before).
+        val seed = File(root, "android-router/netdb-seed")
+        val seedDest = File(project.projectDir, "src/main/assets/netdb")
+        seedDest.deleteRecursively()
+        if (seed.isDirectory) {
+            seed.copyRecursively(seedDest, overwrite = true)
+            val routers = seedDest.walkTopDown().count { it.isFile && it.name.startsWith("routerInfo-") }
+            logger.lifecycle("staged $routers routers from the network database snapshot into assets")
+        }
     }
 }

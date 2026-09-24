@@ -259,7 +259,41 @@ class GipnyService : Service() {
             stamp.writeText(version)
         }
 
+        seedNetDb(routerDir)
+
         java.io.File(routerDir, "assets.ready").writeText(version)
+    }
+
+    /**
+     * On a first start, lay out the snapshot of the i2p network database that
+     * ships in assets/netdb (made by release.yml), so the router starts knowing
+     * hundreds of routers instead of reseeding over HTTPS first — most of a
+     * cold start, and blockable. Existing entries are kept; stale ones the
+     * router drops itself, and with too few left it reseeds as it always did.
+     * Same rule as libcore::router::seed_netdb on the desktop.
+     */
+    private fun seedNetDb(routerDir: java.io.File) {
+        val netDb = java.io.File(routerDir, "netDb")
+        val known = netDb.listFiles()?.sumOf { d ->
+            d.listFiles()?.count { it.name.startsWith("routerInfo-") } ?: 0
+        } ?: 0
+        if (known >= SEED_BELOW_ROUTERS) return
+        val buckets = try { assets.list("netdb") } catch (_: Throwable) { null } ?: return
+        var written = 0
+        for (bucket in buckets) {
+            val files = assets.list("netdb/$bucket") ?: continue
+            for (name in files) {
+                if (!name.startsWith("routerInfo-") || !name.endsWith(".dat")) continue
+                val dest = java.io.File(java.io.File(netDb, bucket), name)
+                if (dest.exists()) continue
+                dest.parentFile?.mkdirs()
+                assets.open("netdb/$bucket/$name").use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                written++
+            }
+        }
+        if (written > 0) android.util.Log.i(TAG, "laid out $written known routers from the bundled snapshot")
     }
 
     private fun copyAssetDir(assetPath: String, dest: java.io.File) {
@@ -288,6 +322,9 @@ class GipnyService : Service() {
         private const val NOTIFICATION_ID = 0x9197
         private const val TAG = "GipnyService"
         private const val SAM_PORT = 7656
+        // libcore::router::SEED_BELOW_ROUTERS; i2pd wants 90 before it stops
+        // calling its network empty.
+        private const val SEED_BELOW_ROUTERS = 90
 
         // Must match libcore::router::DEFAULT_HTTP_PROXY_PORT and
         // DEFAULT_OUTPROXY: the Rust side attaches to this proxy by that
