@@ -18,9 +18,11 @@ if [ ! -d "$root/lib" ]; then
 fi
 # The library names carry the toolset and boost version; take what is there.
 po="$(cd "$root/lib" && ls boost_program_options*.lib | head -1)"
-at="$(cd "$root/lib" && ls boost_atomic*.lib 2>/dev/null | head -1 || true)"
+at="$(cd "$root/lib" && { ls boost_atomic*.lib 2>/dev/null || true; } | head -1)"
 # zlib's static library is zs.lib in a static triplet, zlib.lib otherwise.
-z="$(cd "$root/lib" && ls zs.lib zlib.lib 2>/dev/null | head -1)"
+z=""
+for cand in zs.lib zlib.lib; do [ -f "$root/lib/$cand" ] && { z=$cand; break; }; done
+[ -n "$z" ] || { echo "no zlib in $root/lib"; exit 1; }
 libs="${po%.lib},libssl,libcrypto,${z%.lib}${at:+,${at%.lib}}"
 echo "libraries: $libs"
 {
