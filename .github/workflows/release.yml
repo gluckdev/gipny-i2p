@@ -176,10 +176,22 @@ jobs:
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good libasound2-dev \
             libboost-dev libboost-program-options-dev zlib1g-dev
+      # The app's crate is also a cdylib, and 22.04's static boost is not
+      # built with -fPIC on x86_64: a PIC build of the same version, cached.
+      - name: restore boost_program_options built with -fPIC (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/boost-po-pic
+          key: boost-po-pic-${{ matrix.os }}-1.74.0-${{ hashFiles('.github/scripts/boost-po-pic.sh') }}
+      - name: boost_program_options with -fPIC (Linux, compiled into the app)
+        if: runner.os == 'Linux'
+        run: |
+          .github/scripts/boost-po-pic.sh "$RUNNER_TEMP/boost-po-pic"
           # The router is compiled into the app; boost linked in, OpenSSL and
           # zlib from the system as every desktop has them.
           echo "I2P_EMBED_STATIC_LIBS=boost_program_options" >> "$GITHUB_ENV"
-          echo "I2P_EMBED_LIB_DIRS=/usr/lib/$(gcc -dumpmachine)" >> "$GITHUB_ENV"
+          echo "I2P_EMBED_LIB_DIRS=$RUNNER_TEMP/boost-po-pic/lib:/usr/lib/$(gcc -dumpmachine)" >> "$GITHUB_ENV"
       # A user's Mac has neither: linked in statically, as i2p-embed.yml
       # checks. MACOSX_DEPLOYMENT_TARGET matches tauri.conf's
       # minimumSystemVersion (Homebrew's archives are built for the image's OS).
@@ -199,6 +211,9 @@ jobs:
         with:
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # The image, not just the OS: build scripts built on a newer glibc
+          # do not run on 22.04.
+          key: ${{ matrix.os }}
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
       # Named i2pd-* so the existing resources glob picks it up.
@@ -262,6 +277,10 @@ jobs:
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: core/relay
+          # relay-testnet.yml builds this workspace in a job named the same on
+          # ubuntu-latest; its build scripts want GLIBC_2.39, which 22.04 lacks
+          # (release run 36056978015).
+          key: ${{ matrix.runs-on }}
       - name: i2pd sources and build deps (the relay compiles its router in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
@@ -320,6 +339,7 @@ jobs:
         with:
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ matrix.runs-on }}
       - name: fetch the network database snapshot
         uses: actions/download-artifact@v8
         with:
