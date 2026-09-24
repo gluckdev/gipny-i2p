@@ -123,6 +123,23 @@ pub fn open_to(path: &Path, cipher: &AttachmentCipher, size: u64, chunk_size: u3
     Ok(hash.finalize().into())
 }
 
+/// An attachment on disk, whole in memory, whichever way it was sealed:
+/// whole (`chunk_size` `None`, one chunk) or in parts.
+pub fn read_attachment(path: &Path, key: [u8; 32], size: u64, chunk_size: Option<i64>) -> io::Result<Vec<u8>> {
+    let cipher = AttachmentCipher::from_key(key);
+    match chunk_size {
+        None => {
+            let sealed = std::fs::read(path)?;
+            cipher.decrypt_chunk(0, &[], &sealed).map_err(io::Error::other)
+        }
+        Some(cs) => {
+            let mut out = Vec::with_capacity(size as usize);
+            open_to(path, &cipher, size, cs as u32, &mut out)?;
+            Ok(out)
+        }
+    }
+}
+
 /// Which parts of a file the receiver holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Received {
@@ -275,6 +292,19 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(open_to(&recv, &b, size, cs, &mut out).unwrap(), sha);
         assert_eq!(out, src);
+    }
+
+    #[test]
+    fn attachments_read_back_either_way() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = data(5000);
+        let c = AttachmentCipher::generate();
+        let whole = dir.path().join("whole");
+        std::fs::write(&whole, c.encrypt_chunk(0, &[], &src).unwrap()).unwrap();
+        assert_eq!(read_attachment(&whole, *c.key(), 5000, None).unwrap(), src);
+        let parts = dir.path().join("parts");
+        seal_from(&src[..], &parts, &c, 700).unwrap();
+        assert_eq!(read_attachment(&parts, *c.key(), 5000, Some(700)).unwrap(), src);
     }
 
     #[test]

@@ -1058,8 +1058,7 @@ impl Core {
         for a in self.db.list_attachments(msg_id)? {
             let key = to_arr32(a.key.clone())?;
             let full = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
-            let enc = std::fs::read(&full)?;
-            let data = AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc)?;
+            let data = gipny_libcore::files::read_attachment(&full, key, a.size as u64, a.chunk_size)?;
             out.push((a.name, data));
         }
         Ok(out)
@@ -1959,9 +1958,7 @@ impl Core {
     pub fn read_attachment(&self, att: &Attachment) -> Result<Vec<u8>> {
         let key = to_arr32(att.key.clone())?;
         let full = self.data_dir.join(ATTACHMENTS_DIR).join(&att.path);
-        let enc = std::fs::read(&full)?;
-        let pt = AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc)?;
-        Ok(pt)
+        Ok(gipny_libcore::files::read_attachment(&full, key, att.size as u64, att.chunk_size)?)
     }
 
     fn spawn_relay_loop(self: Arc<Self>) {

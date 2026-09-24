@@ -82,6 +82,13 @@ const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 /// so anything past the 4 MiB bucket never arrived (it was 14 MiB, and was
 /// dropped at the relay). Large files go in parts; see `files`.
 const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
+/// A part unacknowledged this long, by a recipient heard from since, goes again.
+const FILE_RESEND_IDLE_MS: i64 = 30 * 60 * 1000;
+/// A recipient alive this long without acknowledging a single part cannot
+/// take files in parts.
+const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;
+/// Unfinished incoming transfers are dropped after the relay's letter TTL.
+const FILE_IN_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const DHT_ADDRESS_LOOKUP_EVERY: Duration = Duration::from_secs(10 * 60);
@@ -733,6 +740,14 @@ pub enum SessionEvent {
     /// It will not go: too large for one letter (files go in parts; this is
     /// a letter that could not). Marked sent so it is not retried forever.
     MessageFailed { message_id: i64, reason: String },
+    /// A file in parts moved on: `done` of `total` parts, sent (acknowledged
+    /// by `contact_id`) or received.
+    FileProgress { message_id: i64, contact_id: i64, incoming: bool, done: u32, total: u32 },
+    /// A file in parts is whole and is now attachment `attachment_id`.
+    FileReceived { message_id: i64, attachment_id: i64 },
+    /// A file in parts will not get there: the recipient never acknowledged
+    /// a part while alive (an older build), or cancelled; or it came broken.
+    FileFailed { message_id: i64, contact_id: i64, reason: String },
     MessageEdited { message_id: i64, new_body: String, buttons: Option<Vec<Vec<WireButton>>> },
     MessagePinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
     MessageUnpinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
@@ -767,6 +782,9 @@ pub struct SessionManager {
     /// Their sessions that lost to ours, kept so what they sent on one before
     /// taking ours is still read, not dropped and waited for again.
     lost_inits: Arc<Mutex<HashMap<i64, RatchetState>>>,
+    /// When each contact was last heard from (anything decrypted): a part is
+    /// resent on a timer only to someone alive since it went.
+    heard: Arc<std::sync::Mutex<HashMap<i64, i64>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     dht: Arc<dht_client::Node>,
@@ -801,6 +819,7 @@ impl SessionManager {
             bundle_cache: Arc::new(Mutex::new(HashMap::new())),
             own_inits: Arc::new(Mutex::new(HashMap::new())),
             lost_inits: Arc::new(Mutex::new(HashMap::new())),
+            heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             dht,
@@ -961,16 +980,11 @@ impl SessionManager {
     ) -> Result<i64> {
         let sent_at = now_ms();
         let expires_at = ttl.map(|d| sent_at + d.as_millis() as i64);
-        let mut stored = Vec::with_capacity(attachments.len());
-        for (name, data) in &attachments {
-            let (key, path, size) = store_attachment(&self.data_dir, data)?;
-            stored.push(NewAttachment {
-                name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
-            });
-        }
+        let (stored, parts) = self.store_outgoing(&attachments)?;
         let msg_id = self.db.insert_message(
             contact_id, Direction::Out, &body, sent_at, expires_at, &stored,
         )?;
+        self.register_offers(msg_id, &parts, &[contact_id])?;
         if let Some(b) = &buttons {
             if let Ok(bytes) = bincode::serialize(b) {
                 self.db.set_setting(&format!("buttons_{}", msg_id), &bytes)?;
@@ -995,16 +1009,11 @@ impl SessionManager {
         attachments: Vec<(String, Vec<u8>)>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let mut stored = Vec::with_capacity(attachments.len());
-        for (name, data) in &attachments {
-            let (key, path, size) = store_attachment(&self.data_dir, data)?;
-            stored.push(NewAttachment {
-                name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
-            });
-        }
+        let (stored, parts) = self.store_outgoing(&attachments)?;
         let msg_id = self.db.insert_message(
             contact_id, Direction::Out, &body, sent_at, None, &stored,
         )?;
+        self.register_offers(msg_id, &parts, &[contact_id])?;
         self.db.set_setting(&format!("console_{}", msg_id), &bincode::serialize(&console)?)?;
         self.send_kick.notify_one();
         Ok(msg_id)
@@ -1071,13 +1080,7 @@ impl SessionManager {
         notify_sound: Option<String>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let mut stored = Vec::with_capacity(attachments.len());
-        for (name, data) in &attachments {
-            let (key, path, size) = store_attachment(&self.data_dir, data)?;
-            stored.push(NewAttachment {
-                name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
-            });
-        }
+        let (stored, parts) = self.store_outgoing(&attachments)?;
         let msg_id = self.db.insert_group_message_with_origin(
             group_id, Some(&self.identity.card().sign_pk), Direction::Out,
             &body, sent_at, None, &stored, None,
@@ -1091,8 +1094,17 @@ impl SessionManager {
             self.db.set_setting(&format!("sound_{}", msg_id), s.as_bytes())?;
         }
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
+            .filter(|(_, data)| data.len() <= crate::files::INLINE_MAX)
             .map(|(name, data)| WireAttachment { name, data }).collect();
         let members = self.db.list_group_members(group_id)?;
+        let recipients: Vec<i64> = members.iter()
+            .filter(|m| !m.is_self)
+            .filter_map(|m| self.db.find_contact_by_identity(&m.dh_pk).ok().flatten())
+            .filter(|c| c.trust != TrustLevel::Blocked)
+            .map(|c| c.id)
+            .collect();
+        self.register_offers(msg_id, &parts, &recipients)?;
+        let offers = self.offers_for(msg_id)?;
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
             sign_pk: m.sign_pk.clone(), dh_pk: m.dh_pk.clone(),
             onion: m.onion.clone(), name: m.display_name.clone(),
@@ -1110,6 +1122,7 @@ impl SessionManager {
             let mut payload = WirePayload::simple(
                 msg_id as u64, body.clone(), wire_atts.clone(), sent_at, None,
             );
+            payload.files = offers.clone();
             payload.group = Some(gref.clone());
             payload.buttons = buttons.clone();
             payload.notify_sound = notify_sound.clone();
@@ -1738,6 +1751,17 @@ impl SessionManager {
     }
 
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        self.heard.lock().unwrap_or_else(|p| p.into_inner()).insert(contact_id, now_ms());
+        // Files in parts: these letters are nothing else.
+        if let Some(ack) = &payload.file_ack {
+            self.on_file_ack(contact_id, ack).await?;
+        }
+        if let Some(chunk) = &payload.file_chunk {
+            self.on_file_chunk(contact_id, chunk).await?;
+        }
+        if let Some(file_id) = &payload.file_cancel {
+            self.on_file_cancel(contact_id, file_id).await?;
+        }
         // As in the app: a contact who deleted us asks for the chat to go.
         if payload.wipe == Some(true) {
             eprintln!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
@@ -1771,6 +1795,7 @@ impl SessionManager {
         }
         let is_empty = payload.body.is_empty()
             && payload.attachments.is_empty()
+            && payload.files.is_empty()
             && payload.group.is_none()
             && payload.callback_data.is_none()
             && payload.edit_of.is_none()
@@ -1894,6 +1919,9 @@ impl SessionManager {
                 Some(payload.origin_msg_id as i64),
             )?
         };
+        if !payload.files.is_empty() {
+            self.accept_offers(contact_id, mid, &payload.files).await?;
+        }
         if let Some(btns) = &payload.buttons {
             if let Ok(b) = bincode::serialize(btns) {
                 self.db.set_setting(&format!("buttons_{}", mid), &b)?;
@@ -2039,11 +2067,13 @@ impl SessionManager {
                 RETRY_MAX_BACKOFF_MS,
                 50,
             )?;
+            let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
                 && !needs_session
                 && !needs_keepalive
+                && !file_work
             {
                 continue;
             }
@@ -2081,6 +2111,13 @@ impl SessionManager {
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
                     eprintln!("[session] retry err contact {}: {:?}", contact.id, e);
                     break;
+                }
+            }
+            // Parts only to their relay: the relay network holds too little
+            // per key for a file (dht/src/store.rs); they wait for it.
+            if file_work && matches!(route, Route::Relay(_)) {
+                if let Err(e) = self.send_file_parts(&contact, &route).await {
+                    eprintln!("[files] parts to contact {}: {:?}", contact.id, e);
                 }
             }
             for msg_id in group_pending {
@@ -2249,6 +2286,8 @@ impl SessionManager {
         let atts = self.db.list_attachments(msg.id)?;
         let mut wire_atts = Vec::with_capacity(atts.len());
         for a in atts {
+            // Sealed in parts: offered below and sent from file_out.
+            if a.chunk_size.is_some() { continue; }
             let key = to_arr32(a.key.clone())?;
             let full = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let enc = std::fs::read(&full)?;
@@ -2269,6 +2308,7 @@ impl SessionManager {
         p.buttons = buttons;
         p.notify_sound = sound;
         p.console = console;
+        p.files = self.offers_for(msg.id)?;
         Ok(p)
     }
 
@@ -2281,6 +2321,7 @@ impl SessionManager {
             loop {
                 tick.tick().await;
                 this.republish_bundle().await;
+                this.gc_files();
             }
         });
         self.tasks.lock().unwrap().push(handle);
@@ -2513,6 +2554,274 @@ fn load_or_create_identity(db: &Db) -> Result<Identity> {
             Ok(id)
         }
     }
+}
+
+/// Files sent in parts (`crate::files`, docs/plans/2026-09-24-chunked-files.md).
+impl SessionManager {
+    /// Seal outgoing attachments: small ones whole (they ride inside the
+    /// letter), larger ones in parts. Returns what to store and, for each
+    /// sealed in parts, its sha256 in order.
+    fn store_outgoing(&self, attachments: &[(String, Vec<u8>)]) -> Result<(Vec<NewAttachment>, Vec<[u8; 32]>)> {
+        let mut stored = Vec::with_capacity(attachments.len());
+        let mut parts = Vec::new();
+        for (name, data) in attachments {
+            if data.len() > crate::files::INLINE_MAX {
+                let (key, path, size, sha) = store_attachment_parts(&self.data_dir, data)?;
+                stored.push(NewAttachment {
+                    name: name.clone(), size: size as i64, key: key.to_vec(), path,
+                    chunk_size: Some(crate::files::CHUNK_SIZE as i64),
+                });
+                parts.push(sha);
+            } else {
+                let (key, path, size) = store_attachment(&self.data_dir, data)?;
+                stored.push(NewAttachment { name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
+            }
+        }
+        Ok((stored, parts))
+    }
+
+    /// Offer the message's attachments sealed in parts to `recipients`.
+    fn register_offers(&self, msg_id: i64, shas: &[[u8; 32]], recipients: &[i64]) -> Result<()> {
+        let parted = self.db.list_attachments(msg_id)?.into_iter().filter(|a| a.chunk_size.is_some());
+        for (a, sha) in parted.zip(shas) {
+            let file_id: [u8; 16] = crypto::random_array();
+            self.db.file_out_add(&file_id, a.id, msg_id, sha, recipients)?;
+        }
+        Ok(())
+    }
+
+    fn offers_for(&self, msg_id: i64) -> Result<Vec<WireFileOffer>> {
+        Ok(self.db.files_out_for_message(msg_id)?.into_iter()
+            .filter(|f| !f.cancelled)
+            .map(|f| WireFileOffer {
+                file_id: f.file_id,
+                name: f.attachment.name,
+                size: f.attachment.size as u64,
+                sha256: f.sha256,
+                chunk_size: f.attachment.chunk_size.unwrap_or(crate::files::CHUNK_SIZE as i64) as u32,
+            })
+            .collect())
+    }
+
+    /// A letter offering files: start taking their parts.
+    async fn accept_offers(self: &Arc<Self>, contact_id: i64, message_id: i64, offers: &[WireFileOffer]) -> Result<()> {
+        for o in offers {
+            if o.size > crate::files::MAX_FILE_BYTES || o.chunk_size == 0 || o.chunk_size > crate::files::CHUNK_SIZE {
+                eprintln!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
+                continue;
+            }
+            if self.db.file_in(&o.file_id, contact_id)?.is_some() {
+                continue;
+            }
+            let cipher = AttachmentCipher::generate();
+            let mut name = [0u8; 24];
+            crypto::fill_random(&mut name);
+            let total = crate::files::chunk_count(o.size, o.chunk_size);
+            let fin = crate::db::FileIn {
+                file_id: o.file_id, contact_id, message_id, name: o.name.clone(), size: o.size,
+                sha256: o.sha256, chunk_size: o.chunk_size, path: to_hex(&name), key: cipher.key().to_vec(),
+                bits: crate::files::Received::new(total).bits().to_vec(), received: 0, created_at: now_ms(),
+            };
+            if !self.db.file_in_add(&fin)? {
+                continue;
+            }
+            eprintln!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
+            let _ = self.events.send(SessionEvent::FileProgress { message_id, contact_id, incoming: true, done: 0, total }).await;
+            // Parts that came before this letter.
+            let early = self.db.file_early_take(&o.file_id, contact_id)?;
+            for (index, data) in early {
+                let chunk = WireFileChunk { file_id: o.file_id, index, data };
+                self.on_file_chunk(contact_id, &chunk).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk) -> Result<()> {
+        let Some(fin) = self.db.file_in(&chunk.file_id, contact_id)? else {
+            // Before its offer (resends reorder letters): set aside, a window's
+            // worth at most.
+            if chunk.data.len() <= crate::files::CHUNK_SIZE as usize {
+                self.db.file_early_put(&chunk.file_id, contact_id, chunk.index, &chunk.data)?;
+            }
+            return Ok(());
+        };
+        let total = crate::files::chunk_count(fin.size, fin.chunk_size);
+        let mut got = crate::files::Received::from_bits(fin.bits.clone(), total);
+        let path = self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path);
+        let cipher = AttachmentCipher::from_key(to_arr32(fin.key.clone())?);
+        let fresh = if got.has(chunk.index) {
+            false
+        } else {
+            crate::files::write_part(&path, &cipher, fin.size, fin.chunk_size, chunk.index, &chunk.data)?;
+            got.mark(chunk.index);
+            self.db.file_in_save(&fin.file_id, contact_id, got.bits(), got.count())?;
+            true
+        };
+        if got.complete() {
+            let sha = crate::files::open_to(&path, &cipher, fin.size, fin.chunk_size, &mut std::io::sink())?;
+            if sha != fin.sha256 {
+                eprintln!("[files] {} from contact {contact_id} came broken (sha256); dropped", fin.name);
+                let _ = std::fs::remove_file(&path);
+                self.db.file_in_delete(&fin.file_id, contact_id)?;
+                let _ = self.events.send(SessionEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "came broken".into() }).await;
+            } else {
+                let attachment_id = self.db.file_in_finish(&fin)?;
+                eprintln!("[files] {} from contact {contact_id} is whole ({} bytes)", fin.name, fin.size);
+                let _ = self.events.send(SessionEvent::FileReceived { message_id: fin.message_id, attachment_id }).await;
+            }
+        } else if fresh {
+            let _ = self.events.send(SessionEvent::FileProgress {
+                message_id: fin.message_id, contact_id, incoming: true, done: got.count(), total,
+            }).await;
+        }
+        // A resend means they did not hear our last ack; the whole file, a
+        // hole, or every few parts: say where we are.
+        let hole = !got.missing().is_empty();
+        if !fresh || got.complete() || hole || got.count() % crate::files::ACK_EVERY == 0 {
+            self.send_file_message(contact_id, |p| p.file_ack = Some(got.ack(fin.file_id))).await;
+        }
+        Ok(())
+    }
+
+    async fn on_file_ack(self: &Arc<Self>, contact_id: i64, ack: &WireFileAck) -> Result<()> {
+        let Some(mut peer) = self.db.file_peer(&ack.file_id, contact_id)? else { return Ok(()) };
+        let Some(file) = self.db.file_out(&ack.file_id)? else { return Ok(()) };
+        let total = crate::files::chunk_count(file.attachment.size as u64, file.attachment.chunk_size.unwrap_or(1) as u32);
+        let mut s = crate::files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
+        s.on_ack(ack);
+        peer.acked = s.acked;
+        peer.resend = s.resend.clone();
+        peer.last_ack_at = Some(now_ms());
+        self.db.file_peer_save(&peer)?;
+        let _ = self.events.send(SessionEvent::FileProgress {
+            message_id: file.message_id, contact_id, incoming: false, done: peer.acked, total,
+        }).await;
+        if s.done(total) {
+            eprintln!("[files] {} is all at contact {contact_id}", file.attachment.name);
+        }
+        self.send_kick.notify_one();
+        Ok(())
+    }
+
+    async fn on_file_cancel(&self, contact_id: i64, file_id: &[u8; 16]) -> Result<()> {
+        // They stopped sending it to us: forget what we had.
+        if let Some(fin) = self.db.file_in(file_id, contact_id)? {
+            let _ = std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path));
+            self.db.file_in_delete(file_id, contact_id)?;
+            let _ = self.events.send(SessionEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "cancelled".into() }).await;
+        }
+        // Or they refused ours.
+        if let Some(mut peer) = self.db.file_peer(file_id, contact_id)? {
+            peer.failed = true;
+            self.db.file_peer_save(&peer)?;
+        }
+        Ok(())
+    }
+
+    /// Stop sending a file of ours, to everyone, and tell them.
+    pub async fn cancel_file(self: &Arc<Self>, file_id: [u8; 16]) -> Result<()> {
+        self.db.file_out_cancel(&file_id)?;
+        for peer in self.db.file_peers_of(&file_id)? {
+            self.send_file_message(peer.contact_id, |p| p.file_cancel = Some(file_id)).await;
+        }
+        Ok(())
+    }
+
+    /// A letter about files (an ack, a cancel): no text, not a message, not
+    /// retried — the next part or ack supersedes it.
+    async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) {
+        let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return };
+        let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
+        fill(&mut payload);
+        let Some(route) = self.route_for(&contact).await else { return };
+        if self.ensure_session_for(&contact, &route).await.is_err() {
+            return;
+        }
+        let _ = self.send_payload_via_relay(&contact, &mut payload, &route).await;
+    }
+
+    /// Send what is due of every file still going to this contact.
+    async fn send_file_parts(self: &Arc<Self>, contact: &Contact, route: &Route) -> Result<()> {
+        let now = now_ms();
+        let heard = self.heard.lock().unwrap_or_else(|p| p.into_inner()).get(&contact.id).copied();
+        for mut peer in self.db.file_peers_for(contact.id)? {
+            let Some(file) = self.db.file_out(&peer.file_id)? else { continue };
+            let a = &file.attachment;
+            let chunk_size = a.chunk_size.unwrap_or(crate::files::CHUNK_SIZE as i64) as u32;
+            let total = crate::files::chunk_count(a.size as u64, chunk_size);
+            let mut s = crate::files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
+            if let Some(sent) = peer.last_sent_at {
+                let alive_since = heard.is_some_and(|h| h > sent);
+                let no_ack_since = peer.last_ack_at.is_none_or(|a| a < sent);
+                // Never a single ack from someone alive for a day: a build
+                // without files in parts. Say so, rather than try for a week.
+                if peer.last_ack_at.is_none() && alive_since && now - sent > FILE_GIVE_UP_MS {
+                    peer.failed = true;
+                    self.db.file_peer_save(&peer)?;
+                    let _ = self.events.send(SessionEvent::FileFailed {
+                        message_id: file.message_id, contact_id: contact.id, reason: "not taken".into(),
+                    }).await;
+                    continue;
+                }
+                // Alive, and not a word about the parts for long: they are
+                // gone somewhere. Send what is outstanding again — rarely,
+                // since an absent recipient cannot be told from a lost part.
+                if s.resend.is_empty() && s.next > s.acked && alive_since && no_ack_since && now - sent > FILE_RESEND_IDLE_MS {
+                    s.rewind();
+                }
+            }
+            let due = s.due(total);
+            if due.is_empty() {
+                continue;
+            }
+            let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
+            let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
+            let mut sent_any = false;
+            for index in &due {
+                let data = crate::files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
+                let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
+                payload.file_chunk = Some(WireFileChunk { file_id: file.file_id, index: *index, data });
+                if let Err(e) = self.send_payload_via_relay(contact, &mut payload, route).await {
+                    eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
+                    // What did not go goes again next time.
+                    s.resend.extend(due.iter().copied().filter(|i| i >= index));
+                    break;
+                }
+                sent_any = true;
+            }
+            peer.next = s.next;
+            peer.resend = s.resend;
+            if sent_any {
+                peer.last_sent_at = Some(now);
+            }
+            self.db.file_peer_save(&peer)?;
+        }
+        Ok(())
+    }
+
+    /// Unfinished transfers after the relay would have dropped their parts.
+    fn gc_files(&self) {
+        let cutoff = now_ms() - FILE_IN_TTL_MS;
+        if let Ok(stale) = self.db.files_in_stale(cutoff) {
+            for f in stale {
+                let _ = std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&f.path));
+                let _ = self.db.file_in_delete(&f.file_id, f.contact_id);
+            }
+        }
+        let _ = self.db.file_early_gc(cutoff);
+    }
+}
+
+/// Seal an attachment in parts (`crate::files`): key, file name, size, sha256.
+fn store_attachment_parts(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], String, u64, [u8; 32])> {
+    let cipher = AttachmentCipher::generate();
+    let mut name = [0u8; 24];
+    crate::crypto::fill_random(&mut name);
+    let hex = to_hex(&name);
+    let path = data_dir.join(ATTACHMENTS_DIR).join(&hex);
+    let (size, sha) = crate::files::seal_from(data, &path, &cipher, crate::files::CHUNK_SIZE)?;
+    Ok((*cipher.key(), hex, size, sha))
 }
 
 fn store_attachment(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], String, u64)> {

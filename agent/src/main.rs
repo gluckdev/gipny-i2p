@@ -37,7 +37,6 @@ use gipny_libcore::{
     WireConsole, CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OFF, CONSOLE_REVOKE,
 };
 use gipny_libcore::agent::{self, ExecOptions, BODY_GRANT, BODY_REVOKE};
-use gipny_libcore::crypto::AttachmentCipher;
 use gipny_libcore::router::RouterSettings;
 use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SECS};
 
@@ -168,13 +167,9 @@ fn load_attachments(db: &Db, data_dir: &Path, msg_id: i64) -> Vec<(String, Vec<u
             Err(_) => { eprintln!("[agent] bad attachment key"); continue; }
         };
         let path = data_dir.join("attachments").join(&a.path);
-        let enc = match std::fs::read(&path) {
-            Ok(e) => e,
-            Err(e) => { eprintln!("[agent] read {}: {e}", path.display()); continue; }
-        };
-        match AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc) {
+        match gipny_libcore::files::read_attachment(&path, key, a.size as u64, a.chunk_size) {
             Ok(data) => out.push((a.name, data)),
-            Err(e) => eprintln!("[agent] decrypt {}: {e:?}", path.display()),
+            Err(e) => eprintln!("[agent] read {}: {e}", path.display()),
         }
     }
     out
