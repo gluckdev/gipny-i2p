@@ -425,8 +425,9 @@ where
     let (push_tx, mut push_rx) = mpsc::channel::<RelayToClient>(PUSH_CAPACITY);
     if !owner {
         let cursor = Arc::new(Mutex::new(0u64));
+        let mut given = std::collections::HashSet::new();
         let result = match send(&mut stream, &RelayToClient::AuthOk).await {
-            Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &store, &connections, &cursor).await,
+            Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &store, &connections, &cursor, &mut given).await,
             Err(e) => Err(e),
         };
         return result;
@@ -486,21 +487,39 @@ where
         }
     });
 
+    let mut given = std::collections::HashSet::new();
     let result = match send(&mut stream, &RelayToClient::AuthOk).await {
-        Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &store, &connections, &cursor).await,
+        Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &store, &connections, &cursor, &mut given).await,
         Err(e) => Err(e),
     };
 
     initial.abort();
     refresh.abort();
+    push_rx.close();
+    while let Ok(msg) = push_rx.try_recv() {
+        if let RelayToClient::Incoming { id, .. } = msg { given.insert(id); }
+    }
     let mut conns = connections.write().await;
     if let Some(lanes) = conns.get_mut(&sign_pk) {
         lanes.senders.retain(|t| !t.same_channel(&push_tx) && !t.is_closed());
         if lanes.senders.is_empty() {
             conns.remove(&sign_pk);
+        } else {
+            redeal(lanes, &store.pending_above(&sign_pk, 0), &given);
         }
     }
     result
+}
+
+/// What a closed connection of a key was given and never acked goes to the
+/// others still open. The cursor is past it, so without this it would wait
+/// until every connection of the key had closed.
+fn redeal(lanes: &Lanes, pending: &[(u64, Vec<u8>)], given: &std::collections::HashSet<u64>) {
+    for (id, blob) in pending.iter().filter(|(id, _)| given.contains(id)) {
+        let Some(tx) = lanes.pick() else { return };
+        let pkt = RelayToClient::Incoming { id: *id, from: [0u8; 32], blob: blob.clone() };
+        tokio::spawn(async move { let _ = tx.send(pkt).await; });
+    }
 }
 
 async fn client_loop<S>(
@@ -512,6 +531,7 @@ async fn client_loop<S>(
     store: &Arc<MemStore>,
     connections: &Connections,
     cursor: &Arc<Mutex<u64>>,
+    given: &mut std::collections::HashSet<u64>,
 ) -> Result<(), RelayError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -567,6 +587,7 @@ where
                     },
                     ClientToRelay::Ack { id } => {
                         store.ack(&sign_pk, id);
+                        given.remove(&id);
                         let cur = *cursor.lock().await;
                         for (mid, blob) in store.pending_above(&sign_pk, cur) {
                             {
@@ -587,6 +608,7 @@ where
                 if let RelayToClient::Incoming { id, .. } = &msg {
                     let mut c = cursor.lock().await;
                     if *id > *c { *c = *id; }
+                    given.insert(*id);
                 }
                 send(&mut wr, &msg).await?;
             }
@@ -992,6 +1014,32 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let mut b3 = rig.login(&bob).await;
         assert_eq!(drain(&mut b3, Duration::from_millis(300)).await.len(), 4, "all four again, from the start");
+    }
+
+    #[tokio::test]
+    async fn what_a_closed_connection_left_unacked_goes_to_the_others() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b1 = rig.login(&bob).await;
+        let mut b2 = rig.login(&bob).await;
+        let mut a = rig.login(&alice).await;
+        for i in 0..6u8 {
+            send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+        }
+        let lost = drain(&mut b1, Duration::from_millis(300)).await;
+        let got2 = drain(&mut b2, Duration::from_millis(300)).await;
+        assert!(!lost.is_empty() && !got2.is_empty());
+        for id in &got2 {
+            send(&mut b2, &ClientToRelay::Ack { id: *id }).await.unwrap();
+        }
+        // b1 goes without acking; b2 stays open all along.
+        drop(b1);
+        let mut again = drain(&mut b2, Duration::from_millis(500)).await;
+        again.sort_unstable();
+        let mut lost = lost;
+        lost.sort_unstable();
+        assert_eq!(again, lost, "b1's share comes to b2, and nothing else twice");
     }
 
     #[tokio::test]
