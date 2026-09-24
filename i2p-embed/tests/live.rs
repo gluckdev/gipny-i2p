@@ -31,6 +31,10 @@ async fn a_stream_between_two_destinations_in_one_router() {
     let mut inbound = server.accept();
     let echo = tokio::spawn(async move {
         let mut s = inbound.recv().await.expect("an inbound stream");
+        // The server speaks first, as the relay does (its Challenge): the
+        // stream must reach it before the client has written anything.
+        s.write_all(b"ready").await.unwrap();
+        s.flush().await.unwrap();
         let mut buf = [0u8; 5];
         s.read_exact(&mut buf).await.expect("read on the server");
         s.write_all(&buf).await.unwrap();
@@ -49,6 +53,10 @@ async fn a_stream_between_two_destinations_in_one_router() {
         }
     }).await.expect("connected within 300 s");
     eprintln!("connected in {:?}", t1.elapsed());
+    let mut first = [0u8; 5];
+    tokio::time::timeout(Duration::from_secs(120), s.read_exact(&mut first)).await
+        .expect("the server's first words in 120 s, before the client wrote anything").unwrap();
+    assert_eq!(&first, b"ready");
     s.write_all(b"hello").await.unwrap();
     s.flush().await.unwrap();
     let mut back = [0u8; 5];

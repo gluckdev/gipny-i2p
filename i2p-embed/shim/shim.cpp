@@ -2,6 +2,8 @@
 
 #include "shim.h"
 
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -60,6 +62,15 @@ bool parse_remote(const char *remote, i2p::data::IdentHash &out) {
 	return true;
 }
 
+std::atomic<bool> running{false};
+
+// Stop once, whoever asks first: gipny_router_stop, or the process exiting.
+void stop_router() {
+	if (!running.exchange(false)) return;
+	i2p::api::StopI2P();
+	i2p::api::TerminateI2P();
+}
+
 } // namespace
 
 extern "C" {
@@ -95,11 +106,15 @@ void gipny_router_start(const char *log_path) {
 		if (f->is_open()) log = f;
 	}
 	i2p::api::StartI2P(log);
+	// The router lives in a static the host never drops, and exit() destroys
+	// libi2pd's globals — its threads among them, still joinable — which is
+	// std::terminate ("terminate called without an active exception", e2e run
+	// 36027659010). Handlers registered now run before those destructors.
+	if (!running.exchange(true)) std::atexit(stop_router);
 }
 
 void gipny_router_stop(void) {
-	i2p::api::StopI2P();
-	i2p::api::TerminateI2P();
+	stop_router();
 }
 
 void gipny_router_set_online(int online) {
@@ -166,6 +181,12 @@ int gipny_dest_connect(gipny_dest *dest, const char *remote, uint16_t port,
 	if (!dest || !dest->dest || !parse_remote(remote, hash)) return 0;
 	dest->dest->CreateStream(
 		[cb, ctx](std::shared_ptr<i2p::stream::Stream> stream) {
+			// A new outgoing stream sends its SYN with the first data, so
+			// until we write the other side knows nothing of it — and a
+			// protocol where the server speaks first (the relay's Challenge)
+			// waits forever. An empty send opens it now, as SAM's STREAM
+			// CONNECT does.
+			if (stream) stream->Send(nullptr, 0);
 			cb(ctx, stream ? new gipny_stream{stream} : nullptr);
 		},
 		hash, port);
