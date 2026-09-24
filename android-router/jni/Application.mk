@@ -6,6 +6,10 @@ APP_STL := c++_static
 # c++20. The pinned revision builds either way, so this costs nothing today and
 # keeps the pin bump from breaking the Android router.
 APP_CPPFLAGS += -std=c++20 -fexceptions -frtti
+# As i2p-embed/build.rs: libi2pd's globals are not destroyed at exit (their
+# order is the linker's, and ~Tunnels outlived a mutex it needs on macOS); the
+# router is stopped before exit by the shim.
+APP_CPPFLAGS += -fno-c++-static-destructors
 
 # No USE_UPNP: the router is only ever reached through its own api in this
 # process, so UPnP is a dependency (miniupnpc) and a hole-punching side effect

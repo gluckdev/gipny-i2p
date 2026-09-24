@@ -96,6 +96,13 @@ fn main() {
         // FS.cpp and friends key the macOS paths off it, as upstream's builds.
         build.define("MAC_OSX", None);
     }
+    // libi2pd's globals (tunnels, netdb, transports) are destroyed by exit()
+    // in an order that is the linker's: on macOS ~Tunnels ran after a mutex
+    // it needs was gone ("mutex lock failed", SIGABRT after every clean run).
+    // The router is stopped before that (the shim's atexit handler), so let
+    // the process take the rest with it. Clang only; gcc keeps them and has
+    // not shown the problem.
+    build.flag_if_supported("-fno-c++-static-destructors");
     if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
         // Libraries are named below, not by boost's #pragma autolink (whose
         // names vcpkg's builds do not match); /bigobj for i2pd's larger units.
