@@ -488,9 +488,11 @@ jobs:
           submodules: recursive
 
       - name: check out the pinned vendored sources
+        id: pins
         run: |
           git submodule update --init --recursive
           echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "i2pd_android=$(git -C third_party/i2pd-android rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: restore cached router
         id: cache
@@ -538,8 +540,21 @@ jobs:
           sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh
           echo "[i2pd] boost at $(git -C boost rev-parse HEAD)"
 
-      - name: build dependencies (boost, openssl)
+      # boost and OpenSSL take most of an hour from source and change only with
+      # the NDK or their own pins — not with the i2pd pin or our JNI glue, which
+      # used to throw them away with the router cache every time either moved.
+      - name: restore cached dependencies (boost, openssl)
+        id: deps
         if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            third_party/i2pd-android/binary/jni/boost/build/out/${{ matrix.abi }}
+            third_party/i2pd-android/binary/jni/openssl/out/${{ matrix.abi }}
+          key: android-deps-${{ matrix.abi }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-scripts${{ steps.pins.outputs.i2pd_android }}
+
+      - name: build dependencies (boost, openssl)
+        if: steps.cache.outputs.cache-hit != 'true' && steps.deps.outputs.cache-hit != 'true'
         working-directory: third_party/i2pd-android/binary/jni
         run: |
           ./build_boost.sh ${{ matrix.arch }}
@@ -562,7 +577,8 @@ jobs:
           LIB="android-router/libs/${{ matrix.abi }}/libi2pd.so"
           NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           for sym in Java_app_gipny_GipnyService_nativeStartSam \
-                     Java_app_gipny_GipnyService_nativeStopSam; do
+                     Java_app_gipny_GipnyService_nativeStopSam \
+                     Java_app_gipny_GipnyService_nativeNetworkChanged; do
             # --dynamic: ndk-build strips the copy it installs into libs/, and
             # the dynamic table is what the JVM resolves against anyway.
             "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym" \
