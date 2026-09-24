@@ -11,5 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 gipny-libcore = { path = "../../libcore" }
+# Only to hand a bot the e2e seed through its saved node table.
+gipny-dht = { path = "../../dht" }
 tokio = { workspace = true }
 anyhow = { workspace = true }

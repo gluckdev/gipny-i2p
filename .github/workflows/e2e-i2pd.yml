@@ -515,7 +515,7 @@ jobs:
           [ -s e2e-state/seed/dest.pub ] || { echo "seed: dest.pub never appeared"; tail -50 e2e-logs/seed.log; exit 1; }
           sleep 5
           kill -0 "$(cat seed.pid)" 2>/dev/null || { echo "seed died after dest.pub"; tail -50 e2e-logs/seed.log; exit 1; }
-          echo "GIPNY_DHT_SEEDS=$(cat e2e-state/seed/dest.pub)" >> "$GITHUB_ENV"
+          echo "E2E_DHT_SEED_DEST=$(cat e2e-state/seed/dest.pub)" >> "$GITHUB_ENV"
 
       - name: run e2e harness
         env:

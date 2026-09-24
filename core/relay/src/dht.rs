@@ -13,6 +13,7 @@
 
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -38,6 +39,8 @@ const MAINTAIN_EVERY: Duration = Duration::from_secs(45 * 60);
 const BOOTSTRAP_DELAY: Duration = Duration::from_secs(90);
 /// Nodes silent this long are dropped from the saved table.
 const PEER_FORGET_MS: u64 = 14 * 24 * 3600 * 1000;
+/// Dials failed in a row before the outgoing SAM session is rebuilt.
+const REBUILD_AFTER_FAILURES: u32 = 8;
 
 pub struct Options {
     pub stores: bool,
@@ -50,7 +53,7 @@ pub fn start(data_dir: &Path, sam_port: u16, destination: &str, opts: Options) -
     let items = Arc::new(SqliteStorage::open(&data_dir.join("dht-items.db"), StoreLimits::default())?);
     let peers = Arc::new(PeerStore::open(&data_dir.join("dht-peers.db"))?);
     let node: Arc<Node> = Arc::new(DhtNode::new(
-        Arc::new(RelayTransport { sam_port, session: Mutex::new(None) }),
+        Arc::new(RelayTransport { sam_port, session: Mutex::new(None), failures: AtomicU32::new(0) }),
         items,
         NodeConfig::default(),
         dht_node::system_clock(),
@@ -119,6 +122,9 @@ pub struct RelayTransport {
     /// Opened on first dial, dropped on a failed one so the next dial rebuilds
     /// it. A tunnel pool per call would cost tens of seconds each.
     session: Mutex<Option<Session<style::Stream>>>,
+    /// Dials failed in a row. One node being away is normal; every dial
+    /// failing means the session died with a router restart.
+    failures: AtomicU32,
 }
 
 pub struct RelayConn {
@@ -133,8 +139,8 @@ impl RelayTransport {
             if session.is_none() {
                 // SAM session IDs are router-wide: pid plus a counter, never
                 // random, so a rebuild cannot meet a name still in use.
-                static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                static SEQ: AtomicU32 = AtomicU32::new(0);
+                let seq = SEQ.fetch_add(1, Ordering::Relaxed);
                 let opts = SessionOptions {
                     nickname: format!("gipny-relay-dht-{}-{seq}", std::process::id()),
                     destination: DestinationKind::Transient,
@@ -151,12 +157,18 @@ impl RelayTransport {
             session.as_mut().expect("just set").connect_detached(destination)
         };
         match fut.await {
-            Ok(stream) => Ok(stream),
+            Ok(stream) => {
+                self.failures.store(0, Ordering::Relaxed);
+                Ok(stream)
+            }
             Err(e) => {
                 // A reply yosemite cannot parse poisons the session's controller
-                // (see main.rs); a destination being away does not, but telling
-                // the two apart is not worth a stuck node.
-                if matches!(e, yosemite::Error::Malformed) {
+                // (see main.rs); a router restart kills it without a word. Either
+                // way the next dial opens a new one.
+                let failed = self.failures.fetch_add(1, Ordering::Relaxed) + 1;
+                if matches!(e, yosemite::Error::Malformed) || failed >= REBUILD_AFTER_FAILURES {
+                    eprintln!("[dht] {failed} dial(s) failed in a row ({e}); opening a new SAM session");
+                    self.failures.store(0, Ordering::Relaxed);
                     *self.session.lock().await = None;
                 }
                 Err(net_err(e))

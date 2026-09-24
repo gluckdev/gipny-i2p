@@ -24,7 +24,7 @@
 //!   relay too. `E2E_N_MESSAGES` is the number of commands.
 //! * `E2E_DHT_OFFLINE=1` — a different test: delivery through the relay
 //!   network while each side is away in turn. Needs `GIPNY_SAM_PORT` and
-//!   `GIPNY_DHT_SEEDS` (the destination of a `gipny-relay --dht` on the same
+//!   `E2E_DHT_SEED_DEST` (the destination of a `gipny-relay --dht` on the same
 //!   router). See [`run_dht_offline_mode`].
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
@@ -74,6 +74,7 @@ async fn start_bot(
     name: &'static str,
     work_dir: &PathBuf,
     relay_dest: &str,
+    dht_seeds: &[String],
 ) -> Result<(BotHandle, tokio::sync::mpsc::Receiver<SessionEvent>)> {
     let data_dir = work_dir.join(name);
     std::fs::create_dir_all(&data_dir)
@@ -99,6 +100,23 @@ async fn start_bot(
         Db::open_plain(&db_path)
             .with_context(|| format!("{name}: Db::open_plain failed"))?,
     );
+    // Clients take seeds only from the build. The e2e seed goes where a node
+    // that answered before would be: the saved table the node reads at start.
+    if !dht_seeds.is_empty() {
+        let peers: Vec<gipny_dht::node::KnownPeer> = dht_seeds
+            .iter()
+            .map(|d| gipny_dht::node::KnownPeer {
+                info: gipny_dht::proto::NodeInfo {
+                    destination: d.clone(),
+                    stores: true,
+                    version: gipny_dht::proto::PROTOCOL_VERSION,
+                },
+                first_seen_ms: 0,
+                last_ok_ms: 0,
+            })
+            .collect();
+        db.dht_peers_save(&peers).with_context(|| format!("{name}: seed the node table"))?;
+    }
 
     let (session, events) = SessionManager::start(data_dir, db, node)
         .await
@@ -291,7 +309,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let relay_ms = t0.elapsed().as_millis() as u64;
     eprintln!("[e2e] relay up in {relay_ms} ms ({}...)", &relay_dest[..20.min(relay_dest.len())]);
 
-    let (a, mut a_events) = start_bot("bot-a", &work_dir, &relay_dest).await.context("bot-a start")?;
+    let (a, mut a_events) = start_bot("bot-a", &work_dir, &relay_dest, &[]).await.context("bot-a start")?;
     let master_card = ContactCard {
         onion: a.onion.clone(),
         sign_pk: a.card.sign_pk,
@@ -552,11 +570,13 @@ struct LiveBot {
 impl LiveBot {
     /// Start (or restart, on the same data dir) and wait until the relay
     /// network has answered. Every start is a new relay address.
-    async fn start(name: &'static str, work_dir: &PathBuf, sam_port: u16, budget: Duration) -> Result<Self> {
-        let (bot, events) = start_bot(name, work_dir, "").await?;
+    async fn start(name: &'static str, work_dir: &PathBuf, sam_port: u16, seeds: &[String], budget: Duration) -> Result<Self> {
+        let (bot, events) = start_bot(name, work_dir, "", seeds).await?;
+        // The agent's arrangement: the personal relay also answers for the
+        // session's own network node.
         let relay = tokio::time::timeout(
             Duration::from_secs(300),
-            EphemeralRelay::start(sam_port, MemStoreLimits::personal(bot.card.sign_pk), None),
+            EphemeralRelay::start(sam_port, MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
         )
         .await
         .with_context(|| format!("{name}: relay did not come up in 300s"))?
@@ -565,10 +585,20 @@ impl LiveBot {
         bot.session.set_relay_onion(&relay_address).with_context(|| format!("{name}: set_relay_onion"))?;
         eprintln!("[e2e] {name}: relay {}...", &relay_address[..20.min(relay_address.len())]);
 
+        // join_dht bootstraps, announces us, publishes our bundle and
+        // collects what waits for us. Repeated until the seed has answered,
+        // instead of waiting out the 45-minute maintenance tick.
         let session = bot.session.clone();
-        poll(budget, Duration::from_secs(5), || async { session.dht_peer_count() > 0 })
-            .await
-            .with_context(|| format!("{name}: the seed never answered"))?;
+        let address = relay_address.clone();
+        poll(budget, Duration::from_secs(10), || {
+            let (session, address) = (session.clone(), address.clone());
+            async move {
+                session.join_dht(&address).await;
+                session.dht_peer_count() > 0
+            }
+        })
+        .await
+        .with_context(|| format!("{name}: the seed never answered"))?;
         eprintln!("[e2e] {name}: in the relay network ({} nodes)", bot.session.dht_peer_count());
         Ok(Self { session: bot.session, card: bot.card, onion: bot.onion, relay_address, events, _relay: relay })
     }
@@ -648,8 +678,9 @@ where
 ///    the network; then B goes away.
 /// 5. A comes back, also somewhere new, and collects the N answers.
 ///
-/// The seed is the only node that stores: bots are leaf clients here (their
-/// relays serve no network requests), so everything passed through it.
+/// Bots run as the agent does: their personal relays serve the network too.
+/// Whoever is away takes what it held along, so what arrives was held by the
+/// seed or by the side that stayed.
 async fn run_dht_offline_mode() -> Result<()> {
     let n: usize = std::env::var("E2E_N_MESSAGES").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
     let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
@@ -660,9 +691,14 @@ async fn run_dht_offline_mode() -> Result<()> {
         .trim()
         .parse()
         .context("GIPNY_SAM_PORT is not a port")?;
-    let seeds = gipny_libcore::dht_client::builtin_seeds();
+    let seeds: Vec<String> = std::env::var("E2E_DHT_SEED_DEST")
+        .context("E2E_DHT_OFFLINE needs E2E_DHT_SEED_DEST, the seed's destination")?
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
     if seeds.is_empty() {
-        bail!("E2E_DHT_OFFLINE needs GIPNY_DHT_SEEDS, the seed's destination");
+        bail!("E2E_DHT_SEED_DEST is empty");
     }
     eprintln!("[e2e] relay-network run: {} seed(s), n={n}, timeout={timeout_secs}s", seeds.len());
 
@@ -672,8 +708,8 @@ async fn run_dht_offline_mode() -> Result<()> {
 
     phase("1. both join the network");
     let (a, b) = tokio::try_join!(
-        LiveBot::start("bot-a", &work_dir, sam_port, step),
-        LiveBot::start("bot-b", &work_dir, sam_port, step),
+        LiveBot::start("bot-a", &work_dir, sam_port, &seeds, step),
+        LiveBot::start("bot-b", &work_dir, sam_port, &seeds, step),
     )?;
     let session = b.session.clone();
     poll(step, Duration::from_secs(10), || async { session.publish_bundle_to_dht().await })
@@ -700,7 +736,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     a.stop("bot-a");
 
     phase("4. B comes back elsewhere, reads, answers the absent A");
-    let mut b = LiveBot::start("bot-b", &work_dir, sam_port, step).await?;
+    let mut b = LiveBot::start("bot-b", &work_dir, sam_port, &seeds, step).await?;
     if b.relay_address == b_relay_before {
         bail!("bot-b came back on the same relay address; the run proves nothing about address change");
     }
@@ -716,14 +752,28 @@ async fn run_dht_offline_mode() -> Result<()> {
     }
     b.drain("bot-b", a_in_b, step).await?;
     eprintln!("[e2e] bot-b: all {n} answers are in the network");
+    let b_relay_after = b.relay_address.clone();
     b.stop("bot-b");
 
     phase("5. A comes back elsewhere and reads the answers");
-    let mut a = LiveBot::start("bot-a", &work_dir, sam_port, step).await?;
+    let mut a = LiveBot::start("bot-a", &work_dir, sam_port, &seeds, step).await?;
     if a.relay_address == a_relay_before {
         bail!("bot-a came back on the same relay address; the run proves nothing about address change");
     }
     let answers = a.receive("bot-a", "re:dht-", n, step).await?;
+
+    // Never "ask for a fresh card": A must have found where B is now.
+    let b_relay_now = b_relay_after.clone();
+    let db = a.session.db.clone();
+    poll(step, Duration::from_secs(10), || {
+        let (db, want) = (db.clone(), b_relay_now.clone());
+        async move {
+            db.get_contact(b_in_a).ok().flatten().and_then(|c| c.relay_address).as_deref() == Some(want.as_str())
+        }
+    })
+    .await
+    .context("bot-a never learned bot-b's new relay address")?;
+    eprintln!("[e2e] bot-a: knows bot-b's new relay address");
     a.stop("bot-a");
 
     let total = t0.elapsed().as_secs();
@@ -731,7 +781,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     if let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") {
         use std::io::Write;
         let content = format!(
-            "### e2e relay network, each side away in turn — ✅ PASS\n\n             {n} letters A→B while B was away, {n} answers B→A while A was away;              both came back on new relay addresses. Total {total} s.\n"
+            "### e2e relay network, each side away in turn — ✅ PASS\n\n             {n} letters A→B while B was away, {n} answers B→A while A was away;              both came back on new relay addresses, and A found B's. Total {total} s.\n"
         );
         let _ = std::fs::OpenOptions::new().create(true).append(true).open(&summary_path)
             .and_then(|mut f| f.write_all(content.as_bytes()));
@@ -794,8 +844,8 @@ async fn main() -> Result<()> {
     // relay is started for that identity, and only then does the client learn
     // where it collects.
     let first = standalone.clone().unwrap_or_default();
-    let a_result = start_bot("bot-a", &work_dir, &first.0).await;
-    let b_result = start_bot("bot-b", &work_dir, &first.1).await;
+    let a_result = start_bot("bot-a", &work_dir, &first.0, &[]).await;
+    let b_result = start_bot("bot-b", &work_dir, &first.1, &[]).await;
     let (a, mut a_events) = a_result.context("bot-a start")?;
     let (b, mut b_events) = b_result.context("bot-b start")?;
 
