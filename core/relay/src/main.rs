@@ -340,7 +340,6 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     }
                     ClientToRelay::Send { to, blob } => {
                         let id = storage.deposit(&to, &blob)?;
-                        send_frame(&mut wr, &RelayToClient::Deposited { id: id as u64 }).await?;
                         let tx_opt = connections.read().await.get(&to).cloned();
                         if let Some((tx, cur)) = tx_opt {
                             // Counted as pushed now, not when written: an Ack's
@@ -352,6 +351,9 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                             let pkt = RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob };
                             tokio::spawn(async move { let _ = tx.send(pkt).await; });
                         }
+                        // Answered after it is marked as pushed: the answer can wait on i2p,
+                        // and an Ack's sweep meanwhile would push it a second time.
+                        send_frame(&mut wr, &RelayToClient::Deposited { id: id as u64 }).await?;
                     }
                     ClientToRelay::Ack { id } => {
                         storage.ack(&sign_pk, id as i64)?;

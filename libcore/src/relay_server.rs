@@ -494,7 +494,6 @@ where
                     }
                     ClientToRelay::Send { to, blob } => match store.deposit(&to, &blob) {
                         Ok(id) => {
-                            send(&mut wr, &RelayToClient::Deposited { id }).await?;
                             let online = connections.read().await.get(&to).cloned();
                             if let Some((tx, cur)) = online {
                                 // Counted as pushed now, not when it is written: an
@@ -506,6 +505,9 @@ where
                                 let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
                                 tokio::spawn(async move { let _ = tx.send(pkt).await; });
                             }
+                            // Answered after it is marked as pushed: the answer can wait on i2p,
+                            // and an Ack's sweep meanwhile would push it a second time.
+                            send(&mut wr, &RelayToClient::Deposited { id }).await?;
                         }
                         // No Deposited: the sender keeps the message unacked and
                         // tries again elsewhere or later.
@@ -867,13 +869,21 @@ mod tests {
         }
 
         fn open(&self) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
-            let (client, server) = tokio::io::duplex(1 << 20);
+            self.open_with(1 << 20)
+        }
+
+        fn open_with(&self, buffer: usize) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
+            let (client, server) = tokio::io::duplex(buffer);
             let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone(), RIG_DESTINATION, self.dht.clone()));
             (client, task)
         }
 
         async fn login(&self, who: &Identity) -> DuplexStream {
-            let (mut c, _task) = self.open();
+            self.login_buffered(who, 1 << 20).await
+        }
+
+        async fn login_buffered(&self, who: &Identity, buffer: usize) -> DuplexStream {
+            let (mut c, _task) = self.open_with(buffer);
             let RelayToClient::Challenge(ch) = recv(&mut c).await.unwrap() else { panic!("no challenge") };
             let signature = who.sign(&crate::relay::auth_v2_message(&RIG_DESTINATION, &ch));
             let auth = ClientToRelay::AuthV2 { sign_pk: who.card().sign_pk, signature };
@@ -914,6 +924,48 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), N as usize, "every letter came");
         assert_eq!(got.len(), N as usize, "none came twice: {got:?}");
+    }
+
+    /// Every `Incoming` a connection has within `wait`, by id.
+    async fn drain(c: &mut DuplexStream, wait: Duration) -> Vec<u64> {
+        let mut ids = Vec::new();
+        while let Ok(Ok(frame)) = tokio::time::timeout(wait, recv::<_, RelayToClient>(c)).await {
+            if let RelayToClient::Incoming { id, .. } = frame {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_deposit_slow_to_confirm_is_not_pushed_twice() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        // Alice's side takes two Deposited frames and then nothing, as an
+        // i2p stream with a full window would: the third deposit waits on
+        // its answer, with the letter already stored.
+        let a = rig.login_buffered(&alice, 40).await;
+        let to = bob.card().sign_pk;
+        let (mut ar, mut aw) = tokio::io::split(a);
+        let sender = tokio::spawn(async move {
+            for i in 0..3u8 {
+                send(&mut aw, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            }
+            aw
+        });
+        let first = match next(&mut b).await { RelayToClient::Incoming { id, .. } => id, f => panic!("{f:?}") };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Bob's Ack sweeps while the third deposit is still answering Alice.
+        send(&mut b, &ClientToRelay::Ack { id: first }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for _ in 0..3 {
+            let _: RelayToClient = tokio::time::timeout(Duration::from_secs(5), recv(&mut ar)).await.unwrap().unwrap();
+        }
+        let _aw = sender.await.unwrap();
+        let mut got = vec![first];
+        got.extend(drain(&mut b, Duration::from_millis(300)).await);
+        assert_eq!(got.len(), 3, "each once: {got:?}");
     }
 
     #[tokio::test]
