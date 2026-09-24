@@ -1054,6 +1054,17 @@ impl Core {
             Ok(Some(m)) if m.contact_id == Some(master.contact_id) && matches!(m.direction, Direction::In) => m,
             _ => { let _ = self.db.delete_setting(&pending_key); return; }
         };
+        // Files still coming in parts: the command waits for them (and, the
+        // worker being one queue, so do those after it). An hour at most;
+        // then it runs with what is there.
+        let waited_since = tokio::time::Instant::now();
+        while !self.db.files_in_for_message(mid).unwrap_or_default().is_empty() {
+            if waited_since.elapsed() > Duration::from_secs(3600) {
+                eprintln!("[agent] command {mid}: its files did not all arrive; running without them");
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
         let _ = self.db.delete_setting(&pending_key);
         let files = self.load_attachment_data(mid).unwrap_or_default();
         eprintln!(

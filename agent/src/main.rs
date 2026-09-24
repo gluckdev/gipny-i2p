@@ -326,6 +326,9 @@ async fn main() -> Result<()> {
     // and waits for its delivery (bounded), so the master's app shows the
     // console closed rather than an agent that silently went away.
     let mut stopping: Option<(i64, tokio::time::Instant)> = None;
+    // Commands in arrival order; one whose files are still coming in parts
+    // waits for them, and those after it wait behind it.
+    let mut held: std::collections::VecDeque<(Job, bool)> = std::collections::VecDeque::new();
     // systemd stops the service with SIGTERM: the same as Ctrl-C, so the
     // master hears REVOKE and the router in this process stops before exit.
     #[cfg(unix)]
@@ -367,7 +370,16 @@ async fn main() -> Result<()> {
                         match console.kind {
                             CONSOLE_COMMAND => {
                                 if stopping.is_some() { continue; }
-                                let _ = queue_tx.send(Job { message_id, body: payload.body.clone() });
+                                let waiting = !payload.files.is_empty()
+                                    && !session.db.files_in_for_message(message_id).unwrap_or_default().is_empty();
+                                if waiting {
+                                    eprintln!("[agent] command {message_id} waits for its files");
+                                }
+                                held.push_back((Job { message_id, body: payload.body.clone() }, !waiting));
+                                while held.front().is_some_and(|(_, ready)| *ready) {
+                                    let (job, _) = held.pop_front().unwrap();
+                                    let _ = queue_tx.send(job);
+                                }
                             }
                             CONSOLE_OFF => {
                                 if stopping.is_none() {
@@ -390,6 +402,19 @@ async fn main() -> Result<()> {
                             the master the new card from card.txt."
                         );
                         std::process::exit(2);
+                    }
+                    // A command's files are in (or will not come): it may run.
+                    SessionEvent::FileReceived { message_id, .. } | SessionEvent::FileFailed { message_id, .. } => {
+                        let whole = session.db.files_in_for_message(message_id).unwrap_or_default().is_empty();
+                        for (job, ready) in held.iter_mut() {
+                            if job.message_id == message_id && whole {
+                                *ready = true;
+                            }
+                        }
+                        while held.front().is_some_and(|(_, ready)| *ready) {
+                            let (job, _) = held.pop_front().unwrap();
+                            let _ = queue_tx.send(job);
+                        }
                     }
                     SessionEvent::MessageDelivered { message_id } => {
                         if stopping.map(|(id, _)| id == message_id).unwrap_or(false) {
