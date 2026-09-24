@@ -8,9 +8,9 @@ name: i2p-embed
 
 on:
   push:
-    paths: [ 'i2p-embed/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', '.github/workflows/i2p-embed.yml' ]
   pull_request:
-    paths: [ 'i2p-embed/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', '.github/workflows/i2p-embed.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -52,3 +52,47 @@ jobs:
             grep -aE "ready in|connected in|echo in|test result|panicked|error" live.txt | head -40 || echo 'no output'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Two bots with their built-in relays, all on the router inside the harness
+  # process: no i2pd process, no SAM, no port. The same scenario as
+  # "e2e (relays inside the bots)" in e2e-i2pd.yml.
+  e2e:
+    name: e2e on the in-process router (relays inside the bots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-embed-e2e
+      - name: build the harness on the in-process router
+        run: cargo build --release -p e2e-harness --features embedded-i2p
+      - name: run
+        env:
+          GIPNY_EMBEDDED_I2P: '1'
+          E2E_IN_PROCESS_RELAYS: '1'
+          E2E_N_MESSAGES: '5'
+          E2E_TIMEOUT_SECS: '900'
+          E2E_WORK_DIR: ${{ runner.temp }}/e2e
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee harness.log
+          grep -q '\[e2e\] SUCCESS' harness.log
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo '### e2e on the in-process router'
+            echo '```'
+            grep -aE "router ready|relays up|relay-connect|RTT|SUCCESS|Error|panicked" harness.log | head -30 || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
