@@ -1752,7 +1752,16 @@ impl Core {
                     continue;
                 }
                 eprintln!("[relay-client] connecting to {}", &onion[..16.min(onion.len())]);
-                match relay::connect(&this.node, &onion, &this.identity).await {
+                // Our own built-in relay is in this process: talk to it over a
+                // pipe, not out through i2p and back in.
+                let local = this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+                    .filter(|r| r.address() == onion)
+                    .map(|r| r.connect_local());
+                let connected = match local {
+                    Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
+                    None => relay::connect(&this.node, &onion, &this.identity).await,
+                };
+                match connected {
                     Ok(client) => {
                         eprintln!("[relay-client] connected & authed");
                         this.note_relay_dial(None);

@@ -504,6 +504,10 @@ pub struct EphemeralRelay {
     /// Rung to make the accept loop drop the live session and open a new one
     /// at whatever `hops` now says.
     rebuild: Arc<tokio::sync::Notify>,
+    /// What [`Self::connect_local`] serves its connections with.
+    connections: Connections,
+    destination_hash: [u8; 32],
+    dht: Option<DhtHandler>,
 }
 
 impl EphemeralRelay {
@@ -538,6 +542,7 @@ impl EphemeralRelay {
         // task drops them with it.
         let destination_hash = crate::relay::destination_hash(&address)
             .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
+        let local = (connections.clone(), dht.clone());
         let accept = tokio::spawn({
             let store = store.clone();
             let (hops, rebuild) = (hops.clone(), rebuild.clone());
@@ -619,7 +624,30 @@ impl EphemeralRelay {
             }
         });
 
-        Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild })
+        let (connections, dht) = local;
+        Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild, connections, destination_hash, dht })
+    }
+
+    /// A connection to this relay from inside the process: its owner, the
+    /// client in the same app or agent, collecting its own mail.
+    ///
+    /// The same `handle_client` as for anyone arriving over i2p, over a pipe
+    /// instead of two tunnels. Going through i2p to a relay in the same
+    /// process cost 10–15 s before the client counted as connected after
+    /// every start, and one more pass through the network for every letter
+    /// that arrived (e2e run 35955326759: relay-connect 11–13 s, RTT 42 s).
+    /// The owner still logs in with `AuthV2` for this relay's address, so
+    /// nothing about who may collect changes.
+    pub fn connect_local(&self) -> std::pin::Pin<Box<dyn crate::net::DuplexStream>> {
+        let (client, server) = tokio::io::duplex(1 << 20);
+        let (store, connections, dht) = (self.store.clone(), self.connections.clone(), self.dht.clone());
+        let destination_hash = self.destination_hash;
+        tokio::spawn(async move {
+            if let Err(e) = handle_client(server, store, connections, destination_hash, dht).await {
+                eprintln!("[relay-server] local client gone: {e}");
+            }
+        });
+        Box::pin(client)
     }
 
     /// This relay's destination, for handing to whoever should deposit here.

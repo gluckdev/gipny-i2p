@@ -254,8 +254,11 @@ async fn main() -> Result<()> {
             )
             .await
             .context("start the agent's built-in relay")?;
+            let relay = std::sync::Arc::new(relay);
             let address = relay.address().to_string();
             eprintln!("[agent] built-in relay ready");
+            // Collect from it over a pipe, not out through i2p and back.
+            session.set_local_relay(relay.clone());
             session.set_relay_onion(&address)?;
             let dht_session = session.clone();
             let dht_address = address.clone();
