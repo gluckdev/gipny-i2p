@@ -1490,9 +1490,10 @@ impl SessionManager {
                     return Ok(());
                 }
                 if crossed {
-                    // Theirs stands: what we sent on ours never decrypts there.
-                    eprintln!("[session] X3dhInit from contact {} crossed ours; theirs stands, resending", contact.id);
-                    let _ = self.db.make_unacked_due(contact.id);
+                    // Theirs stands. What we sent on ours they read on it (they
+                    // keep it for that); anything that did not make it goes
+                    // again on the usual retry, so no resend of everything here.
+                    eprintln!("[session] X3dhInit from contact {} crossed ours; theirs stands", contact.id);
                 } else {
                     eprintln!("[session] received X3dhInit from contact {}, accepting", contact.id);
                 }

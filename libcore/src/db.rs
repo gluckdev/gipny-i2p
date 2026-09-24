@@ -1077,16 +1077,6 @@ impl Db {
             params![id, now_ms()])?; Ok(()) })
     }
 
-    /// Every letter to this contact still waiting for its ack is due for a
-    /// resend now, not at its next backoff step: the session it went out on
-    /// was dropped.
-    pub fn make_unacked_due(&self, contact_id: i64) -> Result<usize> {
-        self.with_conn(|c| Ok(c.execute(
-            "UPDATE messages SET last_attempt_at = NULL
-             WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0",
-            params![contact_id])?))
-    }
-
     pub fn record_send_attempt(&self, id: i64) -> Result<()> {
         self.with_conn(|c| { c.execute(
             "UPDATE messages SET last_attempt_at = ?2, send_attempts = send_attempts + 1 WHERE id = ?1",
