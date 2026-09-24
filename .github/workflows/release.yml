@@ -365,10 +365,10 @@ jobs:
             target/release/bundle/**/*.dmg
 
   # ---------------------------------------------------------------------------
-  # 2b. Relay server for Linux amd64 and arm64: gipny-relay, the same musl i2pd
-  #     the desktop app bundles, and both systemd units, in one tarball. arm64
-  #     is here for the cheap always-on machines a relay actually runs on — a
-  #     Raspberry Pi, an ARM VPS.
+  # 2b. Relay server for Linux amd64 and arm64: gipny-relay (the i2p router
+  #     compiled in: no i2pd beside it, no SAM, no port) and its systemd unit,
+  #     in one tarball. arm64 is here for the cheap always-on machines a relay
+  #     actually runs on — a Raspberry Pi, an ARM VPS.
   # ---------------------------------------------------------------------------
   relay:
     name: relay (linux ${{ matrix.arch }})
@@ -395,18 +395,23 @@ jobs:
         with:
           name: ${{ matrix.router }}
           path: router
+      - name: i2pd sources and build deps (the relay compiles its router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: build and package
         run: |
+          export I2P_EMBED_STATIC_LIBS=boost_program_options
+          export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
           cargo build --release --manifest-path core/relay/Cargo.toml
           VERSION="$(jq -r .version core/tauri.conf.json)"
           name="gipny-relay_${VERSION}_linux-${{ matrix.arch }}"
           mkdir -p "dist/$name"
           install -m 0755 core/relay/target/release/gipny-relay "dist/$name/"
-          install -m 0755 router/i2pd "dist/$name/"
-          install -m 0644 core/relay/gipny-relay.service core/relay/gipny-i2pd.service "dist/$name/"
-          # Both binaries must run on the architecture this tarball is named for.
-          "dist/$name/i2pd" --version | head -1
-          file "dist/$name/gipny-relay" "dist/$name/i2pd"
+          install -m 0644 core/relay/gipny-relay.service "dist/$name/"
+          # Must run on the architecture this tarball is named for.
+          file "dist/$name/gipny-relay"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
       - uses: actions/upload-artifact@v7
@@ -417,11 +422,9 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2c. Headless agent: gipny-agent + the i2pd it spawns + a systemd unit,
-  #     as a tar.gz for Linux amd64 and arm64. The router is in the tarball
-  #     because the agent looks for i2pd next to its own executable first
-  #     (libcore/src/router.rs); without it the daemon cannot start on a
-  #     clean host, which is exactly what v0.4.0 shipped.
+  # 2c. Headless agent: gipny-agent (the i2p router compiled in, no SAM, no
+  #     port), the network snapshot beside it and a systemd unit, as a tar.gz
+  #     for Linux amd64 and arm64.
   # ---------------------------------------------------------------------------
   agent:
     name: agent (linux ${{ matrix.arch }})

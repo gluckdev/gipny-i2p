@@ -1,9 +1,9 @@
 [Unit]
 Description=gipny relay server (i2p)
-# Needs the i2pd SAM router up first (SAMv3 on 127.0.0.1:7656).
-After=network-online.target gipny-i2pd.service
+# The i2p router runs inside gipny-relay itself: no i2pd service, no SAM,
+# no local port. Its state is under $GIPNY_RELAY_DATA/router.
+After=network-online.target
 Wants=network-online.target
-Requires=gipny-i2pd.service
 
 [Service]
 Type=simple

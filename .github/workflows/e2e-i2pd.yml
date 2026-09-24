@@ -193,6 +193,11 @@ jobs:
             *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
           esac
 
+      - name: i2pd sources and build deps (the relay compiles its router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: build relay
         run: |
           cargo build --release --manifest-path core/relay/Cargo.toml
@@ -491,6 +496,11 @@ jobs:
             *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
           esac
 
+      - name: i2pd sources and build deps (the relay compiles its router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: build seed and e2e harness
         run: |
           cargo build --release --manifest-path core/relay/Cargo.toml

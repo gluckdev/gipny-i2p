@@ -12,7 +12,6 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
-use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
 use crate::dht::DhtHandler;
 use crate::proto::*;
@@ -20,9 +19,6 @@ use crate::storage::Storage;
 
 type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
 
-/// Default SAMv3 port. The relay is server-side infrastructure: run i2pd as a
-/// system service exposing SAMv3 here (see gipny-i2pd.service).
-const DEFAULT_SAM_PORT: u16 = 7656;
 
 /// A relay-network connection is closed after this many requests, or when it
 /// sits idle this long (same limits as libcore's relay_server).
@@ -55,23 +51,35 @@ async fn main() -> anyhow::Result<()> {
     let storage = Arc::new(Storage::open(&data_dir.join("relay.db"))?);
     let connections: Connections = Arc::new(RwLock::new(HashMap::new()));
 
-    let sam_port: u16 = std::env::var("GIPNY_SAM_PORT").ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_SAM_PORT);
+    // The i2p router runs inside this process (i2p-embed): no SAM, no router
+    // to install beside it, no local port. Its state lives in the data dir.
+    let router_dir = data_dir.join("router");
+    std::fs::create_dir_all(&router_dir)?;
+    eprintln!("[relay] starting the i2p router in-process ({})...", router_dir.display());
+    let router = Arc::new(i2p_embed::Router::start(&[
+        format!("--datadir={}", router_dir.display()),
+        "--sam.enabled=false".into(),
+        "--http.enabled=false".into(),
+        "--httpproxy.enabled=false".into(),
+        "--socksproxy.enabled=false".into(),
+        "--upnp.enabled=false".into(),
+    ], router_dir.join("i2pd.log").to_str()).map_err(|e| anyhow::anyhow!("i2p router: {e}"))?);
 
-    eprintln!("[relay] connecting to SAMv3 bridge on 127.0.0.1:{sam_port}...");
-    let (dest_pub, privkey) = load_or_create_identity(&data_dir, sam_port).await?;
+    let (dest_pub, privkey) = load_or_create_identity(&data_dir)?;
 
     let destination_hash = destination_hash(&dest_pub)
         .ok_or_else(|| anyhow::anyhow!("dest.pub is not an i2p destination"))?;
-    let mut session = Some(open_session(sam_port, &privkey).await?);
     eprintln!("========================================================");
     eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
     eprintln!("{dest_pub}");
     eprintln!("========================================================");
+    let dest = i2p_embed::Destination::new(&router, Some(&privkey), &i2p_embed::DestinationOptions { publish: true, ..Default::default() })
+        .map_err(|e| anyhow::anyhow!("relay destination: {e}"))?;
+    dest.ready(Duration::from_secs(1800)).await.map_err(|e| anyhow::anyhow!("relay tunnels: {e}"))?;
+    eprintln!("[relay] tunnels up; accepting");
 
     let dht = if dht_on {
-        Some(dht::start(&data_dir, sam_port, &dest_pub, dht::Options { stores: dht_stores, seeds })?)
+        Some(dht::start(&data_dir, router.clone(), &dest_pub, dht::Options { stores: dht_stores, seeds })?)
     } else {
         None
     };
@@ -89,42 +97,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let mut failures = 0u32;
-    loop {
-        let Some(live) = session.as_mut() else {
-            // Rebuild on the same key, so the destination clients have stays
-            // valid. Back off: a router that is restarting refuses for a while.
-            tokio::time::sleep(rebuild_backoff(failures)).await;
-            match open_session(sam_port, &privkey).await {
-                Ok(s) => {
-                    eprintln!("[relay] SAM session rebuilt after {failures} failure(s)");
-                    session = Some(s);
-                }
-                Err(e) => {
-                    failures += 1;
-                    eprintln!("[relay] SAM session rebuild failed: {e}");
-                }
-            }
-            continue;
-        };
-        let stream = match live.accept().await {
-            Ok(s) => {
-                failures = 0;
-                s
-            }
-            Err(e) => {
-                // A reply yosemite cannot parse leaves the session's controller
-                // poisoned for good, and every later accept on it is dead: in e2e
-                // run 35076520090 both relays hit this once, stayed up, and
-                // their destinations dropped off the router ("Destination to
-                // connect not found") for the rest of the run. Drop the session
-                // — closing it releases the destination — and open a new one.
-                failures += 1;
-                eprintln!("[relay] accept err: {e}; rebuilding the SAM session");
-                session = None;
-                continue;
-            }
-        };
+    let mut inbound = dest.accept();
+    while let Some(stream) = inbound.recv().await {
         let storage = storage.clone();
         let connections = connections.clone();
         let dht = dht.clone();
@@ -134,37 +108,12 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
-}
-
-/// Open a publishing STREAM session on the relay's persistent destination.
-async fn open_session(sam_port: u16, privkey: &str) -> anyhow::Result<Session<style::Stream>> {
-    let opts = SessionOptions {
-        // Unique per process and per attempt, and secret (`sam_session_id`).
-        // SAM session IDs are router-wide: two relays on one router with a
-        // fixed nickname collide, the second getting DUPLICATED_ID, which
-        // yosemite 0.7 cannot parse and reports only as "invalid message from
-        // router" (e2e run 35074027215). A rebuild can race the router's
-        // teardown of the previous session too.
-        nickname: sam_session_id(HS_NICKNAME),
-        destination: DestinationKind::Persistent { private_key: privkey.to_string() },
-        samv3_tcp_port: sam_port,
-        // Servers must publish their leaseSet so clients can reach them.
-        publish: true,
-        // Relay payloads are already E2E-encrypted/padded; SAM gzip is wasted work.
-        gzip: false,
-        ..Default::default()
-    };
-    Session::<style::Stream>::new(opts).await.map_err(|e| anyhow::anyhow!("SAM session: {e}"))
-}
-
-/// 0.5 s doubling to a 30 s ceiling.
-fn rebuild_backoff(failures: u32) -> Duration {
-    Duration::from_millis(500u64.saturating_mul(1 << failures.min(6)).min(30_000))
+    anyhow::bail!("the relay destination stopped accepting")
 }
 
 /// Load the persistent i2p identity, generating it on first run.
 /// Returns `(public_destination, private_key)`.
-async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> anyhow::Result<(String, String)> {
+fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<(String, String)> {
     let key_path = data_dir.join("dest.key");
     let pub_path = data_dir.join("dest.pub");
     if let (Ok(k), Ok(p)) = (std::fs::read_to_string(&key_path), std::fs::read_to_string(&pub_path)) {
@@ -174,8 +123,10 @@ async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> anyhow::Resu
         }
     }
     eprintln!("[relay] generating persistent destination (first run)...");
-    let (dest, key) = RouterApi::new(sam_port).generate_destination().await
-        .map_err(|e| anyhow::anyhow!("generate destination: {e}"))?;
+    // Same format SAM's DEST GENERATE wrote, so a relay made before keeps its
+    // address.
+    let key = i2p_embed::generate_keys();
+    let dest = i2p_embed::public_of(&key).map_err(|e| anyhow::anyhow!("generate destination: {e}"))?;
     std::fs::write(&key_path, &key)?;
     std::fs::write(&pub_path, &dest)?;
     Ok((dest, key))

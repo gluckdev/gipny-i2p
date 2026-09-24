@@ -73,47 +73,29 @@ jobs:
           else
             echo "no saved state: first run, a new destination"
           fi
-      # Build the router from the pinned submodule, not from apt. The distro
-      # binary aborted on startup — boost::filesystem::create_directory
-      # "Permission denied" on its own datadir under the runner workspace — and
-      # it is the wrong binary anyway: this relay should exercise the router the
-      # release ships, from the same pin. A few minutes of build against a 5.5h
-      # serve window is a fair trade.
-      - name: build router + relay
+      # The relay compiles the i2p router in (i2p-embed) from the pinned
+      # submodule: the same router the release ships, no i2pd beside it, no SAM,
+      # no port.
+      - name: build relay (router compiled in)
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libboost-all-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential libboost-program-options-dev libssl-dev zlib1g-dev
           git submodule update --init --recursive -- third_party/i2pd
-          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
-            git -C third_party/i2pd fetch --quiet --tags origin
-          make -C third_party/i2pd USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes -j"$(nproc)"
-          ./third_party/i2pd/i2pd --version
           cargo build --release --manifest-path core/relay/Cargo.toml
       # Split into start/serve/stop steps so the destination lands in the job
       # summary minutes after start, not when the 5.5h serve step ends.
-      - name: start router + relay, print destination
+      - name: start relay, print destination
         run: |
-          mkdir -p relay-state/router relay-state/relay
-          nohup ./third_party/i2pd/i2pd \
-            --datadir="$PWD/relay-state/router" \
-            --sam.enabled=true --sam.address=127.0.0.1 --sam.port=7656 \
-            --http.enabled=false --httpproxy.enabled=false \
-            --socksproxy.enabled=false --upnp.enabled=false \
-            --log=stdout \
-            > router.log 2>&1 &
-          echo $! > router.pid
-          # SAM up? (bash /dev/tcp probe — nc is not guaranteed on runners)
-          for i in $(seq 1 180); do
-            if timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/7656' 2>/dev/null; then break; fi
-            if ! kill -0 "$(cat router.pid)" 2>/dev/null; then
-              echo "router died during startup"; tail -50 router.log; exit 1
-            fi
-            sleep 2
-          done
+          mkdir -p relay-state/relay
+          # State saved before the router moved in-process: its netDb and
+          # tunnels history now live under the relay's own data dir.
+          if [ -d relay-state/router ] && [ ! -d relay-state/relay/router ]; then
+            mv relay-state/router relay-state/relay/router
+          fi
           GIPNY_RELAY_DATA=relay-state/relay nohup \
             ./core/relay/target/release/gipny-relay --dht > relay.log 2>&1 &
           echo $! > relay.pid
-          # dest.pub is written by the relay before the SAM session opens.
+          # dest.pub is written by the relay before its destination is up.
           for i in $(seq 1 120); do
             [ -s relay-state/relay/dest.pub ] && break
             if ! kill -0 "$(cat relay.pid)" 2>/dev/null; then
@@ -147,12 +129,11 @@ jobs:
         if: always()
         run: |
           kill "$(cat relay.pid)" 2>/dev/null || true
-          sleep 3
-          kill "$(cat router.pid)" 2>/dev/null || true
-          # The state is packed next: wait for the router to let go of it.
-          for i in $(seq 1 30); do kill -0 "$(cat router.pid)" 2>/dev/null || break; sleep 1; done
+          # The state is packed next: wait for the relay (and the router in
+          # it) to let go of it.
+          for i in $(seq 1 30); do kill -0 "$(cat relay.pid)" 2>/dev/null || break; sleep 1; done
           tail -20 relay.log || true
-      # After both processes are gone, so the SQLite files (with their WAL)
+      # After the relay is gone, so the SQLite files (with their WAL)
       # are consistent on disk.
       - name: seal state
         id: seal

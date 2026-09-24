@@ -51,6 +51,11 @@ jobs:
           mkdir -p core/resources
           printf 'placeholder: build.yml is a compile check and ships nothing\n' \
             > core/resources/i2pd
+      - name: i2pd sources and build deps (the relay compiles its router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: build libcore + relay
         run: |
           cargo build --release -p gipny-libcore
@@ -127,6 +132,11 @@ jobs:
           cargo test --release -p gipny-libcore -- --nocapture 2>&1 | tee test-out.txt
       # The standalone relay's own tests: the wire-format golden bytes on its
       # bincode 2 side, and its storage. Nothing ran them before.
+      - name: i2pd sources and build deps (the relay compiles its router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: run relay tests
         run: cargo test --release --manifest-path core/relay/Cargo.toml
       - name: timing summary
