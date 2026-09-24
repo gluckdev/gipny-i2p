@@ -32,3 +32,5 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+[dev-dependencies]
+tempfile = "3"
