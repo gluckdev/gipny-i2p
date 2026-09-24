@@ -62,6 +62,12 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
     if matches!(settings.yggdrasil, Yggdrasil::On) {
         options.push("--meshnets.yggdrasil".into());
     }
+    // Diagnostics only (CI's e2e): i2pd's own log level, into i2pd.log here.
+    if let Some(level) = std::env::var("GIPNY_I2P_LOGLEVEL").ok().filter(|l| {
+        matches!(l.as_str(), "critical" | "error" | "warn" | "info" | "debug")
+    }) {
+        options.push(format!("--loglevel={level}"));
+    }
     let log = router_dir.join("i2pd.log");
     let started = i2p_embed::Router::start(&options, log.to_str())
         .map_err(|e| NetError::I2p(format!("in-process router: {e}")))?;

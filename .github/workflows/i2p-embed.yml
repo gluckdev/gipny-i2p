@@ -141,7 +141,9 @@ jobs:
           ls "$root/lib"
           # vcpkg's boost library names carry the toolset; take what is there.
           po="$(cd "$root/lib" && ls boost_program_options*.lib | head -1)"
-          libs="${po%.lib},libssl,libcrypto,zlib"
+          # zlib's static library is zs.lib in a static triplet, zlib.lib otherwise.
+          z="$(cd "$root/lib" && ls zs.lib zlib.lib 2>/dev/null | head -1)"
+          libs="${po%.lib},libssl,libcrypto,${z%.lib}"
           for extra in boost_atomic; do
             f="$(cd "$root/lib" && ls $extra*.lib 2>/dev/null | head -1 || true)"
             [ -n "$f" ] && libs="$libs,${f%.lib}"
@@ -293,10 +295,22 @@ jobs:
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: ${{ runner.temp }}/e2e
+          # The router's own log, for where letters stall (uploaded below).
+          GIPNY_I2P_LOGLEVEL: info
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee harness.log
           grep -q '\[e2e\] SUCCESS' harness.log
+      - name: keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-in-process-logs
+          retention-days: 5
+          path: |
+            harness.log
+            ${{ runner.temp }}/e2e/**/i2pd.log
+          if-no-files-found: warn
       - name: summary
         if: always()
         run: |
