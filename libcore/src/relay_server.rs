@@ -557,6 +557,15 @@ impl EphemeralRelay {
                         }
                         continue;
                     };
+                    // Only the rebuild notice may interrupt an accept, and it
+                    // drops the session anyway. yosemite's accept is not
+                    // cancel-safe: dropped mid-handshake, it leaves the
+                    // controller between states and every later accept fails
+                    // with "invalid state". Reaping clients in this select did
+                    // exactly that whenever a connection closed, and
+                    // relay-network connections are short (e2e-dht run
+                    // 35946168184). Reap without waiting instead.
+                    while clients.try_join_next().is_some() {}
                     tokio::select! {
                         accepted = live.accept() => match accepted {
                             Ok(stream) => {
@@ -573,10 +582,16 @@ impl EphemeralRelay {
                             // fails while the destination drops off the router
                             // (e2e run 35076520090, both standalone relays). Drop
                             // it, releasing the destination, and reopen.
+                            //
+                            // Its clients go with it: their streams belong to
+                            // the dead session, and while they stay open the
+                            // router may keep the destination, refusing the
+                            // rebuild on the same key. They reconnect.
                             Err(e) => {
                                 failures += 1;
                                 eprintln!("[relay-server] accept err: {e}; rebuilding the session");
                                 session = None;
+                                clients.abort_all();
                             }
                         },
                         // A deliberate rebuild: the tunnel length changed. Drop
@@ -587,9 +602,6 @@ impl EphemeralRelay {
                             failures = 0;
                             session = None;
                         }
-                        // Reap finished clients so the set does not grow for the
-                        // life of the relay.
-                        Some(_) = clients.join_next(), if !clients.is_empty() => {}
                     }
                 }
             }
