@@ -126,7 +126,9 @@ fn wipe_key(contact_id: i64) -> String {
     format!("wipe_pending_{contact_id}")
 }
 
-const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
+/// As in libcore's session.rs: 45 s, not 90 — a hung dial is retried in
+/// 5–10 s instead of holding a letter a minute and a half.
+const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long to leave a peer relay alone after `failures` failed dials in a
 /// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
 /// 2 min, and the first dial often fails only because the relay's LeaseSet

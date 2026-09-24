@@ -42,9 +42,12 @@ enum PeerRelay {
     Failed { until: std::time::Instant, failures: u32 },
 }
 
-/// Give up on a peer relay's dial after this long: nothing below has a timeout,
-/// and opening an i2p destination means building tunnels.
-const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// Give up on a relay's dial after this long: nothing below has a timeout.
+/// Our tunnels exist by the time anything dials; finding the relay's LeaseSet
+/// and the handshake take seconds to a few tens. It was 90 s, and a dial that
+/// hung held a letter all of it before the retry (e2e run 36039568268: an
+/// echo 172 s, 90 of them one stuck dial); a retry now follows in 5–10 s.
+const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 /// How long to leave a peer relay alone after `failures` failed dials in a
 /// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
 /// 2 min, and the first dial often fails only because the relay's LeaseSet

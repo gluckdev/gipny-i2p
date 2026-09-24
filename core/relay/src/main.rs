@@ -56,8 +56,13 @@ async fn main() -> anyhow::Result<()> {
     let router_dir = data_dir.join("router");
     std::fs::create_dir_all(&router_dir)?;
     eprintln!("[relay] starting the i2p router in-process ({})...", router_dir.display());
+    // GIPNY_I2P_LOGLEVEL: diagnostics only (CI's e2e), i2pd's own log level.
+    let loglevel = std::env::var("GIPNY_I2P_LOGLEVEL").ok()
+        .filter(|l| matches!(l.as_str(), "critical" | "error" | "warn" | "info" | "debug"))
+        .map(|l| format!("--loglevel={l}"));
     let router = Arc::new(i2p_embed::Router::start(&[
         format!("--datadir={}", router_dir.display()),
+        loglevel.unwrap_or_else(|| "--loglevel=warn".into()),
         "--sam.enabled=false".into(),
         "--http.enabled=false".into(),
         "--httpproxy.enabled=false".into(),

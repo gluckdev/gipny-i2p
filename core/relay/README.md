@@ -16,7 +16,7 @@
 | `gipny-relay.service` | systemd-юнит для сервера (роутер встроен, отдельный i2pd не нужен) |
 | `Cargo.toml` | Свой `[workspace]`: bincode 2, rusqlite 0.40 `bundled`, sha2 |
 
-**Настройка:** переменные окружения `GIPNY_RELAY_DATA` (по умолчанию `./relay-data`), `GIPNY_DHT_SEEDS` (через кого войти в сеть релеев) и флаги `--dht`, `--no-store` (узел без хранения), `--seeds СПИСОК`.
+**Настройка:** переменные окружения `GIPNY_RELAY_DATA` (по умолчанию `./relay-data`), `GIPNY_DHT_SEEDS` (через кого войти в сеть релеев), `GIPNY_I2P_LOGLEVEL` (уровень лога роутера в `<data>/router/i2pd.log`, по умолчанию `warn`; для диагностики) и флаги `--dht`, `--no-store` (узел без хранения), `--seeds СПИСОК`.
 
 ## Куда вносить правки
 

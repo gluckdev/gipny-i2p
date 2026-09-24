@@ -130,6 +130,7 @@ jobs:
               echo "$name: dest.pub never appeared"; tail -50 "e2e-logs/$name.log"; exit 1
             fi
           }
+          export GIPNY_I2P_LOGLEVEL=info
           start_relay relay-a
           start_relay relay-b
           # Alive a few seconds on: dest.pub alone proves only that keys exist.
@@ -151,6 +152,8 @@ jobs:
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
+          # The routers' own logs, uploaded below, for where a letter waits.
+          GIPNY_I2P_LOGLEVEL: info
         run: |
           # `|| TIME_RC=$?` keeps the failure as data: the log is printed and
           # `delivered` is set either way.
@@ -201,8 +204,10 @@ jobs:
             tail -30 "e2e-logs/$r.log" || true
           done
 
-      - name: upload logs on failure
-        if: failure()
+      # Always: a green run can still be slow, and the router's log is where
+      # the time went.
+      - name: upload logs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-logs
@@ -244,8 +249,10 @@ jobs:
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
-      - name: upload logs on failure
-        if: failure()
+      # Always: a green run can still be slow, and the router's log is where
+      # the time went.
+      - name: upload logs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-in-process-logs
@@ -314,8 +321,10 @@ jobs:
       - name: stop seed
         if: always()
         run: kill "$(cat seed.pid)" 2>/dev/null || true
-      - name: upload logs on failure
-        if: failure()
+      # Always: a green run can still be slow, and the router's log is where
+      # the time went.
+      - name: upload logs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-dht-logs
@@ -360,8 +369,10 @@ jobs:
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
-      - name: upload logs on failure
-        if: failure()
+      # Always: a green run can still be slow, and the router's log is where
+      # the time went.
+      - name: upload logs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-agent-logs
