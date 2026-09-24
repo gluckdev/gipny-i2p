@@ -2011,7 +2011,9 @@ impl SessionManager {
             return;
         }
         let Ok(contacts) = self.db.list_contacts() else { return };
-        let mut letters = Vec::new();
+        // Introductions first: the letters written after one open only with the
+        // session it starts (e2e-dht run 35950928731 lost all three otherwise).
+        let mut letters = dht_client::collect_intros(&self.dht, &self.identity, days).await;
         for contact in contacts {
             if contact.trust == TrustLevel::Blocked {
                 continue;
@@ -2033,7 +2035,6 @@ impl SessionManager {
                 .await,
             );
         }
-        letters.extend(dht_client::collect_intros(&self.dht, &self.identity, days).await);
 
         for letter in letters {
             let hash = dht_client::letter_hash(&letter.envelope);
@@ -2045,8 +2046,14 @@ impl SessionManager {
                 .handle_incoming_envelope(&[0u8; 32], &letter.envelope)
                 .await
             {
-                Ok(()) | Err(SessionError::StaleOpk) | Err(SessionError::SealedDrop) => {
+                Ok(()) | Err(SessionError::StaleOpk) => {
                     dht_client::drop_letter(&self.dht, &letter).await;
+                }
+                // No session opens it yet. Over a relay the sender resends what
+                // is not acked; here the sender is away, so the letter stays in
+                // the network for a later pass, when the session may exist.
+                Err(SessionError::SealedDrop) => {
+                    let _ = self.db.dht_seen_forget(&hash);
                 }
                 Err(e) => {
                     eprintln!("[dht/session] letter did not open: {e:?}");

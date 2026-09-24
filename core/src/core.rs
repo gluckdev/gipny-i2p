@@ -3091,7 +3091,11 @@ impl Core {
             return;
         }
         let Ok(contacts) = self.db.list_contacts() else { return };
-        let mut letters = Vec::new();
+        // First letters from people who may not know us yet; an unknown sender
+        // becomes a contact request, exactly as over a relay. Introductions go
+        // first: the letters written after one open only with the session it
+        // starts (e2e-dht run 35950928731 lost all three otherwise).
+        let mut letters = dht_client::collect_intros(&self.dht, &self.identity, days).await;
         for c in &contacts {
             if c.trust == TrustLevel::Blocked || c.request_state == RequestState::Incoming {
                 continue;
@@ -3101,9 +3105,6 @@ impl Core {
             };
             letters.extend(dht_client::collect_mail(&self.dht, &self.identity, &their_sign, &their_dh, days).await);
         }
-        // First letters from people who may not know us yet; an unknown sender
-        // becomes a contact request, exactly as over a relay.
-        letters.extend(dht_client::collect_intros(&self.dht, &self.identity, days).await);
 
         for letter in letters {
             let hash = dht_client::letter_hash(&letter.envelope);
@@ -3113,10 +3114,16 @@ impl Core {
                 _ => continue,
             }
             match self.handle_incoming_envelope(&[0u8; 32], &letter.envelope).await {
-                Ok(()) | Err(CoreError::StaleOpk) | Err(CoreError::SealedDrop) => {
+                Ok(()) | Err(CoreError::StaleOpk) => {
                     // Ours and handled: take it out of the network so nobody
                     // holds it for the rest of its week.
                     dht_client::drop_letter(&self.dht, &letter).await;
+                }
+                // No session opens it yet. Over a relay the sender resends what
+                // is not acked; here the sender is away, so the letter stays in
+                // the network for a later pass, when the session may exist.
+                Err(CoreError::SealedDrop) => {
+                    let _ = self.db.dht_seen_forget(&hash);
                 }
                 Err(e) => {
                     eprintln!("[dht] letter from the network did not open: {e:?}");
