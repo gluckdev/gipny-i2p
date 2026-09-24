@@ -759,7 +759,10 @@ async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle
             .map_err(|e| format!("{e:?}"))?;
         // Our relay's tunnels take 20–40 s more; build them while the password
         // is typed too. Whose relay it is is only known after unlock.
-        let relay = tokio::spawn(gipny_libcore::EphemeralRelay::start_unclaimed(node.sam_port()));
+        let relay = {
+            let node = node.clone();
+            tokio::spawn(async move { gipny_libcore::EphemeralRelay::start_unclaimed_on(&node).await })
+        };
         Ok((node, relay))
     });
     *slot = Some(Prewarm::Building { profile, settings, task });

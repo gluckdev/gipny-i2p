@@ -9,4 +9,4 @@ description = "The i2pd router inside the process: no SAM, no local port."
 tokio = { workspace = true }
 
 [build-dependencies]
-cc = "1"
+cc = { version = "1", features = ["parallel"] }

@@ -146,7 +146,12 @@ impl Connection {
 /// today, all messaging is relay-mediated — is available via `STREAM FORWARD`
 /// when `GIPNY_I2P_ACCEPT` is set.
 pub struct I2pNode {
-    session: Arc<Mutex<Session<style::Stream>>>,
+    /// The SAM session; `None` when the router runs in this process.
+    session: Option<Arc<Mutex<Session<style::Stream>>>>,
+    /// Our destination on the in-process router (`embedded`), in place of the
+    /// SAM session. Replaced whole by `recreate`.
+    #[cfg(feature = "embedded-i2p")]
+    embedded: Option<Mutex<Arc<i2p_embed::Destination>>>,
     /// Shareable public destination (opaque address; the old code's "onion").
     address: String,
     /// Persistent private key blob, reused across session rebuilds. Wrapped in
@@ -202,6 +207,10 @@ impl I2pNode {
         progress: Option<crate::router::BootProgress>,
     ) -> Result<Self> {
         use crate::router::note;
+        #[cfg(feature = "embedded-i2p")]
+        if crate::embedded::enabled() {
+            return Self::start_embedded(data_dir, settings, progress).await;
+        }
         #[cfg(target_os = "android")]
         let router = {
             let _ = settings; // the foreground service owns the router's config
@@ -244,7 +253,9 @@ impl I2pNode {
         let accept_task = spawn_inbound(session.clone(), tx.clone()).await;
 
         Ok(Self {
-            session,
+            session: Some(session),
+            #[cfg(feature = "embedded-i2p")]
+            embedded: None,
             address,
             privkey: zeroize::Zeroizing::new(privkey),
             data_dir: data_dir.to_path_buf(),
@@ -261,6 +272,63 @@ impl I2pNode {
             router: Mutex::new(router),
             router_settings: settings,
         })
+    }
+
+    /// On the router inside this process: a destination of ours made from
+    /// fresh keys, no SAM. The same shape as the SAM path otherwise.
+    #[cfg(feature = "embedded-i2p")]
+    async fn start_embedded(
+        data_dir: &Path,
+        settings: crate::router::RouterSettings,
+        progress: Option<crate::router::BootProgress>,
+    ) -> Result<Self> {
+        use crate::router::note;
+        note(&progress, "router", "starting the i2p router inside the app (no local ports)");
+        let router = crate::embedded::router(data_dir, settings)?;
+        note(&progress, "tunnels-done", "router running");
+        note(&progress, "session", "generating ephemeral destination for this session...");
+        let privkey = i2p_embed::generate_keys();
+        let dest = i2p_embed::Destination::new(&router, Some(&privkey), &crate::embedded::destination_options(false, DEFAULT_HOPS))
+            .map_err(|e| NetError::I2p(format!("destination: {e}")))?;
+        let address = dest.address().to_string();
+        note(&progress, "session", format!("destination = {}", short_addr(&address)));
+        dest.ready(Duration::from_secs(600)).await
+            .map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
+        note(&progress, "session-done", "tunnels built");
+        let (tx, rx) = mpsc::channel::<Connection>(INBOX_CAPACITY);
+        Ok(Self {
+            session: None,
+            embedded: Some(Mutex::new(Arc::new(dest))),
+            address,
+            privkey: zeroize::Zeroizing::new(privkey),
+            data_dir: data_dir.to_path_buf(),
+            sam_port: 0,
+            http_proxy_port: None,
+            inbound_tx: tx,
+            inbound: Arc::new(Mutex::new(rx)),
+            accept_task: Mutex::new(None),
+            created_at: Instant::now(),
+            hops: AtomicU8::new(DEFAULT_HOPS),
+            relay_fail_count: AtomicU32::new(0),
+            last_recreate_at: Mutex::new(None),
+            recreate_lock: Mutex::new(()),
+            router: Mutex::new(RouterHandle::in_process()),
+            router_settings: settings,
+        })
+    }
+
+    /// The router runs inside this process.
+    pub fn is_embedded(&self) -> bool {
+        self.session.is_none()
+    }
+
+    /// Our destination on the in-process router, when there is one.
+    #[cfg(feature = "embedded-i2p")]
+    pub async fn embedded_destination(&self) -> Option<Arc<i2p_embed::Destination>> {
+        match &self.embedded {
+            Some(d) => Some(d.lock().await.clone()),
+            None => None,
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -301,15 +369,8 @@ impl I2pNode {
 
     pub async fn connect(&self, onion: &str) -> Result<Connection> {
         let dest = onion.trim().to_string();
-        // `connect_detached` clones the SAM controller and returns an owned
-        // future, so we only hold the session lock for the clone — concurrent
-        // dials proceed in parallel.
-        let fut = {
-            let mut s = self.session.lock().await;
-            s.connect_detached(&dest)
-        };
-        let stream = fut.await.map_err(|e| NetError::I2p(e.to_string()))?;
-        Ok(Connection { stream: Box::pin(stream), peer_onion: Some(dest) })
+        let stream = self.dial(&dest, 0).await?;
+        Ok(Connection { stream: stream.inner, peer_onion: Some(dest) })
     }
 
     pub async fn connect_retry(&self, onion: &str, attempts: u32) -> Result<Connection> {
@@ -362,12 +423,24 @@ impl I2pNode {
 
     async fn dial(&self, onion: &str, port: u16) -> Result<RelayStream> {
         let dest = onion.trim().to_string();
+        #[cfg(feature = "embedded-i2p")]
+        if let Some(d) = &self.embedded {
+            let d = d.lock().await.clone();
+            return match d.connect(&dest, port).await {
+                Ok(stream) => Ok(RelayStream { inner: Box::pin(stream) }),
+                Err(e) => Err(NetError::I2p(e.to_string())),
+            };
+        }
+        let Some(session) = &self.session else { return Err(NetError::Closed) };
         // `port` maps to the SAM stream destination port. For a single-service
         // i2p destination the far end ignores it, so this is a harmless carry-over
         // of the old per-onion-port dialing.
         let opts = StreamOptions { dst_port: port, src_port: 0 };
+        // `connect_detached` clones the SAM controller and returns an owned
+        // future, so we only hold the session lock for the clone — concurrent
+        // dials proceed in parallel.
         let fut = {
-            let mut s = self.session.lock().await;
+            let mut s = session.lock().await;
             s.connect_detached_with_options(&dest, opts)
         };
         match fut.await {
@@ -384,6 +457,10 @@ impl I2pNode {
     /// there forever with every contact unreachable. Checked before each session
     /// rebuild rather than on a timer, so an idle app costs nothing.
     async fn ensure_router(&self) -> bool {
+        // In-process: if the router were gone, so would we be.
+        if self.is_embedded() {
+            return true;
+        }
         {
             let router = self.router.lock().await;
             if router.alive().await {
@@ -470,14 +547,24 @@ impl I2pNode {
     }
 
     pub async fn recreate(&self) -> Result<()> {
+        #[cfg(feature = "embedded-i2p")]
+        if let Some(slot) = &self.embedded {
+            let router = crate::embedded::running().ok_or(NetError::Closed)?;
+            let dest = i2p_embed::Destination::new(&router, Some(self.privkey.as_str()), &crate::embedded::destination_options(false, self.hops()))
+                .map_err(|e| NetError::I2p(format!("destination: {e}")))?;
+            dest.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
+            *slot.lock().await = Arc::new(dest);
+            return Ok(());
+        }
+        let Some(session) = &self.session else { return Err(NetError::Closed) };
         let new_session = build_session(self.sam_port, self.privkey.as_str(), self.hops()).await?;
 
         if let Some(old) = self.accept_task.lock().await.take() {
             old.abort();
             let _ = old.await;
         }
-        *self.session.lock().await = new_session;
-        let task = spawn_inbound(self.session.clone(), self.inbound_tx.clone()).await;
+        *session.lock().await = new_session;
+        let task = spawn_inbound(session.clone(), self.inbound_tx.clone()).await;
         *self.accept_task.lock().await = task;
         Ok(())
     }

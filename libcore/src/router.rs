@@ -395,6 +395,13 @@ impl RouterHandle {
         probe_sam(self.sam_port).await
     }
 
+    /// Stands in for a child when the router runs inside the process
+    /// (`embedded`): nothing to supervise, no port.
+    #[cfg(feature = "embedded-i2p")]
+    pub(crate) fn in_process() -> Self {
+        Self { child: None, sam_port: 0, http_proxy_port: None, router_dir: None }
+    }
+
     /// Replace a router that stopped answering, on the same SAM port.
     ///
     /// Nothing supervised the child before: when i2pd died mid-session (killed
@@ -613,7 +620,7 @@ const SEED_BELOW_ROUTERS: usize = 90;
 /// a cold start, and blockable. Existing entries are kept; stale ones the
 /// router drops itself, and with too few left it reseeds as it always did.
 /// Returns how many RouterInfos were written.
-fn seed_netdb(bin: &Path, router_dir: &Path) -> std::io::Result<usize> {
+pub(crate) fn seed_netdb(bin: &Path, router_dir: &Path) -> std::io::Result<usize> {
     let seed = bin.with_file_name("i2pd-netdb-seed.tar.gz");
     if !seed.is_file() {
         return Ok(0);
@@ -664,7 +671,7 @@ fn count_router_infos(netdb: &Path) -> usize {
 /// The Tauri app sets `GIPNY_I2P_BIN` from `resource_dir()` before starting the
 /// transport, which is the only reliable answer for the deb and AppImage
 /// layouts; the probing below covers dev runs and portable unpacks.
-fn resolve_router_bin() -> Result<PathBuf> {
+pub(crate) fn resolve_router_bin() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("GIPNY_I2P_BIN") {
         if !p.is_empty() {
             return Ok(PathBuf::from(p));

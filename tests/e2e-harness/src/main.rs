@@ -155,18 +155,16 @@ fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn start_in_process_relays(owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
-    let port: u16 = std::env::var("GIPNY_SAM_PORT")
-        .context("E2E_IN_PROCESS_RELAYS needs GIPNY_SAM_PORT, the shared router's SAM port")?
-        .trim()
-        .parse()
-        .context("GIPNY_SAM_PORT is not a port")?;
-    eprintln!("[e2e] starting two in-process relays on SAM port {port}...");
+async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
+    // On the shared router over SAM, or on the router inside this process
+    // (GIPNY_EMBEDDED_I2P=1): whichever the bots' node uses.
+    let port = if node.is_embedded() { 0 } else { node.sam_port() };
+    eprintln!("[e2e] starting two in-process relays{}...", if port == 0 { " on the in-process router".to_string() } else { format!(" on SAM port {port}") });
     let t0 = Instant::now();
     let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
         tokio::join!(
-            EphemeralRelay::start(port, MemStoreLimits::personal(owner_a), None),
-            EphemeralRelay::start(port, MemStoreLimits::personal(owner_b), None),
+            EphemeralRelay::start_on(node, MemStoreLimits::personal(owner_a), None),
+            EphemeralRelay::start_on(node, MemStoreLimits::personal(owner_b), None),
         )
     })
     .await
@@ -578,13 +576,13 @@ struct LiveBot {
 impl LiveBot {
     /// Start (or restart, on the same data dir) and wait until the relay
     /// network has answered. Every start is a new relay address.
-    async fn start(name: &'static str, work_dir: &PathBuf, sam_port: u16, seeds: &[String], budget: Duration) -> Result<Self> {
+    async fn start(name: &'static str, work_dir: &PathBuf, seeds: &[String], budget: Duration) -> Result<Self> {
         let (bot, events) = start_bot(name, work_dir, "", seeds).await?;
         // The agent's arrangement: the personal relay also answers for the
         // session's own network node.
         let relay = tokio::time::timeout(
             Duration::from_secs(300),
-            EphemeralRelay::start(sam_port, MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
+            EphemeralRelay::start_on(&bot.session.node, MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
         )
         .await
         .with_context(|| format!("{name}: relay did not come up in 300s"))?
@@ -698,11 +696,6 @@ async fn run_dht_offline_mode() -> Result<()> {
     let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
     let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
     std::fs::create_dir_all(&work_dir).context("create work dir")?;
-    let sam_port: u16 = std::env::var("GIPNY_SAM_PORT")
-        .context("E2E_DHT_OFFLINE needs GIPNY_SAM_PORT, the shared router's SAM port")?
-        .trim()
-        .parse()
-        .context("GIPNY_SAM_PORT is not a port")?;
     let seeds: Vec<String> = std::env::var("E2E_DHT_SEED_DEST")
         .context("E2E_DHT_OFFLINE needs E2E_DHT_SEED_DEST, the seed's destination")?
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -720,8 +713,8 @@ async fn run_dht_offline_mode() -> Result<()> {
 
     phase("1. both join the network");
     let (a, b) = tokio::try_join!(
-        LiveBot::start("bot-a", &work_dir, sam_port, &seeds, step),
-        LiveBot::start("bot-b", &work_dir, sam_port, &seeds, step),
+        LiveBot::start("bot-a", &work_dir, &seeds, step),
+        LiveBot::start("bot-b", &work_dir, &seeds, step),
     )?;
     let session = b.session.clone();
     poll(step, Duration::from_secs(10), || async { session.publish_bundle_to_dht().await })
@@ -748,7 +741,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     a.stop("bot-a");
 
     phase("4. B comes back elsewhere, reads, answers the absent A");
-    let mut b = LiveBot::start("bot-b", &work_dir, sam_port, &seeds, step).await?;
+    let mut b = LiveBot::start("bot-b", &work_dir, &seeds, step).await?;
     if b.relay_address == b_relay_before {
         bail!("bot-b came back on the same relay address; the run proves nothing about address change");
     }
@@ -768,7 +761,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     b.stop("bot-b");
 
     phase("5. A comes back elsewhere and reads the answers");
-    let mut a = LiveBot::start("bot-a", &work_dir, sam_port, &seeds, step).await?;
+    let mut a = LiveBot::start("bot-a", &work_dir, &seeds, step).await?;
     if a.relay_address == a_relay_before {
         bail!("bot-a came back on the same relay address; the run proves nothing about address change");
     }
@@ -864,7 +857,7 @@ async fn main() -> Result<()> {
     let (relay_a, relay_b, in_process_relays) = match standalone {
         Some((ra, rb)) => (ra, rb, None),
         None => {
-            let (ra, rb) = start_in_process_relays(a.card.sign_pk, b.card.sign_pk).await?;
+            let (ra, rb) = start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk).await?;
             let (dest_a, dest_b) = (ra.address().to_string(), rb.address().to_string());
             a.session.set_relay_onion(&dest_a).context("bot-a: set_relay_onion")?;
             b.session.set_relay_onion(&dest_b).context("bot-b: set_relay_onion")?;

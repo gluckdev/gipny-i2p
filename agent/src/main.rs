@@ -247,8 +247,8 @@ async fn main() -> Result<()> {
         }
         None => {
             eprintln!("[agent] starting the built-in relay (this can take a minute or two)…");
-            let relay = gipny_libcore::EphemeralRelay::start(
-                node.sam_port(),
+            let relay = gipny_libcore::EphemeralRelay::start_on(
+                &node,
                 gipny_libcore::MemStoreLimits::personal(me.sign_pk),
                 Some(session.dht_handler()),
             )

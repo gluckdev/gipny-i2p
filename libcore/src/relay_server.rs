@@ -575,6 +575,105 @@ impl EphemeralRelay {
         *self.dht.write().unwrap_or_else(|p| p.into_inner()) = dht;
     }
 
+    /// As [`Self::start`], on whatever router `node` uses: over SAM, or on
+    /// the router inside this process when it runs there.
+    pub async fn start_on(node: &crate::net::TorNode, limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+        #[cfg(feature = "embedded-i2p")]
+        if node.is_embedded() {
+            return Self::start_embedded(MemStore::new(limits), dht).await;
+        }
+        Self::start(node.sam_port(), limits, dht).await
+    }
+
+    /// As [`Self::start_unclaimed`], on whatever router `node` uses.
+    pub async fn start_unclaimed_on(node: &crate::net::TorNode) -> Result<Self, NetError> {
+        #[cfg(feature = "embedded-i2p")]
+        if node.is_embedded() {
+            return Self::start_embedded(MemStore::unclaimed(MemStoreLimits::default()), None).await;
+        }
+        Self::start_unclaimed(node.sam_port()).await
+    }
+
+    /// The relay as a published destination on the router inside this
+    /// process: no SAM session, no port. Same store, same `handle_client`.
+    #[cfg(feature = "embedded-i2p")]
+    async fn start_embedded(store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+        let router = crate::embedded::running().ok_or(NetError::Closed)?;
+        // Kept in memory only, for rebuilding on the same address.
+        let private_key = zeroize::Zeroizing::new(i2p_embed::generate_keys());
+        let hops = Arc::new(AtomicU8::new(crate::net::DEFAULT_HOPS));
+        let rebuild = Arc::new(tokio::sync::Notify::new());
+        let open = |hops: u8| {
+            i2p_embed::Destination::new(&router, Some(private_key.as_str()), &crate::embedded::destination_options(true, hops))
+                .map_err(|e| NetError::I2p(format!("relay destination: {e}")))
+        };
+        let first = open(hops.load(Ordering::Relaxed))?;
+        first.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("relay tunnels: {e}")))?;
+        let address = first.address().to_string();
+        let store = Arc::new(store);
+        let dht = Arc::new(std::sync::RwLock::new(dht));
+        let connections: Connections = Arc::default();
+        let destination_hash = crate::relay::destination_hash(&address)
+            .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
+        let accept = tokio::spawn({
+            let (store, connections, dht, hops, rebuild) = (store.clone(), connections.clone(), dht.clone(), hops.clone(), rebuild.clone());
+            let router = router.clone();
+            let private_key = private_key.clone();
+            async move {
+                let mut dest = Some(first);
+                let mut clients = JoinSet::new();
+                loop {
+                    let Some(live) = dest.as_ref() else { break };
+                    let mut inbound = live.accept();
+                    loop {
+                        while clients.try_join_next().is_some() {}
+                        tokio::select! {
+                            stream = inbound.recv() => {
+                                let Some(stream) = stream else { break };
+                                let (store, connections) = (store.clone(), connections.clone());
+                                let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
+                                clients.spawn(async move {
+                                    if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
+                                        eprintln!("[relay-server] client gone: {e}");
+                                    }
+                                });
+                            }
+                            // The tunnel length changed: the old destination goes
+                            // first (one key, one LeaseSet), then a new one at the
+                            // new length on the same key.
+                            () = rebuild.notified() => {
+                                dest = None;
+                                clients.abort_all();
+                                let opts = crate::embedded::destination_options(true, hops.load(Ordering::Relaxed));
+                                match i2p_embed::Destination::new(&router, Some(private_key.as_str()), &opts) {
+                                    Ok(d) => {
+                                        let _ = d.ready(Duration::from_secs(600)).await;
+                                        dest = Some(d);
+                                    }
+                                    Err(e) => eprintln!("[relay-server] rebuild failed: {e}"),
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let gc = tokio::spawn({
+            let store = store.clone();
+            async move {
+                let mut tick = tokio::time::interval(GC_INTERVAL);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                tick.tick().await;
+                loop {
+                    tick.tick().await;
+                    store.gc();
+                }
+            }
+        });
+        Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild, connections, destination_hash, dht })
+    }
+
     async fn start_with(sam_port: u16, store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
         let (address, private_key) = RouterApi::new(sam_port)
             .generate_destination()

@@ -3,6 +3,8 @@ pub mod card;
 pub mod crypto;
 pub mod db;
 pub mod dht_client;
+#[cfg(feature = "embedded-i2p")]
+pub mod embedded;
 pub mod net;
 pub mod relay;
 pub mod relay_server;
