@@ -578,7 +578,17 @@ where
                             };
                             if let Some(tx) = online {
                                 let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
-                                tokio::spawn(async move { let _ = tx.send(pkt).await; });
+                                let conns = connections.clone();
+                                tokio::spawn(async move {
+                                    // That connection closed just now: to another of the key's, or
+                                    // it would wait below the cursor until the last one closed.
+                                    if let Err(mpsc::error::SendError(pkt)) = tx.send(pkt).await {
+                                        let again = conns.read().await.get(&to).and_then(|l| l.pick());
+                                        if let Some(tx) = again {
+                                            let _ = tx.send(pkt).await;
+                                        }
+                                    }
+                                });
                             }
                         }
                         // No Deposited: the sender keeps the message unacked and
