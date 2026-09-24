@@ -365,25 +365,43 @@ async fn client_loop<S>(
 ) -> anyhow::Result<()>
 where S: AsyncRead + AsyncWrite + Unpin + Send
 {
+    // One read of a frame is kept across turns and polled by reference:
+    // `select!` must never drop it half-read, or the next read takes the
+    // middle of a frame for its length (as in libcore's relay_server.rs).
+    let (rd, mut wr) = tokio::io::split(stream);
+    let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
     loop {
         tokio::select! {
-            frame = recv_frame::<_, ClientToRelay>(stream) => {
+            (rd, frame) = &mut reading => {
+                reading = Box::pin(read_frame(rd));
                 let frame = frame?;
                 match frame {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
-                        send_frame(stream, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
+                        send_frame(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
                     }
                     ClientToRelay::Publish { bundle } => {
                         storage.store_bundle(&sign_pk, &bundle)?;
                     }
                     ClientToRelay::GetBundle { pk } => {
                         let bundle = storage.get_bundle(&pk)?;
-                        send_frame(stream, &RelayToClient::Bundle { pk, bundle }).await?;
+                        send_frame(&mut wr, &RelayToClient::Bundle { pk, bundle }).await?;
                     }
                     ClientToRelay::Send { to, blob } => {
                         let id = storage.deposit(&to, &blob)?;
-                        send_frame(stream, &RelayToClient::Deposited { id: id as u64 }).await?;
-                        let tx_opt = connections.read().await.get(&to).and_then(Lanes::pick);
+                        send_frame(&mut wr, &RelayToClient::Deposited { id: id as u64 }).await?;
+                        let tx_opt = match connections.read().await.get(&to) {
+                            // Counted as pushed now, not when written: an Ack's
+                            // sweep in between would push it a second time.
+                            Some(l) => match l.pick() {
+                                Some(tx) => {
+                                    let mut c = l.cursor.lock().await;
+                                    if id > *c { *c = id; }
+                                    Some(tx)
+                                }
+                                None => None,
+                            },
+                            None => None,
+                        };
                         if let Some(tx) = tx_opt {
                             let pkt = RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob };
                             tokio::spawn(async move { let _ = tx.send(pkt).await; });
@@ -408,7 +426,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                         }
                     }
                     ClientToRelay::Ping => {
-                        send_frame(stream, &RelayToClient::Pong).await?;
+                        send_frame(&mut wr, &RelayToClient::Pong).await?;
                     }
                     ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
                 }
@@ -420,11 +438,21 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     let mut c = cursor.lock().await;
                     if i > *c { *c = i; }
                 }
-                send_frame(stream, &msg).await?;
+                send_frame(&mut wr, &msg).await?;
             }
         }
     }
     Ok(())
+}
+
+/// Read one frame, handing the reader back with it (see `client_loop`).
+async fn read_frame<R, T>(mut r: R) -> (R, anyhow::Result<T>)
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> serde::Deserialize<'de>,
+{
+    let res = recv_frame(&mut r).await;
+    (r, res)
 }
 
 async fn send_frame<W, T>(w: &mut W, frame: &T) -> anyhow::Result<()>
@@ -491,6 +519,34 @@ mod lanes_tests {
             }
         }
         ids
+    }
+
+    #[tokio::test]
+    async fn a_push_while_a_frame_is_half_read_loses_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        let frame = bincode::serde::encode_to_vec(&ClientToRelay::Publish { bundle: vec![9; 8000] }, bincode::config::legacy()).unwrap();
+        b.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
+        b.write_all(&frame[..4000]).await.unwrap();
+        b.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        send_frame(&mut a, &ClientToRelay::Send { to: bob.verifying_key().to_bytes(), blob: vec![1; 10] }).await.unwrap();
+        assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+        assert!(matches!(recv_frame::<_, RelayToClient>(&mut b).await.unwrap(), RelayToClient::Incoming { .. }));
+        b.write_all(&frame[4000..]).await.unwrap();
+        send_frame(&mut b, &ClientToRelay::Ping).await.unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), recv_frame::<_, RelayToClient>(&mut b)).await.expect("an answer").unwrap() {
+                RelayToClient::Pong => break,
+                RelayToClient::Error(e) => panic!("relay error: {e}"),
+                _ => {}
+            }
+        }
+        assert!(storage.get_bundle(&bob.verifying_key().to_bytes()).unwrap().is_some(), "the half-read Publish arrived whole");
     }
 
     #[tokio::test]
