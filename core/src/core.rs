@@ -1255,7 +1255,22 @@ impl Core {
         }
         let _ = self.events.try_send(CoreEvent::ContactAdded { contact_id: id });
         self.send_kick.notify_one();
+        self.warm_relay_of(id);
         Ok(id)
+    }
+
+    /// Dial the relay of one contact whose relay just became known (added,
+    /// or a letter or the network named a new one), in the background, so
+    /// their first letter does not wait 5–30 s for it. See warm_peer_relays.
+    fn warm_relay_of(self: &Arc<Self>, contact_id: i64) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            let Ok(Some(contact)) = this.db.get_contact(contact_id) else { return };
+            if contact.trust == TrustLevel::Blocked || contact.request_state == RequestState::Incoming {
+                return;
+            }
+            let _ = this.relay_for(&contact).await;
+        });
     }
 
     pub async fn send_message(
@@ -2488,7 +2503,7 @@ impl Core {
         }
     }
 
-    fn apply_contact_hints(&self, contact_id: i64, payload: &WirePayload) {
+    fn apply_contact_hints(self: &Arc<Self>, contact_id: i64, payload: &WirePayload) {
         if let Some(relay) = payload.relay_address.as_deref() {
             let trimmed = relay.trim();
             if !trimmed.is_empty() && gipny_libcore::card::is_valid_i2p_address(trimmed) {
@@ -2496,6 +2511,7 @@ impl Core {
                     if current.as_deref() != Some(trimmed) {
                         eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
                         let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
+                        self.warm_relay_of(contact_id);
                     }
                 }
             }
@@ -3391,6 +3407,7 @@ impl Core {
             }
             eprintln!("[dht] contact {id} moved to a new relay; taking the address from the network");
             if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
+                this.warm_relay_of(id);
                 this.send_kick.notify_one();
                 let _ = this.events.try_send(CoreEvent::ContactUpdated { contact_id: id });
             }

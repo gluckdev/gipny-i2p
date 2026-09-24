@@ -687,6 +687,7 @@ impl SessionManager {
         this.clone().spawn_send_loop();
         this.clone().spawn_bundle_refresh_loop();
         this.clone().spawn_dht_loop();
+        this.warm_peer_relays();
         Ok((this, events_rx))
     }
 
@@ -758,7 +759,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn add_contact(&self, card: &crate::crypto::IdentityCard, onion: &str, name: &str) -> Result<i64> {
+    pub async fn add_contact(self: &Arc<Self>, card: &crate::crypto::IdentityCard, onion: &str, name: &str) -> Result<i64> {
         self.add_contact_via(card, onion, name, None).await
     }
 
@@ -768,13 +769,56 @@ impl SessionManager {
     /// there, not on whatever relay this client happens to use. `None` keeps the
     /// old behaviour of falling back to this client's configured relay.
     pub async fn add_contact_via(
-        &self, card: &crate::crypto::IdentityCard, onion: &str, name: &str, relay: Option<&str>,
+        self: &Arc<Self>, card: &crate::crypto::IdentityCard, onion: &str, name: &str, relay: Option<&str>,
     ) -> Result<i64> {
         let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
         let _ = self.events.send(SessionEvent::ContactAdded { contact_id: id }).await;
         self.dht_kick.notify_one();
         self.send_kick.notify_one();
+        self.warm_relay_of(id);
         Ok(id)
+    }
+
+    /// Dial the relays of the most recent contacts now, in the background.
+    ///
+    /// Finding a relay's LeaseSet and opening the stream costs 5–30 s, and it
+    /// was paid by the first letter to each contact, on the way out and again
+    /// on the way back (e2e: 8 s and 32 s of a 64 s round trip). Dialled
+    /// ahead, the letter finds the connection open. `relay_for` never blocks.
+    fn warm_peer_relays(self: &Arc<Self>) {
+        const WARM: usize = 8;
+        let Ok(mut contacts) = self.db.list_contacts() else { return };
+        contacts.retain(|c| {
+            c.trust != TrustLevel::Blocked
+                && c.request_state != crate::db::RequestState::Incoming
+                && c.relay_address.as_deref().is_some_and(|r| !r.trim().is_empty())
+        });
+        contacts.sort_by_key(|c| std::cmp::Reverse(c.last_message_at));
+        contacts.truncate(WARM);
+        if contacts.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            for contact in &contacts {
+                let _ = this.relay_for(contact).await;
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// As [`Self::warm_peer_relays`], for one contact whose relay just became
+    /// known: added, or a letter or the network named a new one.
+    fn warm_relay_of(self: &Arc<Self>, contact_id: i64) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            let Ok(Some(contact)) = this.db.get_contact(contact_id) else { return };
+            if contact.trust == TrustLevel::Blocked || contact.request_state == crate::db::RequestState::Incoming {
+                return;
+            }
+            let _ = this.relay_for(&contact).await;
+        });
+        self.tasks.lock().unwrap().push(handle);
     }
 
     pub async fn send_message(
@@ -1515,6 +1559,7 @@ impl SessionManager {
                     if current.as_deref() != Some(trimmed) {
                         eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
                         let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
+                        self.warm_relay_of(contact_id);
                     }
                 }
             }
@@ -2203,6 +2248,7 @@ impl SessionManager {
                 if let Some(old) = known.as_deref() {
                     this.peer_relays.lock().await.remove(old);
                 }
+                this.warm_relay_of(id);
                 this.send_kick.notify_one();
                 let _ = this.events.send(SessionEvent::ContactUpdated { contact_id: id }).await;
             }
