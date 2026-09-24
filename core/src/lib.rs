@@ -39,12 +39,15 @@ enum Prewarm {
     Building {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
-        task: tokio::task::JoinHandle<Result<Arc<I2pNode>, String>>,
+        task: tokio::task::JoinHandle<Result<(Arc<I2pNode>, core::PrebuiltRelay), String>>,
     },
     Ready {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
         node: Arc<I2pNode>,
+        /// The built-in relay's tunnels, building as soon as the router is up
+        /// (serving nobody until the core claims it after unlock).
+        relay: core::PrebuiltRelay,
     },
 }
 
@@ -750,10 +753,14 @@ async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle
     resolve_bundled_router(&app);
     let app2 = app.clone();
     let task = tokio::spawn(async move {
-        I2pNode::start_with_progress(&dir, settings, Some(boot_progress(&app2)))
+        let node = I2pNode::start_with_progress(&dir, settings, Some(boot_progress(&app2)))
             .await
             .map(Arc::new)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(|e| format!("{e:?}"))?;
+        // Our relay's tunnels take 20–40 s more; build them while the password
+        // is typed too. Whose relay it is is only known after unlock.
+        let relay = tokio::spawn(gipny_libcore::EphemeralRelay::start_unclaimed(node.sam_port()));
+        Ok((node, relay))
     });
     *slot = Some(Prewarm::Building { profile, settings, task });
     Ok(())
@@ -769,7 +776,7 @@ async fn prewarm_status(ctx: State<'_, AppCtx>) -> Result<&'static str, String> 
         if !task.is_finished() { return Ok("building"); }
         let Some(Prewarm::Building { profile, settings, task }) = slot.take() else { unreachable!() };
         match task.await {
-            Ok(Ok(node)) => { *slot = Some(Prewarm::Ready { profile, settings, node }); }
+            Ok(Ok((node, relay))) => { *slot = Some(Prewarm::Ready { profile, settings, node, relay }); }
             // A failed prewarm is not an error the person has to act on: the
             // ordinary boot path will try again, out loud, after the password.
             _ => return Ok("off"),
@@ -791,7 +798,8 @@ async fn drop_prewarm(p: Prewarm) {
             task.abort();
             let _ = task.await;
         }
-        Prewarm::Ready { node, .. } => {
+        Prewarm::Ready { node, relay, .. } => {
+            relay.abort();
             node.shutdown().await;
             drop(node);
         }
@@ -804,7 +812,7 @@ async fn drop_prewarm(p: Prewarm) {
 async fn take_prewarmed(
     ctx: &State<'_, AppCtx>, app: &AppHandle, profile: &str,
     settings: gipny_libcore::router::RouterSettings,
-) -> Option<Arc<I2pNode>> {
+) -> Option<(Arc<I2pNode>, core::PrebuiltRelay)> {
     let taken = ctx.prewarm.lock().await.take()?;
     if taken.profile() != profile || !router_settings_match(taken.settings(), settings) {
         boot_status(&app, "router", "active", if taken.profile() != profile {
@@ -815,13 +823,13 @@ async fn take_prewarmed(
         drop_prewarm(taken).await;
         return None;
     }
-    let node = match taken {
-        Prewarm::Ready { node, .. } => node,
+    let ready = match taken {
+        Prewarm::Ready { node, relay, .. } => (node, relay),
         Prewarm::Building { task, .. } => {
             // Still building: wait for it rather than start a second router.
             // Its progress is already reaching the same boot screen.
             match task.await {
-                Ok(Ok(node)) => node,
+                Ok(Ok(ready)) => ready,
                 _ => {
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                     return None;
@@ -833,7 +841,7 @@ async fn take_prewarmed(
     boot_status(app, "router", "done", "router ready (started before unlocking)");
     boot_status(app, "tunnels", "done", "tunnels built before unlocking");
     boot_status(app, "session", "done", "SAM session open");
-    Some(node)
+    Some(ready)
 }
 
 async fn boot(
@@ -893,20 +901,20 @@ async fn boot(
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let node = match take_prewarmed(ctx, &app, profile, settings).await {
-        Some(node) => node,
-        None => Arc::new(
+    let (node, prebuilt_relay) = match take_prewarmed(ctx, &app, profile, settings).await {
+        Some((node, relay)) => (node, Some(relay)),
+        None => (Arc::new(
             I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
                 .await
                 .map_err(|e| {
                     boot_status(&app, "router", "failed", format!("{e:?}"));
                     err(e)
                 })?,
-        ),
+        ), None),
     };
     let warning: Option<String> = None;
     boot_status(&app, "core", "active", "starting the messenger core");
-    let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(|e| {
+    let (core, mut events) = Core::start(dir.to_path_buf(), db, node, prebuilt_relay).await.map_err(|e| {
         boot_status(&app, "core", "failed", format!("{e:?}"));
         err(e)
     })?;

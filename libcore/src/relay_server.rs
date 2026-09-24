@@ -159,6 +159,17 @@ impl Inner {
 pub struct MemStore {
     inner: std::sync::Mutex<Inner>,
     limits: MemStoreLimits,
+    serving: std::sync::RwLock<Serving>,
+}
+
+/// Whose mail a store takes.
+#[derive(Clone, Copy)]
+enum Serving {
+    Anyone,
+    Only([u8; 32]),
+    /// Built before its owner is known (tunnels built while the password is
+    /// typed): takes nothing from anyone until [`MemStore::claim`].
+    Nobody,
 }
 
 impl MemStore {
@@ -166,7 +177,31 @@ impl MemStore {
         // A recipient cap above the total cap would let one deposit push the
         // total over while evicting nothing of that recipient's.
         limits.max_recipient_bytes = limits.max_recipient_bytes.min(limits.max_total_bytes);
-        Self { inner: std::sync::Mutex::new(Inner::default()), limits }
+        let serving = match limits.only_for {
+            Some(owner) => Serving::Only(owner),
+            None => Serving::Anyone,
+        };
+        Self { inner: std::sync::Mutex::new(Inner::default()), limits, serving: std::sync::RwLock::new(serving) }
+    }
+
+    /// A personal store whose owner is not known yet: refuses everything.
+    pub fn unclaimed(limits: MemStoreLimits) -> Self {
+        let store = Self::new(limits);
+        *store.serving.write().unwrap_or_else(|p| p.into_inner()) = Serving::Nobody;
+        store
+    }
+
+    /// From now on serve `owner` alone.
+    pub fn claim(&self, owner: [u8; 32]) {
+        *self.serving.write().unwrap_or_else(|p| p.into_inner()) = Serving::Only(owner);
+    }
+
+    fn serves(&self, pk: &[u8; 32]) -> bool {
+        match *self.serving.read().unwrap_or_else(|p| p.into_inner()) {
+            Serving::Anyone => true,
+            Serving::Only(owner) => owner == *pk,
+            Serving::Nobody => false,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -176,7 +211,7 @@ impl MemStore {
     }
 
     pub fn store_bundle(&self, pk: &[u8; 32], bundle: &[u8]) -> Result<(), StoreError> {
-        if self.limits.only_for.is_some_and(|owner| owner != *pk) {
+        if !self.serves(pk) {
             return Err(StoreError::NotServed);
         }
         if bundle.len() > self.limits.max_bundle_bytes {
@@ -198,7 +233,7 @@ impl MemStore {
     }
 
     pub fn deposit(&self, to: &[u8; 32], blob: &[u8]) -> Result<u64, StoreError> {
-        if self.limits.only_for.is_some_and(|owner| owner != *to) {
+        if !self.serves(to) {
             return Err(StoreError::NotServed);
         }
         if blob.len() > self.limits.max_recipient_bytes {
@@ -507,7 +542,9 @@ pub struct EphemeralRelay {
     /// What [`Self::connect_local`] serves its connections with.
     connections: Connections,
     destination_hash: [u8; 32],
-    dht: Option<DhtHandler>,
+    /// Read for every connection, so a handler set after start (see
+    /// [`EphemeralRelay::claim`]) serves the next one.
+    dht: Arc<std::sync::RwLock<Option<DhtHandler>>>,
 }
 
 impl EphemeralRelay {
@@ -522,6 +559,23 @@ impl EphemeralRelay {
     ///
     /// `dht` answers relay-network requests arriving here; `None` refuses them.
     pub async fn start(sam_port: u16, limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+        Self::start_with(sam_port, MemStore::new(limits), dht).await
+    }
+
+    /// Build the relay's tunnels before knowing whose it is — while the
+    /// profile's password is being typed — serving nobody until
+    /// [`Self::claim`]. Saves the 20–40 s of tunnel building after unlock.
+    pub async fn start_unclaimed(sam_port: u16) -> Result<Self, NetError> {
+        Self::start_with(sam_port, MemStore::unclaimed(MemStoreLimits::default()), None).await
+    }
+
+    /// Hand a relay from [`Self::start_unclaimed`] to its owner.
+    pub fn claim(&self, owner: [u8; 32], dht: Option<DhtHandler>) {
+        self.store.claim(owner);
+        *self.dht.write().unwrap_or_else(|p| p.into_inner()) = dht;
+    }
+
+    async fn start_with(sam_port: u16, store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
         let (address, private_key) = RouterApi::new(sam_port)
             .generate_destination()
             .await
@@ -533,7 +587,8 @@ impl EphemeralRelay {
         let rebuild = Arc::new(tokio::sync::Notify::new());
         let first = open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await?;
 
-        let store = Arc::new(MemStore::new(limits));
+        let store = Arc::new(store);
+        let dht = Arc::new(std::sync::RwLock::new(dht));
         let connections: Connections = Arc::default();
 
         // The session is owned by this task alone: `accept` holds `&mut` across
@@ -575,7 +630,8 @@ impl EphemeralRelay {
                         accepted = live.accept() => match accepted {
                             Ok(stream) => {
                                 failures = 0;
-                                let (store, connections, dht) = (store.clone(), connections.clone(), dht.clone());
+                                let (store, connections) = (store.clone(), connections.clone());
+                                let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
                                 clients.spawn(async move {
                                     if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
                                         eprintln!("[relay-server] client gone: {e}");
@@ -640,7 +696,8 @@ impl EphemeralRelay {
     /// nothing about who may collect changes.
     pub fn connect_local(&self) -> std::pin::Pin<Box<dyn crate::net::DuplexStream>> {
         let (client, server) = tokio::io::duplex(1 << 20);
-        let (store, connections, dht) = (self.store.clone(), self.connections.clone(), self.dht.clone());
+        let (store, connections) = (self.store.clone(), self.connections.clone());
+        let dht = self.dht.read().unwrap_or_else(|p| p.into_inner()).clone();
         let destination_hash = self.destination_hash;
         tokio::spawn(async move {
             if let Err(e) = handle_client(server, store, connections, destination_hash, dht).await {
@@ -980,6 +1037,18 @@ mod tests {
     #[test]
     fn the_refusal_text_is_the_one_clients_look_for() {
         assert_eq!(StoreError::NotServed.to_string(), crate::relay::ERR_NOT_SERVED);
+    }
+
+    #[test]
+    fn an_unclaimed_store_takes_nothing_until_claimed() {
+        let (owner, stranger) = ([1u8; 32], [2u8; 32]);
+        let store = MemStore::unclaimed(MemStoreLimits::default());
+        assert_eq!(store.deposit(&owner, b"early"), Err(StoreError::NotServed));
+        assert_eq!(store.store_bundle(&owner, b"prekeys"), Err(StoreError::NotServed));
+        store.claim(owner);
+        assert!(store.deposit(&owner, b"for the owner").is_ok());
+        assert!(store.store_bundle(&owner, b"prekeys").is_ok());
+        assert_eq!(store.deposit(&stranger, b"not here"), Err(StoreError::NotServed));
     }
 
     #[tokio::test]

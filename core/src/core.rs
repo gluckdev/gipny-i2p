@@ -114,6 +114,9 @@ enum PeerRelay {
 /// this attempt. Nothing in the dial path has a timeout of its own, and opening
 /// an i2p destination means building tunnels, so an unreachable relay would
 /// otherwise hang its connection task forever.
+/// The relay built before unlock, still coming up or up.
+pub type PrebuiltRelay = JoinHandle<std::result::Result<gipny_libcore::EphemeralRelay, gipny_libcore::NetError>>;
+
 /// A delete request that has not reached a contact in this long is given up
 /// on, and the contact deleted here anyway.
 const WIPE_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
@@ -357,6 +360,9 @@ pub struct Core {
     /// only that there was none.
     relay_dial: Arc<std::sync::RwLock<DialState>>,
     hosted_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
+    /// A relay whose tunnels were built before unlock (see `lib.rs`
+    /// `prewarm_network`), taken by the first `bring_up_hosted_relay`.
+    prebuilt_relay: std::sync::Mutex<Option<PrebuiltRelay>>,
     /// Contacts that have not been told this launch's relay address yet.
     announce_pending: Arc<Mutex<HashSet<i64>>>,
     /// When each of them was last told, so the repeat is paced.
@@ -483,6 +489,7 @@ impl Core {
         data_dir: PathBuf,
         db: Arc<Db>,
         node: Arc<TorNode>,
+        prebuilt_relay: Option<PrebuiltRelay>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<CoreEvent>)> {
         // A staged Windows update is applied earlier than this, in `lib.rs`'s
         // `boot()` — before the vault unlock and the router wait below, not
@@ -514,6 +521,7 @@ impl Core {
             hosted_state: Arc::new(std::sync::RwLock::new(HostedRelayState::Off)),
             relay_dial: Arc::new(std::sync::RwLock::new(DialState::default())),
             hosted_task: Arc::new(std::sync::Mutex::new(None)),
+            prebuilt_relay: std::sync::Mutex::new(prebuilt_relay),
             announce_pending: Arc::new(Mutex::new(HashSet::new())),
             announce_sent_at: Arc::new(Mutex::new(HashMap::new())),
             relay_down_since: Arc::new(Mutex::new(HashMap::new())),
@@ -533,6 +541,10 @@ impl Core {
         core.clone().spawn_dht_loop();
         if core.relay_mode() == RelayMode::Builtin {
             core.start_hosted_relay();
+        } else if let Some(task) = core.prebuilt_relay.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            // Built before unlock on the chance it was wanted; it was not, and
+            // a relay left running keeps a destination published for nothing.
+            task.abort();
         }
         core.clone().warm_peer_relays();
         if let Some(m) = core.agent_master() {
@@ -717,6 +729,30 @@ impl Core {
         *slot = Some(tokio::spawn(async move { this.run_hosted_relay().await }));
     }
 
+    /// The relay built while the password was typed, if there is one and it
+    /// came up, claimed for us; otherwise a new one, built now.
+    async fn bring_up_hosted_relay(self: &Arc<Self>) -> std::result::Result<gipny_libcore::EphemeralRelay, gipny_libcore::NetError> {
+        let owner = self.identity.card().sign_pk;
+        let prebuilt = self.prebuilt_relay.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(task) = prebuilt {
+            match task.await {
+                Ok(Ok(relay)) => {
+                    eprintln!("[relay-hosted] using the relay built before unlock");
+                    relay.claim(owner, Some(dht_client::handler(&self.dht)));
+                    return Ok(relay);
+                }
+                Ok(Err(e)) => eprintln!("[relay-hosted] the relay built before unlock failed: {e:?}; building one now"),
+                Err(_) => {}
+            }
+        }
+        gipny_libcore::EphemeralRelay::start(
+            self.node.sam_port(),
+            // This relay is our inbox and nobody else's.
+            gipny_libcore::MemStoreLimits::personal(owner),
+            Some(dht_client::handler(&self.dht)),
+        ).await
+    }
+
     /// Brings the built-in relay up and hands it over. Off the path anything
     /// user-facing waits on: `EphemeralRelay::start` returns once the
     /// destination's tunnels exist, commonly a minute or two.
@@ -729,12 +765,7 @@ impl Core {
             }
             self.set_hosted_state(HostedRelayState::Starting);
             eprintln!("[relay-hosted] starting the built-in relay on SAM port {}...", self.node.sam_port());
-            match gipny_libcore::EphemeralRelay::start(
-                self.node.sam_port(),
-                // This relay is our inbox and nobody else's.
-                gipny_libcore::MemStoreLimits::personal(self.identity.card().sign_pk),
-                Some(dht_client::handler(&self.dht)),
-            ).await {
+            match self.bring_up_hosted_relay().await {
                 Ok(relay) => {
                     // The mode may have changed while the tunnels were building.
                     if self.relay_mode() != RelayMode::Builtin {
