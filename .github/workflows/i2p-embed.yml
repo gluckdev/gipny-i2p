@@ -250,7 +250,7 @@ jobs:
   e2e:
     name: e2e on the in-process router (relays inside the bots)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7
       - name: check out i2pd
@@ -274,8 +274,10 @@ jobs:
           E2E_IN_PROCESS_RELAYS: '1'
           # bot-b writes first too: the two sessions open at once and cross.
           E2E_BOTH_FIRST: '1'
+          # Then a 5 MiB file, in parts, and its throughput in the log.
+          E2E_BIG_FILE: '5242880'
           E2E_N_MESSAGES: '5'
-          E2E_TIMEOUT_SECS: '900'
+          E2E_TIMEOUT_SECS: '2100'
           E2E_WORK_DIR: ${{ runner.temp }}/e2e
           # The router's own log, for where letters stall (uploaded below).
           GIPNY_I2P_LOGLEVEL: info

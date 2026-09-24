@@ -2719,6 +2719,12 @@ impl SessionManager {
         Ok(())
     }
 
+    /// An attachment's bytes, whichever way it was sealed.
+    pub fn read_attachment(&self, att: &crate::db::Attachment) -> Result<Vec<u8>> {
+        let path = self.data_dir.join(ATTACHMENTS_DIR).join(&att.path);
+        Ok(crate::files::read_attachment(&path, to_arr32(att.key.clone())?, att.size as u64, att.chunk_size)?)
+    }
+
     /// Stop sending a file of ours, to everyone, and tell them.
     pub async fn cancel_file(self: &Arc<Self>, file_id: [u8; 16]) -> Result<()> {
         self.db.file_out_cancel(&file_id)?;
