@@ -494,9 +494,7 @@ impl Drop for AttachmentCipher { fn drop(&mut self) { self.key.zeroize(); } }
 
 impl AttachmentCipher {
     pub fn generate() -> Self {
-        let mut k = [0u8; 32];
-        fill_random(&mut k);
-        Self { key: k }
+        Self { key: random_array() }
     }
     pub fn from_key(key: [u8; 32]) -> Self { Self { key } }
     pub fn key(&self) -> &[u8; 32] { &self.key }
