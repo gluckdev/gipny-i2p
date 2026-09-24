@@ -117,7 +117,9 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
         // Libraries are named below, not by boost's #pragma autolink (whose
         // names vcpkg's builds do not match); /bigobj for i2pd's larger units.
-        build.define("BOOST_ALL_NO_LIB", None).flag("/bigobj").flag("/utf-8");
+        // /EHsc: C++ exceptions on. cc does not pass it, and without it boost
+        // assumes none and wants a boost::throw_exception from us (LNK2001).
+        build.define("BOOST_ALL_NO_LIB", None).flag("/EHsc").flag("/bigobj").flag("/utf-8");
     }
     build.compile("gipny_i2pd");
 
