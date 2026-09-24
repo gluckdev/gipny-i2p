@@ -58,6 +58,18 @@ pub fn peer_relay_backoff(failures: u32) -> std::time::Duration {
     std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
 }
 
+/// Whether to open one more connection to our own relay for file parts:
+/// it is elsewhere, parts came lately, and fewer than `FILE_LANES - 1` extra
+/// are open.
+pub fn collect_lane_wanted(external: bool, part_seen_ms: i64, now_ms: i64, open: usize) -> bool {
+    external && open + 1 < FILE_LANES && collect_lane_holds(part_seen_ms, now_ms)
+}
+
+/// Whether extra connections for parts are still worth holding.
+pub fn collect_lane_holds(part_seen_ms: i64, now_ms: i64) -> bool {
+    part_seen_ms > 0 && now_ms - part_seen_ms < COLLECT_LANE_IDLE_MS
+}
+
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
@@ -87,6 +99,9 @@ const FILE_RESEND_IDLE_MS: i64 = 30 * 60 * 1000;
 /// Streams to a recipient's relay carrying parts at once (the usual one
 /// included).
 const FILE_LANES: usize = 4;
+/// Extra connections to our own relay, when it is not in this process, are
+/// held while parts keep coming and closed this long after the last one.
+const COLLECT_LANE_IDLE_MS: i64 = 60_000;
 /// A recipient alive this long without acknowledging a single part cannot
 /// take files in parts.
 const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;
@@ -794,6 +809,12 @@ pub struct SessionManager {
     file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
     /// Relays a lane is being dialled to, so one is dialled at a time.
     file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// When the last file part came (ms), and how many extra connections to
+    /// our own relay are open to take them: the relay deals new mail round
+    /// every connection of a key, so parts come down several streams at once.
+    part_seen: Arc<std::sync::atomic::AtomicI64>,
+    collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
+    collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     dht: Arc<dht_client::Node>,
@@ -831,6 +852,9 @@ impl SessionManager {
             heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             dht,
@@ -843,6 +867,7 @@ impl SessionManager {
         });
         this.ensure_prekeys().await?;
         this.clone().spawn_relay_loop();
+        this.clone().spawn_collect_lanes();
         this.clone().spawn_send_loop();
         this.clone().spawn_bundle_refresh_loop();
         this.clone().spawn_dht_loop();
@@ -1312,7 +1337,7 @@ impl SessionManager {
                             }
                         }
                         this.send_kick.notify_one();
-                        this.clone().run_recv_loop(client, Some(onion.clone())).await;
+                        this.clone().run_recv_loop(client, Some(onion.clone()), None).await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.send(SessionEvent::Disconnected).await;
                     }
@@ -1320,6 +1345,43 @@ impl SessionManager {
                 }
                 tokio::time::sleep(Duration::from_millis(backoff)).await;
                 backoff = (backoff * 2).min(RECONNECT_MAX_MS);
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// Keep extra connections to our own relay while file parts come, when it
+    /// runs elsewhere (one in this process is a pipe, no faster for more).
+    fn spawn_collect_lanes(self: Arc<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let _ = tokio::time::timeout(Duration::from_secs(5), this.collect_kick.notified()).await;
+                let onion = this.relay_onion();
+                let external = !onion.is_empty()
+                    && this.relay_out.read().await.is_some()
+                    && !this.local_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| r.address() == onion);
+                if !collect_lane_wanted(external, this.part_seen.load(Relaxed), now_ms(), this.collect_lanes.load(Relaxed)) {
+                    continue;
+                }
+                // One dial at a time; the next tick dials the next.
+                let dial = tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, relay::connect(&this.node, &onion, &this.identity)).await;
+                let Ok(Ok(client)) = dial else { continue };
+                let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
+                eprintln!("[files] another connection to our relay for parts ({n} extra)");
+                let lane = this.clone();
+                tokio::spawn(async move {
+                    // Ends when parts stop coming or our relay changes; what it was
+                    // given and did not ack the relay deals to the others.
+                    let quiet = {
+                        let lane = lane.clone();
+                        let onion = onion.clone();
+                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || lane.relay_onion() != onion
+                    };
+                    lane.clone().run_recv_loop(client, Some(onion.clone()), Some(&quiet)).await;
+                    lane.collect_lanes.fetch_sub(1, Relaxed);
+                });
             }
         });
         self.tasks.lock().unwrap().push(handle);
@@ -1400,7 +1462,7 @@ impl SessionManager {
                     let _ = client.out_tx.send(ClientToRelay::GetBundle { pk }).await;
                 }
                 this.send_kick.notify_one();
-                this.clone().run_recv_loop(client, None).await;
+                this.clone().run_recv_loop(client, None, None).await;
                 this.peer_relays.lock().await.remove(&key);
             });
             self.tasks.lock().unwrap().push(handle);
@@ -1472,7 +1534,7 @@ impl SessionManager {
 
     /// `collecting_from` is set on the connection to our own relay: once the
     /// relay we collect from changes, this one is no longer where mail arrives.
-    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, collecting_from: Option<String>) {
+    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, collecting_from: Option<String>, done: Option<&(dyn Fn() -> bool + Send + Sync)>) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
         let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -1483,6 +1545,10 @@ impl SessionManager {
         loop {
             tokio::select! {
                 _ = ping.tick() => {
+                    // Checked between frames, never in the middle of one: a letter
+                    // half-handled when the connection went could have moved the
+                    // ratchet on and not be saved.
+                    if done.is_some_and(|d| d()) { break; }
                     if collecting_from.as_deref().is_some_and(|o| o != self.relay_onion()) {
                         eprintln!("[session] our relay changed, reconnecting to the new one");
                         break;
@@ -2649,6 +2715,10 @@ impl SessionManager {
     }
 
     async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk) -> Result<()> {
+        let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        if !collect_lane_holds(before, now_ms()) {
+            self.collect_kick.notify_one();
+        }
         let Some(fin) = self.db.file_in(&chunk.file_id, contact_id)? else {
             // Before its offer (resends reorder letters): set aside, a window's
             // worth at most.
@@ -2786,7 +2856,7 @@ impl SessionManager {
                     this.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
                     this.send_kick.notify_one();
                     // Drained like any peer relay connection; it ends with the lane.
-                    this.clone().run_recv_loop(client, None).await;
+                    this.clone().run_recv_loop(client, None, None).await;
                 } else {
                     this.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
                 }
@@ -3058,6 +3128,18 @@ mod wire_tests {
     fn a_failed_relay_dial_is_retried_soon_then_less_often() {
         let secs: Vec<u64> = (0..8).map(|n| peer_relay_backoff(n).as_secs()).collect();
         assert_eq!(secs, vec![5, 10, 20, 40, 80, 120, 120, 120]);
+    }
+
+    #[test]
+    fn extra_connections_to_our_relay_only_while_parts_come_to_one_elsewhere() {
+        let now = 1_000_000;
+        assert!(!collect_lane_wanted(true, 0, now, 0), "no part yet");
+        assert!(collect_lane_wanted(true, now - 1_000, now, 0));
+        assert!(!collect_lane_wanted(false, now - 1_000, now, 0), "a relay in this process is a pipe");
+        assert!(collect_lane_wanted(true, now - 1_000, now, FILE_LANES - 2));
+        assert!(!collect_lane_wanted(true, now - 1_000, now, FILE_LANES - 1), "no more than the sender's lanes");
+        assert!(collect_lane_holds(now - COLLECT_LANE_IDLE_MS + 1, now));
+        assert!(!collect_lane_holds(now - COLLECT_LANE_IDLE_MS, now), "a quiet minute closes them");
     }
 
     #[test]

@@ -286,6 +286,9 @@ async fn handshake(
                 break;
             }
         }
+        // Every sender gone: the connection was let go. Close it now, not at
+        // the relay's next push, so what it held unacked is dealt elsewhere.
+        let _ = write_half.shutdown().await;
     });
 
     Ok(RelayClient { out_tx, in_rx: Arc::new(Mutex::new(in_rx)) })

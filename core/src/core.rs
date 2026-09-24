@@ -342,7 +342,7 @@ fn hex_bytes(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
-use gipny_libcore::session::{ours_stands, peer_relay_backoff, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
+use gipny_libcore::session::{collect_lane_holds, collect_lane_wanted, ours_stands, peer_relay_backoff, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Some(unpadded) = unpad_payload(pt) {
@@ -392,6 +392,11 @@ pub struct Core {
     /// destination); see libcore's session.rs `file_lanes`.
     file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
     file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// When the last file part came (ms), and the extra connections to our
+    /// own relay taking them; see libcore's session.rs `spawn_collect_lanes`.
+    part_seen: Arc<std::sync::atomic::AtomicI64>,
+    collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
+    collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
@@ -563,6 +568,9 @@ impl Core {
             heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             updater,
@@ -586,6 +594,7 @@ impl Core {
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
         core.clone().spawn_relay_loop();
+        core.clone().spawn_collect_lanes();
         core.clone().spawn_send_loop();
         core.clone().spawn_purge_loop();
         core.clone().spawn_update_loop();
@@ -2004,6 +2013,42 @@ impl Core {
         Ok(gipny_libcore::files::read_attachment(&full, key, att.size as u64, att.chunk_size)?)
     }
 
+    /// Keep extra connections to our own relay while file parts come, when it
+    /// runs elsewhere. Mirrors libcore's session.rs `spawn_collect_lanes`.
+    fn spawn_collect_lanes(self: Arc<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let _ = tokio::time::timeout(Duration::from_secs(5), this.collect_kick.notified()).await;
+                let onion = this.relay_onion();
+                let external = !onion.is_empty()
+                    && this.relay_out.read().await.is_some()
+                    && !this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| r.address() == onion);
+                if !collect_lane_wanted(external, this.part_seen.load(Relaxed), now_ms(), this.collect_lanes.load(Relaxed)) {
+                    continue;
+                }
+                let dial = tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, relay::connect(&this.node, &onion, &this.identity)).await;
+                let Ok(Ok(client)) = dial else { continue };
+                let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
+                eprintln!("[files] another connection to our relay for parts ({n} extra)");
+                let lane = this.clone();
+                tokio::spawn(async move {
+                    // Ends when parts stop coming or our relay changes; what it was
+                    // given and did not ack the relay deals to the others.
+                    let quiet = {
+                        let lane = lane.clone();
+                        let onion = onion.clone();
+                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || lane.relay_onion() != onion
+                    };
+                    lane.clone().run_recv_loop(client, Some(onion.clone()), Some(&quiet)).await;
+                    lane.collect_lanes.fetch_sub(1, Relaxed);
+                });
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
     fn spawn_relay_loop(self: Arc<Self>) {
         let this = self.clone();
         let handle = tokio::spawn(async move {
@@ -2050,7 +2095,7 @@ impl Core {
                             }
                         }
                         this.send_kick.notify_one();
-                        this.clone().run_recv_loop(client, Some(onion.clone())).await;
+                        this.clone().run_recv_loop(client, Some(onion.clone()), None).await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.try_send(CoreEvent::RelayDisconnected);
                     }
@@ -2225,7 +2270,7 @@ impl Core {
             // mail for us, and the frame handling is identical. No
             // RelayConnected event — that state is about our own relay, and
             // flipping it here would tell the user the wrong thing.
-            this.clone().run_recv_loop(client, None).await;
+            this.clone().run_recv_loop(client, None, None).await;
             this.peer_relays.lock().await.remove(&key);
             eprintln!("[relay-client] peer relay {short} disconnected");
         });
@@ -2238,7 +2283,7 @@ impl Core {
     /// When the relay we collect from changes — another mode, another address
     /// in Settings — the connection ends at its next ping and the loop redials;
     /// before, a new address only took effect when the old relay went away.
-    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, own: Option<String>) {
+    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, own: Option<String>, done: Option<&(dyn Fn() -> bool + Send + Sync)>) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
         let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -2249,6 +2294,10 @@ impl Core {
         loop {
             tokio::select! {
                 _ = ping.tick() => {
+                    // Checked between frames, never in the middle of one: a letter
+                    // half-handled when the connection went could have moved the
+                    // ratchet on and not be saved.
+                    if done.is_some_and(|d| d()) { break; }
                     if own.as_ref().is_some_and(|o| *o != self.relay_onion()) {
                         eprintln!("[relay-client] our relay changed, reconnecting");
                         break;
@@ -3746,6 +3795,10 @@ impl Core {
 
     async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk) -> Result<()> {
         use gipny_libcore::files;
+        let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        if !collect_lane_holds(before, now_ms()) {
+            self.collect_kick.notify_one();
+        }
         let Some(fin) = self.db.file_in(&chunk.file_id, contact_id)? else {
             if chunk.data.len() <= files::CHUNK_SIZE as usize {
                 self.db.file_early_put(&chunk.file_id, contact_id, chunk.index, &chunk.data)?;
@@ -3890,7 +3943,7 @@ impl Core {
                     eprintln!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
                     this.file_lanes.lock().await.entry(relay.clone()).or_default().push(client.out_tx.clone());
                     this.send_kick.notify_one();
-                    this.clone().run_recv_loop(client, None).await;
+                    this.clone().run_recv_loop(client, None, None).await;
                 }
             });
             self.tasks.lock().unwrap().push(handle);
