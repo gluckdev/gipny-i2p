@@ -63,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
         "--httpproxy.enabled=false".into(),
         "--socksproxy.enabled=false".into(),
         "--upnp.enabled=false".into(),
+        // Against the reseed certificates i2p-embed compiles in.
+        "--reseed.verify=true".into(),
     ], router_dir.join("i2pd.log").to_str()).map_err(|e| anyhow::anyhow!("i2p router: {e}"))?);
 
     let (dest_pub, privkey) = load_or_create_identity(&data_dir)?;

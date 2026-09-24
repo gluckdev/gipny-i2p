@@ -68,11 +68,17 @@ pub enum Error {
     BadAddress,
     Unreachable,
     Timeout,
+    /// The certificates could not be laid out in the data dir.
+    Certificates(std::io::Error),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Error::Certificates(e) = self {
+            return write!(f, "reseed certificates: {e}");
+        }
         f.write_str(match self {
+            Error::Certificates(_) => unreachable!(),
             Error::AlreadyStarted => "the router is already running in this process",
             Error::InitFailed => "the router did not initialise",
             Error::BadKeys => "not i2p private keys",
@@ -106,6 +112,18 @@ impl Router {
     /// Start the router with i2pd's own options, e.g. `--datadir=…`,
     /// `--bandwidth=L`. `log_path` `None` logs into the data dir.
     pub fn start(options: &[String], log_path: Option<&str>) -> Result<Self, Error> {
+        if STARTED.get().is_some() {
+            return Err(Error::AlreadyStarted);
+        }
+        // The router verifies reseed bundles against these; with none it can
+        // never join from an empty netDb. Unless told to look elsewhere, it
+        // looks in <datadir>/certificates (see the shim).
+        let datadir = options.iter().find_map(|o| o.strip_prefix("--datadir="));
+        if let Some(dir) = datadir {
+            if !options.iter().any(|o| o.starts_with("--certsdir=")) {
+                write_certificates(&std::path::Path::new(dir).join("certificates")).map_err(Error::Certificates)?;
+            }
+        }
         if STARTED.set(()).is_err() {
             return Err(Error::AlreadyStarted);
         }
@@ -135,6 +153,28 @@ impl Router {
     pub fn set_online(&self, online: bool) {
         unsafe { ffi::gipny_router_set_online(online as c_int) };
     }
+}
+
+mod certs {
+    include!(concat!(env!("OUT_DIR"), "/certificates.rs"));
+}
+
+/// Lay out the certificates compiled in (i2pd's reseed and family ones)
+/// under `dir`, rewriting any that differ: they follow the binary.
+pub fn write_certificates(dir: &std::path::Path) -> std::io::Result<usize> {
+    let mut written = 0;
+    for (name, bytes) in certs::CERTIFICATES {
+        let path = dir.join(name);
+        if std::fs::read(&path).is_ok_and(|have| have == *bytes) {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 impl Drop for Router {

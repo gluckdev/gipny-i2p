@@ -17,14 +17,16 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=I2P_EMBED_SKIP_NATIVE");
-    if env::var_os("I2P_EMBED_SKIP_NATIVE").is_some_and(|v| v == "1") {
-        return;
-    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let i2pd = env::var_os("I2P_EMBED_I2PD_SRC")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest.join("../third_party/i2pd"));
+    certificates(&i2pd.join("contrib/certificates"));
+
+    println!("cargo:rerun-if-env-changed=I2P_EMBED_SKIP_NATIVE");
+    if env::var_os("I2P_EMBED_SKIP_NATIVE").is_some_and(|v| v == "1") {
+        return;
+    }
     let lib = i2pd.join("libi2pd");
     assert!(
         lib.join("api.h").is_file(),
@@ -88,4 +90,31 @@ fn main() {
         }
         _ => {}
     }
+}
+
+/// i2pd's reseed and family certificates, compiled into the binary: the
+/// router verifies reseed bundles against them, and nothing but this binary
+/// is shipped. `CERTIFICATES` in $OUT_DIR/certificates.rs, as
+/// (path under certificates/, contents).
+fn certificates(dir: &std::path::Path) {
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut files = Vec::new();
+    for sub in ["reseed", "family"] {
+        let Ok(entries) = std::fs::read_dir(dir.join(sub)) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "crt") {
+                let name = format!("{sub}/{}", path.file_name().unwrap().to_string_lossy());
+                files.push((name, path));
+            }
+        }
+    }
+    files.sort();
+    let mut out = String::from("pub static CERTIFICATES: &[(&str, &[u8])] = &[\n");
+    for (name, path) in &files {
+        out.push_str(&format!("    ({name:?}, include_bytes!({:?})),\n", path.canonicalize().unwrap()));
+    }
+    out.push_str("];\n");
+    let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("certificates.rs");
+    std::fs::write(dest, out).expect("write certificates.rs");
 }

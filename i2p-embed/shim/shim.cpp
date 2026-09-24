@@ -10,7 +10,9 @@
 
 #include <boost/asio.hpp>
 
+#include "Config.h"
 #include "Destination.h"
+#include "FS.h"
 #include "Identity.h"
 #include "Streaming.h"
 #include "Transports.h"
@@ -73,6 +75,13 @@ int gipny_router_init(int argc, const char *const *argv) {
 	args.push_back(nullptr);
 	try {
 		i2p::api::InitI2P(static_cast<int>(copies.size()), args.data(), "gipny-i2pd");
+		// api.cpp leaves this to the daemon, which we are not: without it the
+		// reseed and family certificates are looked for under "" and a router
+		// with no usable netDb can never join. --certsdir, else
+		// <datadir>/certificates (where the Rust side puts ours).
+		std::string certsdir;
+		i2p::config::GetOption("certsdir", certsdir);
+		i2p::fs::SetCertsDir(certsdir);
 		return 1;
 	} catch (...) {
 		return 0;

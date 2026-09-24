@@ -15,7 +15,11 @@ async fn a_stream_between_two_destinations_in_one_router() {
     });
     std::fs::create_dir_all(&dir).unwrap();
     let t0 = Instant::now();
-    let router = Router::start(&[format!("--datadir={dir}"), "--notransit".into()], None).expect("router");
+    let router = Router::start(&[format!("--datadir={dir}"), "--notransit".into(), "--reseed.verify=true".into()], None).expect("router");
+    assert!(
+        std::path::Path::new(&dir).join("certificates/reseed").read_dir().is_ok_and(|mut d| d.next().is_some()),
+        "no reseed certificates laid out"
+    );
 
     let server = Destination::new(&router, Some(&i2p_embed::generate_keys()), &DestinationOptions { publish: true, ..Default::default() }).unwrap();
     let client = Destination::new(&router, None, &DestinationOptions::default()).unwrap();

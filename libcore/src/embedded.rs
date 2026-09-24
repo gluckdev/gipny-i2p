@@ -47,6 +47,9 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
         "--httpproxy.enabled=false".into(),
         "--socksproxy.enabled=false".into(),
         "--upnp.enabled=false".into(),
+        // Reseed bundles are checked against the certificates i2p-embed lays
+        // out; i2pd's default takes them unverified.
+        "--reseed.verify=true".into(),
         format!("--bandwidth={}", settings.transit.bandwidth()),
         format!("--share={}", settings.transit.share_percent()),
         format!("--limits.transittunnels={}", settings.transit.transit_tunnels()),
