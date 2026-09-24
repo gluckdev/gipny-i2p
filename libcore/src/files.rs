@@ -306,8 +306,17 @@ const RTO_FIRST_MS: i64 = 30_000;
 const QUEUE_GROWS: f64 = 1.5;
 /// ... and past this many times it gives back a fifth, once per round trip.
 const QUEUE_TOO_LONG: f64 = 2.5;
-/// How much the fastest round trip is allowed to rise per sample.
-const BASE_DRIFT: f64 = 1.003;
+/// The fastest round trip is the fastest of this many latest samples: after
+/// new tunnels, or a recipient gone and back, the brake takes the path as it
+/// is now within a window or two, instead of measuring against a start long
+/// past (e2e run 36062035277: after the recipient restarted, the window sat
+/// at 2 for the rest of the file and the run timed out).
+const BASE_SAMPLES: usize = 32;
+/// A sample this many times the smoothed round trip is not the path: a part
+/// that waited on the relay while its recipient was away. It is left out,
+/// unless more come in a row than a window holds — the parts delayed together
+/// are at most a window; past that, the path itself got that slow.
+const OUTLIER: f64 = 4.0;
 
 /// How parts go to one recipient, across all files: a window like TCP's.
 /// It opens by one part per part acknowledged until the first loss, then by
@@ -326,8 +335,9 @@ pub struct Flow {
     ssthresh: f64,
     srtt: Option<f64>,
     rttvar: f64,
-    /// The fastest round trip seen: the path with nothing queued.
-    base: Option<f64>,
+    /// Latest samples, for the fastest round trip: the path with nothing queued.
+    recent: std::collections::VecDeque<f64>,
+    outliers: u32,
     last_cut: i64,
     last_ease: i64,
     /// Parts in flight: when each went, and whether it was a resend.
@@ -343,7 +353,8 @@ impl Default for Flow {
             ssthresh: WINDOW as f64,
             srtt: None,
             rttvar: 0.0,
-            base: None,
+            recent: Default::default(),
+            outliers: 0,
             last_cut: i64::MIN / 2,
             last_ease: i64::MIN / 2,
             sent: Default::default(),
@@ -424,17 +435,28 @@ impl Flow {
 
     /// The smoothed round trip over the fastest: 1 on an empty path.
     fn queueing(&self) -> f64 {
-        match (self.srtt, self.base) {
-            (Some(s), Some(b)) if b > 0.0 => s / b,
+        let base = self.recent.iter().copied().fold(f64::INFINITY, f64::min);
+        match self.srtt {
+            Some(s) if base.is_finite() && base > 0.0 => s / base,
             _ => 1.0,
         }
     }
 
     fn sample(&mut self, rtt: f64) {
-        // Drifts up a little with every sample, so a path slower for good
-        // (new tunnels, more hops) becomes the new empty one after a few
-        // hundred parts, rather than holding the window down forever.
-        self.base = Some(self.base.map_or(rtt, |b| (b * BASE_DRIFT).min(rtt)));
+        if let Some(s) = self.srtt {
+            if rtt > OUTLIER * s {
+                self.outliers += 1;
+                if self.outliers <= self.window().max(2) {
+                    return;
+                }
+            } else {
+                self.outliers = 0;
+            }
+        }
+        self.recent.push_back(rtt);
+        if self.recent.len() > BASE_SAMPLES {
+            self.recent.pop_front();
+        }
         match self.srtt {
             None => {
                 self.srtt = Some(rtt);
@@ -751,6 +773,40 @@ mod tests {
             flow.sample(5_000.0);
         }
         assert!(flow.queueing() < QUEUE_GROWS, "{}", flow.queueing());
+    }
+
+    #[test]
+    fn a_part_that_waited_out_an_absence_does_not_count_as_the_path() {
+        let mut flow = Flow::default();
+        for _ in 0..10 {
+            flow.sample(2_000.0);
+        }
+        let (srtt, rto) = (flow.srtt_ms(), flow.rto_ms());
+        // The recipient restarted: the window's parts sat on the relay a minute.
+        for _ in 0..flow.window() {
+            flow.sample(60_000.0);
+        }
+        assert_eq!((flow.srtt_ms(), flow.rto_ms()), (srtt, rto), "left out");
+        assert!(flow.queueing() < QUEUE_GROWS);
+        // The next is ordinary again: the count starts over.
+        flow.sample(2_000.0);
+        flow.sample(60_000.0);
+        assert_eq!(flow.srtt_ms(), srtt);
+    }
+
+    #[test]
+    fn after_a_disruption_the_window_can_grow_again() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        let mut now = 0;
+        // A path of 2 s round trips, then 8 s ones for good (new tunnels).
+        for rtt in std::iter::repeat_n(2_000, 20).chain(std::iter::repeat_n(8_000, 120)) {
+            let d = s.due(F, 10_000, &mut flow, now);
+            now += rtt;
+            let top = d.iter().max().map_or(s.acked, |t| t + 1);
+            s.on_ack(&ack(F, top, vec![], top), &mut flow, now);
+        }
+        assert!(flow.queueing() < QUEUE_GROWS, "the slower path is the new normal: {}", flow.queueing());
+        assert!(flow.window() > 4, "and the window opens on it: {}", flow.window());
     }
 
     #[test]

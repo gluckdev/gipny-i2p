@@ -2838,6 +2838,8 @@ impl SessionManager {
         {
             let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
             let flow = flows.entry(contact_id).or_default();
+            eprintln!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
+                ack.received_up_to, ack.missing, ack.seen_to);
             s.on_ack(ack, flow, now_ms());
             if s.done(total) {
                 flow.forget(ack.file_id);
@@ -2979,13 +2981,20 @@ impl SessionManager {
                     s.rewind(file.file_id, flows.entry(contact.id).or_default());
                 }
             }
-            let due = {
+            let next_before = s.next;
+            let (due, window, in_flight, rto) = {
                 let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                s.due(file.file_id, total, flows.entry(contact.id).or_default(), now)
+                let flow = flows.entry(contact.id).or_default();
+                let due = s.due(file.file_id, total, flow, now);
+                (due, flow.window(), flow.in_flight(), flow.rto_ms())
             };
             if due.is_empty() {
                 continue;
             }
+            // One line a part (192 KiB): what went, and why it was its turn.
+            let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
+            eprintln!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms",
+                a.name, contact.id, due, again);
             let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
             let mut sent_any = false;
