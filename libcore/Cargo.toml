@@ -42,6 +42,13 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # rustls config built from these roots, because reqwest's own default is the
 # platform verifier, which aborts the process on Android. See `webpki_tls()`.
 webpki-roots = "1"
+# HTTPS through the i2p outproxy with no local proxy (i2p_http.rs): TLS and
+# HTTP/1.1 over our own i2p stream. Already in the tree through reqwest.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 flate2 = "1"
 tar = "0.4"
 [dev-dependencies]

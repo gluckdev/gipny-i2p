@@ -46,6 +46,7 @@ pub type Result<T> = std::result::Result<T, UpdateError>;
 #[derive(Debug, Error)]
 pub enum UpdateError {
     #[error("http: {0}")] Http(#[from] reqwest::Error),
+    #[error("{0}")] I2pHttp(#[from] crate::i2p_http::HttpError),
     #[error("io: {0}")] Io(#[from] std::io::Error),
     #[error("bad json: {0}")] Json(String),
     #[error("downloaded file does not match the release's SHA256SUMS.txt")] BadSha256,
@@ -124,7 +125,7 @@ pub struct Updater {
     /// `None` when this router has no local HTTP proxy to use (Android, or
     /// attached to a router we don't own) — every method then reports
     /// unavailable rather than trying to dial nothing.
-    client: Option<reqwest::Client>,
+    client: Option<Transport>,
     component: Component,
 }
 
@@ -138,6 +139,50 @@ fn ensure_crypto_provider() {
     INSTALLED.call_once(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
+}
+
+/// How the updater reaches GitHub: the router's HTTP proxy (a router in its
+/// own process, over SAM), or our own i2p stream to the outproxy (the router
+/// inside this process, which has no proxy and no port).
+enum Transport {
+    Proxy(reqwest::Client),
+    I2p { node: Arc<TorNode>, tls: Arc<rustls::ClientConfig> },
+}
+
+impl Transport {
+    async fn text(&self, url: &str, accept: Option<&str>) -> Result<String> {
+        match self {
+            Transport::Proxy(c) => {
+                let mut req = c.get(url);
+                if let Some(a) = accept {
+                    req = req.header("Accept", a);
+                }
+                Ok(req.send().await?.error_for_status()?.text().await?)
+            }
+            Transport::I2p { node, tls } => Ok(crate::i2p_http::get(node, tls, url, accept).await?.text().await?),
+        }
+    }
+
+    async fn body(&self, url: &str) -> Result<Body> {
+        match self {
+            Transport::Proxy(c) => Ok(Body::Proxy(c.get(url).send().await?.error_for_status()?)),
+            Transport::I2p { node, tls } => Ok(Body::I2p(crate::i2p_http::get(node, tls, url, None).await?)),
+        }
+    }
+}
+
+enum Body {
+    Proxy(reqwest::Response),
+    I2p(crate::i2p_http::Body),
+}
+
+impl Body {
+    async fn chunk(&mut self) -> Result<Option<bytes::Bytes>> {
+        match self {
+            Body::Proxy(r) => Ok(r.chunk().await?),
+            Body::I2p(b) => Ok(b.chunk().await?),
+        }
+    }
 }
 
 /// TLS that trusts Mozilla's root list and nothing else.
@@ -185,7 +230,7 @@ pub enum CheckOutcome {
 impl Updater {
     pub fn new(node: Arc<TorNode>, component: Component) -> Self {
         ensure_crypto_provider();
-        let client = node.http_proxy_port().and_then(|port| {
+        let proxied = node.http_proxy_port().and_then(|port| {
             reqwest::Client::builder()
                 // `Some(..)`: reqwest downcasts to `Option<ClientConfig>` and a
                 // bare config silently falls through to "unknown TLS backend".
@@ -196,6 +241,13 @@ impl Updater {
                 .build()
                 .ok()
         });
+        // No HTTP proxy on the router inside the process: straight to the
+        // outproxy over our own stream (i2p_http), no port anywhere.
+        let client = match proxied {
+            Some(c) => Some(Transport::Proxy(c)),
+            None if node.is_embedded() => Some(Transport::I2p { node, tls: Arc::new(webpki_tls()) }),
+            None => None,
+        };
         Self { client, component }
     }
 
@@ -207,12 +259,10 @@ impl Updater {
     /// sideload picker, which is not about *this* platform at all.
     pub async fn latest_release(&self) -> Result<ReleaseInfo> {
         let client = self.client.as_ref().ok_or(UpdateError::NotConfigured)?;
-        let text = client
-            .get(format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"))
-            .header("Accept", "application/vnd.github+json")
-            .send().await?
-            .error_for_status()?
-            .text().await?;
+        let text = client.text(
+            &format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"),
+            Some("application/vnd.github+json"),
+        ).await?;
         let release: GhRelease = serde_json::from_str(&text).map_err(|e| UpdateError::Json(e.to_string()))?;
         let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name).to_string();
         Ok(ReleaseInfo {
@@ -284,7 +334,7 @@ impl Updater {
             "{}.partial", dest.extension().and_then(|s| s.to_str()).unwrap_or("")
         ));
 
-        let mut resp = client.get(&asset.download_url).send().await?.error_for_status()?;
+        let mut resp = client.body(&asset.download_url).await?;
         let mut file = std::fs::File::create(&partial)?;
         let mut hasher = Sha256::new();
         let mut total: u64 = 0;
@@ -450,9 +500,9 @@ fn target_suffix(component: Component) -> Option<(&'static str, &'static str)> {
 /// `SHA256SUMS.txt` is `sha256sum -- *` output: `<hex>  <filename>` per line
 /// (sometimes `*filename` in binary mode). Best-effort — a miss just means no
 /// extra check on top of TLS, not a failure.
-async fn find_sha256(client: &reqwest::Client, assets: &[ReleaseAsset], asset_name: &str) -> Option<String> {
+async fn find_sha256(client: &Transport, assets: &[ReleaseAsset], asset_name: &str) -> Option<String> {
     let sums = assets.iter().find(|a| a.name == "SHA256SUMS.txt")?;
-    let text = client.get(&sums.download_url).send().await.ok()?.error_for_status().ok()?.text().await.ok()?;
+    let text = client.text(&sums.download_url, None).await.ok()?;
     text.lines().find_map(|line| {
         let mut parts = line.split_whitespace();
         let hash = parts.next()?;
