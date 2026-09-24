@@ -29,6 +29,9 @@
 //! * `E2E_BOTH_FIRST=1` — bot-b writes to bot-a at the same moment bot-a
 //!   writes to bot-b: two sessions are opened at once and their X3dhInits
 //!   cross (session.rs `ours_stands`). Its letter must arrive too.
+//! * `E2E_UPDATE_CHECK=1` — a different test: one router, and the updater
+//!   asks GitHub for the latest release through the i2p outproxy and fetches
+//!   its smallest file, as an installed app would.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -51,9 +54,29 @@ use gipny_libcore::{
 };
 use tokio::sync::{Mutex, Notify};
 
+mod ports;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The run fails if `pid` (`"self"` for the harness, whose routers run in
+/// it) listens on loopback: nothing local may reach the router. Linux only.
+fn no_local_ports(who: &str, pid: &str) -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let listeners = ports::tcp_listeners(pid).with_context(|| format!("{who}: read /proc/{pid}"))?;
+    for l in &listeners {
+        eprintln!("[e2e] {who} listens on {}:{}{}", l.addr, l.port, if l.loopback { " (LOOPBACK)" } else { "" });
+    }
+    let local: Vec<_> = listeners.iter().filter(|l| l.loopback).map(|l| format!("{}:{}", l.addr, l.port)).collect();
+    if !local.is_empty() {
+        bail!("{who} listens on loopback: {}", local.join(", "));
+    }
+    eprintln!("[e2e] {who}: no local ports");
+    Ok(())
+}
 
 fn hex8(b: &[u8]) -> String {
     b.iter().take(8).map(|x| format!("{x:02x}")).collect()
@@ -490,6 +513,13 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     };
     eprintln!("[e2e] command RTT — min: {rtt_min} ms  median: {rtt_median} ms  max: {rtt_max} ms");
 
+    // While both still run: neither listens on loopback.
+    if let Err(e) = no_local_ports("harness", "self") { failures.push(e.to_string()); }
+    match child.id() {
+        Some(pid) => if let Err(e) = no_local_ports("agent", &pid.to_string()) { failures.push(e.to_string()); },
+        None => failures.push("the agent exited before OFF".into()),
+    }
+
     // 5. OFF: the agent answers REVOKE and exits 0 once that is delivered.
     a.session
         .send_console(agent_cid, BODY_OFF.into(), WireConsole::new(CONSOLE_OFF), vec![])
@@ -774,6 +804,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     .await
     .context("bot-a never learned bot-b's new relay address")?;
     eprintln!("[e2e] bot-a: knows bot-b's new relay address");
+    no_local_ports("harness", "self")?;
     a.stop("bot-a");
 
     let total = t0.elapsed().as_secs();
@@ -789,6 +820,54 @@ async fn run_dht_offline_mode() -> Result<()> {
     Ok(())
 }
 
+/// The updater over the outproxy, end to end: the release list from the
+/// GitHub API, then a file from it (a redirect to GitHub's storage host).
+async fn run_update_check_mode() -> Result<()> {
+    use gipny_libcore::update::{CheckOutcome, Component, Updater};
+    let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/gipny-e2e".into()));
+    let timeout = Duration::from_secs(std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600));
+    let data_dir = work_dir.join("updater");
+    std::fs::create_dir_all(&data_dir)?;
+    let t0 = Instant::now();
+    let node = Arc::new(TorNode::start(&data_dir, Default::default()).await.context("TorNode::start")?);
+    eprintln!("[e2e] router ready in {} ms", t0.elapsed().as_millis());
+    no_local_ports("harness", "self")?;
+    let updater = Updater::new(node.clone(), Component::App);
+
+    // The outproxy's LeaseSet may not be found at the first try.
+    let t1 = Instant::now();
+    let release = loop {
+        match updater.latest_release().await {
+            Ok(r) => break r,
+            Err(e) if t0.elapsed() < timeout => {
+                eprintln!("[e2e] latest release: {e}; again in 15 s");
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+            Err(e) => bail!("no release list through the outproxy in {timeout:?}: {e}"),
+        }
+    };
+    eprintln!("[e2e] latest release {} with {} files in {} ms", release.version, release.assets.len(), t1.elapsed().as_millis());
+    match updater.check_detailed("0.0.0").await {
+        Ok(CheckOutcome::Update(u)) => eprintln!("[e2e] an update from 0.0.0 would be {}", u.version),
+        Ok(other) => eprintln!("[e2e] check from 0.0.0: {other:?}"),
+        Err(e) => bail!("check_detailed: {e}"),
+    }
+    let Some(asset) = release.assets.iter().filter(|a| a.size > 0).min_by_key(|a| a.size) else {
+        bail!("the latest release has no files");
+    };
+    let t2 = Instant::now();
+    let dest = data_dir.join("download").join(&asset.name);
+    updater.download_asset_to(asset, None, &dest, |_, _| {}).await.with_context(|| format!("download {}", asset.name))?;
+    let got = std::fs::metadata(&dest)?.len();
+    if got != asset.size {
+        bail!("{}: {got} bytes, the release says {}", asset.name, asset.size);
+    }
+    eprintln!("[e2e] downloaded {} ({got} bytes) in {} ms", asset.name, t2.elapsed().as_millis());
+    node.shutdown().await;
+    eprintln!("[e2e] SUCCESS — the updater reached GitHub through the outproxy");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -800,6 +879,9 @@ async fn main() -> Result<()> {
     }
     if std::env::var("E2E_DHT_OFFLINE").is_ok_and(|v| v == "1") {
         return run_dht_offline_mode().await;
+    }
+    if std::env::var("E2E_UPDATE_CHECK").is_ok_and(|v| v == "1") {
+        return run_update_check_mode().await;
     }
 
     // One relay or two. Two is the interesting case: each bot collects from its
@@ -1229,6 +1311,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    no_local_ports("harness", "self")?;
     eprintln!("[e2e] SUCCESS — all {n_messages} messages delivered and echoed");
     Ok(())
 }

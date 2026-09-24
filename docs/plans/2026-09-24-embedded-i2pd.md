@@ -118,7 +118,7 @@ ID (`libi2pd_client/SAM.cpp`, `FindSession(m_ID)`). До 2026-09-24 наши ID 
 |---|---|---|
 | 1. `i2p-embed` | `i2p-embed/` | `i2p-embed.yml`: live-тест Linux (сервер говорит первым), macOS (arm64 и intel), Windows/MSVC (vcpkg); jammy/boost 1.74 static |
 | 2–3. libcore, relay, DHT | `libcore/src/embedded.rs`, `net.rs`, `relay_server.rs` | e2e «релеи внутри ботов» на встроенном роутере, 5/5 |
-| 4. Обновления через аутпрокси | `libcore/src/i2p_http.rs`, `update.rs` | — (живой проверки нет) |
+| 4. Обновления через аутпрокси | `libcore/src/i2p_http.rs`, `update.rs` | `i2p-embed.yml` → `updater` (`E2E_UPDATE_CHECK`): список релизов и самый маленький файл последнего релиза через аутпрокси |
 | 5. Android | `android-router/jni` (libi2pd + shim + `nativeNetworkChanged`), `GipnyService.kt` (только foreground и сеть), снимок netDb в libcore (`GIPNY_NETDB_SEED`) | `i2p-embed.yml` → `android` (сборка `libi2pd.so` arm64, экспорт символов, линковка Rust) на каждый push; `release.yml` → `router (i2pd, android …)` и `android` (шаг `verify signed APKs`: `libi2pd.so` в APK, `libgipny_lib.so` с ней слинкована); `build.yml` → `android APK` с заглушкой `I2P_EMBED_STUB` |
 | 6. Агент | только встроенный роутер, `--sam` удалён; SIGTERM — как Ctrl-C | `e2e-i2pd.yml` → `e2e (agent binary)`; `release.yml` → smoke архива в `agent (linux …)` (i2pd нет нигде) |
 | 7. Серверный релей | `core/relay` на `i2p-embed`, без i2pd рядом, роутер под `<data>/router`; SIGTERM/SIGINT — чистая остановка | `e2e-i2pd.yml` → `e2e (relay + two bots)`, `e2e (relay network, each side away in turn)` (`--dht` как сид); `relay-testnet.yml`; архив — `release.yml` → `relay (linux …)` |
@@ -140,5 +140,6 @@ ID (`libi2pd_client/SAM.cpp`, `FindSession(m_ID)`). До 2026-09-24 наши ID 
 - `cargo check`/`cargo test` локально (с разрешённой локальной компиляцией i2pd).
 - CI: build.yml на всех платформах (Linux, Windows, macOS, Android APK + эмулятор).
 - e2e-i2pd: все пять сценариев, включая `e2e-dht` и агента.
-- Ручная проверка на устройстве владельца: ни одного слушающего сокета у процесса
-  (`ss -ltnp` / `lsof -i` на десктопе, `/proc/net/tcp` на Android).
+- Ни одного слушающего сокета на loopback: каждый e2e-сценарий проверяет это сам
+  по `/proc` для харнесса и для процесса агента (`no_local_ports`). На устройстве
+  владельца — `ss -ltnp` / `lsof -i` на десктопе, `/proc/net/tcp` на Android.
