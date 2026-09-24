@@ -13,4 +13,6 @@ git -C third_party/i2pd checkout --quiet "$sha"
 echo "i2pd under test: $(git -C third_party/i2pd log --oneline -1)"
 sudo apt-get update -qq
 sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+# The reseed certificates as upstream has them now, as every build carries.
+"$(dirname "$0")/../../scripts/fresh-i2p-certs.sh" "${RUNNER_TEMP:-/tmp}/i2p-certs"
 mkdir -p e2e-state e2e-logs

@@ -56,6 +56,9 @@ jobs:
           git submodule update --init --depth 1 third_party/i2pd
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: build libcore + relay
         run: |
           cargo build --release -p gipny-libcore
@@ -107,6 +110,9 @@ jobs:
             echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto"
             echo "MACOSX_DEPLOYMENT_TARGET=15.0"
           } >> "$GITHUB_ENV"
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: libcore tests
         run: cargo test --release -p gipny-libcore
       - name: build app (frontend + tauri)
@@ -142,6 +148,9 @@ jobs:
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       # pipefail: GitHub runs `bash -e` without it, so `cargo test | tee` took
       # tee's exit status and this step could never fail, whatever the tests did.
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: run libcore tests
         run: |
           set -o pipefail
