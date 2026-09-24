@@ -139,15 +139,6 @@ const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;
 /// Unfinished incoming transfers are dropped after the relay's letter TTL.
 const FILE_IN_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 
-/// How long to leave a peer relay alone after `failures` failed dials in a
-/// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
-/// 2 min, and the first dial often fails only because the relay's LeaseSet
-/// has not reached the floodfills yet — a contact added a moment after their
-/// relay came up then waited two minutes for nothing (e2e run 36033917903:
-/// an echo held 85 s behind it).
-fn peer_relay_backoff(failures: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
-}
 const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
@@ -351,7 +342,7 @@ fn hex_bytes(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
-use gipny_libcore::session::{WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
+use gipny_libcore::session::{ours_stands, peer_relay_backoff, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Some(unpadded) = unpad_payload(pt) {
@@ -4022,13 +4013,6 @@ fn to_hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
     for x in b { s.push_str(&format!("{:02x}", x)); }
     s
-}
-
-/// When two X3dhInits cross, the session opened by the side with the lower
-/// signing key stands — the same answer on both ends (libcore's session.rs
-/// decides the same way).
-fn ours_stands(my_sign: &[u8], their_sign: &[u8]) -> bool {
-    my_sign < their_sign
 }
 
 fn hex_short(b: &[u8]) -> String {

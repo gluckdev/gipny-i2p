@@ -175,6 +175,39 @@ fn load_attachments(db: &Db, data_dir: &Path, msg_id: i64) -> Vec<(String, Vec<u
     out
 }
 
+/// Commands in arrival order. One whose files are still coming in parts is
+/// not ready; it and everything after it wait.
+#[derive(Default)]
+struct Held {
+    q: std::collections::VecDeque<(Job, bool)>,
+}
+
+impl Held {
+    /// Queue a command; returns what may run now, in order.
+    fn push(&mut self, job: Job, ready: bool) -> Vec<Job> {
+        self.q.push_back((job, ready));
+        self.drain()
+    }
+
+    /// A command's files are all in; returns what may run now, in order.
+    fn ready(&mut self, message_id: i64) -> Vec<Job> {
+        for (job, ready) in self.q.iter_mut() {
+            if job.message_id == message_id {
+                *ready = true;
+            }
+        }
+        self.drain()
+    }
+
+    fn drain(&mut self) -> Vec<Job> {
+        let mut out = Vec::new();
+        while self.q.front().is_some_and(|(_, ready)| *ready) {
+            out.push(self.q.pop_front().unwrap().0);
+        }
+        out
+    }
+}
+
 /// One command waiting for the worker: the row id (its attachments are looked
 /// up when it runs) and the body.
 struct Job {
@@ -328,7 +361,7 @@ async fn main() -> Result<()> {
     let mut stopping: Option<(i64, tokio::time::Instant)> = None;
     // Commands in arrival order; one whose files are still coming in parts
     // waits for them, and those after it wait behind it.
-    let mut held: std::collections::VecDeque<(Job, bool)> = std::collections::VecDeque::new();
+    let mut held = Held::default();
     // systemd stops the service with SIGTERM: the same as Ctrl-C, so the
     // master hears REVOKE and the router in this process stops before exit.
     #[cfg(unix)]
@@ -375,9 +408,7 @@ async fn main() -> Result<()> {
                                 if waiting {
                                     eprintln!("[agent] command {message_id} waits for its files");
                                 }
-                                held.push_back((Job { message_id, body: payload.body.clone() }, !waiting));
-                                while held.front().is_some_and(|(_, ready)| *ready) {
-                                    let (job, _) = held.pop_front().unwrap();
+                                for job in held.push(Job { message_id, body: payload.body.clone() }, !waiting) {
                                     let _ = queue_tx.send(job);
                                 }
                             }
@@ -405,15 +436,10 @@ async fn main() -> Result<()> {
                     }
                     // A command's files are in (or will not come): it may run.
                     SessionEvent::FileReceived { message_id, .. } | SessionEvent::FileFailed { message_id, .. } => {
-                        let whole = session.db.files_in_for_message(message_id).unwrap_or_default().is_empty();
-                        for (job, ready) in held.iter_mut() {
-                            if job.message_id == message_id && whole {
-                                *ready = true;
+                        if session.db.files_in_for_message(message_id).unwrap_or_default().is_empty() {
+                            for job in held.ready(message_id) {
+                                let _ = queue_tx.send(job);
                             }
-                        }
-                        while held.front().is_some_and(|(_, ready)| *ready) {
-                            let (job, _) = held.pop_front().unwrap();
-                            let _ = queue_tx.send(job);
                         }
                     }
                     SessionEvent::MessageDelivered { message_id } => {
@@ -493,4 +519,28 @@ async fn begin_stop(session: &SessionManager, master_id: i64) -> (i64, tokio::ti
         Err(e) => { eprintln!("[agent] could not queue REVOKE: {e}"); -1 }
     };
     (id, tokio::time::Instant::now() + REVOKE_WAIT)
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn job(id: i64) -> Job {
+        Job { message_id: id, body: String::new() }
+    }
+
+    fn ids(v: Vec<Job>) -> Vec<i64> {
+        v.into_iter().map(|j| j.message_id).collect()
+    }
+
+    #[test]
+    fn a_command_waiting_for_its_files_holds_those_after_it() {
+        let mut h = Held::default();
+        assert_eq!(ids(h.push(job(1), true)), vec![1]);
+        assert!(h.push(job(2), false).is_empty(), "its files are coming");
+        assert!(h.push(job(3), true).is_empty(), "behind 2, in order");
+        assert!(h.ready(99).is_empty(), "not a held command");
+        assert_eq!(ids(h.ready(2)), vec![2, 3]);
+        assert_eq!(ids(h.push(job(4), true)), vec![4]);
+    }
 }

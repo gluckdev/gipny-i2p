@@ -54,7 +54,7 @@ const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// has not reached the floodfills yet — a contact added a moment after their
 /// relay came up then waited two minutes for nothing (e2e run 36033917903:
 /// an echo held 85 s behind it).
-fn peer_relay_backoff(failures: u32) -> std::time::Duration {
+pub fn peer_relay_backoff(failures: u32) -> std::time::Duration {
     std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
 }
 
@@ -2922,8 +2922,9 @@ fn to_hex(b: &[u8]) -> String {
 }
 
 /// When two X3dhInits cross, the session opened by the side with the lower
-/// signing key stands — the same answer on both ends, with no waiting.
-fn ours_stands(my_sign: &[u8], their_sign: &[u8]) -> bool {
+/// signing key stands — the same answer on both ends, with no waiting. The
+/// app (Core) decides by this too.
+pub fn ours_stands(my_sign: &[u8], their_sign: &[u8]) -> bool {
     my_sign < their_sign
 }
 
@@ -3044,6 +3045,19 @@ mod wire_tests {
         p.files = vec![WireFileOffer { file_id: [1; 16], name: "a".into(), size: 1, sha256: [0; 32], chunk_size: 1 }];
         let old: WireV8 = bincode::deserialize(&encode_payload(&p).unwrap()).expect("trailing fields tolerated");
         assert_eq!(old.body, p.body);
+    }
+
+    #[test]
+    fn crossing_inits_pick_the_same_session_on_both_ends() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        assert!(ours_stands(&a, &b));
+        assert!(!ours_stands(&b, &a), "exactly one side keeps its own");
+    }
+
+    #[test]
+    fn a_failed_relay_dial_is_retried_soon_then_less_often() {
+        let secs: Vec<u64> = (0..8).map(|n| peer_relay_backoff(n).as_secs()).collect();
+        assert_eq!(secs, vec![5, 10, 20, 40, 80, 120, 120, 120]);
     }
 
     #[test]

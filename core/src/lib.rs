@@ -1407,7 +1407,42 @@ fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, Str
 
 #[cfg(test)]
 mod attachment_path_tests {
-    use super::prepare_attachment;
+    use super::{prepare_attachment, read_one_attachment};
+
+    fn file(dir: &std::path::Path, name: &str, head: &[u8], size: usize) -> String {
+        let mut data = head.to_vec();
+        data.resize(size, 7);
+        let p = dir.join(name);
+        std::fs::write(&p, &data).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_large_file_the_filter_passes_goes_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = gipny_libcore::files::INLINE_MAX + 1;
+        let p = file(dir.path(), "backup.tar.gz", b"\x1f\x8b", big);
+        let a = read_one_attachment(&p, true).unwrap();
+        assert!(a.from.is_some() && a.data.is_empty(), "streamed, not read");
+        assert_eq!(a.name, "backup.tar.gz");
+    }
+
+    #[test]
+    fn a_large_photo_is_read_to_be_cleaned_and_a_small_file_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = gipny_libcore::files::INLINE_MAX + 1;
+        // A JPEG by content: the filter must see it whole (here it refuses the
+        // made-up bytes, which proves it looked rather than streaming them).
+        let p = file(dir.path(), "photo.jpg", b"\xff\xd8\xff\xe0", big);
+        assert!(read_one_attachment(&p, true).is_err());
+        // With the filter off the same file goes from disk.
+        let a = read_one_attachment(&p, false).unwrap();
+        assert!(a.from.is_some());
+        // Small: in memory, as before.
+        let p = file(dir.path(), "note.txt", b"hi", 10);
+        let a = read_one_attachment(&p, true).unwrap();
+        assert!(a.from.is_none() && a.data.len() == 10);
+    }
 
     #[test]
     fn console_attachment_keeps_the_original_name_and_bytes() {
@@ -2174,6 +2209,24 @@ struct BackupAttachmentV3 {
     chunk_size: Option<i64>,
 }
 
+/// A backup of either version, as version 3 (`version` is its first field).
+fn decode_backup(plain: &[u8]) -> Result<BackupV2<BackupAttachmentV3>, String> {
+    let version = plain.get(..4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]])).unwrap_or(0);
+    let unknown = || "backup format unknown / corrupted".to_string();
+    match version {
+        2 => {
+            let b: BackupV2<BackupAttachment> = bincode::deserialize(plain).map_err(|_| unknown())?;
+            Ok(BackupV2 {
+                version: b.version, settings: b.settings, contacts: b.contacts, groups: b.groups,
+                messages: b.messages, attachments: b.attachments.into_iter().map(Into::into).collect(),
+                pinned: b.pinned, prekeys: b.prekeys, exported_at: b.exported_at,
+            })
+        }
+        3 => bincode::deserialize(plain).map_err(|_| unknown()),
+        v => Err(format!("unsupported backup version: {v}")),
+    }
+}
+
 impl From<BackupAttachment> for BackupAttachmentV3 {
     fn from(a: BackupAttachment) -> Self {
         Self { id: a.id, message_id: a.message_id, name: a.name, size: a.size, key: a.key, path: a.path, bytes: a.bytes, chunk_size: None }
@@ -2251,20 +2304,7 @@ async fn import_identity_to_profile(
     if vault_pass.len() < 8 { return Err("vault passphrase too short".into()); }
     let blob = std::fs::read(&backup_path).map_err(err)?;
     let plain = gipny_libcore::security::backup_open(&backup_pass, &blob).map_err(|_| "wrong backup passphrase or corrupt file".to_string())?;
-    let version = plain.get(..4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]])).unwrap_or(0);
-    let unknown = || "backup format unknown / corrupted".to_string();
-    let backup: BackupV2<BackupAttachmentV3> = match version {
-        2 => {
-            let b: BackupV2<BackupAttachment> = bincode::deserialize(&plain).map_err(|_| unknown())?;
-            BackupV2 {
-                version: b.version, settings: b.settings, contacts: b.contacts, groups: b.groups,
-                messages: b.messages, attachments: b.attachments.into_iter().map(Into::into).collect(),
-                pinned: b.pinned, prekeys: b.prekeys, exported_at: b.exported_at,
-            }
-        }
-        3 => bincode::deserialize(&plain).map_err(|_| unknown())?,
-        v => return Err(format!("unsupported backup version: {v}")),
-    };
+    let backup = decode_backup(&plain)?;
     let dir = ctx.base_dir.join("profiles").join(&profile);
     if dir.exists() {
         if Vault::exists(&dir) { return Err("profile already exists".into()); }
@@ -2443,4 +2483,30 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    fn empty<A>(version: u32, attachments: Vec<A>) -> BackupV2<A> {
+        BackupV2 {
+            version, settings: vec![], contacts: vec![], groups: vec![], messages: vec![],
+            attachments, pinned: vec![], prekeys: vec![], exported_at: 1,
+        }
+    }
+
+    #[test]
+    fn a_version_2_backup_still_restores_and_version_3_keeps_chunk_size() {
+        let v2 = BackupAttachment { id: 1, message_id: 2, name: "a".into(), size: 3, key: vec![4], path: "p".into(), bytes: vec![5] };
+        let b = decode_backup(&bincode::serialize(&empty(2, vec![v2])).unwrap()).unwrap();
+        assert_eq!(b.attachments[0].chunk_size, None);
+        assert_eq!(b.attachments[0].bytes, vec![5]);
+
+        let v3 = BackupAttachmentV3 { id: 1, message_id: 2, name: "a".into(), size: 3, key: vec![4], path: "p".into(), bytes: vec![5], chunk_size: Some(196_608) };
+        let b = decode_backup(&bincode::serialize(&empty(3, vec![v3])).unwrap()).unwrap();
+        assert_eq!(b.attachments[0].chunk_size, Some(196_608));
+
+        assert!(decode_backup(&bincode::serialize(&empty::<BackupAttachment>(9, vec![])).unwrap()).is_err());
+        assert!(decode_backup(b"").is_err());
+    }
 }

@@ -32,6 +32,9 @@
 //! * `E2E_BIG_FILE=<bytes>` — after the echoes, bot-a sends bot-b a file of
 //!   that size; it goes in parts (libcore::files) and must arrive whole and
 //!   equal. The throughput is printed.
+//! * `E2E_BIG_FILE_RESTART=1` — with E2E_BIG_FILE: bot-b stops once a third
+//!   of the parts are in and starts again on the same data, and the file
+//!   must still arrive whole — the transfer picks up where it was.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -931,6 +934,9 @@ async fn main() -> Result<()> {
     let big_file: usize = std::env::var("E2E_BIG_FILE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let b_file: Arc<Mutex<Option<Vec<u8>>>> = Default::default();
     let b_file_notify = Arc::new(Notify::new());
+    let restart = std::env::var("E2E_BIG_FILE_RESTART").is_ok_and(|v| v == "1");
+    // Parts bot-b holds of the big file, and of how many.
+    let b_parts = Arc::new((std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0)));
 
     // Bot A event loop
     {
@@ -974,7 +980,7 @@ async fn main() -> Result<()> {
         let connect_notify = b_connect_notify.clone();
         let connect_at = b_connect_at.clone();
         let b_session = b.session.clone();
-        let (b_file, b_file_notify) = (b_file.clone(), b_file_notify.clone());
+        let (b_file, b_file_notify, b_parts) = (b_file.clone(), b_file_notify.clone(), b_parts.clone());
         tokio::spawn(async move {
             while let Some(ev) = b_events.recv().await {
                 match ev {
@@ -990,6 +996,8 @@ async fn main() -> Result<()> {
                         eprintln!("[e2e] bot-b: relay disconnected");
                     }
                     SessionEvent::FileProgress { done, total, incoming: true, .. } => {
+                        b_parts.0.store(done, std::sync::atomic::Ordering::SeqCst);
+                        b_parts.1.store(total, std::sync::atomic::Ordering::SeqCst);
                         if done % 8 == 0 {
                             eprintln!("[e2e] bot-b: file part {done}/{total}");
                         }
@@ -1241,6 +1249,37 @@ async fn main() -> Result<()> {
             .await
             .context("send the big file")?;
         eprintln!("[e2e] bot-a: sent a {big_file}-byte file in parts");
+        if restart {
+            // A third in, bot-b goes away and comes back on the same data.
+            let left = timeout.saturating_sub(t_start.elapsed());
+            tokio::time::timeout(left, async {
+                loop {
+                    let (done, total) = (b_parts.0.load(std::sync::atomic::Ordering::SeqCst), b_parts.1.load(std::sync::atomic::Ordering::SeqCst));
+                    if total > 0 && done * 3 >= total { break; }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }).await.context("timeout: bot-b never got a third of the file")?;
+            let held = b_parts.0.load(std::sync::atomic::Ordering::SeqCst);
+            eprintln!("[e2e] bot-b: stopping with {held} parts in");
+            b.session.shutdown();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let (again, mut again_events) = SessionManager::start(work_dir.join("bot-b"), b.session.db.clone(), b.session.node.clone())
+                .await
+                .context("bot-b: start again")?;
+            eprintln!("[e2e] bot-b: started again");
+            let (b_file, b_file_notify) = (b_file.clone(), b_file_notify.clone());
+            tokio::spawn(async move {
+                while let Some(ev) = again_events.recv().await {
+                    if let SessionEvent::FileReceived { attachment_id, .. } = ev {
+                        let got = again.db.get_attachment(attachment_id).ok().flatten()
+                            .and_then(|a| again.read_attachment(&a).ok());
+                        eprintln!("[e2e] bot-b (again): file whole ({} bytes)", got.as_ref().map_or(0, |g| g.len()));
+                        *b_file.lock().await = got;
+                        b_file_notify.notify_one();
+                    }
+                }
+            });
+        }
         let left = timeout.saturating_sub(t_start.elapsed());
         tokio::time::timeout(left, async {
             loop {
