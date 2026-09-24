@@ -15,13 +15,17 @@ branch=$(git ls-remote --symref "$repo" HEAD | awk '/^ref:/ {sub("refs/heads/", 
 commit=$(git ls-remote "$repo" "refs/heads/$branch" | cut -f1)
 [ -n "$commit" ] || { echo "cannot resolve upstream i2pd's $branch"; exit 1; }
 rm -rf "$dir" && mkdir -p "$dir"
+# From inside the dir: GNU tar reads "D:\…" (Windows) as host:path.
 curl -fsSL --retry 3 "$repo/archive/$commit.tar.gz" \
-  | tar -xz -C "$dir" --strip-components=3 "i2pd-$commit/contrib/certificates"
+  | (cd "$dir" && tar -xz --strip-components=3 "i2pd-$commit/contrib/certificates")
 for sub in reseed family; do
   n=$(find "$dir/$sub" -name '*.crt' | wc -l)
   [ "$n" -gt 0 ] || { echo "upstream i2pd $commit has no $sub certificates"; exit 1; }
   echo "$n $sub certificates from i2pd $branch @ ${commit:0:12}"
 done
 if [ -n "${GITHUB_ENV:-}" ]; then
-  echo "I2P_EMBED_CERTS_DIR=$(cd "$dir" && pwd)" >> "$GITHUB_ENV"
+  abs=$(cd "$dir" && pwd)
+  # Read by build.rs, a native program: a Windows path on Windows.
+  if command -v cygpath >/dev/null; then abs=$(cygpath -w "$abs"); fi
+  echo "I2P_EMBED_CERTS_DIR=$abs" >> "$GITHUB_ENV"
 fi

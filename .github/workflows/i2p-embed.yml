@@ -95,6 +95,13 @@ jobs:
         run: |
           set -o pipefail
           cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+      - name: where it crashed
+        if: failure()
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed-bt
+        run: |
+          bin="$(ls target/release/deps/live-* | grep -v '\.d$' | head -1)"
+          lldb --batch -o run -k "thread backtrace all" -- "$bin" --ignored --nocapture 2>&1 | tail -150
 
   # Windows: MSVC (the toolchain the app builds with), boost and OpenSSL from
   # vcpkg as static libraries against the dynamic CRT Rust uses.
