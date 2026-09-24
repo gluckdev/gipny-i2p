@@ -44,6 +44,15 @@ pub fn day_of(now_ms: u64) -> u32 {
     (now_ms / DAY_MS) as u32
 }
 
+/// HKDF salts. Public labels that keep keys derived for one purpose from
+/// ever equalling keys for another (RFC 5869 §3.1 allows a fixed salt); the
+/// secret is always the input keying material. Changing any of them changes
+/// every key in the network.
+const SALT_PAIR: &[u8] = b"gipny-dht-pair-v1";
+const SALT_CARD: &[u8] = b"gipny-dht-card-v1";
+const SALT_SEAL: &[u8] = b"gipny-dht-seal-v1";
+const SALT_ECIES: &[u8] = b"gipny-dht-ecies-v1";
+
 fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8]) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
     let mut out = Zeroizing::new([0u8; 32]);
@@ -79,13 +88,13 @@ pub fn pair_secret(
     ikm.extend_from_slice(shared.as_bytes());
     ikm.extend_from_slice(lo);
     ikm.extend_from_slice(hi);
-    Some(hkdf(b"gipny-dht-pair-v1", &ikm, b"pair"))
+    Some(hkdf(SALT_PAIR, &ikm, b"pair"))
 }
 
 /// Derived from a public card. Not secret from anyone holding the card, but a
 /// storing node without it cannot tell whose keys it is looking at.
 pub fn card_secret(sign_pk: &[u8; 32], dh_pk: &[u8; 32]) -> [u8; 32] {
-    *hkdf(b"gipny-dht-card-v1", &[&sign_pk[..], &dh_pk[..]].concat(), b"card")
+    *hkdf(SALT_CARD, &[&sign_pk[..], &dh_pk[..]].concat(), b"card")
 }
 
 /// Mail from one of a pair to the other, on a given day.
@@ -156,12 +165,12 @@ fn aead_open(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Option<Vec<u8>> {
 /// of item, so a value cannot be replayed under another meaning; `dht_key`
 /// binds it to the one key it was stored under.
 pub fn seal(secret: &[u8; 32], label: &[u8], dht_key: &DhtKey, plaintext: &[u8]) -> Option<Vec<u8>> {
-    let key = hkdf(b"gipny-dht-seal-v1", secret, label);
+    let key = hkdf(SALT_SEAL, secret, label);
     aead_seal(&key, dht_key, plaintext)
 }
 
 pub fn open(secret: &[u8; 32], label: &[u8], dht_key: &DhtKey, sealed: &[u8]) -> Option<Vec<u8>> {
-    let key = hkdf(b"gipny-dht-seal-v1", secret, label);
+    let key = hkdf(SALT_SEAL, secret, label);
     aead_open(&key, dht_key, sealed)
 }
 
@@ -178,7 +187,7 @@ pub fn seal_to(recipient_dh_pk: &[u8; 32], dht_key: &DhtKey, plaintext: &[u8]) -
         return None;
     }
     let ikm = Zeroizing::new([shared.as_bytes(), &eph_pk[..], &recipient_dh_pk[..]].concat());
-    let key = hkdf(b"gipny-dht-ecies-v1", &ikm, b"intro");
+    let key = hkdf(SALT_ECIES, &ikm, b"intro");
     Some([&eph_pk[..], &aead_seal(&key, dht_key, plaintext)?].concat())
 }
 
@@ -191,7 +200,7 @@ pub fn open_from(my_dh_sk: &[u8; 32], dht_key: &DhtKey, sealed: &[u8]) -> Option
         return None;
     }
     let ikm = Zeroizing::new([shared.as_bytes(), &eph_pk[..], &my_pk[..]].concat());
-    let key = hkdf(b"gipny-dht-ecies-v1", &ikm, b"intro");
+    let key = hkdf(SALT_ECIES, &ikm, b"intro");
     aead_open(&key, dht_key, &sealed[32..])
 }
 
