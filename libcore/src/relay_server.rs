@@ -465,25 +465,33 @@ async fn client_loop<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // One read of a frame is kept across turns of the loop and polled by
+    // reference: `select!` must never drop it half-way, or the bytes it had
+    // read are gone and the next read takes the middle of a frame for its
+    // length ("frame too large", a dropped connection, and everything unacked
+    // pushed again).
+    let (rd, mut wr) = tokio::io::split(stream);
+    let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
     loop {
         tokio::select! {
-            frame = recv::<_, ClientToRelay>(stream) => {
+            (rd, frame) = &mut reading => {
+                reading = Box::pin(read_frame(rd));
                 match frame? {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
-                        send(stream, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
+                        send(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
                     }
                     ClientToRelay::Publish { bundle } => {
                         if let Err(e) = store.store_bundle(&sign_pk, &bundle) {
-                            send(stream, &RelayToClient::Error(e.to_string())).await?;
+                            send(&mut wr, &RelayToClient::Error(e.to_string())).await?;
                         }
                     }
                     ClientToRelay::GetBundle { pk } => {
                         let bundle = store.get_bundle(&pk);
-                        send(stream, &RelayToClient::Bundle { pk, bundle }).await?;
+                        send(&mut wr, &RelayToClient::Bundle { pk, bundle }).await?;
                     }
                     ClientToRelay::Send { to, blob } => match store.deposit(&to, &blob) {
                         Ok(id) => {
-                            send(stream, &RelayToClient::Deposited { id }).await?;
+                            send(&mut wr, &RelayToClient::Deposited { id }).await?;
                             let online = connections.read().await.get(&to).cloned();
                             if let Some(tx) = online {
                                 let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
@@ -492,7 +500,7 @@ where
                         }
                         // No Deposited: the sender keeps the message unacked and
                         // tries again elsewhere or later.
-                        Err(e) => send(stream, &RelayToClient::Error(e.to_string())).await?,
+                        Err(e) => send(&mut wr, &RelayToClient::Error(e.to_string())).await?,
                     },
                     ClientToRelay::Ack { id } => {
                         store.ack(&sign_pk, id);
@@ -507,7 +515,7 @@ where
                             }
                         }
                     }
-                    ClientToRelay::Ping => send(stream, &RelayToClient::Pong).await?,
+                    ClientToRelay::Ping => send(&mut wr, &RelayToClient::Pong).await?,
                     ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
                 }
             }
@@ -517,11 +525,20 @@ where
                     let mut c = cursor.lock().await;
                     if *id > *c { *c = *id; }
                 }
-                send(stream, &msg).await?;
+                send(&mut wr, &msg).await?;
             }
         }
     }
     Ok(())
+}
+/// Read one frame, handing the reader back with it (see `client_loop`).
+async fn read_frame<R, T>(mut r: R) -> (R, Result<T, RelayError>)
+where
+    R: AsyncRead + Unpin,
+    T: serde::de::DeserializeOwned,
+{
+    let res = recv(&mut r).await;
+    (r, res)
 }
 
 /// A running in-process relay: its own published destination on the router
@@ -859,6 +876,36 @@ mod tests {
 
     async fn next(c: &mut DuplexStream) -> RelayToClient {
         tokio::time::timeout(Duration::from_secs(5), recv(c)).await.expect("frame within 5s").unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_push_while_a_frame_is_half_read_loses_nothing() {
+        use tokio::io::AsyncWriteExt;
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        let mut a = rig.login(&alice).await;
+        // Bob starts a large frame and stops half-way ...
+        let frame = bincode::serialize(&ClientToRelay::Publish { bundle: vec![9; 8000] }).unwrap();
+        b.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
+        b.write_all(&frame[..4000]).await.unwrap();
+        b.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // ... a letter for him arrives and is pushed meanwhile ...
+        send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![1; 10] }).await.unwrap();
+        assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+        assert!(matches!(next(&mut b).await, RelayToClient::Incoming { .. }));
+        // ... and the rest of his frame still parses: the connection lives.
+        b.write_all(&frame[4000..]).await.unwrap();
+        send(&mut b, &ClientToRelay::Ping).await.unwrap();
+        loop {
+            match next(&mut b).await {
+                RelayToClient::Pong => break,
+                RelayToClient::Error(e) => panic!("relay error: {e}"),
+                _ => {}
+            }
+        }
+        assert!(rig.store.get_bundle(&bob.card().sign_pk).is_some(), "the half-read Publish arrived whole");
     }
 
     #[tokio::test]
