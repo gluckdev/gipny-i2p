@@ -15,7 +15,7 @@ pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// How long an undelivered outgoing message keeps being retried.
 pub const RETRY_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 
-const MIGRATE_TABLES: &[&str] = &["messages", "contacts", "groups"];
+const MIGRATE_TABLES: &[&str] = &["messages", "contacts", "groups", "attachments"];
 
 trait CollectRows<T> {
     fn collect_rows(self) -> Result<Vec<T>>;
@@ -116,6 +116,62 @@ pub struct Message {
     pub reply_to: Option<i64>,
 }
 
+/// A file we send in parts, with its attachment (sealed in parts on disk).
+#[derive(Clone, Debug)]
+pub struct FileOut {
+    pub file_id: [u8; 16],
+    pub message_id: i64,
+    pub sha256: [u8; 32],
+    pub cancelled: bool,
+    pub attachment: Attachment,
+}
+
+/// Where one recipient is with one file (`crate::files::Sending`).
+#[derive(Clone, Debug)]
+pub struct FilePeer {
+    pub file_id: [u8; 16],
+    pub contact_id: i64,
+    pub next: u32,
+    pub acked: u32,
+    pub resend: Vec<u32>,
+    pub last_sent_at: Option<i64>,
+    pub last_ack_at: Option<i64>,
+    pub failed: bool,
+}
+
+/// A file coming in parts.
+#[derive(Clone, Debug)]
+pub struct FileIn {
+    pub file_id: [u8; 16],
+    pub contact_id: i64,
+    pub message_id: i64,
+    pub name: String,
+    pub size: u64,
+    pub sha256: [u8; 32],
+    pub chunk_size: u32,
+    pub path: String,
+    pub key: Vec<u8>,
+    pub bits: Vec<u8>,
+    pub received: u32,
+    pub created_at: i64,
+}
+
+fn blob16(v: Vec<u8>) -> rusqlite::Result<[u8; 16]> {
+    v.try_into().map_err(|_| rusqlite::Error::InvalidColumnType(0, "file_id".into(), rusqlite::types::Type::Blob))
+}
+
+fn blob32(v: Vec<u8>) -> rusqlite::Result<[u8; 32]> {
+    v.try_into().map_err(|_| rusqlite::Error::InvalidColumnType(0, "sha256".into(), rusqlite::types::Type::Blob))
+}
+
+fn u32s(v: Option<Vec<u8>>) -> Vec<u32> {
+    v.unwrap_or_default().chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+}
+
+fn u32s_blob(v: &[u32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct Attachment {
     pub id: i64,
@@ -124,6 +180,9 @@ pub struct Attachment {
     pub size: i64,
     pub key: Vec<u8>,
     pub path: String,
+    /// Sealed in parts of this many bytes (`crate::files`); `None`: sealed
+    /// whole, as one chunk.
+    pub chunk_size: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -132,6 +191,9 @@ pub struct NewAttachment {
     pub size: i64,
     pub key: Vec<u8>,
     pub path: String,
+    /// Sealed in parts of this many bytes (`crate::files`); `None`: sealed
+    /// whole, as one chunk.
+    pub chunk_size: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -513,6 +575,72 @@ impl Db {
             END;
 
             PRAGMA user_version = 9;
+        ")?;
+        // Files sent in parts (crate::files).
+        Self::ensure_column(conn, "attachments", "chunk_size", "INTEGER")?;
+        conn.execute_batch("
+            -- A file we send in parts: its attachment (sealed in parts on disk)
+            -- and the offer the recipients check it against.
+            CREATE TABLE IF NOT EXISTS file_out (
+                file_id BLOB PRIMARY KEY,
+                attachment_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                sha256 BLOB NOT NULL,
+                cancelled INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
+            -- How far each recipient has it (crate::files::Sending).
+            CREATE TABLE IF NOT EXISTS file_out_peer (
+                file_id BLOB NOT NULL,
+                contact_id INTEGER NOT NULL,
+                next INTEGER NOT NULL DEFAULT 0,
+                acked INTEGER NOT NULL DEFAULT 0,
+                resend BLOB,
+                last_sent_at INTEGER,
+                last_ack_at INTEGER,
+                failed INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (file_id, contact_id)
+            );
+            -- A file coming in parts, until it is whole and becomes an
+            -- attachment of its message.
+            CREATE TABLE IF NOT EXISTS file_in (
+                file_id BLOB NOT NULL,
+                contact_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                sha256 BLOB NOT NULL,
+                chunk_size INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                key BLOB NOT NULL,
+                bits BLOB NOT NULL,
+                received INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (file_id, contact_id)
+            );
+            -- Parts that came before their offer.
+            CREATE TABLE IF NOT EXISTS file_early (
+                file_id BLOB NOT NULL,
+                contact_id INTEGER NOT NULL,
+                idx INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                at INTEGER NOT NULL,
+                PRIMARY KEY (file_id, contact_id, idx)
+            );
+            CREATE TRIGGER IF NOT EXISTS tr_file_out_msg_del
+                AFTER DELETE ON messages
+                BEGIN
+                    DELETE FROM file_out_peer WHERE file_id IN (SELECT file_id FROM file_out WHERE message_id = OLD.id);
+                    DELETE FROM file_out WHERE message_id = OLD.id;
+                    DELETE FROM file_in WHERE message_id = OLD.id;
+                END;
+            CREATE TRIGGER IF NOT EXISTS tr_file_contact_del
+                AFTER DELETE ON contacts
+                BEGIN
+                    DELETE FROM file_out_peer WHERE contact_id = OLD.id;
+                    DELETE FROM file_in WHERE contact_id = OLD.id;
+                    DELETE FROM file_early WHERE contact_id = OLD.id;
+                END;
         ")?;
         Self::ensure_column(conn, "contacts", "is_bot", "INTEGER NOT NULL DEFAULT 0")?;
         let added_contact_lma = Self::ensure_column(conn, "contacts", "last_message_at", "INTEGER")?;
@@ -1171,14 +1299,14 @@ impl Db {
 
     pub fn list_attachments(&self, message_id: i64) -> Result<Vec<Attachment>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT id, message_id, name, size, key, path FROM attachments WHERE message_id = ?1")?
+            "SELECT id, message_id, name, size, key, path, chunk_size FROM attachments WHERE message_id = ?1")?
             .query_map(params![message_id], map_attachment)?.collect_rows())
     }
 
     pub fn list_attachments_for_messages(&self, ids: &[i64]) -> Result<HashMap<i64, Vec<Attachment>>> {
         if ids.is_empty() { return Ok(HashMap::new()); }
         let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT id, message_id, name, size, key, path FROM attachments WHERE message_id IN ({})", placeholders);
+        let sql = format!("SELECT id, message_id, name, size, key, path, chunk_size FROM attachments WHERE message_id IN ({})", placeholders);
         self.with_conn(|c| {
             let mut s = c.prepare(&sql)?;
             let mut out: HashMap<i64, Vec<Attachment>> = HashMap::new();
@@ -1192,10 +1320,10 @@ impl Db {
 
     pub fn list_attachments_for_contact(&self, contact_id: i64, limit: i64) -> Result<Vec<(Attachment, i64)>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT a.id, a.message_id, a.name, a.size, a.key, a.path, m.sent_at
+            "SELECT a.id, a.message_id, a.name, a.size, a.key, a.path, a.chunk_size, m.sent_at
              FROM attachments a JOIN messages m ON m.id = a.message_id
              WHERE m.contact_id = ?1 ORDER BY m.id DESC LIMIT ?2")?
-            .query_map(params![contact_id, limit], |r| Ok((map_attachment(r)?, r.get(6)?)))?
+            .query_map(params![contact_id, limit], |r| Ok((map_attachment(r)?, r.get(7)?)))?
             .collect_rows())
     }
 
@@ -1205,7 +1333,7 @@ impl Db {
     }
 
     pub fn list_all_attachments(&self) -> Result<Vec<Attachment>> {
-        self.with_conn(|c| c.prepare_cached("SELECT id, message_id, name, size, key, path FROM attachments ORDER BY id ASC")?
+        self.with_conn(|c| c.prepare_cached("SELECT id, message_id, name, size, key, path, chunk_size FROM attachments ORDER BY id ASC")?
             .query_map([], map_attachment)?.collect_rows())
     }
 
@@ -1243,9 +1371,9 @@ impl Db {
     pub fn bulk_insert_attachments(&self, atts: &[Attachment]) -> Result<()> {
         self.with_tx(|tx| {
             let mut s = tx.prepare_cached(
-                "INSERT OR IGNORE INTO attachments (id, message_id, name, size, key, path) VALUES (?1,?2,?3,?4,?5,?6)")?;
+                "INSERT OR IGNORE INTO attachments (id, message_id, name, size, key, path, chunk_size) VALUES (?1,?2,?3,?4,?5,?6,?7)")?;
             for a in atts {
-                s.execute(params![a.id, a.message_id, a.name, a.size, a.key, a.path])?;
+                s.execute(params![a.id, a.message_id, a.name, a.size, a.key, a.path, a.chunk_size])?;
             }
             Ok(())
         })
@@ -1285,10 +1413,10 @@ impl Db {
 
     pub fn list_attachments_for_group(&self, group_id: &[u8], limit: i64) -> Result<Vec<(Attachment, i64)>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT a.id, a.message_id, a.name, a.size, a.key, a.path, m.sent_at
+            "SELECT a.id, a.message_id, a.name, a.size, a.key, a.path, a.chunk_size, m.sent_at
              FROM attachments a JOIN messages m ON m.id = a.message_id
              WHERE m.group_id = ?1 ORDER BY m.id DESC LIMIT ?2")?
-            .query_map(params![group_id, limit], |r| Ok((map_attachment(r)?, r.get(6)?)))?
+            .query_map(params![group_id, limit], |r| Ok((map_attachment(r)?, r.get(7)?)))?
             .collect_rows())
     }
 
@@ -1313,8 +1441,182 @@ impl Db {
 
     pub fn get_attachment(&self, id: i64) -> Result<Option<Attachment>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT id, message_id, name, size, key, path FROM attachments WHERE id = ?1")?
+            "SELECT id, message_id, name, size, key, path, chunk_size FROM attachments WHERE id = ?1")?
             .query_row(params![id], map_attachment).optional().map_err(Into::into))
+    }
+
+    // --- Files sent in parts (crate::files) -------------------------------
+
+    /// Offer a file (sealed in parts as `attachment_id`) to `recipients`.
+    pub fn file_out_add(&self, file_id: &[u8; 16], attachment_id: i64, message_id: i64, sha256: &[u8; 32], recipients: &[i64]) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO file_out (file_id, attachment_id, message_id, sha256, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![file_id.as_slice(), attachment_id, message_id, sha256.as_slice(), now_ms()])?;
+            for c in recipients {
+                tx.execute("INSERT OR IGNORE INTO file_out_peer (file_id, contact_id) VALUES (?1, ?2)", params![file_id.as_slice(), c])?;
+            }
+            Ok(())
+        })
+    }
+
+    fn map_file_out(r: &Row<'_>) -> rusqlite::Result<FileOut> {
+        Ok(FileOut {
+            file_id: blob16(r.get(0)?)?, message_id: r.get(1)?, sha256: blob32(r.get(2)?)?,
+            cancelled: r.get::<_, i64>(3)? != 0,
+            attachment: Attachment {
+                id: r.get(4)?, message_id: r.get(5)?, name: r.get(6)?, size: r.get(7)?,
+                key: r.get(8)?, path: r.get(9)?, chunk_size: r.get(10)?,
+            },
+        })
+    }
+
+    /// The files a message offers, for (re)building its letter.
+    pub fn files_out_for_message(&self, message_id: i64) -> Result<Vec<FileOut>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT f.file_id, f.message_id, f.sha256, f.cancelled,
+                    a.id, a.message_id, a.name, a.size, a.key, a.path, a.chunk_size
+             FROM file_out f JOIN attachments a ON a.id = f.attachment_id WHERE f.message_id = ?1 ORDER BY a.id")?
+            .query_map(params![message_id], Self::map_file_out)?.collect_rows())
+    }
+
+    pub fn file_out(&self, file_id: &[u8; 16]) -> Result<Option<FileOut>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT f.file_id, f.message_id, f.sha256, f.cancelled,
+                    a.id, a.message_id, a.name, a.size, a.key, a.path, a.chunk_size
+             FROM file_out f JOIN attachments a ON a.id = f.attachment_id WHERE f.file_id = ?1")?
+            .query_row(params![file_id.as_slice()], Self::map_file_out).optional().map_err(Into::into))
+    }
+
+    fn map_file_peer(r: &Row<'_>) -> rusqlite::Result<FilePeer> {
+        Ok(FilePeer {
+            file_id: blob16(r.get(0)?)?, contact_id: r.get(1)?, next: r.get(2)?, acked: r.get(3)?,
+            resend: u32s(r.get(4)?), last_sent_at: r.get(5)?, last_ack_at: r.get(6)?,
+            failed: r.get::<_, i64>(7)? != 0,
+        })
+    }
+
+    /// Files still going to `contact_id`, oldest first.
+    pub fn file_peers_for(&self, contact_id: i64) -> Result<Vec<FilePeer>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT p.file_id, p.contact_id, p.next, p.acked, p.resend, p.last_sent_at, p.last_ack_at, p.failed
+             FROM file_out_peer p JOIN file_out f ON f.file_id = p.file_id
+             JOIN attachments a ON a.id = f.attachment_id
+             WHERE p.contact_id = ?1 AND p.failed = 0 AND f.cancelled = 0
+               AND p.acked < ((a.size + a.chunk_size - 1) / a.chunk_size)
+             ORDER BY f.created_at")?
+            .query_map(params![contact_id], Self::map_file_peer)?.collect_rows())
+    }
+
+    pub fn file_peer(&self, file_id: &[u8; 16], contact_id: i64) -> Result<Option<FilePeer>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT file_id, contact_id, next, acked, resend, last_sent_at, last_ack_at, failed
+             FROM file_out_peer WHERE file_id = ?1 AND contact_id = ?2")?
+            .query_row(params![file_id.as_slice(), contact_id], Self::map_file_peer).optional().map_err(Into::into))
+    }
+
+    /// All recipients of one file, for its progress.
+    pub fn file_peers_of(&self, file_id: &[u8; 16]) -> Result<Vec<FilePeer>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT file_id, contact_id, next, acked, resend, last_sent_at, last_ack_at, failed
+             FROM file_out_peer WHERE file_id = ?1")?
+            .query_map(params![file_id.as_slice()], Self::map_file_peer)?.collect_rows())
+    }
+
+    pub fn file_peer_save(&self, p: &FilePeer) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "UPDATE file_out_peer SET next = ?3, acked = ?4, resend = ?5, last_sent_at = ?6, last_ack_at = ?7, failed = ?8
+             WHERE file_id = ?1 AND contact_id = ?2",
+            params![p.file_id.as_slice(), p.contact_id, p.next, p.acked, u32s_blob(&p.resend),
+                    p.last_sent_at, p.last_ack_at, p.failed as i64])?; Ok(()) })
+    }
+
+    pub fn file_out_cancel(&self, file_id: &[u8; 16]) -> Result<()> {
+        self.with_conn(|c| { c.execute("UPDATE file_out SET cancelled = 1 WHERE file_id = ?1", params![file_id.as_slice()])?; Ok(()) })
+    }
+
+    pub fn file_in_add(&self, f: &FileIn) -> Result<bool> {
+        self.with_conn(|c| Ok(c.execute(
+            "INSERT OR IGNORE INTO file_in (file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![f.file_id.as_slice(), f.contact_id, f.message_id, f.name, f.size as i64, f.sha256.as_slice(),
+                    f.chunk_size, f.path, f.key, f.bits, f.received, f.created_at])? > 0))
+    }
+
+    fn map_file_in(r: &Row<'_>) -> rusqlite::Result<FileIn> {
+        Ok(FileIn {
+            file_id: blob16(r.get(0)?)?, contact_id: r.get(1)?, message_id: r.get(2)?, name: r.get(3)?,
+            size: r.get::<_, i64>(4)? as u64, sha256: blob32(r.get(5)?)?, chunk_size: r.get(6)?,
+            path: r.get(7)?, key: r.get(8)?, bits: r.get(9)?, received: r.get(10)?, created_at: r.get(11)?,
+        })
+    }
+
+    pub fn file_in(&self, file_id: &[u8; 16], contact_id: i64) -> Result<Option<FileIn>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at
+             FROM file_in WHERE file_id = ?1 AND contact_id = ?2")?
+            .query_row(params![file_id.as_slice(), contact_id], Self::map_file_in).optional().map_err(Into::into))
+    }
+
+    /// Files still coming in for a message, for its progress.
+    pub fn files_in_for_message(&self, message_id: i64) -> Result<Vec<FileIn>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at
+             FROM file_in WHERE message_id = ?1")?
+            .query_map(params![message_id], Self::map_file_in)?.collect_rows())
+    }
+
+    pub fn file_in_save(&self, file_id: &[u8; 16], contact_id: i64, bits: &[u8], received: u32) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "UPDATE file_in SET bits = ?3, received = ?4 WHERE file_id = ?1 AND contact_id = ?2",
+            params![file_id.as_slice(), contact_id, bits, received])?; Ok(()) })
+    }
+
+    /// The file is whole: it becomes an attachment of its message, and the
+    /// transfer is forgotten. Returns the attachment's id.
+    pub fn file_in_finish(&self, f: &FileIn) -> Result<i64> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO attachments (message_id, name, size, key, path, chunk_size) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![f.message_id, f.name, f.size as i64, f.key, f.path, f.chunk_size])?;
+            let id = tx.last_insert_rowid();
+            tx.execute("DELETE FROM file_in WHERE file_id = ?1 AND contact_id = ?2", params![f.file_id.as_slice(), f.contact_id])?;
+            Ok(id)
+        })
+    }
+
+    pub fn file_in_delete(&self, file_id: &[u8; 16], contact_id: i64) -> Result<()> {
+        self.with_conn(|c| { c.execute("DELETE FROM file_in WHERE file_id = ?1 AND contact_id = ?2", params![file_id.as_slice(), contact_id])?; Ok(()) })
+    }
+
+    /// Transfers begun before `older_than` and never finished.
+    pub fn files_in_stale(&self, older_than: i64) -> Result<Vec<FileIn>> {
+        self.with_conn(|c| c.prepare_cached(
+            "SELECT file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at
+             FROM file_in WHERE created_at < ?1")?
+            .query_map(params![older_than], Self::map_file_in)?.collect_rows())
+    }
+
+    /// A part that came before its offer.
+    pub fn file_early_put(&self, file_id: &[u8; 16], contact_id: i64, index: u32, data: &[u8]) -> Result<()> {
+        self.with_conn(|c| { c.execute(
+            "INSERT OR IGNORE INTO file_early (file_id, contact_id, idx, data, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![file_id.as_slice(), contact_id, index, data, now_ms()])?; Ok(()) })
+    }
+
+    /// The parts set aside for a file whose offer has now come; forgotten here.
+    pub fn file_early_take(&self, file_id: &[u8; 16], contact_id: i64) -> Result<Vec<(u32, Vec<u8>)>> {
+        self.with_tx(|tx| {
+            let rows: Vec<(u32, Vec<u8>)> = tx.prepare_cached(
+                "SELECT idx, data FROM file_early WHERE file_id = ?1 AND contact_id = ?2 ORDER BY idx")?
+                .query_map(params![file_id.as_slice(), contact_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect_rows()?;
+            tx.execute("DELETE FROM file_early WHERE file_id = ?1 AND contact_id = ?2", params![file_id.as_slice(), contact_id])?;
+            Ok(rows)
+        })
+    }
+
+    pub fn file_early_gc(&self, older_than: i64) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute("DELETE FROM file_early WHERE at < ?1", params![older_than])?))
     }
 
     pub fn delete_attachment(&self, id: i64) -> Result<()> {
@@ -1773,17 +2075,17 @@ fn map_group_member(r: &Row<'_>) -> rusqlite::Result<GroupMember> {
 fn map_attachment(r: &Row<'_>) -> rusqlite::Result<Attachment> {
     Ok(Attachment {
         id: r.get(0)?, message_id: r.get(1)?, name: r.get(2)?,
-        size: r.get(3)?, key: r.get(4)?, path: r.get(5)?,
+        size: r.get(3)?, key: r.get(4)?, path: r.get(5)?, chunk_size: r.get(6)?,
     })
 }
 
 fn insert_attachments(tx: &Transaction<'_>, message_id: i64, attachments: &[NewAttachment]) -> Result<()> {
     if attachments.is_empty() { return Ok(()); }
     let mut s = tx.prepare_cached(
-        "INSERT INTO attachments (message_id, name, size, key, path) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO attachments (message_id, name, size, key, path, chunk_size) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
     for a in attachments {
-        s.execute(params![message_id, a.name, a.size, a.key, a.path])?;
+        s.execute(params![message_id, a.name, a.size, a.key, a.path, a.chunk_size])?;
     }
     Ok(())
 }
@@ -1895,5 +2197,60 @@ mod request_tests {
 
         db.set_contact_request_state(a, RequestState::None).unwrap();
         assert_eq!(db.list_incoming_requests().unwrap(), vec![b]);
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn a_file_in_parts_round_trips_through_the_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("t.db")).unwrap();
+        let bob = db.add_contact(&[1; 32], &[2; 32], "", "bob", None).unwrap();
+        let att = NewAttachment { name: "big.bin".into(), size: 1000, key: vec![3; 32], path: "p".into(), chunk_size: Some(300) };
+        let msg = db.insert_message(bob, Direction::Out, "here", now_ms(), None, &[att]).unwrap();
+        let aid = db.list_attachments(msg).unwrap()[0].id;
+        let fid = [9u8; 16];
+        db.file_out_add(&fid, aid, msg, &[7; 32], &[bob]).unwrap();
+
+        let offers = db.files_out_for_message(msg).unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].attachment.chunk_size, Some(300));
+        assert_eq!(offers[0].sha256, [7; 32]);
+
+        let mut peer = db.file_peers_for(bob).unwrap().pop().expect("pending for bob");
+        peer.next = 4;
+        peer.acked = 2;
+        peer.resend = vec![2, 3];
+        db.file_peer_save(&peer).unwrap();
+        assert_eq!(db.file_peer(&fid, bob).unwrap().unwrap().resend, vec![2, 3]);
+        // All four parts acknowledged: nothing left for bob.
+        peer.acked = 4;
+        db.file_peer_save(&peer).unwrap();
+        assert!(db.file_peers_for(bob).unwrap().is_empty());
+
+        // Receiving side, with a part that came before the offer.
+        db.file_early_put(&fid, bob, 1, b"early").unwrap();
+        let fin = FileIn {
+            file_id: fid, contact_id: bob, message_id: msg, name: "big.bin".into(), size: 1000,
+            sha256: [7; 32], chunk_size: 300, path: "in".into(), key: vec![4; 32], bits: vec![0],
+            received: 0, created_at: now_ms(),
+        };
+        assert!(db.file_in_add(&fin).unwrap());
+        assert!(!db.file_in_add(&fin).unwrap(), "a repeated offer changes nothing");
+        assert_eq!(db.file_early_take(&fid, bob).unwrap(), vec![(1, b"early".to_vec())]);
+        assert!(db.file_early_take(&fid, bob).unwrap().is_empty());
+        db.file_in_save(&fid, bob, &[0b1111], 4).unwrap();
+        let got = db.file_in(&fid, bob).unwrap().unwrap();
+        assert_eq!(got.received, 4);
+        let aid2 = db.file_in_finish(&got).unwrap();
+        assert!(db.file_in(&fid, bob).unwrap().is_none());
+        assert_eq!(db.get_attachment(aid2).unwrap().unwrap().chunk_size, Some(300));
+
+        // Deleting the message forgets the transfer.
+        db.delete_message(msg).unwrap();
+        assert!(db.file_out(&fid).unwrap().is_none());
     }
 }

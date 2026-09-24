@@ -1000,7 +1000,7 @@ impl Core {
         for a in &attachments {
             let (key, path, size) = self.store_attachment(&a.data)?;
             stored.push(NewAttachment {
-                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
+                name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
             });
         }
         let msg_id = self.db.insert_message(
@@ -1311,7 +1311,7 @@ impl Core {
         for a in &attachments {
             let (key, path, size) = self.store_attachment(&a.data)?;
             stored.push(NewAttachment {
-                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
+                name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
             });
         }
         let msg_id = self.db.insert_message(
@@ -1897,7 +1897,7 @@ impl Core {
         for a in &attachments {
             let (key, path, size) = self.store_attachment(&a.data)?;
             stored.push(NewAttachment {
-                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
+                name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
             });
         }
         let msg_id = self.db.insert_group_message(
@@ -2637,7 +2637,7 @@ impl Core {
         let mut atts = Vec::with_capacity(payload.attachments.len());
         for a in &payload.attachments {
             let (key, path, size) = store_attachment_raw(&self.data_dir, &a.data)?;
-            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path });
+            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
         }
         self.db.insert_message_with_origin(
             contact_id, Direction::In, &payload.body, payload.sent_at, expires_at, &atts,
@@ -2829,7 +2829,7 @@ impl Core {
         let mut atts = Vec::with_capacity(payload.attachments.len());
         for a in &payload.attachments {
             let (key, path, size) = store_attachment_raw(&self.data_dir, &a.data)?;
-            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path });
+            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
         }
         let (mid, group_id_for_event) = if let Some(gref) = &payload.group {
             if payload.body.is_empty() && payload.attachments.is_empty() {

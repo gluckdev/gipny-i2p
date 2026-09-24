@@ -2044,13 +2044,17 @@ fn update_tray_badge(app: AppHandle, count: u32) -> Result<(), String> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct BackupV2 {
+/// Version 2 carried attachments sealed whole; version 3 also says how each
+/// was sealed (`chunk_size`, files sent in parts). bincode is positional, so
+/// the attachment type is the parameter and `version` (first, fixed width)
+/// says which to read.
+struct BackupV2<A = BackupAttachment> {
     version: u32,
     settings: Vec<(String, Vec<u8>)>,
     contacts: Vec<BackupContact>,
     groups: Vec<BackupGroup>,
     messages: Vec<BackupMessage>,
-    attachments: Vec<BackupAttachment>,
+    attachments: Vec<A>,
     pinned: Vec<(Option<i64>, Option<Vec<u8>>, i64, i64)>,
     prekeys: Vec<BackupPreKey>,
     exported_at: i64,
@@ -2111,6 +2115,24 @@ struct BackupAttachment {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+struct BackupAttachmentV3 {
+    id: i64,
+    message_id: i64,
+    name: String,
+    size: i64,
+    key: Vec<u8>,
+    path: String,
+    bytes: Vec<u8>,
+    chunk_size: Option<i64>,
+}
+
+impl From<BackupAttachment> for BackupAttachmentV3 {
+    fn from(a: BackupAttachment) -> Self {
+        Self { id: a.id, message_id: a.message_id, name: a.name, size: a.size, key: a.key, path: a.path, bytes: a.bytes, chunk_size: None }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 struct BackupPreKey {
     id: i64,
     kind: u8,
@@ -2148,12 +2170,12 @@ async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, A
         expires_at: m.expires_at, last_attempt_at: m.last_attempt_at,
         send_attempts: m.send_attempts as i32, reply_to: m.reply_to,
     }).collect();
-    let mut attachments: Vec<BackupAttachment> = Vec::new();
+    let mut attachments: Vec<BackupAttachmentV3> = Vec::new();
     for a in db.list_all_attachments().map_err(err)? {
         let bytes = std::fs::read(&a.path).unwrap_or_default();
-        attachments.push(BackupAttachment {
+        attachments.push(BackupAttachmentV3 {
             id: a.id, message_id: a.message_id, name: a.name, size: a.size,
-            key: a.key, path: a.path, bytes,
+            key: a.key, path: a.path, bytes, chunk_size: a.chunk_size,
         });
     }
     let pinned = db.list_all_pinned().map_err(err)?;
@@ -2161,7 +2183,7 @@ async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, A
         id: p.id, kind: p.kind as u8, private: p.private, public: p.public, created_at: p.created_at,
     }).collect();
     let backup = BackupV2 {
-        version: 2, settings, contacts, groups, messages, attachments, pinned, prekeys,
+        version: 3, settings, contacts, groups, messages, attachments, pinned, prekeys,
         exported_at: now_ms_helper(),
     };
     let bytes = bincode::serialize(&backup).map_err(err)?;
@@ -2181,8 +2203,20 @@ async fn import_identity_to_profile(
     if vault_pass.len() < 8 { return Err("vault passphrase too short".into()); }
     let blob = std::fs::read(&backup_path).map_err(err)?;
     let plain = gipny_libcore::security::backup_open(&backup_pass, &blob).map_err(|_| "wrong backup passphrase or corrupt file".to_string())?;
-    let backup: BackupV2 = bincode::deserialize(&plain).map_err(|_| "backup format unknown / corrupted".to_string())?;
-    if backup.version != 2 { return Err(format!("unsupported backup version: {}", backup.version)); }
+    let version = plain.get(..4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]])).unwrap_or(0);
+    let unknown = || "backup format unknown / corrupted".to_string();
+    let backup: BackupV2<BackupAttachmentV3> = match version {
+        2 => {
+            let b: BackupV2<BackupAttachment> = bincode::deserialize(&plain).map_err(|_| unknown())?;
+            BackupV2 {
+                version: b.version, settings: b.settings, contacts: b.contacts, groups: b.groups,
+                messages: b.messages, attachments: b.attachments.into_iter().map(Into::into).collect(),
+                pinned: b.pinned, prekeys: b.prekeys, exported_at: b.exported_at,
+            }
+        }
+        3 => bincode::deserialize(&plain).map_err(|_| unknown())?,
+        v => return Err(format!("unsupported backup version: {v}")),
+    };
     let dir = ctx.base_dir.join("profiles").join(&profile);
     if dir.exists() {
         if Vault::exists(&dir) { return Err("profile already exists".into()); }
@@ -2251,7 +2285,7 @@ async fn import_identity_to_profile(
         }
         attachments_db.push(gipny_libcore::db::Attachment {
             id: a.id, message_id: a.message_id, name: a.name, size: a.size, key: a.key,
-            path: new_path.to_string_lossy().to_string(),
+            path: new_path.to_string_lossy().to_string(), chunk_size: a.chunk_size,
         });
     }
     db.bulk_insert_attachments(&attachments_db).map_err(err)?;

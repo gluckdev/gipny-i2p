@@ -965,7 +965,7 @@ impl SessionManager {
         for (name, data) in &attachments {
             let (key, path, size) = store_attachment(&self.data_dir, data)?;
             stored.push(NewAttachment {
-                name: name.clone(), size: size as i64, key: key.to_vec(), path,
+                name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
             });
         }
         let msg_id = self.db.insert_message(
@@ -999,7 +999,7 @@ impl SessionManager {
         for (name, data) in &attachments {
             let (key, path, size) = store_attachment(&self.data_dir, data)?;
             stored.push(NewAttachment {
-                name: name.clone(), size: size as i64, key: key.to_vec(), path,
+                name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
             });
         }
         let msg_id = self.db.insert_message(
@@ -1075,7 +1075,7 @@ impl SessionManager {
         for (name, data) in &attachments {
             let (key, path, size) = store_attachment(&self.data_dir, data)?;
             stored.push(NewAttachment {
-                name: name.clone(), size: size as i64, key: key.to_vec(), path,
+                name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None,
             });
         }
         let msg_id = self.db.insert_group_message_with_origin(
@@ -1880,7 +1880,7 @@ impl SessionManager {
         let mut atts = Vec::with_capacity(payload.attachments.len());
         for a in &payload.attachments {
             let (key, path, size) = store_attachment(&self.data_dir, &a.data)?;
-            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path });
+            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
         }
         let mid = if let Some(gref) = &payload.group {
             self.db.insert_group_message_with_origin(
