@@ -327,11 +327,19 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Event loop. Stopping — on the master's OFF or on Ctrl-C — sends REVOKE
+    // Event loop. Stopping — on the master's OFF, Ctrl-C or SIGTERM — sends REVOKE
     // and waits for its delivery (bounded), so the master's app shows the
     // console closed rather than an agent that silently went away.
     let mut stopping: Option<(i64, tokio::time::Instant)> = None;
+    // systemd stops the service with SIGTERM: the same as Ctrl-C, so the
+    // master hears REVOKE and the router in this process stops before exit.
+    #[cfg(unix)]
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).context("SIGTERM handler")?;
     loop {
+        #[cfg(unix)]
+        let terminate = sigterm.recv();
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<Option<()>>();
         let deadline = async {
             match stopping {
                 Some((_, at)) => tokio::time::sleep_until(at).await,
@@ -339,7 +347,7 @@ async fn main() -> Result<()> {
             }
         };
         tokio::select! {
-            _ = signal::ctrl_c() => {
+            _ = async { tokio::select! { _ = signal::ctrl_c() => {}, _ = terminate => {} } } => {
                 if stopping.is_some() {
                     eprintln!("[agent] interrupted again — exiting now");
                     break;

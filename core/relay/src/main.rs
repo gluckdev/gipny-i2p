@@ -100,17 +100,49 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let mut inbound = dest.accept();
-    while let Some(stream) = inbound.recv().await {
-        let storage = storage.clone();
-        let connections = connections.clone();
-        let dht = dht.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
-                eprintln!("[relay] client disconnected: {}", e);
+    let stop = shutdown_signal();
+    tokio::pin!(stop);
+    loop {
+        tokio::select! {
+            stream = inbound.recv() => {
+                let Some(stream) = stream else { anyhow::bail!("the relay destination stopped accepting") };
+                let storage = storage.clone();
+                let connections = connections.clone();
+                let dht = dht.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
+                        eprintln!("[relay] client disconnected: {}", e);
+                    }
+                });
             }
-        });
+            // systemd's stop, or Ctrl-C: return, so the router in this process
+            // is stopped before exit — its netDb written out, its LeaseSet
+            // no longer served — rather than killed mid-flight.
+            () = &mut stop => {
+                eprintln!("[relay] stopping");
+                return Ok(());
+            }
+        }
     }
-    anyhow::bail!("the relay destination stopped accepting")
+}
+
+/// SIGTERM or SIGINT (Ctrl-C on Windows).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Load the persistent i2p identity, generating it on first run.
