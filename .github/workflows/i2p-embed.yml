@@ -8,9 +8,9 @@ name: i2p-embed
 
 on:
   push:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', '.github/workflows/i2p-embed.yml' ]
   pull_request:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', '.github/workflows/i2p-embed.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -156,6 +156,79 @@ jobs:
         run: |
           set -o pipefail
           cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+
+  # Android: libi2pd.so as release.yml builds it (libi2pd + shim, ndk-build),
+  # then a Rust binary linked against it — the live test built for the phone,
+  # which proves the shim is exported and resolves. Not run: no device here.
+  # boost/OpenSSL come from release.yml's cache (written on main); cold, they
+  # are built, which takes most of an hour.
+  android:
+    name: i2p-embed for Android (arm64, libi2pd.so + link)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      NDK_VERSION: 27.3.13750724
+      BOOST_FOR_ANDROID_REV: 7943955c4d11a5bd61381a8b200c28619323eb0f
+      ABI: arm64-v8a
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: pins
+        id: pins
+        run: |
+          echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "i2pd_android=$(git -C third_party/i2pd-android rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: android-actions/setup-android@v4
+        with: { packages: 'platform-tools ndk;27.3.13750724' }
+      - name: resolve NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: align the vendored sources
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          git -C i2pd fetch --quiet origin "$I2PD_REV" || git -C i2pd fetch --quiet --tags origin
+          git -C i2pd checkout --quiet "$I2PD_REV"
+          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
+          git -C boost checkout FETCH_HEAD
+          sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh
+      - name: restore cached dependencies (boost, openssl)
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            third_party/i2pd-android/binary/jni/boost/build/out/${{ env.ABI }}
+            third_party/i2pd-android/binary/jni/openssl/out/${{ env.ABI }}
+          key: android-deps-${{ env.ABI }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-scripts${{ steps.pins.outputs.i2pd_android }}
+      - name: build dependencies (boost, openssl)
+        if: steps.deps.outputs.cache-hit != 'true'
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          ./build_boost.sh arm64
+          ./build_openssl.sh arm64
+      - name: build libi2pd.so
+        run: |
+          "$ANDROID_NDK_HOME/ndk-build" -C android-router/jni -j"$(nproc)" \
+            NDK_MODULE_PATH="$GITHUB_WORKSPACE/third_party/i2pd-android/binary/jni" \
+            NDK_PROJECT_PATH="$GITHUB_WORKSPACE/android-router" \
+            APP_ABI=$ABI APP_PLATFORM=android-24
+          LIB="android-router/libs/$ABI/libi2pd.so"
+          NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for sym in gipny_router_init gipny_router_start gipny_dest_create \
+                     gipny_dest_connect gipny_stream_recv gipny_stream_send \
+                     Java_app_gipny_GipnyService_nativeNetworkChanged; do
+            "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym" || { echo "libi2pd.so does not export $sym"; exit 1; }
+          done
+          mkdir -p prebuilt && cp "$LIB" prebuilt/ && ls -lh prebuilt/libi2pd.so
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-linux-android }
+      - name: link a Rust binary against it
+        run: |
+          tc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$tc/aarch64-linux-android24-clang"
+          export I2P_EMBED_PREBUILT_DIR="$PWD/prebuilt"
+          cargo build --release -p i2p-embed --tests --target aarch64-linux-android
+          bin="$(ls target/aarch64-linux-android/release/deps/live-* | grep -v '\.d$' | head -1)"
+          "$tc/llvm-readelf" -d "$bin" | grep -F '[libi2pd.so]'
 
   # The oldest system the Linux bundles support (their glibc floor): does
   # libi2pd build against its boost (1.74), and link boost statically?
