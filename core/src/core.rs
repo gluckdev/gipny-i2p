@@ -4037,18 +4037,18 @@ impl Core {
                 }
             }
             let next_before = s.next;
-            let (due, window, in_flight, rto) = {
+            let (due, window, in_flight, rto, srtt, base) = {
                 let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
                 let flow = flows.entry(contact.id).or_default();
                 let due = s.due(file.file_id, total, flow, now);
-                (due, flow.window(), flow.in_flight(), flow.rto_ms())
+                (due, flow.window(), flow.in_flight(), flow.rto_ms(), flow.srtt_ms(), flow.base_ms().map(|b| b as i64))
             };
             if due.is_empty() {
                 continue;
             }
             // One line a part (192 KiB): what went, and why it was its turn.
             let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
-            eprintln!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms",
+            eprintln!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} (fast {base:?}) ms",
                 a.name, contact.id, due, again);
             let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
