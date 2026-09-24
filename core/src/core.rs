@@ -131,6 +131,8 @@ fn wipe_key(contact_id: i64) -> String {
 const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 /// A part unacknowledged this long, by a recipient heard from since, goes again.
 const FILE_RESEND_IDLE_MS: i64 = 30 * 60 * 1000;
+/// Streams to a recipient's relay carrying parts at once (the usual one included).
+const FILE_LANES: usize = 4;
 /// A recipient alive this long without acknowledging a single part cannot
 /// take files in parts (an older build).
 const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;
@@ -389,6 +391,10 @@ pub struct Core {
     /// When each contact was last heard from: a part is resent on a timer
     /// only to someone alive since it went.
     heard: Arc<std::sync::Mutex<HashMap<i64, i64>>>,
+    /// Extra connections to a contact's relay for file parts (by relay
+    /// destination); see libcore's session.rs `file_lanes`.
+    file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
+    file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
@@ -558,6 +564,8 @@ impl Core {
             own_inits: Arc::new(Mutex::new(HashMap::new())),
             lost_inits: Arc::new(Mutex::new(HashMap::new())),
             heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            file_lanes: Arc::new(Mutex::new(HashMap::new())),
+            file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             updater,
@@ -3842,9 +3850,50 @@ impl Core {
         let _ = self.send_payload_via_relay(&contact, &mut payload, &route).await;
     }
 
+    /// The usual connection to this contact's relay and up to
+    /// `FILE_LANES - 1` more, dialled in the background as needed: parts
+    /// spread over several i2p streams go that many times faster.
+    async fn file_lanes(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, main: &mpsc::Sender<ClientToRelay>) -> Vec<mpsc::Sender<ClientToRelay>> {
+        let mut out = vec![main.clone()];
+        let Some(relay) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return out };
+        let relay = relay.to_string();
+        let live = {
+            let mut lanes = self.file_lanes.lock().await;
+            let v = lanes.entry(relay.clone()).or_default();
+            v.retain(|tx| !tx.is_closed());
+            v.clone()
+        };
+        let want_more = live.len() + 1 < FILE_LANES;
+        out.extend(live);
+        let dialling = !self.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).insert(relay.clone());
+        if want_more && !dialling {
+            let this = self.clone();
+            let handle = tokio::spawn(async move {
+                let dial = tokio::time::timeout(
+                    PEER_RELAY_CONNECT_TIMEOUT,
+                    relay::connect_peer(&this.node, &relay, &this.identity),
+                ).await;
+                this.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
+                if let Ok(Ok(client)) = dial {
+                    eprintln!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
+                    this.file_lanes.lock().await.entry(relay.clone()).or_default().push(client.out_tx.clone());
+                    this.send_kick.notify_one();
+                    this.clone().run_recv_loop(client, None).await;
+                }
+            });
+            self.tasks.lock().unwrap().push(handle);
+        } else if !want_more && !dialling {
+            self.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
+        }
+        out
+    }
+
     async fn send_file_parts(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, route: &Route) -> Result<()> {
         use gipny_libcore::files;
         let now = now_ms();
+        let Route::Relay(main) = route else { return Ok(()) };
+        let lanes = self.file_lanes(contact, main).await;
+        let mut lane = 0usize;
         let heard = self.heard.lock().unwrap_or_else(|p| p.into_inner()).get(&contact.id).copied();
         for mut peer in self.db.file_peers_for(contact.id)? {
             let Some(file) = self.db.file_out(&peer.file_id)? else { continue };
@@ -3878,7 +3927,9 @@ impl Core {
                 let data = files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
                 payload.file_chunk = Some(WireFileChunk { file_id: file.file_id, index: *index, data });
-                if let Err(e) = self.send_payload_via_relay(contact, &mut payload, route).await {
+                let via = Route::Relay(lanes[lane % lanes.len()].clone());
+                lane += 1;
+                if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &via).await {
                     eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
                     s.resend.extend(due.iter().copied().filter(|i| i >= index));
                     break;
