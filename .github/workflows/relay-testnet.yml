@@ -7,12 +7,19 @@ name: relay-testnet
 # destination stays STABLE. Expect a few minutes of downtime around each
 # handover (plus tunnel rebuild).
 #
-# This is test infrastructure for the project's own end-to-end testing, not
-# production delivery. Caveats, deliberately accepted:
-#   - the cached relay identity is reachable from PR workflows (cache scoping),
-#     so this destination must never be treated as trusted long-term infra;
-#   - offline queue survives handovers via cache, but a crashed run may lose
-#     the tail since the last save.
+# The relay runs with `--dht`: it is also the seed of the relay network, the
+# node every client finds first (its destination goes into the repository
+# variable GIPNY_DHT_SEEDS, which release.yml bakes into builds).
+#
+# The state (relay identity, DHT items and peers, router) crosses runs through
+# actions/cache ENCRYPTED with age. Caches are readable from PR workflows; a
+# plaintext dest.key there would let anyone impersonate the seed. The key is
+# the secret DHT_SEED_AGE_KEY (an `age-keygen` identity; the recipient is
+# derived from it). Without the secret the relay still serves, but nothing is
+# saved and the next run comes up under a new destination.
+#
+# Caveats, deliberately accepted: a crashed run may lose the tail since the
+# last save; the seed is away for a few minutes around each handover.
 # Kill switch: disable the workflow in the Actions UI.
 
 on:
@@ -39,12 +46,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core/relay
-      - name: restore relay state
+      # A new cache name on purpose: the old relay-testnet-state-* caches held
+      # the identity in the clear, so the seed starts from a key never exposed.
+      - name: restore sealed state
         uses: actions/cache/restore@v6
         with:
-          path: relay-state
-          key: relay-testnet-state-${{ github.run_id }}
-          restore-keys: relay-testnet-state-
+          path: relay-state.tar.gz.age
+          key: dht-seed-state-${{ github.run_id }}
+          restore-keys: dht-seed-state-
+      - name: unseal state
+        env:
+          AGE_KEY: ${{ secrets.DHT_SEED_AGE_KEY }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          mkdir -p relay-state
+          if [ -z "$AGE_KEY" ]; then
+            echo "::warning::DHT_SEED_AGE_KEY is not set: state will not be saved, the destination changes every run"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$AGE_KEY" > "$RUNNER_TEMP/age.key"
+          if [ -s relay-state.tar.gz.age ]; then
+            age -d -i "$RUNNER_TEMP/age.key" relay-state.tar.gz.age | tar -xz -C relay-state
+            rm relay-state.tar.gz.age
+            echo "state restored"
+          else
+            echo "no saved state: first run, a new destination"
+          fi
       # Build the router from the pinned submodule, not from apt. The distro
       # binary aborted on startup — boost::filesystem::create_directory
       # "Permission denied" on its own datadir under the runner workspace — and
@@ -83,7 +111,7 @@ jobs:
             sleep 2
           done
           GIPNY_RELAY_DATA=relay-state/relay nohup \
-            ./core/relay/target/release/gipny-relay > relay.log 2>&1 &
+            ./core/relay/target/release/gipny-relay --dht > relay.log 2>&1 &
           echo $! > relay.pid
           # dest.pub is written by the relay before the SAM session opens.
           for i in $(seq 1 120); do
@@ -94,7 +122,8 @@ jobs:
             sleep 2
           done
           {
-            echo '### relay-testnet destination (paste into Settings → relay address)'
+            echo '### relay-testnet destination'
+            echo 'Paste into Settings → relay address, or into the repository variable GIPNY_DHT_SEEDS (the seed release builds carry).'
             echo '```'
             cat relay-state/relay/dest.pub 2>/dev/null || echo 'dest.pub missing — see logs'
             echo ''
@@ -120,10 +149,25 @@ jobs:
           kill "$(cat relay.pid)" 2>/dev/null || true
           sleep 3
           kill "$(cat router.pid)" 2>/dev/null || true
+          # The state is packed next: wait for the router to let go of it.
+          for i in $(seq 1 30); do kill -0 "$(cat router.pid)" 2>/dev/null || break; sleep 1; done
           tail -20 relay.log || true
-      - name: save relay state
+      # After both processes are gone, so the SQLite files (with their WAL)
+      # are consistent on disk.
+      - name: seal state
+        id: seal
         if: always()
+        run: |
+          [ -s "$RUNNER_TEMP/age.key" ] || { echo "no key: nothing is saved"; exit 0; }
+          [ -s relay-state/relay/dest.key ] || { echo "no identity to save"; exit 0; }
+          recipient=$(age-keygen -y "$RUNNER_TEMP/age.key")
+          tar -cz -C relay-state . | age -r "$recipient" -o relay-state.tar.gz.age
+          rm -f "$RUNNER_TEMP/age.key"
+          ls -l relay-state.tar.gz.age
+          echo "sealed=true" >> "$GITHUB_OUTPUT"
+      - name: save sealed state
+        if: always() && steps.seal.outputs.sealed == 'true'
         uses: actions/cache/save@v6
         with:
-          path: relay-state
-          key: relay-testnet-state-${{ github.run_id }}
+          path: relay-state.tar.gz.age
+          key: dht-seed-state-${{ github.run_id }}

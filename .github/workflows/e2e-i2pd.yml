@@ -448,6 +448,105 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
+  # Delivery through the relay network while each side is away in turn: B
+  # leaves, A writes; A leaves, B comes back on a new address, reads and
+  # answers; B leaves, A comes back elsewhere and reads the answers. The seed
+  # is a `gipny-relay --dht` started here, on the same router, so the run
+  # needs neither the long-running relay-testnet seed nor its age key. Not in
+  # bump's needs: it tests our code, not the router.
+  # ------------------------------------------------------------------
+  e2e-dht:
+    name: e2e (relay network, each side away in turn)
+    needs: router
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core/relay
+            . -> target
+
+      - name: fetch the router built above
+        uses: actions/download-artifact@v8
+        with:
+          name: i2pd-linux-amd64
+          path: router
+
+      - name: install router and check its version
+        run: |
+          chmod +x router/i2pd
+          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
+          EXPECTED="${{ needs.router.outputs.revision }}"
+          ACTUAL="$(i2pd --version | head -1)"
+          echo "router job built: $EXPECTED"
+          echo "artifact reports: $ACTUAL"
+          test -n "$EXPECTED"
+          case "$ACTUAL" in
+            *"$EXPECTED"*) echo "version check: OK" ;;
+            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
+          esac
+
+      - name: build seed and e2e harness
+        run: |
+          cargo build --release --manifest-path core/relay/Cargo.toml
+          cargo build --release -p e2e-harness
+
+      - name: start router
+        run: tests/e2e-harness/start-router.sh
+
+      - name: start the seed, capture its destination
+        run: |
+          mkdir -p e2e-state/seed
+          GIPNY_RELAY_DATA=e2e-state/seed nohup \
+            ./core/relay/target/release/gipny-relay --dht > e2e-logs/seed.log 2>&1 &
+          echo $! > seed.pid
+          for i in $(seq 1 120); do
+            [ -s e2e-state/seed/dest.pub ] && break
+            if ! kill -0 "$(cat seed.pid)" 2>/dev/null; then
+              echo "seed died during startup"; tail -50 e2e-logs/seed.log; exit 1
+            fi
+            sleep 2
+          done
+          [ -s e2e-state/seed/dest.pub ] || { echo "seed: dest.pub never appeared"; tail -50 e2e-logs/seed.log; exit 1; }
+          sleep 5
+          kill -0 "$(cat seed.pid)" 2>/dev/null || { echo "seed died after dest.pub"; tail -50 e2e-logs/seed.log; exit 1; }
+          echo "GIPNY_DHT_SEEDS=$(cat e2e-state/seed/dest.pub)" >> "$GITHUB_ENV"
+
+      - name: run e2e harness
+        env:
+          E2E_DHT_OFFLINE: '1'
+          E2E_N_MESSAGES: '3'
+          E2E_TIMEOUT_SECS: '1800'
+          E2E_WORK_DIR: e2e-state
+          GIPNY_SAM_PORT: '7656'
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
+
+      - name: seed log
+        if: always()
+        run: tail -100 e2e-logs/seed.log || true
+
+      - name: stop seed and router
+        if: always()
+        run: |
+          kill "$(cat seed.pid)" 2>/dev/null || true
+          kill "$(cat relay-router.pid)" 2>/dev/null || true
+
+      - name: upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-dht-logs
+          path: e2e-logs/
+          retention-days: 7
+
+  # ------------------------------------------------------------------
   # The real gipny-agent binary as the far side. bot-a is the master; the agent
   # is a separate process on the same router, started with bot-a's v2 card the
   # way a server would be. Proves over live i2p: the agent's first message

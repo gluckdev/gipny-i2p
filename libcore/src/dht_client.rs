@@ -33,12 +33,15 @@ pub type Node = DhtNode<I2pTransport, DbStorage>;
 /// renews our address records (they live two hours).
 pub const MAINTAIN_EVERY: Duration = Duration::from_secs(45 * 60);
 
-/// Seed nodes baked in at build time, comma or whitespace separated
-/// (`GIPNY_DHT_SEEDS`, set from a repository variable in release.yml).
+/// Seed nodes, comma or whitespace separated: baked in at build time
+/// (`GIPNY_DHT_SEEDS`, set from a repository variable in release.yml), plus
+/// any named in the same variable at run time — how a server operator, or the
+/// e2e run with its own seed, points a client at a network of its own.
 pub fn builtin_seeds() -> Vec<String> {
-    option_env!("GIPNY_DHT_SEEDS")
-        .unwrap_or("")
-        .split(|c: char| c == ',' || c.is_whitespace())
+    let runtime = std::env::var("GIPNY_DHT_SEEDS").unwrap_or_default();
+    [option_env!("GIPNY_DHT_SEEDS").unwrap_or(""), runtime.as_str()]
+        .iter()
+        .flat_map(|list| list.split(|c: char| c == ',' || c.is_whitespace()))
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .collect()

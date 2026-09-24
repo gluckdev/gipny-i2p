@@ -643,6 +643,11 @@ impl SessionManager {
         dht_client::handler(&self.dht)
     }
 
+    /// Relay-network nodes that have answered us so far.
+    pub fn dht_peer_count(&self) -> usize {
+        self.dht.peer_count()
+    }
+
     /// Announce an embedded relay as this node's reachable DHT endpoint.
     pub async fn join_dht(self: &Arc<Self>, address: &str) {
         dht_client::join(&self.dht, &self.db, &self.identity, address).await;
@@ -2084,13 +2089,15 @@ impl SessionManager {
         self.tasks.lock().unwrap().push(handle);
     }
 
-    async fn publish_bundle_to_dht(&self) {
+    /// Put our prekey bundle into the relay network, so a contact can open a
+    /// session while our relay is away. True once some node holds it.
+    pub async fn publish_bundle_to_dht(&self) -> bool {
         if self.dht.peer_count() == 0 {
-            return;
+            return false;
         }
-        let Ok(bundle) = self.my_bundle() else { return };
-        let Ok(bytes) = bincode::serialize(&bundle) else { return };
-        let _ = dht_client::publish_bundle(&self.dht, &self.identity, &bytes).await;
+        let Ok(bundle) = self.my_bundle() else { return false };
+        let Ok(bytes) = bincode::serialize(&bundle) else { return false };
+        dht_client::publish_bundle(&self.dht, &self.identity, &bytes).await
     }
 
     async fn republish_bundle(&self) {
