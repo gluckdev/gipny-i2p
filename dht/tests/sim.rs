@@ -19,12 +19,16 @@ type Node = DhtNode<MemTransport, MemStorage>;
 struct Net {
     nodes: Mutex<HashMap<String, Arc<Node>>>,
     offline: Mutex<HashSet<String>>,
+    /// Gone the way an i2p destination goes: a dial is never refused, it
+    /// just never completes.
+    silent: Mutex<HashSet<String>>,
+    dials: Mutex<HashMap<String, usize>>,
     clock: Arc<AtomicU64>,
 }
 
 impl Net {
     fn new() -> Arc<Self> {
-        Arc::new(Self { nodes: Mutex::default(), offline: Mutex::default(), clock: Arc::new(AtomicU64::new(20_000 * DAY_MS)) })
+        Arc::new(Self { nodes: Mutex::default(), offline: Mutex::default(), silent: Mutex::default(), dials: Mutex::default(), clock: Arc::new(AtomicU64::new(20_000 * DAY_MS)) })
     }
     fn now(&self) -> u64 {
         self.clock.load(Ordering::Relaxed)
@@ -66,6 +70,10 @@ impl Transport for MemTransport {
     fn open(&self, destination: &str) -> BoxFuture<'_, Result<MemConn, NetError>> {
         let destination = destination.to_string();
         Box::pin(async move {
+            *self.net.dials.lock().unwrap().entry(destination.clone()).or_default() += 1;
+            if self.net.silent.lock().unwrap().contains(&destination) {
+                std::future::pending::<()>().await;
+            }
             if self.net.offline.lock().unwrap().contains(&destination) {
                 return Err(NetError("unreachable".into()));
             }
@@ -78,7 +86,7 @@ impl Transport for MemTransport {
 const DIFFICULTY: u32 = 4;
 
 fn config() -> NodeConfig {
-    NodeConfig { pow_difficulty: DIFFICULTY, call_timeout: Duration::from_secs(5), ..NodeConfig::default() }
+    NodeConfig { pow_difficulty: DIFFICULTY, dial_timeout: Duration::from_secs(5), call_timeout: Duration::from_secs(5), ..NodeConfig::default() }
 }
 
 fn new_node(net: &Arc<Net>, destination: Option<&str>, stores: bool) -> Arc<Node> {
@@ -147,6 +155,30 @@ fn holders(nodes: &[Arc<Node>], key: &[u8; 32], net: &Net) -> Vec<String> {
         })
         .map(|(_, d)| d)
         .collect()
+}
+
+/// A contact's node that went away silently costs one dial timeout, not one
+/// per letter: the e2e run 35947260726 spent 120 s on it for every lookup
+/// until it had failed three times, and three letters did not leave in 450 s.
+#[tokio::test(start_paused = true)]
+async fn an_absent_node_is_waited_for_once() {
+    let net = Net::new();
+    let _nodes = network(&net, 6).await;
+    let alice = new_node(&net, Some("alice"), true);
+    alice.add_candidates(&["node-0".to_string()], true);
+    alice.bootstrap().await;
+    net.silent.lock().unwrap().insert("node-3".into());
+    net.dials.lock().unwrap().clear();
+
+    let (a, b) = (Person::new(), Person::new());
+    let started = tokio::time::Instant::now();
+    for i in 0..5u8 {
+        let letter = stored(items::mail(&a.pair_with(&b), &b.sign_pk(), net.now(), &[i; 16]).unwrap());
+        assert!(alice.put(letter).await >= 2, "letter {i} was not stored elsewhere");
+    }
+    let dials = net.dials.lock().unwrap().get("node-3").copied().unwrap_or(0);
+    assert_eq!(dials, 1, "the silent node was dialled {dials} times");
+    assert!(started.elapsed() < config().dial_timeout * 2, "took {:?}", started.elapsed());
 }
 
 #[tokio::test]

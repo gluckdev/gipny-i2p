@@ -49,7 +49,11 @@ pub struct NodeConfig {
     /// Leading zero bits a store's proof of work needs.
     pub pow_difficulty: u32,
     pub max_peers: usize,
-    /// One whole exchange with a node, dial included. i2p dials take seconds.
+    /// Reaching a node. i2p dials take seconds; a destination that is gone
+    /// makes the router wait out its own lookup, so this caps what one absent
+    /// node can cost.
+    pub dial_timeout: Duration,
+    /// One request and its answer on an open connection.
     pub call_timeout: Duration,
     /// Failed exchanges before a node is forgotten; seeds are never forgotten.
     pub max_failures: u32,
@@ -64,6 +68,7 @@ impl Default for NodeConfig {
             alpha: 3,
             pow_difficulty: 18,
             max_peers: 2048,
+            dial_timeout: Duration::from_secs(60),
             call_timeout: Duration::from_secs(120),
             max_failures: 3,
             max_get_bytes: 8 * 1024 * 1024,
@@ -235,8 +240,13 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         }
     }
 
+    /// Nodes that failed their last exchange are left out until they answer
+    /// again (`maintain` pings them): otherwise every lookup waits out the
+    /// timeout on the same absent node, until it has failed `max_failures`
+    /// times — minutes per letter while a contact is away.
     fn closest(&self, target: &DhtKey, n: usize, storing_only: bool) -> Vec<NodeInfo> {
         let mut list: Vec<NodeInfo> = self.peers().values()
+            .filter(|p| p.failures == 0)
             .filter(|p| !storing_only || p.info.stores)
             .map(|p| p.info.clone())
             .collect();
@@ -303,7 +313,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     }
 
     async fn open(&self, destination: &str) -> Option<T::Conn> {
-        match tokio::time::timeout(self.cfg.call_timeout, self.transport.open(destination)).await {
+        match tokio::time::timeout(self.cfg.dial_timeout, self.transport.open(destination)).await {
             Ok(Ok(c)) => Some(c),
             _ => {
                 self.failed(destination);
