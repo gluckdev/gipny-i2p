@@ -58,6 +58,16 @@ pub fn peer_relay_backoff(failures: u32) -> std::time::Duration {
     std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
 }
 
+/// Failed dials to a peer relay after which it is dialled again on its own,
+/// without a letter asking: 5+10+20+40+80 s, a few minutes in all.
+const PEER_RELAY_REDIALS: u32 = 5;
+
+/// When to dial a peer relay again after `failures` failed dials before this
+/// one, if at all without a letter asking; see [`PEER_RELAY_REDIALS`].
+pub fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
+    (failures < PEER_RELAY_REDIALS).then(|| peer_relay_backoff(failures))
+}
+
 /// Whether to open one more connection to our own relay for file parts:
 /// it is elsewhere, parts came lately, and fewer than `FILE_LANES - 1` extra
 /// are open.
@@ -1303,9 +1313,11 @@ impl SessionManager {
                 let onion = this.relay_onion();
                 if onion.is_empty() {
                     // No relay configured yet (i2p: DEFAULT_RELAY not baked in and
-                    // none set in Settings). Wait quietly instead of hammering.
-                    tokio::time::sleep(Duration::from_millis(backoff)).await;
-                    backoff = (backoff * 2).min(RECONNECT_MAX_MS);
+                    // none set in Settings). Look again soon; the backoff is for
+                    // failed dials, and growing it here made the first real one
+                    // start late and its retry wait the full 15 s (e2e run
+                    // 36042483601: 20 s from the relay being set to connected).
+                    tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
                 eprintln!("[session] relay connect {}", &onion[..16.min(onion.len())]);
@@ -1448,6 +1460,19 @@ impl SessionManager {
                                 failures: failures + 1,
                             },
                         );
+                        // Dialled again when the wait is over, letter or not: a
+                        // first dial fails mostly because the relay's LeaseSet has
+                        // not spread yet, and the first letter then waited for a
+                        // dial of its own (e2e run 36042483601: 7 s of a 16 s echo).
+                        if let Some(wait) = peer_relay_redial_after(failures) {
+                            let this = this.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(wait).await;
+                                if let Ok(Some(c)) = this.db.get_contact(contact_id) {
+                                    let _ = this.relay_for(&c).await;
+                                }
+                            });
+                        }
                         return;
                     }
                 };
@@ -3128,6 +3153,12 @@ mod wire_tests {
     fn a_failed_relay_dial_is_retried_soon_then_less_often() {
         let secs: Vec<u64> = (0..8).map(|n| peer_relay_backoff(n).as_secs()).collect();
         assert_eq!(secs, vec![5, 10, 20, 40, 80, 120, 120, 120]);
+    }
+
+    #[test]
+    fn an_unreachable_relay_is_dialled_again_for_a_few_minutes_then_left() {
+        let waits: Vec<Option<u64>> = (0..7).map(|n| peer_relay_redial_after(n).map(|d| d.as_secs())).collect();
+        assert_eq!(waits, vec![Some(5), Some(10), Some(20), Some(40), Some(80), None, None]);
     }
 
     #[test]

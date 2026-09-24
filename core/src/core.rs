@@ -342,7 +342,7 @@ fn hex_bytes(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
-use gipny_libcore::session::{collect_lane_holds, collect_lane_wanted, ours_stands, peer_relay_backoff, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
+use gipny_libcore::session::{collect_lane_holds, collect_lane_wanted, ours_stands, peer_relay_backoff, peer_relay_redial_after, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Some(unpadded) = unpad_payload(pt) {
@@ -2057,9 +2057,11 @@ impl Core {
                 let onion = this.relay_onion();
                 if onion.is_empty() {
                     // No relay configured yet (i2p: DEFAULT_RELAY not baked in and
-                    // none set in Settings). Wait quietly instead of hammering.
-                    tokio::time::sleep(Duration::from_millis(backoff)).await;
-                    backoff = (backoff * 2).min(RECONNECT_MAX_MS);
+                    // none set in Settings). Look again soon; the backoff is for
+                    // failed dials, and growing it here made the first real one
+                    // start late and its retry wait the full 15 s (e2e run
+                    // 36042483601: 20 s from the relay being set to connected).
+                    tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
                 eprintln!("[relay-client] connecting to {}", &onion[..16.min(onion.len())]);
@@ -2251,6 +2253,17 @@ impl Core {
                         key.clone(),
                         PeerRelay::Failed { until: Instant::now() + peer_relay_backoff(failures), failures: failures + 1 },
                     );
+                    // Dialled again when the wait is over, letter or not; see
+                    // libcore's `peer_relay_redial_after`.
+                    if let Some(wait) = peer_relay_redial_after(failures) {
+                        let this = this.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(wait).await;
+                            if let Ok(Some(c)) = this.db.get_contact(contact_id) {
+                                let _ = this.relay_for(&c).await;
+                            }
+                        });
+                    }
                     return;
                 }
             };
