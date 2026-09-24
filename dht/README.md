@@ -10,7 +10,7 @@
 | `src/items.rs` | Что кладётся в сеть | `mail`/`open_mail`, `intro`/`open_intro`, `address_record`/`open_address_record`, `bundle_record`/`open_bundle_record`, `mail_keys_to_poll`, `intro_keys_to_poll`, `delete_hash`, `PreparedItem`, TTL `MAIL_TTL_MS`/`ADDRESS_TTL_MS`/`BUNDLE_TTL_MS` |
 | `src/proto.rs` | Сообщения между узлами | `NodeInfo` (+ `node_id`), `StoredItem`, `DhtRequest`, `DhtEnvelope`, `DhtResponse`, `pow_ok`/`solve_pow`, `PROTOCOL_VERSION`, `MAX_VALUE_BYTES` |
 | `src/store.rs` | Хранилище узла | трейт `Storage`, `MemStorage`, `StoreLimits`, `admit` |
-| `src/node.rs` | Узел | трейты `Transport`/`Connection`, `DhtNode` (`handle` — ответ другим; `bootstrap`, `lookup`, `put`, `get`, `delete`, `republish`, `maintain`, `add_candidates`, `known_peers`), `NodeConfig` |
+| `src/node.rs` | Узел | трейты `Transport`/`Connection`, `DhtNode` (`handle` — ответ другим; `bootstrap`, `lookup`, `put`, `get`, `delete`, `republish`, `maintain`, `add_candidates`, `known_peers`), `NodeConfig` (`dial_timeout` 60 с на подключение, `call_timeout` 120 с на обмен). Узел, не ответивший в последний раз, не участвует в поиске, пока `maintain` не найдёт его живым: иначе молчащий адресат стоил бы таймаута на каждое письмо |
 | `tests/sim.rs` | Сеть в памяти | переживание смены узлов, поиск адреса после перезапуска, отказы узлов |
 
 ## Куда вносить правки

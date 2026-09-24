@@ -6,7 +6,7 @@
 
 | Файл | За что отвечает |
 |---|---|
-| `src/main.rs` | `main` выбирает сценарий по переменным окружения. `start_bot` — клиент на `SessionManager`. `start_in_process_relays` — два личных `EphemeralRelay` в процессе. `run_agent_mode` — сценарий с настоящим `gipny-agent`. `wait_for` и `compute_latencies` — ожидания и таймингы. Успех — строка `[e2e] SUCCESS`, тайминги — блок `[e2e-timing]` |
+| `src/main.rs` | `main` выбирает сценарий по переменным окружения. `start_bot` — клиент на `SessionManager`. `start_in_process_relays` — два личных `EphemeralRelay` в процессе. `run_agent_mode` — сценарий с настоящим `gipny-agent`. `run_dht_offline_mode` и `LiveBot` — сеть релеев, стороны уходят по очереди (сид кладётся в таблицу узлов бота через `put_seeds` перед каждым входом). `wait_for` и `compute_latencies` — ожидания и таймингы. Успех — строка `[e2e] SUCCESS`, тайминги — блок `[e2e-timing]` |
 | `start-router.sh` | Поднимает общий i2pd с SAM на 7656 и ждёт туннелей. Вызывается из всех джоб e2e |
 
 **Переменные окружения:**
@@ -14,6 +14,7 @@
 - `E2E_RELAY_DEST`, `E2E_RELAY_DEST_A`, `E2E_RELAY_DEST_B` — адреса внешних релеев;
 - `E2E_IN_PROCESS_RELAYS=1` — релеи внутри процесса;
 - `E2E_AGENT_BIN` — путь к `gipny-agent`, включает режим агента;
+- `E2E_DHT_OFFLINE=1` и `E2E_DHT_SEED_DEST` — сценарий сети релеев и адрес сида (`gipny-relay --dht` на том же роутере);
 - `E2E_N_MESSAGES` — число сообщений;
 - `E2E_TIMEOUT_SECS` — таймаут;
 - `E2E_WORK_DIR` — каталог состояния;
@@ -26,6 +27,7 @@
 | `e2e (relay + two bots)` | `E2E_RELAY_DEST_A`/`_B` (два `gipny-relay`) | Письмо кладётся на релей **получателя**; по результату двигается пин i2pd |
 | `e2e (relays inside the bots)` | `E2E_IN_PROCESS_RELAYS=1` | Встроенный релей `libcore` работает по живой i2p |
 | `e2e (agent binary)` | `E2E_AGENT_BIN`, `E2E_IN_PROCESS_RELAYS=1` | Агент: GRANT, команды по очереди, загрузка файла, OFF → REVOKE |
+| `e2e (relay network, each side away in turn)` | `E2E_DHT_OFFLINE=1`, `E2E_DHT_SEED_DEST` | B уходит → A пишет и уходит → B возвращается на новом адресе, читает, отвечает, уходит → A возвращается, читает и знает новый адрес B |
 
 ## Куда вносить правки
 
