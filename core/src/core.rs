@@ -620,6 +620,13 @@ impl Core {
         Ok((core, events_rx))
     }
 
+    /// Keep a task to stop with the rest at shutdown; finished ones go.
+    fn track(&self, handle: JoinHandle<()>) {
+        let mut v = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        v.retain(|h| !h.is_finished());
+        v.push(handle);
+    }
+
     pub fn shutdown(&self) {
         let mut v = self.tasks.lock().unwrap();
         for h in v.drain(..) { h.abort(); }
@@ -2037,7 +2044,11 @@ impl Core {
                 let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
                 eprintln!("[files] another connection to our relay for parts ({n} extra)");
                 let lane = this.clone();
-                tokio::spawn(async move {
+                // Tracked like every task of ours: one left running after
+                // shutdown kept reading mail on the old instance, with its own
+                // copy of the ratchet, and wrote it over the new one's (e2e
+                // run 36056788336, the recipient restarting midway).
+                let handle = tokio::spawn(async move {
                     // Ends when parts stop coming or our relay changes; what it was
                     // given and did not ack the relay deals to the others.
                     let quiet = {
@@ -2048,6 +2059,7 @@ impl Core {
                     lane.clone().run_recv_loop(client, Some(onion.clone()), Some(&quiet)).await;
                     lane.collect_lanes.fetch_sub(1, Relaxed);
                 });
+                this.track(handle);
             }
         });
         self.tasks.lock().unwrap().push(handle);
@@ -2260,13 +2272,14 @@ impl Core {
                     // Dialled again when the wait is over, letter or not; see
                     // libcore's `peer_relay_redial_after`.
                     if let Some(wait) = peer_relay_redial_after(failures) {
-                        let this = this.clone();
-                        tokio::spawn(async move {
+                        let again = this.clone();
+                        let handle = tokio::spawn(async move {
                             tokio::time::sleep(wait).await;
-                            if let Ok(Some(c)) = this.db.get_contact(contact_id) {
-                                let _ = this.relay_for(&c).await;
+                            if let Ok(Some(c)) = again.db.get_contact(contact_id) {
+                                let _ = again.relay_for(&c).await;
                             }
                         });
+                        this.track(handle);
                     }
                     return;
                 }
