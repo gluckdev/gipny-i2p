@@ -11,7 +11,7 @@
 | `codeql.yml` | push/PR в `main`, раз в неделю (пн) | `analyze (actions / javascript-typescript / rust)` | Статический анализ, `build-mode: none`. Настройки — `.github/codeql/codeql-config.yml` (тесты не сканируются: в фикстурах ключи зашиты намеренно). |
 | `e2e-i2pd.yml` | каждую ночь, вручную, PR с изменениями в `third_party/**` или в самом файле | `router (i2pd, linux/amd64)` → `e2e (relay + two bots)`, `e2e (relays inside the bots)`, `e2e (agent binary)`, `e2e (relay network, each side away in turn)` → `record the proven revision` | Единственная проверка того, что сообщения реально доходят по i2p. Роутер собирается из **головы ветки** сабмодуля, а не из пина. Четыре сценария: два `gipny-relay` + два бота; релеи внутри ботов (`E2E_IN_PROCESS_RELAYS`); настоящий `gipny-agent` (`E2E_AGENT_BIN`); сеть релеев со своим сидом `gipny-relay --dht` внутри джобы, стороны уходят по очереди (`E2E_DHT_OFFLINE`, `E2E_DHT_SEED_DEST`). Успех — строка `[e2e] SUCCESS` в логе харнесса. Джобы ~10–15 мин (лимит 30), сеть релеев ~16 мин (лимит 45). Пин i2pd двигает только первый сценарий. |
 | `i2pd-build.yml` | вручную, раз в неделю (пн) | linux x86_64 (static, static musl), linux arm64 musl, macos, windows, android по трём ABI | «Широкая сеть»: апстрим i2pd всё ещё собирается везде, включая платформы, которых нет в релизе. Строит **пин** сабмодулей. Android — до 120 мин. |
-| `release.yml` | push тега `v*`, вручную | `version matches the tag` → `router (i2pd, …)`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На теге публикует; при ручном запуске делает только превью (артефакт `release-page-preview`). Последний релиз шёл ~20 мин. |
+| `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `router (i2pd, …)`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует (один раз на версию: если тег уже есть — только превью). При ручном запуске — только превью (артефакт `release-page-preview`). Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
 | `relay-testnet.yml` | вручную, каждые 6 ч | `relay` | **Временный** публичный `gipny-relay --dht` на раннере GitHub (~5,5 ч на запуск): и тестовый релей, и **сид сети релеев**. Идентичность, очередь, узел сети и роутер переносятся между запусками через `actions/cache` (`dht-seed-state-*`) **только зашифрованными `age`** (секрет `DHT_SEED_AGE_KEY`; без него сервис работает, но ничего не сохраняет, и адрес меняется каждый запуск). Адрес — в summary и в артефакте `relay-destination`; его вписывают в переменную `GIPNY_DHT_SEEDS`. |
 
 **Скрипты и настройки рядом:**
@@ -25,7 +25,7 @@
 
 | Задача | Файл |
 |---|---|
-| Выпустить версию | Поднять версию в `core/Cargo.toml`, `agent/Cargo.toml`, `core/tauri.conf.json`, `ui/package.json` (и `ui/package-lock.json`), `Cargo.lock` (`gipny`, `gipny-agent`); строка в таблице версий `README.md`; написать `docs/releases/<версия>.md`; закоммитить в `main`; `git tag -a vX.Y.Z` и `git push origin vX.Y.Z`. Сиды сети релеев вшиваются из переменной репозитория `GIPNY_DHT_SEEDS` (весь `release.yml`, `env:`) |
+| Выпустить версию | Поднять версию в `core/Cargo.toml`, `agent/Cargo.toml`, `core/tauri.conf.json`, `ui/package.json` (и `ui/package-lock.json`), `Cargo.lock` (`gipny`, `gipny-agent`); строка в таблице версий `README.md`; написать `docs/releases/<версия>.md`; закоммитить в `main` и запушить — дальше `release.yml` всё делает сам, **тег руками не ставить**. Сиды сети релеев вшиваются из переменной репозитория `GIPNY_DHT_SEEDS` (весь `release.yml`, `env:`) |
 | Текст страницы релиза | `docs/releases/<версия>.md` (свободный текст); общий шаблон, таблица загрузок, changelog — `.github/scripts/release-notes.sh` |
 | Добавить или переименовать артефакт релиза | Джоба в `release.yml` + таблица платформ в `release-notes.sh` (иначе публикация упадёт) + имена ассетов, которые ищет автообновление (`libcore/src/update.rs`, `target_suffix`) |
 | Пререлиз | Тег с дефисом (`v0.5.0-rc1`): `release.yml` ставит `prerelease` и не делает его «Latest» |
@@ -84,10 +84,12 @@
 
 1. **`save-if: github.ref == 'refs/heads/main'`** на всех `Swatinem/rust-cache`. Читают
    по-прежнему все, пишет только `main`.
-2. **Порядок релиза: сначала ручной прогон `release.yml` с `main`, потом тег.** Ручной
-   прогон собирает всё и останавливается, не публикуя, — и заодно кладёт кеши в ту
-   единственную область, откуда прогон по тегу сможет их взять. Без этого шага тег
-   всегда стартует с холодного кеша.
+2. **Релиз собирается на `main`, а не по тегу** (с 2026-09-24). Раньше порядок был
+   «сначала ручной прогон на `main`, потом тег», и шаг с ручным прогоном пропускали —
+   тег стартовал с холодного кеша и собирал всё второй раз. Теперь подъём версии в
+   `main` сам запускает сборку, её кеши остаются в `main`, а тег ставит джоба
+   `release page`. Кеш boost/OpenSSL для Android (`android-deps-*`) отдельный от
+   роутера и не выбрасывается при сдвиге пина i2pd или правке JNI.
 
 Проверять так: `gh cache list` — суммарный объём должен оставаться ниже 10 ГБ, а ключи
 `i2pd-*` должны в нём присутствовать. Если снова не влезает, следующие рычаги:
@@ -97,7 +99,7 @@ pre-release ассет, который не вытесняет ничто.
 
 ## Что менять вместе, инварианты и грабли
 
-- **Версия и тег.** Джоба `version matches the tag` сравнивает тег с версиями в `core/tauri.conf.json`, `ui/package.json` и `core/Cargo.toml` и падает первой, до многочасовых сборок. Поднимайте все три (плюс `agent/Cargo.toml`) в одном коммите.
+- **Версия.** Джоба `versions agree` сверяет версии в `core/tauri.conf.json`, `ui/package.json`, `core/Cargo.toml` и `agent/Cargo.toml` и падает первой, до долгих сборок. Поднимайте их в одном коммите. Публикуется версия один раз: если тег `vX.Y.Z` уже есть, прогон делает только превью. Руками тег не ставить: триггера по тегу больше нет, а при ручном теге страницу релиза никто не создаст.
 - **Пин i2pd двигается только по доставке.** Все workflow, кроме `router` в `e2e-i2pd.yml`, собирают закреплённый коммит сабмодуля. `bump` коммитит новый пин, только если `e2e (relay + two bots)` доставил сообщения, и **пушит в ветку, на которой запущен workflow**. Ручной запуск на своей ветке может добавить в неё коммит пина. Push в эту ветку, пока идёт `bump`, отклонится — сделайте `git pull --rebase` и пушьте снова.
 - **`gh` CLI на этой машине не может запускать workflow** (`HTTP 403` на `gh workflow run`, `gh run cancel`, `gh release edit`, `gh pr create`). Ручной запуск — через страницу Actions в браузере: *workflow → Run workflow → ветка → Run workflow*. PR и merge работают через GitHub MCP. Чтение (`gh run list/view`, `gh pr checks`, `gh api …/actions/jobs/<id>/logs`) работает.
 - **Сборка релиза для Android требует секретов подписи.** Без них шаг `configure Android signing` падает на `test -n`.

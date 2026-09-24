@@ -6,12 +6,24 @@ name: release
 # the relay server for Linux amd64/arm64, plus Android arm64 and armv7 (i2pd embedded in-process via JNI; see
 # android-router/jni).
 #
-# Trigger: push a tag `v*` (e.g. v0.3.0) or run manually.
+# Trigger: a push to main that changes the version (core/tauri.conf.json).
+# That run builds everything, then tags the commit vX.Y.Z and publishes the
+# release itself — do not push tags by hand. It runs on main because a run
+# reads caches only from its own ref and main, and writes only to its own: a
+# tag run's caches could never be read again, so every tagged release used to
+# start cold (and a manual "seed the cache on main first" step kept being
+# skipped). A manual run builds a preview and publishes nothing.
 
 on:
   push:
-    tags: [ 'v*' ]
+    branches: [ main ]
+    paths: [ 'core/tauri.conf.json' ]
   workflow_dispatch:
+
+# One release build at a time; a second version bump waits for the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 # Least privilege by default; only the publish job elevates to write.
 permissions:
@@ -26,33 +38,43 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 0. On a tag, the version the tag names must be the version the code carries.
-  #    Checked first, because finding out at publish time means hours of builds
-  #    thrown away, and not finding out means assets named for one version on a
-  #    release page for another.
+  # 0. Every place that carries the version must carry the same one, and a
+  #    version is published once. Checked first, because finding out at
+  #    publish time means hours of builds thrown away, and not finding out
+  #    means assets named for one version on a release page for another.
   # ---------------------------------------------------------------------------
   version:
-    name: version matches the tag
-    # Always runs, and only enforces on a tag. Skipping it on manual runs would
-    # skip every job downstream of it too: GitHub treats a skipped ancestor as
-    # not-success for the whole dependency chain.
+    name: versions agree
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compare.outputs.version }}
+      publish: ${{ steps.compare.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
       - name: compare
+        id: compare
         run: |
+          want="$(jq -r .version core/tauri.conf.json)"
           ok=true
           for pair in \
-            "core/tauri.conf.json=$(jq -r .version core/tauri.conf.json)" \
             "ui/package.json=$(jq -r .version ui/package.json)" \
-            "core/Cargo.toml=$(sed -nE '0,/^version *= *"([^"]+)"/s//\1/p' core/Cargo.toml)"; do
+            "core/Cargo.toml=$(sed -nE '0,/^version *= *"([^"]+)"/s//\1/p' core/Cargo.toml)" \
+            "agent/Cargo.toml=$(sed -nE '0,/^version *= *"([^"]+)"/s//\1/p' agent/Cargo.toml)"; do
             file="${pair%%=*}"; have="${pair#*=}"
             echo "$file: $have"
-            if [ "$GITHUB_REF_TYPE" = tag ] && [ "$have" != "${GITHUB_REF_NAME#v}" ]; then
-              echo "  does not match tag $GITHUB_REF_NAME"; ok=false
-            fi
+            [ "$have" = "$want" ] || { echo "  differs from core/tauri.conf.json ($want)"; ok=false; }
           done
           $ok
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+          # Publish on a push to main, once per version: a rerun, or a later
+          # push that touches the file without bumping, must not republish.
+          if [ "$GITHUB_EVENT_NAME" = push ] && ! git ls-remote --exit-code --tags origin "refs/tags/v$want" >/dev/null; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "v$want: will be published"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "v$want: preview only (manual run, or the tag already exists)"
+          fi
 
   # ---------------------------------------------------------------------------
   # 1. Bundled i2pd router, built from third_party/i2pd at the pinned commit.
@@ -750,7 +772,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: release page
-    needs: [desktop, relay, agent, android]
+    needs: [version, desktop, relay, agent, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release + upload assets
@@ -775,11 +797,7 @@ jobs:
           ls -lh dist
       - name: write the release page
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            TAG="$GITHUB_REF_NAME"; REF="$GITHUB_REF_NAME"
-          else
-            TAG="v$(jq -r .version core/tauri.conf.json)"; REF=HEAD
-          fi
+          TAG="v${{ needs.version.outputs.version }}"; REF=HEAD
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           .github/scripts/release-notes.sh "$TAG" dist "$GITHUB_REPOSITORY" "$REF" > notes.md
           {
@@ -788,7 +806,7 @@ jobs:
             cat notes.md
           } >> "$GITHUB_STEP_SUMMARY"
       - name: keep the preview
-        if: github.ref_type != 'tag'
+        if: needs.version.outputs.publish != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: release-page-preview
@@ -802,14 +820,17 @@ jobs:
       # name. Here every file gets a time limit, retries, and --clobber, which
       # replaces whatever a previous attempt left. The release stays a draft
       # until every asset is in, so clients never see a half-published one.
+      # The tag does not exist yet: GitHub makes it on the commit that was
+      # built (--target) when the draft is published at the end. A tag made
+      # by this workflow's token starts no other run.
       - name: publish
-        if: github.ref_type == 'tag'
+        if: needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --draft --title "gipny-i2p $TAG" --notes-file notes.md
+            gh release create "$TAG" --target "$GITHUB_SHA" --draft --title "gipny-i2p $TAG" --notes-file notes.md
           fi
           for f in dist/*; do
             ok=
