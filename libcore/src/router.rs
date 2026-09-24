@@ -1,45 +1,11 @@
-//! i2p router (SAMv3 bridge) lifecycle.
+//! The i2p router's settings, startup progress, and the network database
+//! snapshot it starts from.
 //!
-//! Unlike the previous embedded Tor transport (Arti compiled into the binary),
-//! i2p needs a running router that exposes a SAMv3 bridge on a local TCP port.
-//! We bundle i2pd (built from `third_party/i2pd`) and spawn it as a child
-//! process; [`crate::net`] then speaks SAMv3 to it.
-//!
-//! On Android i2pd is started in-process by the Kotlin foreground service via
-//! JNI (`libi2pd.so`); there we only [`RouterHandle::attach`] to the
-//! already-listening SAM port instead of spawning a child.
+//! The router itself is libi2pd compiled into this process
+//! ([`crate::embedded`]): no child process, no SAM, no local port.
 
-use std::net::TcpListener as StdTcpListener;
-use std::sync::Arc;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-
-use crate::net::{NetError, Result};
-
-/// Default SAMv3 TCP port.
-pub const DEFAULT_SAM_PORT: u16 = 7656;
-
-/// i2pd's conventional local HTTP proxy port, tried first before falling back
-/// to a free one (same policy as the SAM port).
-/// Also what the Android foreground service writes into `i2pd.conf`
-/// (`GipnyService.kt`), which is how the updater reaches GitHub there.
-pub const DEFAULT_HTTP_PROXY_PORT: u16 = 4444;
-
-/// Where the local HTTP proxy sends anything outside i2p: the update checker
-/// is the only thing that uses it (`libcore::update`), to reach GitHub without
-/// this host's real IP ever reaching GitHub. `exit.stormycloud.i2p` is the
-/// standard, long-running i2pd/I2P outproxy for HTTP(S); it only ever sees an
-/// encrypted CONNECT to api.github.com/objects.githubusercontent.com, never
-/// content, but it is still a third party this depends on for update checks —
-/// and, unverified either way here, i2pd may build the outproxy tunnel pool
-/// at router start rather than on first use, which would mean every instance
-/// carries that tunnel whether or not an update check ever runs.
-/// specifically — nothing else uses this proxy.
-const DEFAULT_OUTPROXY: &str = "http://exit.stormycloud.i2p";
+use std::sync::Arc;
 
 /// How much of the line to give to other people's tunnels.
 ///
@@ -131,14 +97,6 @@ pub(crate) fn note(progress: &Option<BootProgress>, stage: &str, detail: impl As
     }
 }
 
-/// How long to wait for the router to come up. First run reseeds and builds
-/// tunnels, which can take a couple of minutes.
-const START_TIMEOUT: Duration = Duration::from_secs(180);
-/// Poll interval while waiting for SAM to answer.
-const PROBE_INTERVAL: Duration = Duration::from_millis(500);
-/// Per-probe connect/response timeout.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// When to carry i2p over a Yggdrasil mesh as well as plain IP.
 ///
 /// Yggdrasil is a different underlay, so it is a way in when the normal way is
@@ -150,7 +108,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 pub enum Yggdrasil {
     /// Never. Plain IP only.
     Off,
-    /// Try without it, and fall back to it if the router cannot start at all.
+    /// Not unless asked: the same as `Off` for the in-process router, kept
+    /// so stored settings keep their meaning.
     #[default]
     Auto,
     /// Always announce over the mesh.
@@ -190,441 +149,17 @@ pub struct RouterSettings {
     pub yggdrasil: Yggdrasil,
 }
 
-/// Handle to a running i2p router.
-///
-/// Dropping the handle kills the child process we spawned (if any), tearing the
-/// router down together with the profile — matching the previous Tor behaviour
-/// where the transport lived and died with the unlocked vault.
-pub struct RouterHandle {
-    child: Option<Child>,
-    sam_port: u16,
-    /// `None` for a router we did not spawn ourselves (Android, or `--sam`
-    /// attach to somebody else's): we don't control its config and cannot
-    /// assume it has an HTTP proxy open at all.
-    http_proxy_port: Option<u16>,
-    /// Where this profile's router state lives, for the note we leave about
-    /// our child (`RUNTIME_FILE`). `None` when we did not spawn it.
-    router_dir: Option<PathBuf>,
-}
-
-impl RouterHandle {
-    /// Spawn our bundled i2pd and wait until its SAM bridge answers.
-    ///
-    /// `data_dir` is the profile directory; router state lives under
-    /// `data_dir/i2p/router`. `bin` overrides the router binary path (otherwise
-    /// it is resolved from `GIPNY_I2P_BIN`, next to the executable, or `PATH`).
-    pub async fn start(
-        data_dir: &Path,
-        bin: Option<PathBuf>,
-        settings: RouterSettings,
-    ) -> Result<Self> {
-        Self::start_with_progress(data_dir, bin, settings, None).await
-    }
-
-    /// As [`Self::start`], reporting each step through `progress` — the
-    /// caller is blocked here for anything from a second to three minutes.
-    pub async fn start_with_progress(
-        data_dir: &Path,
-        bin: Option<PathBuf>,
-        settings: RouterSettings,
-        progress: Option<BootProgress>,
-    ) -> Result<Self> {
-        let bin = match bin {
-            Some(b) => b,
-            None => resolve_router_bin()?,
-        };
-        match settings.yggdrasil {
-            Yggdrasil::On => Self::spawn(data_dir, &bin, settings, true, progress, None).await,
-            Yggdrasil::Off => Self::spawn(data_dir, &bin, settings, false, progress, None).await,
-            // Try the ordinary way first; only reach for the mesh if the router
-            // could not come up at all. This catches a blocked start, which is
-            // the case a user cannot work around on their own. It does not catch
-            // a router that opens SAM and then fails to find peers — SAM comes up
-            // regardless of whether the network is reachable — so "auto" is a
-            // fallback for a dead start, not a general connectivity doctor.
-            Yggdrasil::Auto => match Self::spawn(data_dir, &bin, settings, false, progress.clone(), None).await {
-                Ok(h) => Ok(h),
-                Err(e) => {
-                    note(&progress, "router", format!("router did not come up ({e:?}); retrying over yggdrasil"));
-                    Self::spawn(data_dir, &bin, settings, true, progress, None).await
-                }
-            },
-        }
-    }
-
-    async fn spawn(
-        data_dir: &Path,
-        bin: &Path,
-        settings: RouterSettings,
-        yggdrasil: bool,
-        progress: Option<BootProgress>,
-        // Keep the SAM port across a restart: everything already running —
-        // the client's session, the built-in relay — was handed that number
-        // and reconnects to it by itself.
-        preferred_sam_port: Option<u16>,
-    ) -> Result<Self> {
-        let router_dir = data_dir.join("i2p").join("router");
-        std::fs::create_dir_all(&router_dir)
-            .map_err(|e| NetError::I2p(format!("router data dir: {e}")))?;
-
-        // A router from an earlier run of this profile may still be alive: the
-        // app can die (or be killed) without its child going with it. i2pd
-        // locks `i2pd.pid`, so the new one exits at once with
-        // "Could not lock pid file", which reached the unlock screen as
-        // "router exited early: exit status: 1" (seen 2026-09-17). If that
-        // router still answers SAM, use it — its tunnels are already built.
-        // If it answers nothing, it is stuck: stop it and start fresh.
-        match previous_router(&router_dir).await {
-            Some(Previous::Serving { sam_port, http_proxy_port }) => {
-                note(&progress, "router-reused", format!("a router from an earlier run is still serving SAM on {sam_port}; using it"));
-                let mut handle = Self { child: None, sam_port, http_proxy_port, router_dir: None };
-                handle.await_ready(&progress).await?;
-                return Ok(handle);
-            }
-            Some(Previous::Stuck { pid }) => {
-                note(&progress, "router", format!("a router from an earlier run (pid {pid}) holds the data directory but does not answer; stopping it"));
-                stop_pid(pid).await;
-            }
-            None => {}
-        }
-
-        // Always run our own router on private, free ports so the profile is
-        // self-contained and we never route through an untrusted foreign router.
-        let sam_port = pick_free_port(preferred_sam_port.unwrap_or(DEFAULT_SAM_PORT));
-        let http_proxy_port = pick_free_port(DEFAULT_HTTP_PROXY_PORT);
-
-        match seed_netdb(&bin, &router_dir) {
-            Ok(0) => {}
-            Ok(n) => note(&progress, "router", format!("laid out {n} known routers from the bundled snapshot; no reseed needed")),
-            Err(e) => eprintln!("[router] bundled network snapshot not used: {e}"),
-        }
-        note(&progress, "router", format!("launching router {} (SAM 127.0.0.1:{sam_port}); first run may take 1-3 min...", bin.display()));
-        // Everything but SAM and the HTTP proxy is switched off: gipny talks
-        // SAMv3 over loopback for messaging, and the HTTP proxy (with an
-        // outproxy) only for the update checker's GitHub requests — no HTTP
-        // console, no SOCKS proxy, no UPnP punching holes on the user's behalf.
-        let mut cmd = Command::new(bin);
-        cmd.arg(format!("--datadir={}", router_dir.display()))
-            .arg("--sam.enabled=true")
-            .arg("--sam.address=127.0.0.1")
-            .arg(format!("--sam.port={sam_port}"))
-            .arg("--http.enabled=false")
-            .arg("--httpproxy.enabled=true")
-            .arg("--httpproxy.address=127.0.0.1")
-            .arg(format!("--httpproxy.port={http_proxy_port}"))
-            .arg(format!("--httpproxy.outproxy={DEFAULT_OUTPROXY}"))
-            .arg("--socksproxy.enabled=false")
-            .arg("--upnp.enabled=false")
-            .arg(format!("--bandwidth={}", settings.transit.bandwidth()))
-            .arg(format!("--share={}", settings.transit.share_percent()))
-            .arg(format!("--limits.transittunnels={}", settings.transit.transit_tunnels()))
-            .arg("--log=file")
-            .arg(format!("--logfile={}", router_dir.join("i2pd.log").display()));
-        // i2pd declares meshnets.yggdrasil as a boost bool_switch: present means
-        // on, and a value after `=` is refused outright ("option does not take
-        // any arguments"), which exits the router before SAM ever opens. Off is
-        // its default and is not spelled out.
-        if yggdrasil {
-            cmd.arg("--meshnets.yggdrasil");
-        }
-        // Without WIN32_APP the router is a console subsystem binary, so Windows
-        // would flash a console window every time we spawn it. CREATE_NO_WINDOW
-        // suppresses that; the router talks to us over SAM and has no console
-        // output anyone reads (it logs to --logfile).
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let child = cmd
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| NetError::I2p(format!("spawn router {}: {e}", bin.display())))?;
-
-        // Ports of the router we own, so the next launch can find it if this
-        // process dies without taking it down (see `previous_router`).
-        let _ = std::fs::write(router_dir.join(RUNTIME_FILE), format!("{} {sam_port} {http_proxy_port}\n", child.id()));
-
-        let mut handle = Self { child: Some(child), sam_port, http_proxy_port: Some(http_proxy_port), router_dir: Some(router_dir.clone()) };
-        handle.await_ready(&progress).await?;
-        note(&progress, "tunnels-done", format!("router ready (SAM up on {sam_port})"));
-        Ok(handle)
-    }
-
-    /// Attach to an already-running SAM bridge (Android: started in-process via
-    /// JNI; or a developer-managed router). Does not own the process, and does
-    /// not know whether that router has an HTTP proxy open.
-    pub async fn attach(sam_port: u16) -> Result<Self> {
-        Self::attach_with_proxy(sam_port, None).await
-    }
-
-    /// Attach with progress, for the Android path where the foreground service
-    /// owns the router and the app still has to wait for its SAM.
-    pub async fn attach_with_progress(
-        sam_port: u16,
-        http_proxy_port: Option<u16>,
-        progress: Option<BootProgress>,
-    ) -> Result<Self> {
-        let mut handle = Self { child: None, sam_port, http_proxy_port: None, router_dir: None };
-        handle.await_ready(&progress).await?;
-        // Only now ask about the proxy. The router binds its listeners as it
-        // starts, and this used to be asked *before* the wait for SAM — so on
-        // a phone, where the service and the app race each other, a port that
-        // was simply not bound yet disabled updates for the whole run, with
-        // nothing on screen but "автообновление недоступно".
-        handle.http_proxy_port = probe_proxy(http_proxy_port).await;
-        Ok(handle)
-    }
-
-    /// Attach, and use `http_proxy_port` for anything that needs plain HTTP
-    /// out of i2p (the updater). The port is *checked*, not trusted: an older
-    /// foreground service, or a router somebody else configured, may not have
-    /// a proxy at all, and the updater must see "unavailable" rather than
-    /// failed requests.
-    pub async fn attach_with_proxy(sam_port: u16, http_proxy_port: Option<u16>) -> Result<Self> {
-        Self::attach_with_progress(sam_port, http_proxy_port, None).await
-    }
-
-    /// Does the router still answer? A dead router looks exactly like a
-    /// network problem from above — every dial fails with "connection
-    /// refused" — so somebody has to ask this question out loud.
-    pub async fn alive(&self) -> bool {
-        probe_sam(self.sam_port).await
-    }
-
-    /// Stands in for a child when the router runs inside the process
-    /// (`embedded`): nothing to supervise, no port.
-    #[cfg(feature = "embedded-i2p")]
-    pub(crate) fn in_process() -> Self {
-        Self { child: None, sam_port: 0, http_proxy_port: None, router_dir: None }
-    }
-
-    /// Replace a router that stopped answering, on the same SAM port.
-    ///
-    /// Nothing supervised the child before: when i2pd died mid-session (killed
-    /// for memory, crashed, stopped by hand) the app kept dialling a port with
-    /// nothing behind it, forever, and every contact looked unreachable
-    /// (seen on the owner's machine, 2026-09-18).
-    pub async fn restart(
-        &mut self,
-        data_dir: &Path,
-        settings: RouterSettings,
-        progress: Option<BootProgress>,
-    ) -> Result<()> {
-        self.kill_child();
-        let bin = resolve_router_bin()?;
-        let yggdrasil = matches!(settings.yggdrasil, Yggdrasil::On);
-        let replacement = Self::spawn(data_dir, &bin, settings, yggdrasil, progress, Some(self.sam_port)).await?;
-        let port = replacement.sam_port;
-        *self = replacement;
-        if port != self.sam_port {
-            eprintln!("[i2p] router restarted on a different SAM port ({port})");
-        }
-        Ok(())
-    }
-
-    /// SAM TCP port the router is listening on.
-    pub fn sam_port(&self) -> u16 {
-        self.sam_port
-    }
-
-    /// Local HTTP proxy port, if this router has one open (see the field doc).
-    pub fn http_proxy_port(&self) -> Option<u16> {
-        self.http_proxy_port
-    }
-
-    /// Wait for SAM, telling `progress` roughly once a second how long it has
-    /// been. This is the longest wait in the whole startup — on a cold router
-    /// it is minutes — so silence here is what made unlocking look frozen.
-    async fn await_ready(&mut self, progress: &Option<BootProgress>) -> Result<()> {
-        let started = Instant::now();
-        let deadline = started + START_TIMEOUT;
-        let mut last_note = Instant::now();
-        loop {
-            if probe_sam(self.sam_port).await {
-                return Ok(());
-            }
-            if progress.is_some() && last_note.elapsed() >= Duration::from_secs(1) {
-                last_note = Instant::now();
-                note(progress, "tunnels", format!(
-                    "waiting for SAM: {}s of {}s",
-                    started.elapsed().as_secs(),
-                    START_TIMEOUT.as_secs(),
-                ));
-            }
-            // If the child we own has already died, surface it instead of spinning.
-            if let Some(child) = self.child.as_mut() {
-                if let Ok(Some(status)) = child.try_wait() {
-                    return Err(NetError::I2p(format!("router exited early: {status}")));
-                }
-            }
-            if Instant::now() >= deadline {
-                self.kill_child();
-                return Err(NetError::I2p("router SAM did not come up in time".into()));
-            }
-            tokio::time::sleep(PROBE_INTERVAL).await;
-        }
-    }
-
-    fn kill_child(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-            // The note is about a router that is now gone.
-            if let Some(dir) = self.router_dir.take() {
-                let _ = std::fs::remove_file(dir.join(RUNTIME_FILE));
-            }
-        }
-    }
-
-    /// Stop the router (kills the child process if we own it).
-    pub async fn shutdown(&mut self) {
-        self.kill_child();
-    }
-}
-
-impl Drop for RouterHandle {
-    fn drop(&mut self) {
-        self.kill_child();
-    }
-}
-
-/// What a still-running router from an earlier launch of this profile is good
-/// for.
-enum Previous {
-    /// Answers SAM on these ports: adopt it.
-    Serving { sam_port: u16, http_proxy_port: Option<u16> },
-    /// Holds the data directory but does not answer: has to go.
-    Stuck { pid: u32 },
-}
-
-/// Is the HTTP proxy there? Asked a few times over several seconds: the
-/// router opens SAM and its other listeners at slightly different moments,
-/// and a single "connection refused" is not evidence of absence.
-async fn probe_proxy(port: Option<u16>) -> Option<u16> {
-    let port = port?;
-    for _ in 0..10 {
-        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-            return Some(port);
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    eprintln!("[i2p] no HTTP proxy on {port}; updates are unavailable this run");
-    None
-}
-
-/// Ports of the router this process spawned, next to i2pd's own pid file.
-const RUNTIME_FILE: &str = "gipny-router.txt";
-
-async fn previous_router(router_dir: &Path) -> Option<Previous> {
-    // i2pd writes and locks this; a pid here that is still alive means the
-    // directory is taken, whoever started it.
-    let pid: u32 = std::fs::read_to_string(router_dir.join("i2pd.pid")).ok()?.trim().parse().ok()?;
-    if pid == 0 || !pid_alive(pid) {
-        return None;
-    }
-    let ports = std::fs::read_to_string(router_dir.join(RUNTIME_FILE)).ok();
-    let parsed = ports.as_deref().and_then(|line| {
-        let mut it = line.split_whitespace();
-        let noted_pid: u32 = it.next()?.parse().ok()?;
-        let sam: u16 = it.next()?.parse().ok()?;
-        let http: u16 = it.next()?.parse().ok()?;
-        // A recycled pid would point at some unrelated process.
-        (noted_pid == pid).then_some((sam, http))
-    });
-    match parsed {
-        Some((sam, http)) if probe_sam(sam).await => {
-            Some(Previous::Serving { sam_port: sam, http_proxy_port: Some(http) })
-        }
-        _ => Some(Previous::Stuck { pid }),
-    }
-}
-
-#[cfg(unix)]
-fn pid_alive(pid: u32) -> bool {
-    // Signal 0 checks for the process without touching it.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
-}
-
-#[cfg(windows)]
-fn pid_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
-}
-
-/// Ask a router we no longer talk to to exit, then insist. It is our own
-/// process for this profile: the pid came from the data directory it locks.
-async fn stop_pid(pid: u32) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGTERM);
-    }
-    #[cfg(windows)]
-    let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string()]).output();
-    for _ in 0..20 {
-        if !pid_alive(pid) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(pid as libc::pid_t, libc::SIGKILL);
-    }
-    #[cfg(windows)]
-    let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-}
-
-/// Probe a SAMv3 bridge: TCP connect + `HELLO VERSION` handshake, expect `RESULT=OK`.
-pub async fn probe_sam(port: u16) -> bool {
-    let fut = async {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
-        stream
-            .write_all(b"HELLO VERSION MIN=3.0 MAX=3.3\n")
-            .await
-            .ok()?;
-        let mut buf = [0u8; 256];
-        let n = stream.read(&mut buf).await.ok()?;
-        let reply = String::from_utf8_lossy(&buf[..n]);
-        Some(reply.contains("RESULT=OK"))
-    };
-    matches!(tokio::time::timeout(PROBE_TIMEOUT, fut).await, Ok(Some(true)))
-}
-
-/// Return `preferred` if free, otherwise an OS-assigned free port.
-fn pick_free_port(preferred: u16) -> u16 {
-    if StdTcpListener::bind(("127.0.0.1", preferred)).is_ok() {
-        return preferred;
-    }
-    StdTcpListener::bind(("127.0.0.1", 0))
-        .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or(preferred)
-}
-
 /// Fewer known routers than this and the bundled snapshot is laid out: i2pd
 /// itself wants 90 before it stops calling its network empty.
 const SEED_BELOW_ROUTERS: usize = 90;
 
 /// On a first start (or after the network database was lost), lay out the
-/// snapshot of the i2p network database that ships next to the router
+/// snapshot of the i2p network database that ships with the app
 /// (`i2pd-netdb-seed.tar.gz`, made by release.yml), so the router starts
 /// knowing hundreds of routers instead of reseeding over HTTPS first — most of
 /// a cold start, and blockable. Existing entries are kept; stale ones the
 /// router drops itself, and with too few left it reseeds as it always did.
 /// Returns how many RouterInfos were written.
-pub(crate) fn seed_netdb(bin: &Path, router_dir: &Path) -> std::io::Result<usize> {
-    seed_netdb_from(&bin.with_file_name("i2pd-netdb-seed.tar.gz"), router_dir)
-}
-
-/// As [`seed_netdb`], from the snapshot at `seed`.
 pub(crate) fn seed_netdb_from(seed: &Path, router_dir: &Path) -> std::io::Result<usize> {
     if !seed.is_file() {
         return Ok(0);
@@ -634,7 +169,6 @@ pub(crate) fn seed_netdb_from(seed: &Path, router_dir: &Path) -> std::io::Result
 
 /// The snapshot compiled into this binary (`GIPNY_NETDB_SEED` at build time;
 /// the Android build, which has no file beside it that Rust could read).
-#[cfg_attr(not(feature = "embedded-i2p"), allow(dead_code))]
 pub(crate) fn compiled_in_seed() -> Option<&'static [u8]> {
     #[cfg(gipny_netdb_seed)]
     return Some(include_bytes!(env!("GIPNY_NETDB_SEED_PATH")));
@@ -642,7 +176,7 @@ pub(crate) fn compiled_in_seed() -> Option<&'static [u8]> {
     None
 }
 
-/// As [`seed_netdb`], from a gzipped tar of the snapshot.
+/// As [`seed_netdb_from`], from a gzipped tar of the snapshot.
 pub(crate) fn seed_netdb_reader(seed: impl std::io::Read, router_dir: &Path) -> std::io::Result<usize> {
     let netdb = router_dir.join("netDb");
     if count_router_infos(&netdb) >= SEED_BELOW_ROUTERS {
@@ -685,9 +219,8 @@ fn count_router_infos(netdb: &Path) -> usize {
 }
 
 /// The bundled network database snapshot: `GIPNY_I2P_SEED` (the app sets it
-/// from its resource dir), next to the router binary, or next to this
-/// executable — where the agent's archive puts it once no router ships.
-#[cfg_attr(not(feature = "embedded-i2p"), allow(dead_code))]
+/// from its resource dir), or next to this executable — where the agent's
+/// archive puts it.
 pub(crate) fn bundled_seed() -> Option<PathBuf> {
     const NAME: &str = "i2pd-netdb-seed.tar.gz";
     if let Some(p) = std::env::var_os("GIPNY_I2P_SEED").map(PathBuf::from) {
@@ -696,9 +229,6 @@ pub(crate) fn bundled_seed() -> Option<PathBuf> {
         }
     }
     let mut candidates = Vec::new();
-    if let Ok(bin) = resolve_router_bin() {
-        candidates.push(bin.with_file_name(NAME));
-    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             for sub in ["", "resources", "../lib", "../Resources"] {
@@ -709,41 +239,13 @@ pub(crate) fn bundled_seed() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Resolve the bundled router binary: `GIPNY_I2P_BIN`, then next to the current
-/// executable (and common bundle sub-dirs), then the bare name on `PATH`.
-///
-/// The Tauri app sets `GIPNY_I2P_BIN` from `resource_dir()` before starting the
-/// transport, which is the only reliable answer for the deb and AppImage
-/// layouts; the probing below covers dev runs and portable unpacks.
-pub(crate) fn resolve_router_bin() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("GIPNY_I2P_BIN") {
-        if !p.is_empty() {
-            return Ok(PathBuf::from(p));
-        }
-    }
-    let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for sub in ["", "resources", "../lib", "../Resources"] {
-                let cand = if sub.is_empty() { dir.join(name) } else { dir.join(sub).join(name) };
-                if cand.exists() {
-                    return Ok(cand);
-                }
-            }
-        }
-    }
-    // Fall back to PATH resolution by bare name.
-    Ok(PathBuf::from(name))
-}
-
 #[cfg(test)]
 mod seed_tests {
     use super::*;
 
     fn snapshot(dir: &Path, entries: &[(&str, &[u8])]) -> PathBuf {
-        let bin = dir.join("i2pd");
-        std::fs::write(&bin, b"").unwrap();
-        let file = std::fs::File::create(dir.join("i2pd-netdb-seed.tar.gz")).unwrap();
+        let seed = dir.join("i2pd-netdb-seed.tar.gz");
+        let file = std::fs::File::create(&seed).unwrap();
         let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::fast()));
         for (path, data) in entries {
             let mut h = tar::Header::new_gnu();
@@ -757,20 +259,20 @@ mod seed_tests {
             tar.append(&h, *data).unwrap();
         }
         tar.into_inner().unwrap().finish().unwrap();
-        bin
+        seed
     }
 
     #[test]
     fn lays_out_router_infos_only_and_only_into_an_empty_netdb() {
         let dir = tempfile::tempdir().unwrap();
-        let bin = snapshot(dir.path(), &[
+        let seed = snapshot(dir.path(), &[
             ("rA/routerInfo-A1.dat", b"a"),
             ("rB/routerInfo-B1.dat", b"b"),
             ("rB/notes.txt", b"no"),
             ("../routerInfo-escape.dat", b"no"),
         ]);
         let router = dir.path().join("router");
-        assert_eq!(seed_netdb(&bin, &router).unwrap(), 2);
+        assert_eq!(seed_netdb_from(&seed, &router).unwrap(), 2);
         assert!(router.join("netDb/rA/routerInfo-A1.dat").is_file());
         assert!(!router.join("netDb/rB/notes.txt").exists());
         assert!(!dir.path().join("routerInfo-escape.dat").exists());
@@ -782,6 +284,6 @@ mod seed_tests {
             std::fs::write(d.join(format!("routerInfo-C{i}.dat")), b"c").unwrap();
         }
         std::fs::remove_file(router.join("netDb/rA/routerInfo-A1.dat")).unwrap();
-        assert_eq!(seed_netdb(&bin, &router).unwrap(), 0);
+        assert_eq!(seed_netdb_from(&seed, &router).unwrap(), 0);
     }
 }

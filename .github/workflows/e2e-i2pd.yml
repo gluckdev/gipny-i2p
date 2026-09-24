@@ -1,33 +1,27 @@
 name: e2e-i2pd
 
-# End-to-end messaging test: relay + two headless bot clients, latency report.
+# End-to-end messaging test: relays + two headless bot clients, latency report.
 #
 # This is the only job in the repo that answers the question the product turns
 # on: do messages arrive over live i2p. It proves the full
 # "boot → link → deliver → measure" path end to end.
 #
-# Pattern reused from relay-testnet.yml:
-#   - SAM /dev/tcp probe loop
-#   - dest.pub written by the relay before its SAM session opens
-#   - GIPNY_RELAY_DATA for relay state directory
-#   - GIPNY_SAM_PORT so both bots attach to the single shared router
+# Every binary here compiles the i2p router in (i2p-embed): the relays, the
+# harness (both bots on one router, a destination each) and the agent each run
+# their own, in their own process. There is no i2pd beside them, no SAM and no
+# local port — the way the app ships.
+#
+# The router under test is upstream's branch head, not the pin: every job
+# compiles that revision in, and when the relay job delivers, `bump` moves the
+# pin to it. That is how the pin earns its way forward — by delivering, not by
+# compiling.
 #
 # Runs nightly + on demand rather than on every push/PR.
 #
-# Note (#42, #45): this job used to start THREE independent routers on one
-# runner (relay + one per bot). go-i2cp hardcodes its I2CP dial target to
-# 127.0.0.1:7654, so only the first router ever got a working transport. Relay
-# and both bots now share ONE router (GIPNY_SAM_PORT=7656).
-#
-# The I2CP reconnect workaround this job used to need went away with go-i2p:
-# i2pd has no such defect.
-#
-# It is NOT continue-on-error any more. It was, on the argument that reseed and
-# tunnel building are flaky — but that made a green check meaningless, and
-# meaningless green is how a transport that delivered zero messages stayed
-# hidden for weeks (#42). A failed delivery now reds the job. If real flakiness
-# turns out to red the nightly often, the answer is a retry or a quieter
-# notification, not hiding the result.
+# It is NOT continue-on-error. It was, on the argument that reseed and tunnel
+# building are flaky — but that made a green check meaningless, and meaningless
+# green is how a transport that delivered zero messages stayed hidden for weeks
+# (#42). A failed delivery reds the job.
 
 on:
   schedule:
@@ -40,121 +34,62 @@ on:
     paths:
       - 'third_party/**'
       - '.github/workflows/e2e-i2pd.yml'
+      - '.github/scripts/i2pd-under-test.sh'
 
 permissions:
   contents: read
 
 jobs:
   # ------------------------------------------------------------------
-  # Build the router we actually ship, from third_party/i2pd, rather than
-  # downloading upstream's release. Same shape as release.yml's router job.
-  # Testing a binary we did not build would leave the thing under test and
-  # the thing we bundle free to drift apart.
+  # Which revision is under test: the tracked branch's head, resolved once so
+  # every job below compiles the same one even if upstream pushes meanwhile.
   # ------------------------------------------------------------------
-  router:
-    name: router (i2pd, linux/amd64)
-    runs-on: ubuntu-22.04
-    timeout-minutes: 30
+  head:
+    name: i2pd revision under test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
-      revision: ${{ steps.build.outputs.revision }}
-      sha: ${{ steps.build.outputs.sha }}
+      revision: ${{ steps.head.outputs.revision }}
+      sha: ${{ steps.head.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      # This is the one place that deliberately runs ahead of the pin. Every
-      # other workflow builds the pinned commit; this job tests the branch head
-      # and, when it delivers, the bump job below moves the pin to it. That is
-      # how the pin earns its way forward — by delivering, not by compiling.
-      - name: check out the upstream head under test
+      - name: resolve the upstream head
+        id: head
         run: |
-          # Order matters, and getting it wrong is how this step failed twice.
-          #
-          # 1. Nested submodules first. `git submodule update` without --remote
-          #    checks out the commit the superproject records, so running it
-          #    *after* moving to the branch head silently undoes the move.
-          # 2. Unshallow next. actions/checkout clones shallow with no tags, and
-          #    USE_GIT_VERSION below shells out to `git describe --tags`, which
-          #    dies with "No tags can describe <sha>" without them.
-          # 3. Only then fetch the tracked branch by name and check it out.
-          #    `git submodule update --remote` cannot do this: checkout pins the
-          #    submodule's remote refspec to a single SHA, so origin/<branch>
-          #    does not exist locally and --remote finds nothing to move to.
-          git submodule update --init --recursive -- third_party/i2pd
-
+          # Unshallow for `git describe`: actions/checkout clones shallow with
+          # no tags, and describe dies with "No tags can describe <sha>".
+          git submodule update --init -- third_party/i2pd
           PINNED="$(git -C third_party/i2pd rev-parse --short HEAD)"
-
           git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
             git -C third_party/i2pd fetch --quiet --tags origin
-
+          # Fetch the tracked branch by name: `git submodule update --remote`
+          # cannot, as checkout pins the submodule's refspec to a single SHA.
           BRANCH="$(git config -f .gitmodules submodule.third_party/i2pd.branch)"
           git -C third_party/i2pd fetch --quiet origin "$BRANCH"
           git -C third_party/i2pd checkout --quiet FETCH_HEAD
-
-          HEAD_REV="$(git -C third_party/i2pd rev-parse --short HEAD)"
+          SHA="$(git -C third_party/i2pd rev-parse HEAD)"
+          REV="$(git -C third_party/i2pd describe --tags)"
           echo "branch:     $BRANCH"
           echo "pinned:     $PINNED"
-          echo "under test: $HEAD_REV  $(git -C third_party/i2pd log --oneline -1 | cut -d' ' -f2-)"
-          echo "describe:   $(git -C third_party/i2pd describe --tags)"
-          if [ "$PINNED" = "$HEAD_REV" ]; then
+          echo "under test: $REV  $(git -C third_party/i2pd log --oneline -1 | cut -d' ' -f2-)"
+          if [ "$PINNED" = "${SHA:0:${#PINNED}}" ]; then
             echo "note: branch head equals the pin — this run re-proves the pinned router"
-          else
-            echo "note: testing $PINNED -> $HEAD_REV; the bump job advances the pin only if this delivers"
           fi
-
-      - name: install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential libboost-program-options-dev libssl-dev zlib1g-dev
-
-      - name: build
-        id: build
-        working-directory: third_party/i2pd
-        run: |
-          git fetch --tags --quiet origin || true
-          # TORRENTS=no: upstream added a BitTorrent client with a JSON-RPC
-          # server, compiled in by default and linking boost_json. Run
-          # 35072808411 died at link on the missing libboost_json.a. A
-          # messenger's router has no use for it, so leave it out rather than
-          # add a dependency to carry it.
-          make USE_STATIC=yes USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes -j"$(nproc)"
-
-          # Assert the binary reports the revision it was built from, rather
-          # than trusting whatever ends up in the artifact downstream.
-          EXPECTED="$(git describe --tags)"
-          ACTUAL="$(./i2pd --version | head -1)"
-          echo "built from: $EXPECTED"
-          echo "reports:    $ACTUAL"
-          case "$ACTUAL" in
-            *"$EXPECTED"*) echo "version check: OK" ;;
-            *) echo "version check: FAILED"; exit 1 ;;
-          esac
-          echo "revision=$EXPECTED" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: i2pd-linux-amd64
-          path: third_party/i2pd/i2pd
-          if-no-files-found: error
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "revision=$REV" >> "$GITHUB_OUTPUT"
 
   e2e:
     name: e2e (relay + two bots)
-    needs: router
+    needs: head
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     outputs:
       delivered: ${{ steps.harness.outputs.delivered }}
     steps:
-      # ------------------------------------------------------------------
-      # Checkout + toolchains
-      # ------------------------------------------------------------------
       - uses: actions/checkout@v7
-
+      - name: i2pd under test and its build deps
+        run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
         with:
           # Cache the relay sub-workspace and the harness separately from the
@@ -162,65 +97,19 @@ jobs:
           workspaces: |
             core/relay
             . -> target
-
-      # ------------------------------------------------------------------
-      # Build all three binaries
-      # ------------------------------------------------------------------
-      - name: fetch the router built above
-        uses: actions/download-artifact@v8
-        with:
-          name: i2pd-linux-amd64
-          path: router
-
-      - name: install router and check its version
-        run: |
-          chmod +x router/i2pd
-          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
-
-          # The artifact is not taken on trust. The router job reports which
-          # revision it built, the binary is stamped with its own source, and
-          # this asserts they agree — so a stale or foreign artifact cannot
-          # quietly become the thing under test. Comparing against the job
-          # output rather than the branch also survives upstream pushing
-          # between the two jobs.
-          EXPECTED="${{ needs.router.outputs.revision }}"
-          ACTUAL="$(i2pd --version | head -1)"
-          echo "router job built: $EXPECTED"
-          echo "artifact reports: $ACTUAL"
-          test -n "$EXPECTED"
-          case "$ACTUAL" in
-            *"$EXPECTED"*) echo "version check: OK" ;;
-            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
-          esac
-
-      - name: i2pd sources and build deps (the relay compiles its router in)
-        run: |
-          git submodule update --init --depth 1 third_party/i2pd
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
-      - name: build relay
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: build relay and e2e harness
         run: |
           cargo build --release --manifest-path core/relay/Cargo.toml
-
-      - name: build e2e harness
-        run: |
           cargo build --release -p e2e-harness
 
-      # ------------------------------------------------------------------
-      # Start the i2p router for the relay
-      # ------------------------------------------------------------------
-      - name: start router (relay)
-        run: tests/e2e-harness/start-router.sh
-
-      # ------------------------------------------------------------------
-      # Start the relay; wait for dest.pub
-      # ------------------------------------------------------------------
       - name: start two relays, capture destinations
         run: |
-          # Two relays, one per bot. This is what makes the run prove something
-          # new: each bot collects from its own, so a message only arrives if the
-          # sender deposited on the *recipient's* relay. With one shared relay
-          # that distinction is invisible and a broken router would still pass.
+          # Two relays, one per bot, each a process with its own router. This
+          # is what makes the run prove something: each bot collects from its
+          # own, so a message only arrives if the sender deposited on the
+          # *recipient's* relay.
           start_relay() {
             name="$1"
             mkdir -p "e2e-state/$name"
@@ -229,8 +118,7 @@ jobs:
               > "e2e-logs/$name.log" 2>&1 &
             echo $! > "$name.pid"
             echo "[e2e-setup] $name pid=$(cat "$name.pid")"
-
-            # dest.pub is written before the SAM session opens.
+            # dest.pub is written before the destination is up.
             for i in $(seq 1 120); do
               [ -s "e2e-state/$name/dest.pub" ] && break
               if ! kill -0 "$(cat "$name.pid")" 2>/dev/null; then
@@ -241,31 +129,19 @@ jobs:
             if [ ! -s "e2e-state/$name/dest.pub" ]; then
               echo "$name: dest.pub never appeared"; tail -50 "e2e-logs/$name.log"; exit 1
             fi
-
-            # dest.pub appearing proves only that DEST GENERATE worked. In run
-            # 29685601054 the relay died on the SESSION CREATE right after and
-            # the step still reported success.
-            if ! kill -0 "$(cat "$name.pid")" 2>/dev/null; then
-              echo "$name wrote dest.pub and then died (SAM session never opened)"
-              tail -50 "e2e-logs/$name.log"; exit 1
-            fi
           }
-
           start_relay relay-a
           start_relay relay-b
-
-          RELAY_A="$(cat e2e-state/relay-a/dest.pub)"
-          RELAY_B="$(cat e2e-state/relay-b/dest.pub)"
+          # Alive a few seconds on: dest.pub alone proves only that keys exist.
+          sleep 5
+          for r in relay-a relay-b; do
+            kill -0 "$(cat "$r.pid")" 2>/dev/null || { echo "$r died after dest.pub"; tail -50 "e2e-logs/$r.log"; exit 1; }
+          done
           {
-            echo "RELAY_DEST_A=$RELAY_A"
-            echo "RELAY_DEST_B=$RELAY_B"
+            echo "RELAY_DEST_A=$(cat e2e-state/relay-a/dest.pub)"
+            echo "RELAY_DEST_B=$(cat e2e-state/relay-b/dest.pub)"
           } >> "$GITHUB_ENV"
-          echo "[e2e-setup] bot-a relay: ${RELAY_A:0:20}..."
-          echo "[e2e-setup] bot-b relay: ${RELAY_B:0:20}..."
 
-      # ------------------------------------------------------------------
-      # Run the end-to-end harness
-      # ------------------------------------------------------------------
       - name: run e2e harness
         id: harness
         env:
@@ -273,16 +149,11 @@ jobs:
           E2E_RELAY_DEST_A: ${{ env.RELAY_DEST_A }}
           E2E_RELAY_DEST_B: ${{ env.RELAY_DEST_B }}
           E2E_N_MESSAGES: '5'
-          E2E_TIMEOUT_SECS: '600'
+          E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
-          # Point the bots to the single shared router on SAM port 7656
-          GIPNY_SAM_PORT: '7656'
         run: |
-          # `set -e` is the default shell here and it applies inside `if` bodies
-          # too, so the harness exiting non-zero used to abort this step on the
-          # spot: TIME_RC was never assigned, the log was never printed, and
-          # `delivered` was left empty rather than false. `|| TIME_RC=$?` keeps
-          # the failure as data.
+          # `|| TIME_RC=$?` keeps the failure as data: the log is printed and
+          # `delivered` is set either way.
           TIME_RC=0
           if command -v /usr/bin/time >/dev/null 2>&1; then
             /usr/bin/time -v ./target/release/e2e-harness \
@@ -291,48 +162,27 @@ jobs:
             ./target/release/e2e-harness > e2e-logs/harness.log 2>&1 || TIME_RC=$?
           fi
           cat e2e-logs/harness.log
-
-          # Delivery, not exit status, is the question this job exists to answer,
-          # and it gates the pin bump below.
+          # Delivery, not exit status, is the question this job exists to
+          # answer, and it gates the pin bump below.
           if [ "$TIME_RC" -eq 0 ] && grep -q '\[e2e\] SUCCESS' e2e-logs/harness.log; then
             echo "delivered=true" >> "$GITHUB_OUTPUT"
           else
             echo "delivered=false" >> "$GITHUB_OUTPUT"
           fi
-
           exit $TIME_RC
 
-      # ------------------------------------------------------------------
-      # Surface the SAM/I2CP path from the router log. With DEBUG_I2P=debug the
-      # raw log runs to hundreds of thousands of lines (tunnel building, NTCP2,
-      # netdb), so print only what explains a failed SESSION CREATE. The full
-      # log still goes up as an artifact.
-      # ------------------------------------------------------------------
-      - name: router log (SAM / tunnel path)
-        if: always()
-        run: |
-          echo "[e2e] router log: $(wc -l < e2e-logs/relay-router.log) lines total"
-          echo "[e2e] ---- i2pd SAM + tunnel lines ----"
-          grep -aE 'SAM|Tunnel: (Outbound|Inbound) tunnel .* has been created|LeaseSet|Session' \
-            e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
-
-      # ------------------------------------------------------------------
-      # Publish timing report to the job summary
-      # ------------------------------------------------------------------
       - name: timing summary
         if: always()
         run: |
           {
             echo '### e2e messaging test'
             echo ''
-            # Extract the timing table printed by the harness
             if grep -q '\[e2e-timing\]' e2e-logs/harness.log 2>/dev/null; then
               grep -A 20 '\[e2e-timing\]' e2e-logs/harness.log | tail -20
             else
               echo '_harness log not available or timing block missing_'
             fi
             echo ''
-            # Peak RSS from /usr/bin/time -v output (if available)
             if grep -q 'Maximum resident' e2e-logs/harness.log 2>/dev/null; then
               echo '**Peak RSS (harness process):**'
               echo '```'
@@ -341,174 +191,97 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # ------------------------------------------------------------------
-      # Stop relay + router
-      # ------------------------------------------------------------------
-      - name: stop relays and router
+      - name: stop relays
         if: always()
         run: |
           kill "$(cat relay-a.pid)" 2>/dev/null || true
           kill "$(cat relay-b.pid)" 2>/dev/null || true
-          sleep 2
-          kill "$(cat relay-router.pid)" 2>/dev/null || true
           for r in relay-a relay-b; do
             echo "--- $r log (last 30 lines) ---"
             tail -30 "e2e-logs/$r.log" || true
           done
 
-      # ------------------------------------------------------------------
-      # Upload logs as artifact on failure for post-mortem
-      # ------------------------------------------------------------------
       - name: upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-logs
-          path: e2e-logs/
+          path: |
+            e2e-logs/
+            e2e-state/**/i2pd.log
           retention-days: 7
 
   # ------------------------------------------------------------------
   # The same delivery test with no standalone relay: each bot's relay is an
-  # EphemeralRelay running inside the harness process, on a destination that
-  # exists only in memory. This is what proves libcore's relay server works
-  # over live i2p, not just over the in-memory pipe its unit tests use.
-  #
-  # A separate job, and not in bump's needs: it tests our relay code, so its
-  # failure must not hold back a router revision the relay job proved.
+  # EphemeralRelay running inside the harness process. Proves libcore's relay
+  # server works over live i2p, not just over the in-memory pipe its unit
+  # tests use. Not in bump's needs: it tests our relay code, so its failure
+  # must not hold back a router revision the relay job proved.
   # ------------------------------------------------------------------
   e2e-in-process:
     name: e2e (relays inside the bots)
-    needs: router
+    needs: head
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-
+      - name: i2pd under test and its build deps
+        run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
-
-      - name: fetch the router built above
-        uses: actions/download-artifact@v8
-        with:
-          name: i2pd-linux-amd64
-          path: router
-
-      - name: install router and check its version
-        run: |
-          chmod +x router/i2pd
-          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
-
-          # The artifact is not taken on trust. The router job reports which
-          # revision it built, the binary is stamped with its own source, and
-          # this asserts they agree — so a stale or foreign artifact cannot
-          # quietly become the thing under test. Comparing against the job
-          # output rather than the branch also survives upstream pushing
-          # between the two jobs.
-          EXPECTED="${{ needs.router.outputs.revision }}"
-          ACTUAL="$(i2pd --version | head -1)"
-          echo "router job built: $EXPECTED"
-          echo "artifact reports: $ACTUAL"
-          test -n "$EXPECTED"
-          case "$ACTUAL" in
-            *"$EXPECTED"*) echo "version check: OK" ;;
-            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
-          esac
-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: build e2e harness
         run: cargo build --release -p e2e-harness
-
-      - name: start router
-        run: tests/e2e-harness/start-router.sh
-
       - name: run e2e harness
         env:
           E2E_IN_PROCESS_RELAYS: '1'
           E2E_N_MESSAGES: '5'
-          E2E_TIMEOUT_SECS: '600'
+          E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
-          GIPNY_SAM_PORT: '7656'
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
-
-      - name: router log (SAM / tunnel path)
-        if: always()
-        run: |
-          grep -aE 'SAM|LeaseSet|Session' e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
-
-      - name: stop router
-        if: always()
-        run: kill "$(cat relay-router.pid)" 2>/dev/null || true
-
       - name: upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-in-process-logs
-          path: e2e-logs/
+          path: |
+            e2e-logs/
+            e2e-state/**/i2pd.log
           retention-days: 7
 
   # ------------------------------------------------------------------
   # Delivery through the relay network while each side is away in turn: B
   # leaves, A writes; A leaves, B comes back on a new address, reads and
   # answers; B leaves, A comes back elsewhere and reads the answers. The seed
-  # is a `gipny-relay --dht` started here, on the same router, so the run
-  # needs neither the long-running relay-testnet seed nor its age key. Not in
-  # bump's needs: it tests our code, not the router.
+  # is a `gipny-relay --dht` started here, so the run needs neither the
+  # long-running relay-testnet seed nor its age key. Not in bump's needs: it
+  # tests our code, not the router.
   # ------------------------------------------------------------------
   e2e-dht:
     name: e2e (relay network, each side away in turn)
-    needs: router
+    needs: head
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-
+      - name: i2pd under test and its build deps
+        run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             core/relay
             . -> target
-
-      - name: fetch the router built above
-        uses: actions/download-artifact@v8
-        with:
-          name: i2pd-linux-amd64
-          path: router
-
-      - name: install router and check its version
-        run: |
-          chmod +x router/i2pd
-          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
-          EXPECTED="${{ needs.router.outputs.revision }}"
-          ACTUAL="$(i2pd --version | head -1)"
-          echo "router job built: $EXPECTED"
-          echo "artifact reports: $ACTUAL"
-          test -n "$EXPECTED"
-          case "$ACTUAL" in
-            *"$EXPECTED"*) echo "version check: OK" ;;
-            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
-          esac
-
-      - name: i2pd sources and build deps (the relay compiles its router in)
-        run: |
-          git submodule update --init --depth 1 third_party/i2pd
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: build seed and e2e harness
         run: |
           cargo build --release --manifest-path core/relay/Cargo.toml
           cargo build --release -p e2e-harness
-
-      - name: start router
-        run: tests/e2e-harness/start-router.sh
-
       - name: start the seed, capture its destination
         run: |
           mkdir -p e2e-state/seed
@@ -526,39 +299,34 @@ jobs:
           sleep 5
           kill -0 "$(cat seed.pid)" 2>/dev/null || { echo "seed died after dest.pub"; tail -50 e2e-logs/seed.log; exit 1; }
           echo "E2E_DHT_SEED_DEST=$(cat e2e-state/seed/dest.pub)" >> "$GITHUB_ENV"
-
       - name: run e2e harness
         env:
           E2E_DHT_OFFLINE: '1'
           E2E_N_MESSAGES: '3'
-          E2E_TIMEOUT_SECS: '1800'
+          E2E_TIMEOUT_SECS: '2400'
           E2E_WORK_DIR: e2e-state
-          GIPNY_SAM_PORT: '7656'
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
-
       - name: seed log
         if: always()
         run: tail -100 e2e-logs/seed.log || true
-
-      - name: stop seed and router
+      - name: stop seed
         if: always()
-        run: |
-          kill "$(cat seed.pid)" 2>/dev/null || true
-          kill "$(cat relay-router.pid)" 2>/dev/null || true
-
+        run: kill "$(cat seed.pid)" 2>/dev/null || true
       - name: upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-dht-logs
-          path: e2e-logs/
+          path: |
+            e2e-logs/
+            e2e-state/**/i2pd.log
           retention-days: 7
 
   # ------------------------------------------------------------------
   # The real gipny-agent binary as the far side. bot-a is the master; the agent
-  # is a separate process on the same router, started with bot-a's v2 card the
+  # is a separate process with its own router, started with bot-a's v2 card the
   # way a server would be. Proves over live i2p: the agent's first message
   # creates the contact on the master and carries GRANT; commands run one at a
   # time in arrival order; a file sent with a command is saved before it runs;
@@ -567,79 +335,39 @@ jobs:
   # ------------------------------------------------------------------
   e2e-agent:
     name: e2e (agent binary)
-    needs: router
+    needs: head
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-
+      - name: i2pd under test and its build deps
+        run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
-
-      - name: fetch the router built above
-        uses: actions/download-artifact@v8
-        with:
-          name: i2pd-linux-amd64
-          path: router
-
-      - name: install router and check its version
-        run: |
-          chmod +x router/i2pd
-          sudo install -m 0755 router/i2pd /usr/local/bin/i2pd
-
-          # The artifact is not taken on trust. The router job reports which
-          # revision it built, the binary is stamped with its own source, and
-          # this asserts they agree — so a stale or foreign artifact cannot
-          # quietly become the thing under test. Comparing against the job
-          # output rather than the branch also survives upstream pushing
-          # between the two jobs.
-          EXPECTED="${{ needs.router.outputs.revision }}"
-          ACTUAL="$(i2pd --version | head -1)"
-          echo "router job built: $EXPECTED"
-          echo "artifact reports: $ACTUAL"
-          test -n "$EXPECTED"
-          case "$ACTUAL" in
-            *"$EXPECTED"*) echo "version check: OK" ;;
-            *) echo "version check: FAILED — artifact is not the router built in this run"; exit 1 ;;
-          esac
-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: build e2e harness and gipny-agent
         run: cargo build --release -p e2e-harness -p gipny-agent
-
-      - name: start router
-        run: tests/e2e-harness/start-router.sh
-
       - name: run e2e harness against the agent binary
         env:
           E2E_AGENT_BIN: ./target/release/gipny-agent
           E2E_IN_PROCESS_RELAYS: '1'
           E2E_N_MESSAGES: '5'
-          E2E_TIMEOUT_SECS: '600'
+          E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
-          GIPNY_SAM_PORT: '7656'
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
-
-      - name: router log (SAM / tunnel path)
-        if: always()
-        run: |
-          grep -aE 'SAM|LeaseSet|Session' e2e-logs/relay-router.log | tail -200 || echo "(none matched)"
-
-      - name: stop router
-        if: always()
-        run: kill "$(cat relay-router.pid)" 2>/dev/null || true
-
       - name: upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: e2e-agent-logs
-          path: e2e-logs/
+          path: |
+            e2e-logs/
+            e2e-state/**/i2pd.log
           retention-days: 7
 
   # ------------------------------------------------------------------
@@ -657,7 +385,7 @@ jobs:
   # ------------------------------------------------------------------
   bump:
     name: record the proven revision
-    needs: [router, e2e]
+    needs: [head, e2e]
     if: >-
       github.repository == 'gluckdev/gipny-i2p' &&
       github.event_name != 'pull_request' &&
@@ -673,8 +401,8 @@ jobs:
 
       - name: move the pin to the proven revision
         env:
-          PROVEN_SHA: ${{ needs.router.outputs.sha }}
-          PROVEN_REV: ${{ needs.router.outputs.revision }}
+          PROVEN_SHA: ${{ needs.head.outputs.sha }}
+          PROVEN_REV: ${{ needs.head.outputs.revision }}
         run: |
           git -C third_party/i2pd fetch --quiet origin
           git -C third_party/i2pd checkout --quiet "$PROVEN_SHA"

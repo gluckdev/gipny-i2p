@@ -1,12 +1,12 @@
 # agent — `gipny-agent`: headless-агент, выполняющий команды мастера из чата
 
-Один бинарь, `src/main.rs`, поверх `SessionManager` из `libcore`. Запускает рядом свой i2pd (или подключается к `--sam`), поднимает личный релей, пишет мастеру первым, выполняет присланные команды и сам обновляется. Пользовательская инструкция по запуску — в `README.txt` внутри архива (генерируется в `release.yml`) и в корневом `README.md`.
+Один бинарь, `src/main.rs`, поверх `SessionManager` из `libcore`. Запускает роутер i2p внутри своего процесса (без SAM и портов), поднимает личный релей, пишет мастеру первым, выполняет присланные команды и сам обновляется. Пользовательская инструкция по запуску — в `README.txt` внутри архива (генерируется в `release.yml`) и в корневом `README.md`.
 
 ## Что здесь
 
 | Файл | За что отвечает |
 |---|---|
-| `src/main.rs` | `parse_args`/`usage` (флаги `--data`, `--master`, `--name`, `--relay`, `--sam`, `--cwd`, `--timeout`); `data_dir` (`--data` или `GIPNY_AGENT_DATA`); `load_master`/`load_relay`, которые запоминают карточку мастера и `--relay` в `master.card` и `relay.txt`; `main` (роутер → `SessionManager::start` → встроенный `EphemeralRelay` или внешний релей → GRANT мастеру → цикл событий: команды, OFF); `load_attachments`; `run_update_loop` (автообновление); `begin_stop` (REVOKE и выход) |
+| `src/main.rs` | `parse_args`/`usage` (флаги `--data`, `--master`, `--name`, `--relay`, `--cwd`, `--timeout`); `data_dir` (`--data` или `GIPNY_AGENT_DATA`); `load_master`/`load_relay`, которые запоминают карточку мастера и `--relay` в `master.card` и `relay.txt`; `main` (роутер → `SessionManager::start` → встроенный `EphemeralRelay` или внешний релей → GRANT мастеру → цикл событий: команды, OFF); `load_attachments`; `run_update_loop` (автообновление); `begin_stop` (REVOKE и выход) |
 | `gipny-agent.service` | systemd-юнит: `/var/lib/gipny-agent`, аргументы из `/etc/gipny-agent.env` (`GIPNY_AGENT_ARGS`), `Restart=on-failure` |
 | `Cargo.toml` | Версия агента, должна совпадать с версией приложения |
 
@@ -29,7 +29,7 @@
 - **База агента открывается без шифрования** (`Db::open_plain`). Каталог данных создаётся приватным для пользователя.
 - **Адрес личного релея новый при каждом запуске.** Мастер узнаёт его из GRANT, который агент шлёт при каждом старте.
 - **Путь к бинарю для самообновления берётся один раз** до цикла: после первой подмены `current_exe()` указывал бы на удалённый файл.
-- **i2pd ищется рядом с исполняемым файлом.** Поэтому он лежит в архиве, и smoke-тест в `release.yml` это проверяет.
+- **Рядом с исполняемым файлом лежит только снимок сети** (`i2pd-netdb-seed.tar.gz`): роутер вкомпилирован, отдельного i2pd в архиве нет. Smoke-тест в `release.yml` это проверяет.
 
 ## Как проверить
 
@@ -37,4 +37,4 @@
 env -u CC -u CXX cargo check -p gipny-agent
 ```
 
-По живой i2p агента проверяет джоба `e2e (agent binary)` в `e2e-i2pd.yml` (`E2E_AGENT_BIN`). Запуск из архива без системного i2pd — smoke-тест в джобе `agent (linux …)` в `release.yml`.
+По живой i2p агента проверяет джоба `e2e (agent binary)` в `e2e-i2pd.yml` (`E2E_AGENT_BIN`). Запуск из архива — smoke-тест в джобе `agent (linux …)` в `release.yml`.

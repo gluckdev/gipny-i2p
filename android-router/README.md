@@ -22,14 +22,14 @@
 | Набор исходников и библиотек | `jni/Android.mk` |
 | Флаги компилятора | `jni/Application.mk` |
 | Версия i2pd | Пин сабмодуля `third_party/i2pd` (двигает джоба `bump` в `e2e-i2pd.yml`) |
-| Ревизия Boost-for-Android, NDK | `BOOST_FOR_ANDROID_REV`, `NDK_VERSION` в `release.yml` (джоба `android-router`) и `i2pd-build.yml` |
+| Ревизия Boost-for-Android, NDK | `BOOST_FOR_ANDROID_REV`, `NDK_VERSION` в `release.yml` (джоба `android-router`) и `i2p-embed.yml` (джоба `android`) |
 
 ## Инварианты и грабли
 
 - **Имя JNI-символа должно совпадать с пакетом и классом Kotlin.**
-- **Функции прослойки экспортируются** (`GIPNY_API` в `shim.h`): Rust-сторона ищет их в динамической таблице `libi2pd.so`. Проверяют шаги `build libi2pd.so` в `release.yml` и `verify and stage` в `i2pd-build.yml`.
+- **Функции прослойки экспортируются** (`GIPNY_API` в `shim.h`): Rust-сторона ищет их в динамической таблице `libi2pd.so`. Проверяют шаги `build libi2pd.so` в `release.yml` и в `i2p-embed.yml`.
 - **Холодная сборка идёт около часа на ABI** (Boost и OpenSSL из исходников). `release.yml` кэширует результат по пину i2pd, NDK, ревизии Boost и хэшу `android-router/jni/**` и `i2p-embed/shim/**`, поэтому правка здесь или в прослойке сбрасывает кэш.
 
 ## Как проверить
 
-Только в CI: `i2pd-build.yml` (джобы `android …`) или джоба `router (i2pd, android …)` в `release.yml`. Шаг `verify signed APKs` в `release.yml` проверяет, что `libi2pd.so` лежит в APK и что `libgipny_lib.so` с ней слинкована.
+Только в CI: джоба `android` в `i2p-embed.yml` (arm64, на каждый push) или `router (i2pd, android …)` в `release.yml`. Шаг `verify signed APKs` в `release.yml` проверяет, что `libi2pd.so` лежит в APK и что `libgipny_lib.so` с ней слинкована.

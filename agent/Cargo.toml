@@ -15,7 +15,3 @@ tokio = { workspace = true }
 anyhow = "1"
 bincode = { workspace = true }
 
-[features]
-# The i2pd router inside the process instead of SAM (needs boost, OpenSSL
-# and zlib at build time). No SAM, no port, no router process.
-embedded-i2p = ["gipny-libcore/embedded-i2p"]

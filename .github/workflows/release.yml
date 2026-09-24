@@ -78,156 +78,10 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # 1. The i2pd binary, built from third_party/i2pd at the pinned commit, only
-  #    to make the network snapshot below: every build compiles the router in
-  #    (i2p-embed) and ships no i2pd.
-  # ---------------------------------------------------------------------------
-  router:
-    name: router (i2pd, ${{ matrix.label }})
-    needs: version
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux is built against musl and fully static, so one file runs on
-          # every distribution — Arch, Void, CentOS, Deepin — instead of
-          # carrying a glibc floor from whatever image built it.
-          - { label: linux/amd64, runs-on: ubuntu-latest, out: i2pd, artifact: router-linux-amd64 }
-          # Only for the network database snapshot below: every build ships
-          # the router compiled in.
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-
-      # USE_GIT_VERSION and the version check below both run `git describe
-      # --tags`, and actions/checkout clones submodules shallow with no tags —
-      # run 29696503988 died on exactly this ("No tags can describe"). Under
-      # `set -e` a failing describe aborts the step, so this is not optional.
-      - name: unshallow the router sources (git describe needs tags)
-        shell: bash
-        run: |
-          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
-            git -C third_party/i2pd fetch --quiet --tags origin
-          git -C third_party/i2pd describe --tags
-          echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      # The router is the same binary for the same pinned revision, and that pin
-      # only moves when e2e proves delivery — so building it five times per
-      # release was five idle waits (4-11 minutes each) that everything
-      # downstream sat behind. Keyed like the Android one: revision plus
-      # everything that changes the output.
-      - name: restore cached router
-        id: router-cache
-        uses: actions/cache@v6
-        with:
-          path: third_party/i2pd/${{ matrix.out }}
-          key: i2pd-${{ matrix.artifact }}-${{ env.I2PD_REV }}-${{ hashFiles('.github/scripts/build-i2pd-macos.sh') }}-v1
-
-      # Built from third_party/i2pd, not downloaded: a release must be
-      # reproducible from this repository, and an upstream binary would also be
-      # a binary nobody here reviewed. See docs/i2p-transport-evaluation.md for
-      # why the router changed at all — go-i2p never delivered a message.
-      - name: build (linux, static musl)
-        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src alpine:3.21 sh -c '
-            apk add --no-cache build-base git make g++ \
-              boost-dev boost-static openssl-dev openssl-libs-static zlib-dev zlib-static
-            git config --global --add safe.directory "*"
-            cd third_party/i2pd
-            make USE_UPNP=no TORRENTS=no USE_GIT_VERSION=yes LDFLAGS=-static -j"$(nproc)"
-            strip --strip-unneeded i2pd
-          '
-          ldd third_party/i2pd/i2pd 2>&1 | grep -qiE 'not a (valid )?dynamic|statically linked' \
-            || { echo "router is not static — it would not run on other distros"; exit 1; }
-          ls -lh third_party/i2pd/i2pd
-
-      # A release has to be able to say which source revision it shipped.
-      # USE_GIT_VERSION stamps the binary; this asserts the stamp matches the
-      # submodule, so the shipped router can be tied back to the revision the
-      # e2e job proved delivers.
-      - name: verify version stamp (linux)
-        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          EXPECTED="$(git -C third_party/i2pd describe --tags)"
-          ACTUAL="$(third_party/i2pd/i2pd --version | head -1)"
-          echo "expected: $EXPECTED"
-          echo "actual:   $ACTUAL"
-          case "$ACTUAL" in
-            *"${EXPECTED#v}"*) echo "version check: OK" ;;
-            *) echo "version check: FAILED — binary is not the pinned source"; exit 1 ;;
-          esac
-
-      - uses: msys2/setup-msys2@v2
-        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            base-devel
-            git
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-boost
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-zlib
-
-      - name: build (windows)
-        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          cd third_party/i2pd
-          # USE_WIN32_APP=no: Makefile.mingw defaults it to yes, which builds the
-          # tray/GUI daemon with -mwindows. gipny's router is a background
-          # process driven over SAM; the installer must not drop a tray icon and
-          # a window on the user.
-          #
-          # No TORRENTS=no: Makefile.mingw ignores it and always links
-          # boost_json. The torrent code stays inert — it only starts from a
-          # tunnels.conf section gipny never writes.
-          make USE_UPNP=no USE_WIN32_APP=no USE_GIT_VERSION=yes -j"$(nproc)"
-          strip --strip-unneeded i2pd.exe
-          ls -lh i2pd.exe
-          ./i2pd.exe --version
-
-      # Static against Homebrew's boost/openssl, stripped, ad-hoc signed, and
-      # checked to link nothing outside the OS — shared with i2pd-build.yml.
-      - name: build (macos)
-        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
-        run: .github/scripts/build-i2pd-macos.sh
-
-      # Shrink the bundled router. Linux only: UPX-packed Windows executables
-      # routinely trip antivirus false positives.
-      - name: compress router (UPX)
-        if: steps.router-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
-        run: |
-          sudo apt-get update && sudo apt-get install -y upx-ucl
-          # A static-pie binary is something UPX has historically refused; keep
-          # the unpacked one if packing fails rather than shipping nothing.
-          cp "third_party/i2pd/${{ matrix.out }}" /tmp/i2pd.unpacked
-          if upx --best --lzma "third_party/i2pd/${{ matrix.out }}"; then
-            # Packed binaries have to still run: an unrunnable router is a
-            # client that never connects, and nothing downstream would notice.
-            "third_party/i2pd/${{ matrix.out }}" --version \
-              || { echo "UPX-packed router does not run — shipping the unpacked one"
-                   cp /tmp/i2pd.unpacked "third_party/i2pd/${{ matrix.out }}"; }
-          else
-            echo "UPX declined this binary — shipping it unpacked"
-            cp /tmp/i2pd.unpacked "third_party/i2pd/${{ matrix.out }}"
-          fi
-          ls -lh "third_party/i2pd/${{ matrix.out }}"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          retention-days: 5
-          path: third_party/i2pd/${{ matrix.out }}
-
-  # ---------------------------------------------------------------------------
-  # 1b. A snapshot of the i2p network database, shipped with every client so a
-  #     first start does not have to reseed. The freshly built router runs a
-  #     few minutes on the runner (reseed, then exploration) and its netDb —
+  # 1. A snapshot of the i2p network database, shipped with every client so a
+  #    first start does not have to reseed. The router (i2p-embed at the pin,
+  #    run by its netdb_snapshot example) runs a few minutes on the runner
+  #    (reseed, then exploration) and its netDb —
   #     public RouterInfos of other routers, nothing of ours — is packed. A
   #     client with an empty netDb lays it out before starting its router;
   #     stale entries are dropped by the router itself, and with too few left
@@ -236,29 +90,23 @@ jobs:
   # ---------------------------------------------------------------------------
   netdb-seed:
     name: network database snapshot
-    needs: router
+    needs: version
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - uses: actions/download-artifact@v8
-        with: { name: router-linux-amd64, path: router }
+      - uses: actions/checkout@v7
+      - name: i2pd sources and build deps
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - uses: dtolnay/rust-toolchain@stable
       - name: run the router and let it learn the network
         run: |
-          chmod +x router/i2pd
-          mkdir -p seed-dir
-          ./router/i2pd --datadir="$PWD/seed-dir" --sam.enabled=false --http.enabled=false \
-            --httpproxy.enabled=false --socksproxy.enabled=false --upnp.enabled=false \
-            --notransit --log=file --logfile="$PWD/seed.log" &
-          pid=$!
-          for i in $(seq 1 36); do
-            sleep 10
-            n=$(find seed-dir/netDb -name 'routerInfo-*.dat' 2>/dev/null | wc -l)
-            echo "after $((i*10)) s: $n routers known"
-            [ "$n" -ge 2500 ] && break
-          done
-          kill "$pid"; sleep 5
+          cargo run --release -p i2p-embed --example netdb_snapshot -- "$PWD/seed-dir" 2500 360
           n=$(find seed-dir/netDb -name 'routerInfo-*.dat' | wc -l)
-          echo "snapshot: $n routers"
           tar -czf i2pd-netdb-seed.tar.gz -C seed-dir/netDb .
           ls -lh i2pd-netdb-seed.tar.gz
           {
@@ -279,7 +127,7 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop:
     name: desktop (${{ matrix.os }})
-    needs: [router, netdb-seed]
+    needs: [netdb-seed]
     strategy:
       fail-fast: false
       matrix:
@@ -365,7 +213,7 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         with:
           projectPath: core
-          args: --bundles ${{ matrix.bundles }} --features embedded-i2p
+          args: --bundles ${{ matrix.bundles }}
       - name: the app links nothing a Mac lacks
         if: runner.os == 'macOS'
         run: |
@@ -481,7 +329,7 @@ jobs:
         run: |
           export I2P_EMBED_STATIC_LIBS=boost_program_options
           export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
-          cargo build --release -p gipny-agent --features embedded-i2p
+          cargo build --release -p gipny-agent
       - name: package
         run: |
           VERSION="$(jq -r .version core/tauri.conf.json)"
@@ -598,7 +446,7 @@ jobs:
           - { abi: armeabi-v7a, arch: arm }
     env:
       NDK_VERSION: 27.3.13750724
-      # Pinned; see i2pd-build.yml. Must match it, or the release ships an
+      # Pinned; i2p-embed.yml's android job uses the same. Must match it, or the release ships an
       # Android router built from different sources than the one that was tested.
       BOOST_FOR_ANDROID_REV: 7943955c4d11a5bd61381a8b200c28619323eb0f
     steps:
@@ -840,7 +688,7 @@ jobs:
         # the 32-bit libraries it will never load. It also keeps each APK to
         # its own ABI: Tauri's per-arch flavors filter jniLibs, while the
         # universal flavor would pack every ABI staged in jniLibs.
-        run: cd core && cargo tauri android build --apk --split-per-abi --target ${{ matrix.target }} --features embedded-i2p
+        run: cd core && cargo tauri android build --apk --split-per-abi --target ${{ matrix.target }}
       - name: verify signed APKs
         run: |
           # apksigner is not on PATH — pick the newest build-tools copy.

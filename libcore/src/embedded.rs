@@ -7,9 +7,7 @@
 //! new every start), so profiles can share it. Its settings are the first
 //! profile's too, until the app restarts.
 //!
-//! A build with the `embedded-i2p` feature uses nothing else: no SAM, no
-//! router process, no local port. SAM remains only in builds without it
-//! (platforms not moved yet: Windows, macOS, Android).
+//! There is nothing else: no SAM, no router process, no local port.
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -18,11 +16,6 @@ use crate::net::NetError;
 use crate::router::{RouterSettings, Yggdrasil};
 
 static ROUTER: OnceLock<Arc<i2p_embed::Router>> = OnceLock::new();
-
-/// Whether this run uses the in-process router: always, in a build that has it.
-pub fn enabled() -> bool {
-    true
-}
 
 /// The router, started on first use under `data_dir/i2p/router`.
 pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed::Router>, NetError> {

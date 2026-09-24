@@ -9,7 +9,7 @@ import java.io.File
  *
  * i2pd is C++ with boost and OpenSSL; building it from Gradle on every APK build
  * would add hours per ABI, so it is built once in CI
- * (.github/workflows/i2pd-build.yml, from android-router/jni) and consumed here.
+ * (release.yml and i2p-embed.yml, from android-router/jni) and consumed here.
  * The predecessor task cross-compiled the Go router inline, which was possible
  * only because pure Go builds in seconds.
  *
@@ -40,7 +40,7 @@ abstract class I2pdRouterTask : DefaultTask() {
             ?: throw GradleException(
                 "no prebuilt libi2pd.so for $abi. Looked in:\n" +
                     candidates.joinToString("\n") { "  - $it" } +
-                    "\nBuild it with the i2pd-build workflow and drop the artifact in " +
+                    "\nTake it from release.yml's router-android artifact and drop it in " +
                     "android-router/prebuilt/$abi/, or set GIPNY_I2PD_JNILIBS to a " +
                     "directory laid out as <abi>/libi2pd.so. " +
                     "Pass -PskipRouter to build an APK without a router (it will not connect)."

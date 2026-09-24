@@ -19,6 +19,9 @@
 //!   I2P_EMBED_PREBUILT_DIR  link the libi2pd.so there (Android, where
 //!                           ndk-build compiles libi2pd with the shim) and
 //!                           compile nothing
+//!   I2P_EMBED_STUB=1        no router: the shim's functions over nothing
+//!                           (shim/stub.c), for builds that must link and
+//!                           start but never run one (debug APKs in build.yml)
 //!   I2P_EMBED_SKIP_NATIVE=1 compile nothing native (a `cargo check` of the
 //!                           Rust side on a machine without boost)
 
@@ -38,6 +41,14 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=I2P_EMBED_SKIP_NATIVE");
     if env::var_os("I2P_EMBED_SKIP_NATIVE").is_some_and(|v| v == "1") {
+        return;
+    }
+    // No router at all: the shim's interface over nothing, so a build that
+    // only has to link and start (build.yml's debug APKs) needs no boost.
+    println!("cargo:rerun-if-env-changed=I2P_EMBED_STUB");
+    if env::var_os("I2P_EMBED_STUB").is_some_and(|v| v == "1") {
+        println!("cargo:rerun-if-changed=shim/stub.c");
+        cc::Build::new().include(manifest.join("shim")).file(manifest.join("shim/stub.c")).compile("gipny_i2pd_stub");
         return;
     }
     // Android: libi2pd and the shim are one shared library built by ndk-build

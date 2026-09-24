@@ -56,7 +56,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # macOS: Homebrew's boost and OpenSSL, linked in statically (a user's Mac has
-  # neither), as .github/scripts/build-i2pd-macos.sh does for the old binary.
+  # neither), as release.yml does for the app.
   macos:
     name: i2p-embed on macOS (${{ matrix.os }}, live)
     runs-on: ${{ matrix.os }}
@@ -260,7 +260,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: i2p-embed-e2e
       - name: build the harness on the in-process router
-        run: cargo build --release -p e2e-harness --features embedded-i2p
+        run: cargo build --release -p e2e-harness
       - name: run
         env:
           E2E_IN_PROCESS_RELAYS: '1'

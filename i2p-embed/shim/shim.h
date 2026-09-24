@@ -7,7 +7,8 @@
  * wakes a task from it.
  *
  * Ownership: every gipny_* object returned is released with its own
- * *_free/*_destroy; strings returned are released with gipny_string_free.
+ * gipny_..._free or gipny_..._destroy; strings returned are released with
+ * gipny_string_free.
  */
 #ifndef GIPNY_I2P_SHIM_H
 #define GIPNY_I2P_SHIM_H

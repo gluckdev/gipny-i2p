@@ -1,18 +1,15 @@
-//! Network transport over i2p (SAMv3).
+//! Network transport over i2p, on the router inside this process.
 //!
-//! This is the i2p replacement for the former Tor/Arti transport. The public
-//! surface is deliberately unchanged from the old `TorNode`: the rest of the
-//! app (session, relay client, update client, bot-sdk) treats a node's address
-//! as an opaque `String` (historically an `.onion`, now an i2p destination) and
-//! operates over an abstract [`DuplexStream`]. Only this module and the relay
-//! server know we speak SAMv3.
+//! The public surface is deliberately unchanged from the old `TorNode`: the
+//! rest of the app (session, relay client, update client, bot-sdk) treats a
+//! node's address as an opaque `String` (historically an `.onion`, now an i2p
+//! destination) and operates over an abstract [`DuplexStream`].
 //!
-//! The actual i2p router (i2pd) runs as a separate process/host; see
-//! [`crate::router`]. Here we open one SAMv3 STREAM session bound to our
-//! persistent destination and use it for outbound connections (and, optionally,
-//! inbound via `STREAM FORWARD`).
+//! The router is libi2pd compiled in ([`crate::embedded`], `i2p-embed`): no
+//! SAM, no router process, no local port. A node is one destination of ours
+//! on it, outbound only.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -21,16 +18,11 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex};
-use tokio::task::JoinHandle;
-use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions, StreamOptions};
+use tokio::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
 use crate::crypto::{IdentityCard, PreKeyBundle, RatchetHeader, X3dhInitial};
-use crate::router::RouterHandle;
-#[cfg(target_os = "android")]
-use crate::router::{DEFAULT_HTTP_PROXY_PORT, DEFAULT_SAM_PORT};
 
 pub type Result<T> = std::result::Result<T, NetError>;
 
@@ -46,9 +38,6 @@ pub enum NetError {
 impl From<bincode::Error> for NetError { fn from(_: bincode::Error) -> Self { Self::Codec } }
 
 const MAX_FRAME: u32 = 16 * 1024 * 1024;
-/// SAM session nickname prefix (a unique suffix is appended per session).
-const NICKNAME: &str = "gipny";
-const INBOX_CAPACITY: usize = 64;
 const RECREATE_AFTER_FAILURES: u32 = 5;
 const RECREATE_COOLDOWN: Duration = Duration::from_secs(300);
 const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
@@ -64,25 +53,6 @@ pub const DEFAULT_HOPS: u8 = 3;
 /// half. The floor lives here rather than at the call site so no future caller
 /// can talk the transport below it by passing a smaller number.
 pub const MIN_HOPS: u8 = 2;
-
-/// Monotonic counter making each SAM session nickname unique, so a rebuilt
-/// session never collides (`DUPLICATED_ID`) with one the router hasn't dropped.
-static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// A SAM session ID that is unique and cannot be guessed.
-///
-/// i2pd's SAM has no authentication: `STREAM ACCEPT` and `STREAM CONNECT`
-/// find a session by its ID alone, and anything on this machine can reach the
-/// SAM port — on Android, any app. With a guessable ID (`prefix-pid-counter`)
-/// another program could take the connections meant for us or open ones from
-/// our destination. The pid and counter keep it unique; 128 random bits keep
-/// it secret. It is never logged.
-pub(crate) fn sam_session_id(prefix: &str) -> String {
-    let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
-    let secret: [u8; 16] = crate::crypto::random_array();
-    let secret: String = secret.iter().map(|b| format!("{b:02x}")).collect();
-    format!("{prefix}-{}-{seq}-{secret}", std::process::id())
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
@@ -138,35 +108,21 @@ impl Connection {
     }
 }
 
-/// i2p transport node.
+/// i2p transport node: one destination of ours on the in-process router.
 ///
-/// Holds one SAMv3 STREAM session (bound to our persistent destination) plus the
-/// router process handle. Outbound connections are opened via detached SAM
-/// streams (so concurrent dials don't serialize); inbound — unused by the client
-/// today, all messaging is relay-mediated — is available via `STREAM FORWARD`
-/// when `GIPNY_I2P_ACCEPT` is set.
+/// Outbound only — all messaging is relay-mediated; our relay, when we host
+/// one, is a destination of its own ([`crate::EphemeralRelay`]).
 pub struct I2pNode {
-    /// The SAM session; `None` when the router runs in this process.
-    session: Option<Arc<Mutex<Session<style::Stream>>>>,
-    /// Our destination on the in-process router (`embedded`), in place of the
-    /// SAM session. Replaced whole by `recreate`.
-    #[cfg(feature = "embedded-i2p")]
-    embedded: Option<Mutex<Arc<i2p_embed::Destination>>>,
+    /// Our destination. Replaced whole by `recreate` (same keys, new tunnels).
+    dest: Mutex<Arc<i2p_embed::Destination>>,
     /// Shareable public destination (opaque address; the old code's "onion").
     address: String,
-    /// Persistent private key blob, reused across session rebuilds. Wrapped in
+    /// Private keys, reused when the destination is rebuilt. Wrapped in
     /// `Zeroizing` so our long-lived copy is scrubbed from memory on drop (the
     /// process also mlocks to keep it out of swap).
     privkey: zeroize::Zeroizing<String>,
-    #[allow(dead_code)]
-    data_dir: PathBuf,
-    sam_port: u16,
-    http_proxy_port: Option<u16>,
-    inbound_tx: mpsc::Sender<Connection>,
-    inbound: Arc<Mutex<mpsc::Receiver<Connection>>>,
-    accept_task: Mutex<Option<JoinHandle<()>>>,
     created_at: Instant,
-    /// Hops each of our outbound tunnels is built with.
+    /// Hops each of our tunnels is built with.
     ///
     /// This is our leg of the path and nobody else's: a letter leaves through
     /// these hops and arrives through the inbound tunnel of the relay the
@@ -177,11 +133,6 @@ pub struct I2pNode {
     relay_fail_count: AtomicU32,
     last_recreate_at: Mutex<Option<Instant>>,
     recreate_lock: Mutex<()>,
-    /// Owns the router child process; dropping it tears the router down. Also
-    /// what `ensure_router` restarts when the child dies under us.
-    router: Mutex<RouterHandle>,
-    /// Kept so a restarted router gets the profile's own settings.
-    router_settings: crate::router::RouterSettings,
 }
 
 impl I2pNode {
@@ -191,9 +142,8 @@ impl I2pNode {
     /// relay routes by that key — not by i2p address — so the network address is
     /// deliberately regenerated every session for unlinkability. Nothing is
     /// persisted to disk; the key stays within a session only (for `recreate`).
-    /// `settings` configures the router we spawn — transit share and Yggdrasil.
-    /// Ignored on Android and when attaching to a router somebody else started,
-    /// since those settings belong to whoever launched it.
+    /// `settings` configures the router, when this is the first node of the
+    /// process to start it — transit share and Yggdrasil.
     pub async fn start(data_dir: &Path, settings: crate::router::RouterSettings) -> Result<Self> {
         Self::start_with_progress(data_dir, settings, None).await
     }
@@ -202,82 +152,6 @@ impl I2pNode {
     /// it to keep the unlock screen moving: everything here takes from a second
     /// to three minutes and used to happen in complete silence.
     pub async fn start_with_progress(
-        data_dir: &Path,
-        settings: crate::router::RouterSettings,
-        progress: Option<crate::router::BootProgress>,
-    ) -> Result<Self> {
-        use crate::router::note;
-        #[cfg(feature = "embedded-i2p")]
-        if crate::embedded::enabled() {
-            return Self::start_embedded(data_dir, settings, progress).await;
-        }
-        #[cfg(target_os = "android")]
-        let router = {
-            let _ = settings; // the foreground service owns the router's config
-            // The service configures i2pd's HTTP proxy on the default port so
-            // update checks go out over i2p here too; `attach_with_proxy`
-            // verifies it is actually listening.
-            RouterHandle::attach_with_progress(DEFAULT_SAM_PORT, Some(DEFAULT_HTTP_PROXY_PORT), progress.clone()).await?
-        };
-        // GIPNY_SAM_PORT attaches to a router someone else already started
-        // instead of spawning our own — the e2e harness uses it to put every
-        // bot on one shared router (only one router per host can hold I2CP, see
-        // the SAM bridge). A malformed value is a configuration error, not
-        // a reason to quietly spawn a second router that will then fail to build
-        // tunnels somewhere far from here.
-        #[cfg(not(target_os = "android"))]
-        let router = match std::env::var("GIPNY_SAM_PORT") {
-            Ok(raw) => {
-                let port = raw.trim().parse::<u16>().map_err(|e| {
-                    NetError::I2p(format!("GIPNY_SAM_PORT={raw:?} is not a valid port: {e}"))
-                })?;
-                RouterHandle::attach_with_progress(port, None, progress.clone()).await?
-            }
-            Err(_) => RouterHandle::start_with_progress(data_dir, None, settings, progress.clone()).await?,
-        };
-
-        let sam_port = router.sam_port();
-        let http_proxy_port = router.http_proxy_port();
-        note(&progress, "session", "generating ephemeral destination for this session...");
-        let (address, privkey) = RouterApi::new(sam_port)
-            .generate_destination()
-            .await
-            .map_err(|e| NetError::I2p(format!("generate destination: {e}")))?;
-        note(&progress, "session", format!("destination = {}", short_addr(&address)));
-
-        let session = build_session(sam_port, &privkey, DEFAULT_HOPS).await?;
-        note(&progress, "session-done", "SAM session open");
-        let session = Arc::new(Mutex::new(session));
-
-        let (tx, rx) = mpsc::channel::<Connection>(INBOX_CAPACITY);
-        let accept_task = spawn_inbound(session.clone(), tx.clone()).await;
-
-        Ok(Self {
-            session: Some(session),
-            #[cfg(feature = "embedded-i2p")]
-            embedded: None,
-            address,
-            privkey: zeroize::Zeroizing::new(privkey),
-            data_dir: data_dir.to_path_buf(),
-            sam_port,
-            http_proxy_port,
-            inbound_tx: tx,
-            inbound: Arc::new(Mutex::new(rx)),
-            accept_task: Mutex::new(accept_task),
-            created_at: Instant::now(),
-            hops: AtomicU8::new(DEFAULT_HOPS),
-            relay_fail_count: AtomicU32::new(0),
-            last_recreate_at: Mutex::new(None),
-            recreate_lock: Mutex::new(()),
-            router: Mutex::new(router),
-            router_settings: settings,
-        })
-    }
-
-    /// On the router inside this process: a destination of ours made from
-    /// fresh keys, no SAM. The same shape as the SAM path otherwise.
-    #[cfg(feature = "embedded-i2p")]
-    async fn start_embedded(
         data_dir: &Path,
         settings: crate::router::RouterSettings,
         progress: Option<crate::router::BootProgress>,
@@ -295,60 +169,27 @@ impl I2pNode {
         dest.ready(Duration::from_secs(600)).await
             .map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
         note(&progress, "session-done", "tunnels built");
-        let (tx, rx) = mpsc::channel::<Connection>(INBOX_CAPACITY);
         Ok(Self {
-            session: None,
-            embedded: Some(Mutex::new(Arc::new(dest))),
+            dest: Mutex::new(Arc::new(dest)),
             address,
             privkey: zeroize::Zeroizing::new(privkey),
-            data_dir: data_dir.to_path_buf(),
-            sam_port: 0,
-            http_proxy_port: None,
-            inbound_tx: tx,
-            inbound: Arc::new(Mutex::new(rx)),
-            accept_task: Mutex::new(None),
             created_at: Instant::now(),
             hops: AtomicU8::new(DEFAULT_HOPS),
             relay_fail_count: AtomicU32::new(0),
             last_recreate_at: Mutex::new(None),
             recreate_lock: Mutex::new(()),
-            router: Mutex::new(RouterHandle::in_process()),
-            router_settings: settings,
         })
     }
 
-    /// The router runs inside this process.
-    pub fn is_embedded(&self) -> bool {
-        self.session.is_none()
+    /// Our destination on the router.
+    pub async fn destination(&self) -> Arc<i2p_embed::Destination> {
+        self.dest.lock().await.clone()
     }
 
-    /// Our destination on the in-process router, when there is one.
-    #[cfg(feature = "embedded-i2p")]
-    pub async fn embedded_destination(&self) -> Option<Arc<i2p_embed::Destination>> {
-        match &self.embedded {
-            Some(d) => Some(d.lock().await.clone()),
-            None => None,
-        }
-    }
-
-    pub async fn shutdown(&self) {
-        if let Some(h) = self.accept_task.lock().await.take() {
-            h.abort();
-            let _ = h.await;
-        }
-        // The router child is torn down when `self.router` (this node) drops.
-    }
+    pub async fn shutdown(&self) {}
 
     /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
     pub fn onion_address(&self) -> &str { &self.address }
-
-    /// The SAM bridge TCP port this node talks to.
-    pub fn sam_port(&self) -> u16 { self.sam_port }
-
-    /// Local HTTP proxy port for the update checker, if this router has one
-    /// open — `None` when attached to a router we don't own (`GIPNY_SAM_PORT`)
-    /// and it has no proxy, where auto-update is unavailable this run.
-    pub fn http_proxy_port(&self) -> Option<u16> { self.http_proxy_port }
 
     /// Short `.b32.i2p` address derived from the destination.
     ///
@@ -361,10 +202,6 @@ impl I2pNode {
         let bytes = base64_decode_padded(&std_b64)?;
         let hash = Sha256::digest(&bytes);
         Some(format!("{}.b32.i2p", base32_encode_nopad(&hash)))
-    }
-
-    pub async fn accept(&self) -> Option<Connection> {
-        self.inbound.lock().await.recv().await
     }
 
     pub async fn connect(&self, onion: &str) -> Result<Connection> {
@@ -391,10 +228,10 @@ impl I2pNode {
         Err(last)
     }
 
-    /// Dial the relay. Failures here count toward SAM session health.
+    /// Dial the relay. Failures here count toward our tunnels' health.
     ///
     /// Only the relay loop should use this. Repeated failures to reach the relay
-    /// are evidence the local SAM session has gone bad, which is what
+    /// are evidence our tunnels have gone bad, which is what
     /// [`Self::maybe_recreate`] acts on.
     pub async fn connect_relay(&self, onion: &str, port: u16) -> Result<RelayStream> {
         match self.dial(onion, port).await {
@@ -414,70 +251,18 @@ impl I2pNode {
     ///
     /// Deliberately does not touch the relay failure counter. It used to: every
     /// subsystem shared `connect_relay`, so an unreachable update server counted
-    /// as relay trouble, and five such failures tore down and rebuilt a SAM
-    /// session that was carrying live messages perfectly well. A destination
+    /// as relay trouble, and five such failures tore down and rebuilt tunnels
+    /// that were carrying live messages perfectly well. A destination
     /// being down says nothing about our own session.
     pub async fn connect_service(&self, dest: &str, port: u16) -> Result<RelayStream> {
         self.dial(dest, port).await
     }
 
     async fn dial(&self, onion: &str, port: u16) -> Result<RelayStream> {
-        let dest = onion.trim().to_string();
-        #[cfg(feature = "embedded-i2p")]
-        if let Some(d) = &self.embedded {
-            let d = d.lock().await.clone();
-            return match d.connect(&dest, port).await {
-                Ok(stream) => Ok(RelayStream { inner: Box::pin(stream) }),
-                Err(e) => Err(NetError::I2p(e.to_string())),
-            };
-        }
-        let Some(session) = &self.session else { return Err(NetError::Closed) };
-        // `port` maps to the SAM stream destination port. For a single-service
-        // i2p destination the far end ignores it, so this is a harmless carry-over
-        // of the old per-onion-port dialing.
-        let opts = StreamOptions { dst_port: port, src_port: 0 };
-        // `connect_detached` clones the SAM controller and returns an owned
-        // future, so we only hold the session lock for the clone — concurrent
-        // dials proceed in parallel.
-        let fut = {
-            let mut s = session.lock().await;
-            s.connect_detached_with_options(&dest, opts)
-        };
-        match fut.await {
+        let dest = self.destination().await;
+        match dest.connect(onion.trim(), port).await {
             Ok(stream) => Ok(RelayStream { inner: Box::pin(stream) }),
             Err(e) => Err(NetError::I2p(e.to_string())),
-        }
-    }
-
-    /// Make sure there is still a router behind our SAM port, and start a new
-    /// one if there is not.
-    ///
-    /// Rebuilding the SAM session is pointless when the process that serves SAM
-    /// is gone: every rebuild fails with "connection refused" and the app sits
-    /// there forever with every contact unreachable. Checked before each session
-    /// rebuild rather than on a timer, so an idle app costs nothing.
-    async fn ensure_router(&self) -> bool {
-        // In-process: if the router were gone, so would we be.
-        if self.is_embedded() {
-            return true;
-        }
-        {
-            let router = self.router.lock().await;
-            if router.alive().await {
-                return true;
-            }
-        }
-        eprintln!("[i2p] SAM has stopped answering — restarting the router");
-        let mut router = self.router.lock().await;
-        match router.restart(&self.data_dir, self.router_settings, None).await {
-            Ok(()) => {
-                eprintln!("[i2p] router restarted");
-                true
-            }
-            Err(e) => {
-                eprintln!("[i2p] router restart failed: {e:?}");
-                false
-            }
         }
     }
 
@@ -491,12 +276,9 @@ impl I2pNode {
                 if t.elapsed() < RECREATE_COOLDOWN { return; }
             }
         }
-        eprintln!("[i2p] {} consecutive relay failures past {}s mark, rebuilding SAM session",
+        eprintln!("[i2p] {} consecutive relay failures past {}s mark, rebuilding our tunnels",
             fail_count, RECREATE_MIN_AGE.as_secs());
         *self.last_recreate_at.lock().await = Some(Instant::now());
-        if !self.ensure_router().await {
-            return;
-        }
         match self.recreate().await {
             Ok(()) => {
                 self.relay_fail_count.store(0, Ordering::Relaxed);
@@ -506,9 +288,6 @@ impl I2pNode {
         }
     }
 
-    /// Rebuild the SAM session against the same persistent destination (the
-    /// router keeps running). This is the i2p analogue of the old Tor client
-    /// recreate — a fresh set of tunnels without changing our address.
     /// How many hops our tunnels are built with right now.
     pub fn hops(&self) -> u8 {
         self.hops.load(Ordering::Relaxed)
@@ -516,10 +295,9 @@ impl I2pNode {
 
     /// Rebuild our tunnels at a different length.
     ///
-    /// This is not a switch. i2p fixes tunnel length when the session is
-    /// created, and SAMv3 has no way to change it afterwards, so the session
-    /// has to be torn down and built again — tens of seconds of waiting, during
-    /// which nothing sends. The destination is kept, so nobody has to learn a
+    /// This is not a switch. i2p fixes tunnel length when a destination's
+    /// tunnel pool is created, so the destination is built again on the same
+    /// keys — tens of seconds of waiting, during which nothing sends. The destination is kept, so nobody has to learn a
     /// new address for us.
     ///
     /// On failure the old length is restored and the error returned: a caller
@@ -546,104 +324,16 @@ impl I2pNode {
         }
     }
 
+    /// The destination built again on the same keys: a fresh set of tunnels
+    /// without changing our address. The router keeps running.
     pub async fn recreate(&self) -> Result<()> {
-        #[cfg(feature = "embedded-i2p")]
-        if let Some(slot) = &self.embedded {
-            let router = crate::embedded::running().ok_or(NetError::Closed)?;
-            let dest = i2p_embed::Destination::new(&router, Some(self.privkey.as_str()), &crate::embedded::destination_options(false, self.hops()))
-                .map_err(|e| NetError::I2p(format!("destination: {e}")))?;
-            dest.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
-            *slot.lock().await = Arc::new(dest);
-            return Ok(());
-        }
-        let Some(session) = &self.session else { return Err(NetError::Closed) };
-        let new_session = build_session(self.sam_port, self.privkey.as_str(), self.hops()).await?;
-
-        if let Some(old) = self.accept_task.lock().await.take() {
-            old.abort();
-            let _ = old.await;
-        }
-        *session.lock().await = new_session;
-        let task = spawn_inbound(session.clone(), self.inbound_tx.clone()).await;
-        *self.accept_task.lock().await = task;
+        let router = crate::embedded::running().ok_or(NetError::Closed)?;
+        let dest = i2p_embed::Destination::new(&router, Some(self.privkey.as_str()), &crate::embedded::destination_options(false, self.hops()))
+            .map_err(|e| NetError::I2p(format!("destination: {e}")))?;
+        dest.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
+        *self.dest.lock().await = Arc::new(dest);
         Ok(())
     }
-}
-
-/// Build a SAMv3 STREAM session bound to our persistent destination.
-async fn build_session(sam_port: u16, privkey: &str, hops: u8) -> Result<Session<style::Stream>> {
-    let opts = SessionOptions {
-        nickname: sam_session_id(NICKNAME),
-        destination: DestinationKind::Persistent { private_key: privkey.to_string() },
-        samv3_tcp_port: sam_port,
-        // The client is outbound-only (all messaging is relay-mediated): no need
-        // to advertise a leaseSet or maintain inbound tunnels, which speeds up cold
-        // start. Inbound forwarding via STREAM FORWARD (GIPNY_I2P_ACCEPT) still
-        // works regardless of this flag.
-        publish: false,
-        // Forwarded inbound streams carry pure data, no in-band peer destination.
-        silent_forward: true,
-        // Payloads are already E2E-encrypted and padded to fixed buckets; SAM-level
-        // gzip only burns CPU and would blur the uniform padding size classes.
-        gzip: false,
-        // Our leg of the path. Longer is more anonymous and slower; the only
-        // thing that ever lowers it is a user who was told what it costs.
-        outbound_len: hops.clamp(MIN_HOPS, DEFAULT_HOPS) as usize,
-        inbound_len: hops.clamp(MIN_HOPS, DEFAULT_HOPS) as usize,
-        ..Default::default()
-    };
-    Session::<style::Stream>::new(opts)
-        .await
-        .map_err(|e| NetError::I2p(format!("SAM session: {e}")))
-}
-
-/// Optionally register inbound forwarding to a local TCP listener.
-///
-/// The client never calls [`I2pNode::accept`] (all messaging is relay-mediated),
-/// so inbound is off by default and only enabled with `GIPNY_I2P_ACCEPT=1` — this
-/// keeps the default path pure-outbound and maximally compatible with the
-/// early-stage router. Returns `None` (no accept task) when disabled or on error.
-async fn spawn_inbound(
-    session: Arc<Mutex<Session<style::Stream>>>,
-    tx: mpsc::Sender<Connection>,
-) -> Option<JoinHandle<()>> {
-    let enabled = std::env::var("GIPNY_I2P_ACCEPT")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if !enabled {
-        return None;
-    }
-    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0u16)).await {
-        Ok(l) => l,
-        Err(e) => { eprintln!("[i2p] inbound listener bind failed: {e}"); return None; }
-    };
-    let port = match listener.local_addr() {
-        Ok(a) => a.port(),
-        Err(e) => { eprintln!("[i2p] inbound listener addr failed: {e}"); return None; }
-    };
-    {
-        let mut s = session.lock().await;
-        if let Err(e) = s.forward(port).await {
-            eprintln!("[i2p] STREAM FORWARD failed (inbound disabled): {e}");
-            return None;
-        }
-    }
-    eprintln!("[i2p] inbound forwarding active on 127.0.0.1:{port}");
-    let handle = tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((tcp, _)) => {
-                    let conn = Connection { stream: Box::pin(tcp), peer_onion: None };
-                    if tx.send(conn).await.is_err() { return; }
-                }
-                Err(e) => {
-                    eprintln!("[i2p] inbound accept err: {e}");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-            }
-        }
-    });
-    Some(handle)
 }
 
 /// Truncate a long i2p destination for logging.
@@ -704,22 +394,3 @@ fn base32_encode_nopad(input: &[u8]) -> String {
 /// Backwards-compatible alias: the transport is now i2p, but the rest of the
 /// codebase still refers to the node type by its historical name.
 pub type TorNode = I2pNode;
-
-#[cfg(test)]
-mod tests {
-    use super::sam_session_id;
-
-    #[test]
-    fn sam_session_ids_are_unique_and_carry_a_secret() {
-        let (a, b) = (sam_session_id("gipny"), sam_session_id("gipny"));
-        assert_ne!(a, b);
-        for id in [&a, &b] {
-            let secret = id.rsplit('-').next().unwrap();
-            assert!(id.starts_with("gipny-"));
-            assert_eq!(secret.len(), 32, "{id}");
-            assert!(secret.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
-        }
-        // Not just the counter: the secrets differ too.
-        assert_ne!(a.rsplit('-').next(), b.rsplit('-').next());
-    }
-}

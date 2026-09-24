@@ -1,6 +1,7 @@
 //! End-to-end messaging harness.
 //!
-//! Boots two headless bot instances (A and B) against a shared local relay,
+//! Boots two headless bot instances (A and B) on the i2p router inside this
+//! process (one per process, a destination per bot) against a relay,
 //! cross-adds them as contacts, sends N messages A→B with an attachment,
 //! verifies that B echoes every message back to A, and reports latency and
 //! resource metrics to stdout and to `$GITHUB_STEP_SUMMARY` when running in CI.
@@ -13,19 +14,18 @@
 //! # Optional environment variables
 //! * `E2E_RELAY_DEST_A` / `E2E_RELAY_DEST_B` — a separate relay per bot.
 //! * `E2E_IN_PROCESS_RELAYS=1` — no standalone relay: each bot gets an
-//!   in-process `EphemeralRelay` on the router at `GIPNY_SAM_PORT`, started
+//!   in-process `EphemeralRelay` on the router in this process, started
 //!   for that bot's key only (`MemStoreLimits::personal`) after the bot is up
 //!   — the app's built-in relay, in the order the app does it.
 //! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
 //!   far side is the real `gipny-agent` binary at that path, started with
-//!   bot-a's v2 card and attached to the shared router, with no `--relay` —
-//!   proving the agent hosts a personal relay for itself, the same as the
-//!   app does. Needs `GIPNY_SAM_PORT`; the master gets its own in-process
-//!   relay too. `E2E_N_MESSAGES` is the number of commands.
+//!   bot-a's v2 card, on its own router in its own process, with no
+//!   `--relay` — proving the agent hosts a personal relay for itself, the
+//!   same as the app does. The master gets its own in-process relay too.
+//!   `E2E_N_MESSAGES` is the number of commands.
 //! * `E2E_DHT_OFFLINE=1` — a different test: delivery through the relay
-//!   network while each side is away in turn. Needs `GIPNY_SAM_PORT` and
-//!   `E2E_DHT_SEED_DEST` (the destination of a `gipny-relay --dht` on the same
-//!   router). See [`run_dht_offline_mode`].
+//!   network while each side is away in turn. Needs `E2E_DHT_SEED_DEST` (the
+//!   destination of a `gipny-relay --dht`). See [`run_dht_offline_mode`].
 //! * `E2E_BOTH_FIRST=1` — bot-b writes to bot-a at the same moment bot-a
 //!   writes to bot-b: two sessions are opened at once and their X3dhInits
 //!   cross (session.rs `ours_stands`). Its letter must arrive too.
@@ -33,8 +33,6 @@
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
 //!   `/tmp/e2e-harness`).
-//! * `GIPNY_I2P_BIN`    — path to the `i2pd` binary; libcore
-//!   falls back to the executable's directory and `$PATH` when not set.
 //! * `GITHUB_STEP_SUMMARY` — when set (always true in GitHub Actions), the
 //!   timing table is appended to this file.
 
@@ -69,7 +67,7 @@ struct BotHandle {
     session: Arc<SessionManager>,
     card: IdentityCard,
     onion: String,
-    /// Wall-clock milliseconds from `TorNode::start` call to SAM ready.
+    /// Wall-clock milliseconds from the `TorNode::start` call to its tunnels.
     router_ready_ms: u64,
 }
 
@@ -83,11 +81,7 @@ async fn start_bot(
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("{name}: create data dir"))?;
 
-    if std::env::var("GIPNY_SAM_PORT").is_ok() {
-        eprintln!("[e2e] {name}: attaching to shared i2p router...");
-    } else {
-        eprintln!("[e2e] {name}: starting i2p router...");
-    }
+    eprintln!("[e2e] {name}: starting i2p router...");
     let t0 = Instant::now();
     let node = Arc::new(
         TorNode::start(&data_dir, Default::default())
@@ -162,15 +156,13 @@ fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
 const GREETING: &str = "hello from bot-b";
 
 async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
-    // On the shared router over SAM, or on the router inside this process
-    // (a build with embedded-i2p): whichever the bots' node uses.
-    let port = if node.is_embedded() { 0 } else { node.sam_port() };
-    eprintln!("[e2e] starting two in-process relays{}...", if port == 0 { " on the in-process router".to_string() } else { format!(" on SAM port {port}") });
+    let _ = node; // up already: the relays share its router
+    eprintln!("[e2e] starting two in-process relays on the in-process router...");
     let t0 = Instant::now();
     let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
         tokio::join!(
-            EphemeralRelay::start_on(node, MemStoreLimits::personal(owner_a), None),
-            EphemeralRelay::start_on(node, MemStoreLimits::personal(owner_b), None),
+            EphemeralRelay::start(MemStoreLimits::personal(owner_a), None),
+            EphemeralRelay::start(MemStoreLimits::personal(owner_b), None),
         )
     })
     .await
@@ -288,7 +280,7 @@ where
 }
 
 /// bot-a is the master; the far side is `agent_bin`, run as the separate
-/// process it is on a server, on the shared router (`--sam`). Proves, over
+/// process it is on a server, with its own router. Proves, over
 /// live i2p: the agent's GRANT creates the contact on the master by itself;
 /// commands run one at a time in arrival order; a file sent with a command is
 /// there when the command runs; OFF is answered with REVOKE and exit 0.
@@ -297,11 +289,6 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600);
     let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
     std::fs::create_dir_all(&work_dir).context("create work dir")?;
-    let port: u16 = std::env::var("GIPNY_SAM_PORT")
-        .context("E2E_AGENT_BIN needs GIPNY_SAM_PORT, the shared router's SAM port")?
-        .trim()
-        .parse()
-        .context("GIPNY_SAM_PORT is not a port")?;
     let timeout = Duration::from_secs(timeout_secs);
     let t_start = Instant::now();
     let budget = |t_start: Instant| timeout.saturating_sub(t_start.elapsed());
@@ -311,9 +298,12 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     // No `--relay` is passed to the agent below: it hosts a personal relay
     // for itself and tells the master the address through its GRANT message,
     // exactly as any contact's relay is learned.
-    eprintln!("[e2e] starting the master's in-process relay on SAM port {port}...");
+    // The router first: the relay is a destination on it, and bot-a (below)
+    // takes the same one.
+    gipny_libcore::embedded::router(&work_dir.join("router"), Default::default()).context("i2p router")?;
+    eprintln!("[e2e] starting the master's in-process relay...");
     let t0 = Instant::now();
-    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(port, MemStoreLimits::default(), None))
+    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(MemStoreLimits::default(), None))
         .await
         .context("timeout: in-process relay did not come up in 300s")?
         .context("in-process relay")?;
@@ -342,7 +332,6 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
         .arg("--data").arg(&agent_data)
         .arg("--master").arg(&master_card)
         .arg("--name").arg("e2e-agent")
-        .arg("--sam").arg(port.to_string())
         .arg("--timeout").arg("30")
         .arg("--cwd").arg(&agent_cwd)
         .stdin(Stdio::null())
@@ -588,7 +577,7 @@ impl LiveBot {
         // session's own network node.
         let relay = tokio::time::timeout(
             Duration::from_secs(300),
-            EphemeralRelay::start_on(&bot.session.node, MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
+            EphemeralRelay::start(MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
         )
         .await
         .with_context(|| format!("{name}: relay did not come up in 300s"))?

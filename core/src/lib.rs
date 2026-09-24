@@ -640,7 +640,7 @@ fn boot_status(app: &AppHandle, stage: &'static str, state: &'static str, detail
     let _ = app.emit("boot_status", BootStatus { stage, state, detail: detail.into() });
 }
 
-/// The callback libcore reports router and SAM progress through. Stage ids come
+/// The callback libcore reports router and tunnel progress through. Stage ids come
 /// from there (`router`, `router-reused`, `tunnels`, `tunnels-done`, `session`,
 /// `session-done`); anything unknown still reaches the technical log.
 fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
@@ -659,28 +659,19 @@ fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
     })
 }
 
-/// Point the transport at the bundled i2pd shipped as a Tauri resource.
+/// Point the router at the network database snapshot shipped as a Tauri
+/// resource (the router itself is compiled in).
 ///
 /// `resource_dir()` is authoritative: the deb and AppImage put resources under
-/// `usr/lib/<product>/resources/`, which router.rs's relative probing does not
-/// reach. On Android the router is started in-process by the foreground
-/// service, so this is a no-op there.
+/// `usr/lib/<product>/resources/`, which relative probing does not reach. On
+/// Android the snapshot is compiled into the binary instead.
 ///
-/// Called before *any* router start — the prewarm below runs before `boot`,
-/// and a prewarm that could not find the binary would quietly do nothing on
-/// exactly the installs people use.
+/// Called before *any* router start — the prewarm below runs before `boot`.
 fn resolve_bundled_router(app: &AppHandle) {
     #[cfg(not(target_os = "android"))]
-    if std::env::var_os("GIPNY_I2P_BIN").is_none() {
+    if std::env::var_os("GIPNY_I2P_SEED").is_none() {
         use tauri::Manager;
         if let Ok(res) = app.path().resource_dir() {
-            let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
-            for cand in [res.join(name), res.join("resources").join(name)] {
-                if cand.exists() {
-                    std::env::set_var("GIPNY_I2P_BIN", cand);
-                    break;
-                }
-            }
             for cand in [res.join("i2pd-netdb-seed.tar.gz"), res.join("resources").join("i2pd-netdb-seed.tar.gz")] {
                 if cand.exists() {
                     std::env::set_var("GIPNY_I2P_SEED", cand);
@@ -721,14 +712,11 @@ fn write_router_hint(dir: &std::path::Path, s: gipny_libcore::router::RouterSett
 }
 
 /// Whether a node started for `have` can be handed to a profile that wants
-/// `want`. On an Android build without the in-process router the settings
-/// are the foreground service's business and ours are ignored outright, so
-/// there is nothing to compare.
+/// `want`.
 fn router_settings_match(
     have: gipny_libcore::router::RouterSettings,
     want: gipny_libcore::router::RouterSettings,
 ) -> bool {
-    if cfg!(target_os = "android") && !cfg!(feature = "embedded-i2p") { return true; }
     have == want
 }
 
@@ -736,7 +724,7 @@ fn router_settings_match(
 ///
 /// The interface calls this as soon as it knows which profile that is — on the
 /// unlock screen, and again after a logout — so the router, its tunnels and
-/// the SAM session are up by the time the password is typed. If the guess was
+/// our destination are up by the time the password is typed. If the guess was
 /// wrong (another profile is picked), the node is dropped and a new one built.
 #[tauri::command]
 async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle) -> Result<(), String> {
@@ -766,10 +754,7 @@ async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle
             .map_err(|e| format!("{e:?}"))?;
         // Our relay's tunnels take 20–40 s more; build them while the password
         // is typed too. Whose relay it is is only known after unlock.
-        let relay = {
-            let node = node.clone();
-            tokio::spawn(async move { gipny_libcore::EphemeralRelay::start_unclaimed_on(&node).await })
-        };
+        let relay = tokio::spawn(gipny_libcore::EphemeralRelay::start_unclaimed());
         Ok((node, relay))
     });
     *slot = Some(Prewarm::Building { profile, settings, task });
@@ -850,7 +835,7 @@ async fn take_prewarmed(
     // The screen's own listener may have attached after these stages went by.
     boot_status(app, "router", "done", "router ready (started before unlocking)");
     boot_status(app, "tunnels", "done", "tunnels built before unlocking");
-    boot_status(app, "session", "done", "SAM session open");
+    boot_status(app, "session", "done", "destination ready");
     Some(ready)
 }
 
@@ -1788,9 +1773,6 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
     Ok(dtos)
 }
 
-/// Whether an update server destination is baked in. The UI hides the whole
-/// update surface when it is not: those buttons could only ever show a raw SAM
-/// error, and the APK listing fired on every Settings open.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RouterSettingsDto {
     /// "frugal" | "balanced" | "generous"

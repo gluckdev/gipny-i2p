@@ -30,9 +30,8 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
-use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
-use crate::net::{sam_session_id, NetError};
+use crate::net::NetError;
 use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
 /// Answers one relay-network request, given the connection's challenge and the
@@ -525,8 +524,8 @@ where
     Ok(())
 }
 
-/// A running in-process relay: its own publishing SAM session, memory-only
-/// storage, and the tasks serving both. Dropping it stops everything and
+/// A running in-process relay: its own published destination on the router
+/// in this process, memory-only storage, and the tasks serving both. Dropping it stops everything and
 /// releases the destination.
 pub struct EphemeralRelay {
     address: String,
@@ -548,55 +547,34 @@ pub struct EphemeralRelay {
 }
 
 impl EphemeralRelay {
-    /// Generate a fresh destination and start serving it through the router
-    /// on `sam_port`.
-    ///
-    /// This needs its own SAM session: the client's is unpublished, and a relay
-    /// must publish a LeaseSet to be reachable at all. It returns once that
-    /// session exists, which for a published destination means its tunnels are
-    /// built, commonly a minute or two. Run it in a spawned task; never on a
-    /// path anything user-facing waits on.
-    ///
-    /// `dht` answers relay-network requests arriving here; `None` refuses them.
-    pub async fn start(sam_port: u16, limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
-        Self::start_with(sam_port, MemStore::new(limits), dht).await
-    }
-
-    /// Build the relay's tunnels before knowing whose it is — while the
-    /// profile's password is being typed — serving nobody until
-    /// [`Self::claim`]. Saves the 20–40 s of tunnel building after unlock.
-    pub async fn start_unclaimed(sam_port: u16) -> Result<Self, NetError> {
-        Self::start_with(sam_port, MemStore::unclaimed(MemStoreLimits::default()), None).await
-    }
-
     /// Hand a relay from [`Self::start_unclaimed`] to its owner.
     pub fn claim(&self, owner: [u8; 32], dht: Option<DhtHandler>) {
         self.store.claim(owner);
         *self.dht.write().unwrap_or_else(|p| p.into_inner()) = dht;
     }
 
-    /// As [`Self::start`], on whatever router `node` uses: over SAM, or on
-    /// the router inside this process when it runs there.
-    pub async fn start_on(node: &crate::net::TorNode, limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
-        #[cfg(feature = "embedded-i2p")]
-        if node.is_embedded() {
-            return Self::start_embedded(MemStore::new(limits), dht).await;
-        }
-        Self::start(node.sam_port(), limits, dht).await
+    /// Generate a fresh destination and start serving it, published, on the
+    /// router in this process (started by the first node, or by
+    /// [`crate::embedded::router`]).
+    ///
+    /// It returns once the destination's tunnels are built and its LeaseSet
+    /// is up, commonly a minute or two. Run it in a spawned task; never on a
+    /// path anything user-facing waits on.
+    ///
+    /// `dht` answers relay-network requests arriving here; `None` refuses them.
+    pub async fn start(limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+        Self::start_embedded(MemStore::new(limits), dht).await
     }
 
-    /// As [`Self::start_unclaimed`], on whatever router `node` uses.
-    pub async fn start_unclaimed_on(node: &crate::net::TorNode) -> Result<Self, NetError> {
-        #[cfg(feature = "embedded-i2p")]
-        if node.is_embedded() {
-            return Self::start_embedded(MemStore::unclaimed(MemStoreLimits::default()), None).await;
-        }
-        Self::start_unclaimed(node.sam_port()).await
+    /// Build the relay's tunnels before knowing whose it is — while the
+    /// profile's password is being typed — serving nobody until
+    /// [`Self::claim`]. Saves the 20–40 s of tunnel building after unlock.
+    pub async fn start_unclaimed() -> Result<Self, NetError> {
+        Self::start_embedded(MemStore::unclaimed(MemStoreLimits::default()), None).await
     }
 
     /// The relay as a published destination on the router inside this
-    /// process: no SAM session, no port. Same store, same `handle_client`.
-    #[cfg(feature = "embedded-i2p")]
+    /// process: no port. Same store, same `handle_client` as `connect_local`.
     async fn start_embedded(store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
         let router = crate::embedded::running().ok_or(NetError::Closed)?;
         // Kept in memory only, for rebuilding on the same address.
@@ -674,115 +652,6 @@ impl EphemeralRelay {
         Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild, connections, destination_hash, dht })
     }
 
-    async fn start_with(sam_port: u16, store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
-        let (address, private_key) = RouterApi::new(sam_port)
-            .generate_destination()
-            .await
-            .map_err(|e| NetError::I2p(format!("relay destination: {e}")))?;
-        // Kept in memory only, for rebuilding the session on the same address.
-        // It is never written anywhere.
-        let private_key = zeroize::Zeroizing::new(private_key);
-        let hops = Arc::new(AtomicU8::new(crate::net::DEFAULT_HOPS));
-        let rebuild = Arc::new(tokio::sync::Notify::new());
-        let first = open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await?;
-
-        let store = Arc::new(store);
-        let dht = Arc::new(std::sync::RwLock::new(dht));
-        let connections: Connections = Arc::default();
-
-        // The session is owned by this task alone: `accept` holds `&mut` across
-        // its await, so sharing it would stall everything else behind a wait for
-        // the next caller. Client tasks live in the JoinSet, so aborting this
-        // task drops them with it.
-        let destination_hash = crate::relay::destination_hash(&address)
-            .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
-        let local = (connections.clone(), dht.clone());
-        let accept = tokio::spawn({
-            let store = store.clone();
-            let (hops, rebuild) = (hops.clone(), rebuild.clone());
-            async move {
-                let mut session = Some(first);
-                let mut failures = 0u32;
-                let mut clients = JoinSet::new();
-                loop {
-                    let Some(live) = session.as_mut() else {
-                        tokio::time::sleep(rebuild_backoff(failures)).await;
-                        match open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await {
-                            Ok(s) => session = Some(s),
-                            Err(e) => {
-                                failures += 1;
-                                eprintln!("[relay-server] session rebuild failed: {e}");
-                            }
-                        }
-                        continue;
-                    };
-                    // Only the rebuild notice may interrupt an accept, and it
-                    // drops the session anyway. yosemite's accept is not
-                    // cancel-safe: dropped mid-handshake, it leaves the
-                    // controller between states and every later accept fails
-                    // with "invalid state". Reaping clients in this select did
-                    // exactly that whenever a connection closed, and
-                    // relay-network connections are short (e2e-dht run
-                    // 35946168184). Reap without waiting instead.
-                    while clients.try_join_next().is_some() {}
-                    tokio::select! {
-                        accepted = live.accept() => match accepted {
-                            Ok(stream) => {
-                                failures = 0;
-                                let (store, connections) = (store.clone(), connections.clone());
-                                let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
-                                clients.spawn(async move {
-                                    if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
-                                        eprintln!("[relay-server] client gone: {e}");
-                                    }
-                                });
-                            }
-                            // yosemite poisons the session's controller on any
-                            // reply it cannot parse, and every later accept on it
-                            // fails while the destination drops off the router
-                            // (e2e run 35076520090, both standalone relays). Drop
-                            // it, releasing the destination, and reopen.
-                            //
-                            // Its clients go with it: their streams belong to
-                            // the dead session, and while they stay open the
-                            // router may keep the destination, refusing the
-                            // rebuild on the same key. They reconnect.
-                            Err(e) => {
-                                failures += 1;
-                                eprintln!("[relay-server] accept err: {e}; rebuilding the session");
-                                session = None;
-                                clients.abort_all();
-                            }
-                        },
-                        // A deliberate rebuild: the tunnel length changed. Drop
-                        // the session so the next turn opens one at the new
-                        // length, and clear the failure count — this is not a
-                        // failure, and it should not inherit anyone's backoff.
-                        () = rebuild.notified() => {
-                            failures = 0;
-                            session = None;
-                        }
-                    }
-                }
-            }
-        });
-        let gc = tokio::spawn({
-            let store = store.clone();
-            async move {
-                let mut tick = tokio::time::interval(GC_INTERVAL);
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                tick.tick().await;
-                loop {
-                    tick.tick().await;
-                    store.gc();
-                }
-            }
-        });
-
-        let (connections, dht) = local;
-        Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild, connections, destination_hash, dht })
-    }
-
     /// A connection to this relay from inside the process: its owner, the
     /// client in the same app or agent, collecting its own mail.
     ///
@@ -835,34 +704,6 @@ impl EphemeralRelay {
     pub fn stats(&self) -> StoreStats {
         self.store.stats()
     }
-}
-
-/// A publishing STREAM session on `private_key`, under an ID no other session
-/// on the router has and nobody else can guess ([`sam_session_id`]): IDs are
-/// router-wide, and a rebuild can race the router's teardown of the session
-/// it replaces.
-async fn open_session(sam_port: u16, private_key: &str, hops: u8) -> Result<Session<style::Stream>, NetError> {
-    let opts = SessionOptions {
-        nickname: sam_session_id("gipny-relay"),
-        destination: DestinationKind::Persistent { private_key: private_key.to_string() },
-        samv3_tcp_port: sam_port,
-        publish: true,
-        // Payloads are E2E-encrypted and padded to size buckets already.
-        gzip: false,
-        // The leg everyone writing to us travels. Ours to shorten, and ours
-        // alone to pay for if we do.
-        inbound_len: hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS) as usize,
-        outbound_len: hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS) as usize,
-        ..Default::default()
-    };
-    Session::<style::Stream>::new(opts)
-        .await
-        .map_err(|e| NetError::I2p(format!("relay SAM session: {e}")))
-}
-
-/// 0.5 s doubling to a 30 s ceiling.
-fn rebuild_backoff(failures: u32) -> Duration {
-    Duration::from_millis(500u64.saturating_mul(1 << failures.min(6)).min(30_000))
 }
 
 impl Drop for EphemeralRelay {

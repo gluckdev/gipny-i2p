@@ -16,6 +16,3 @@ gipny-dht = { path = "../../dht" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 
-[features]
-# Run the bots on the router inside the process, with no SAM.
-embedded-i2p = ["gipny-libcore/embedded-i2p"]

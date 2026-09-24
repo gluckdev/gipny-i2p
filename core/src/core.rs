@@ -751,8 +751,7 @@ impl Core {
                 Err(_) => {}
             }
         }
-        gipny_libcore::EphemeralRelay::start_on(
-            &self.node,
+        gipny_libcore::EphemeralRelay::start(
             // This relay is our inbox and nobody else's.
             gipny_libcore::MemStoreLimits::personal(owner),
             Some(dht_client::handler(&self.dht)),
@@ -770,8 +769,7 @@ impl Core {
                 return;
             }
             self.set_hosted_state(HostedRelayState::Starting);
-            eprintln!("[relay-hosted] starting the built-in relay{}...",
-                if self.node.is_embedded() { " (in-process router)".to_string() } else { format!(" on SAM port {}", self.node.sam_port()) });
+            eprintln!("[relay-hosted] starting the built-in relay (in-process router)...");
             match self.bring_up_hosted_relay().await {
                 Ok(relay) => {
                     // The mode may have changed while the tunnels were building.

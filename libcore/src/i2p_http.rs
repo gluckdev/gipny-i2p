@@ -70,7 +70,7 @@ impl Body {
 
 /// GET `url` (https only), following redirects. Non-2xx is an error.
 pub async fn get(node: &Arc<TorNode>, tls: &Arc<rustls::ClientConfig>, url: &str, accept: Option<&str>) -> Result<Body, HttpError> {
-    let mut url = reqwest::Url::parse(url).map_err(|e| HttpError::Url(e.to_string()))?;
+    let mut url = url::Url::parse(url).map_err(|e| HttpError::Url(e.to_string()))?;
     for _ in 0..=MAX_REDIRECTS {
         let resp = get_once(node, tls, &url, accept).await?;
         let status = resp.status();
@@ -92,7 +92,7 @@ pub async fn get(node: &Arc<TorNode>, tls: &Arc<rustls::ClientConfig>, url: &str
 async fn get_once(
     node: &Arc<TorNode>,
     tls: &Arc<rustls::ClientConfig>,
-    url: &reqwest::Url,
+    url: &url::Url,
     accept: Option<&str>,
 ) -> Result<hyper::Response<hyper::body::Incoming>, HttpError> {
     if url.scheme() != "https" {
