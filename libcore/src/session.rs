@@ -122,8 +122,10 @@ const FILE_RESEND_IDLE_MS: i64 = 30 * 60 * 1000;
 /// included).
 const FILE_LANES: usize = 4;
 /// Extra connections to our own relay, when it is not in this process, are
-/// held while parts keep coming and closed this long after the last one.
-const COLLECT_LANE_IDLE_MS: i64 = 60_000;
+/// held while parts keep coming and closed this long after the last one. A
+/// minute closed and reopened them every two or three while a slow path
+/// brought a part a minute; each close pushed what they held elsewhere again.
+const COLLECT_LANE_IDLE_MS: i64 = 5 * 60_000;
 /// A recipient alive this long without acknowledging a single part cannot
 /// take files in parts.
 const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;

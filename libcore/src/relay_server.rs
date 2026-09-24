@@ -102,6 +102,15 @@ impl Lanes {
 const PENDING_LIMIT: usize = 200;
 /// How often a connected client is re-offered messages it has not acked.
 const PUSH_REFRESH: Duration = Duration::from_secs(30);
+/// A client says something at least every 20 s (a ping, if nothing else); one
+/// silent this long is gone, though its close never came. Its connection is
+/// dropped and what it was given goes to the key's others — kept, it went on
+/// taking a share of new mail into nowhere (a recipient restarted with three
+/// extra connections open: one close arrived, three did not).
+#[cfg(not(test))]
+const CLIENT_SILENT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const CLIENT_SILENT: Duration = Duration::from_secs(2);
 const GC_INTERVAL: Duration = Duration::from_secs(600);
 const PUSH_CAPACITY: usize = 512;
 
@@ -569,10 +578,17 @@ where
     // pushed again — e2e run 36047667974 under a file in parts).
     let (rd, mut wr) = tokio::io::split(stream);
     let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let silent = tokio::time::sleep(CLIENT_SILENT);
+    tokio::pin!(silent);
     loop {
         tokio::select! {
+            () = &mut silent => {
+                eprintln!("[relay-server] client silent for {CLIENT_SILENT:?}, dropping it");
+                break;
+            }
             (rd, frame) = &mut reading => {
                 reading = Box::pin(read_frame(rd));
+                silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
                 match frame? {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
                         send(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
@@ -1143,6 +1159,38 @@ mod tests {
         let mut got = vec![first];
         got.extend(drain(&mut b, Duration::from_millis(300)).await);
         assert_eq!(got.len(), 3, "each once: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_silent_connection_is_dropped_and_its_share_goes_to_the_others() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        // b1 goes quiet as a client whose close never arrived; b2 pings.
+        let mut b1 = rig.login(&bob).await;
+        let mut b2 = rig.login(&bob).await;
+        let mut a = rig.login(&alice).await;
+        for i in 0..2u8 {
+            send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+        }
+        let to_b1 = drain(&mut b1, Duration::from_millis(200)).await;
+        let to_b2 = drain(&mut b2, Duration::from_millis(200)).await;
+        assert_eq!((to_b1.len(), to_b2.len()), (1, 1), "dealt round both");
+        send(&mut b2, &ClientToRelay::Ack { id: to_b2[0] }).await.unwrap();
+        let mut got = Vec::new();
+        let deadline = tokio::time::Instant::now() + CLIENT_SILENT + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            send(&mut b2, &ClientToRelay::Ping).await.unwrap();
+            got.extend(drain(&mut b2, Duration::from_millis(300)).await);
+        }
+        assert_eq!(got, to_b1, "b1's letter came to b2 once b1 was dropped");
+        // Alice kept quiet too, and was dropped the same way: she comes back.
+        let mut a = rig.login(&alice).await;
+        for i in 2..5u8 {
+            send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+        }
+        assert_eq!(drain(&mut b2, Duration::from_millis(300)).await.len(), 3, "all new mail to the live one");
     }
 
     #[tokio::test]

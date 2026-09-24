@@ -70,6 +70,15 @@ impl Lanes {
 /// sits idle this long (same limits as libcore's relay_server).
 const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
+/// A client says something at least every 20 s (a ping, if nothing else); one
+/// silent this long is gone, though its close never came. Its connection is
+/// dropped and what it was given goes to the key's others — kept, it went on
+/// taking a share of new mail into nowhere (a recipient restarted with three
+/// extra connections open: one close arrived, three did not).
+#[cfg(not(test))]
+const CLIENT_SILENT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const CLIENT_SILENT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -416,10 +425,17 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     // middle of a frame for its length (as in libcore's relay_server.rs).
     let (rd, mut wr) = tokio::io::split(stream);
     let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let silent = tokio::time::sleep(CLIENT_SILENT);
+    tokio::pin!(silent);
     loop {
         tokio::select! {
+            () = &mut silent => {
+                eprintln!("[relay] client silent for {CLIENT_SILENT:?}, dropping it");
+                break;
+            }
             (rd, frame) = &mut reading => {
                 reading = Box::pin(read_frame(rd));
+                silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
                 let frame = frame?;
                 match frame {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
@@ -580,6 +596,33 @@ mod lanes_tests {
             }
         }
         ids
+    }
+
+    #[tokio::test]
+    async fn a_silent_connection_is_dropped_and_its_share_goes_to_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b1 = login(&storage, &conns, &bob).await;
+        let mut b2 = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        let to = bob.verifying_key().to_bytes();
+        for i in 0..2u8 {
+            send_frame(&mut a, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+        }
+        let to_b1 = drain(&mut b1).await;
+        let to_b2 = drain(&mut b2).await;
+        assert_eq!((to_b1.len(), to_b2.len()), (1, 1), "dealt round both");
+        send_frame(&mut b2, &ClientToRelay::Ack { id: to_b2[0] }).await.unwrap();
+        let mut got = Vec::new();
+        let deadline = tokio::time::Instant::now() + CLIENT_SILENT + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            send_frame(&mut b2, &ClientToRelay::Ping).await.unwrap();
+            got.extend(drain(&mut b2).await);
+        }
+        assert_eq!(got, to_b1, "b1's letter came to b2 once b1 was dropped");
     }
 
     #[tokio::test]
