@@ -1968,6 +1968,20 @@ impl Core {
         Ok((*cipher.key(), hex, data.len() as u64))
     }
 
+    /// Write an attachment out without holding it whole: part by part when
+    /// it was sealed in parts.
+    pub fn write_attachment_to(&self, att: &Attachment, out: &mut impl std::io::Write) -> Result<()> {
+        match att.chunk_size {
+            Some(cs) => {
+                let full = self.data_dir.join(ATTACHMENTS_DIR).join(&att.path);
+                let cipher = AttachmentCipher::from_key(to_arr32(att.key.clone())?);
+                gipny_libcore::files::open_to(&full, &cipher, att.size as u64, cs as u32, out)?;
+            }
+            None => out.write_all(&self.read_attachment(att)?)?,
+        }
+        Ok(())
+    }
+
     pub fn read_attachment(&self, att: &Attachment) -> Result<Vec<u8>> {
         let key = to_arr32(att.key.clone())?;
         let full = self.data_dir.join(ATTACHMENTS_DIR).join(&att.path);

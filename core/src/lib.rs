@@ -247,6 +247,7 @@ pub fn run() {
             forward_message,
             list_attachments, load_attachment, save_attachment, save_paste_temp,
             list_media_contact, list_media_group, search_messages,
+            files_progress, cancel_files,
             list_muted, set_muted,
             paste_clipboard_image,
             press_button, press_group_button,
@@ -1337,7 +1338,9 @@ async fn send_message_paths(
     Ok(last_id)
 }
 
-const MAX_ATTACHMENT_BYTES: u64 = 12 * 1024 * 1024;
+/// Past 128 KiB a file goes in parts (libcore::files), so the old 12 MiB cap
+/// (one letter) is gone; this one is what is read into memory to send.
+const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024 * 1024;
 
 fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<PendingAttachment, String> {
     if sanitize {
@@ -1436,6 +1439,29 @@ async fn list_attachments(message_id: i64, ctx: State<'_, AppCtx>) -> Result<Vec
     }).collect())
 }
 
+#[derive(serde::Serialize)]
+struct FileProgressDto {
+    name: String,
+    size: u64,
+    done: u32,
+    total: u32,
+    incoming: bool,
+}
+
+/// Files of a message still moving in parts (not yet attachments, or not yet
+/// at every recipient).
+#[tauri::command]
+async fn files_progress(message_id: i64, ctx: State<'_, AppCtx>) -> Result<Vec<FileProgressDto>, String> {
+    let rows = core_of(&ctx).await?.files_progress(message_id).map_err(err)?;
+    Ok(rows.into_iter().map(|(name, size, done, total, incoming)| FileProgressDto { name, size, done, total, incoming }).collect())
+}
+
+/// Stop sending a message's files in parts.
+#[tauri::command]
+async fn cancel_files(message_id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.cancel_files(message_id).await.map_err(err)
+}
+
 #[tauri::command]
 async fn list_media_contact(contact_id: i64, limit: i64, ctx: State<'_, AppCtx>) -> Result<Vec<MediaItemDto>, String> {
     let rows = core_of(&ctx).await?.db().list_attachments_for_contact(contact_id, limit).map_err(err)?;
@@ -1522,15 +1548,17 @@ async fn save_attachment(attachment_id: i64, dest_path: String, app: AppHandle, 
     use tauri_plugin_fs::FsExt;
     let core = core_of(&ctx).await?;
     let att = core.db().get_attachment(attachment_id).map_err(err)?.ok_or("not found")?;
-    let bytes = core.read_attachment(&att).map_err(err)?;
     // On Android the save dialog returns a content:// URI, which std::fs
     // cannot open; the fs plugin resolves it through the content resolver.
     // On the desktop it is an ordinary path either way.
     let path = tauri_plugin_fs::FilePath::from_str(&dest_path).map_err(|_| "bad path".to_string())?;
     let mut opts = tauri_plugin_fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
-    let mut file = app.fs().open(path, opts).map_err(err)?;
-    file.write_all(&bytes).map_err(err)?;
+    let file = app.fs().open(path, opts).map_err(err)?;
+    // Part by part for a file sent in parts: never whole in memory.
+    let mut out = std::io::BufWriter::new(file);
+    core.write_attachment_to(&att, &mut out).map_err(err)?;
+    out.flush().map_err(err)?;
     Ok(())
 }
 

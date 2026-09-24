@@ -106,6 +106,10 @@ export class Store {
   groups = new Signal<Group[]>([]);
   selectedChat = new Signal<ChatTarget | null>(null);
   messages = new Signal<Map<string, Message[]>>(new Map());
+  /** Messages whose files in parts moved on, and how far (for the bar). */
+  fileProgress = new Signal<Map<number, { done: number; total: number; incoming: boolean }>>(new Map());
+  /** Bumped when a file in parts becomes an attachment of message `mid`. */
+  fileArrived = new Signal<{ mid: number; n: number }>({ mid: 0, n: 0 });
   pinned = new Signal<Map<string, Message[]>>(new Map());
   groupMembers = new Signal<Map<string, GroupMember[]>>(new Map());
   identity = new Signal<Identity | null>(null);
@@ -1115,6 +1119,19 @@ export class Store {
         return n;
       });
       for (const b of bumps) this.bumpChatOrder(b.target, b.ts);
+    } else if ('FileProgress' in e) {
+      const { message_id, done, total, incoming } = e.FileProgress;
+      this.fileProgress.update((m) => new Map(m).set(message_id, { done, total, incoming }));
+    } else if ('FileReceived' in e) {
+      const mid = e.FileReceived.message_id;
+      this.fileProgress.update((m) => { const n = new Map(m); n.delete(mid); return n; });
+      this.fileArrived.update((v) => ({ mid, n: v.n + 1 }));
+    } else if ('FileFailed' in e) {
+      const { message_id, reason } = e.FileFailed;
+      this.fileProgress.update((m) => { const n = new Map(m); n.delete(message_id); return n; });
+      const why = reason === 'not taken' ? 'у собеседника версия без передачи частями'
+        : reason === 'cancelled' ? 'отправка отменена' : 'файл пришёл повреждённым';
+      this.showToast(`Файл не передан: ${why}`, true);
     } else if ('MessageDelivered' in e) {
       const id = e.MessageDelivered.message_id;
       this.messages.update((m) => {
