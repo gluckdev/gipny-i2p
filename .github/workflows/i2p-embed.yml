@@ -55,6 +55,108 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # macOS: Homebrew's boost and OpenSSL, linked in statically (a user's Mac has
+  # neither), as .github/scripts/build-i2pd-macos.sh does for the old binary.
+  macos:
+    name: i2p-embed on macOS (${{ matrix.os }}, live)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: boost and OpenSSL from Homebrew
+        run: |
+          brew install boost openssl@3
+          b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
+          echo "I2P_EMBED_INCLUDE_DIRS=$b/include:$o/include" >> "$GITHUB_ENV"
+          echo "I2P_EMBED_LIB_DIRS=$b/lib:$o/lib" >> "$GITHUB_ENV"
+          echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --release -p i2p-embed --tests
+      - name: links nothing outside the OS
+        run: |
+          bin="$(ls target/release/deps/live-* | grep -v '\.d$' | head -1)"
+          otool -L "$bin"
+          foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/Library/)' || true)"
+          [ -z "$foreign" ] || { echo "links what a user's Mac does not have: $foreign"; exit 1; }
+      - name: live test over i2p
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
+        run: |
+          set -o pipefail
+          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+
+  # Windows: MSVC (the toolchain the app builds with), boost and OpenSSL from
+  # vcpkg as static libraries against the dynamic CRT Rust uses.
+  windows:
+    name: i2p-embed on Windows (MSVC, live)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      VCPKG_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        shell: bash
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: restore vcpkg packages
+        id: vcpkg-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-installed
+          key: vcpkg-${{ env.VCPKG_TRIPLET }}-${{ hashFiles('.github/workflows/i2p-embed.yml') }}
+      - name: boost and OpenSSL from vcpkg
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet "$VCPKG_TRIPLET" \
+            --x-install-root="$RUNNER_TEMP/vcpkg-installed" \
+            boost-asio boost-program-options boost-algorithm boost-property-tree \
+            boost-system boost-lexical-cast boost-beast boost-atomic boost-smart-ptr \
+            openssl zlib
+      - name: point the build at them
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/vcpkg-installed/$VCPKG_TRIPLET"
+          ls "$root/lib"
+          # vcpkg's boost library names carry the toolset; take what is there.
+          po="$(cd "$root/lib" && ls boost_program_options*.lib | head -1)"
+          libs="${po%.lib},libssl,libcrypto,zlib"
+          for extra in boost_atomic; do
+            f="$(cd "$root/lib" && ls $extra*.lib 2>/dev/null | head -1 || true)"
+            [ -n "$f" ] && libs="$libs,${f%.lib}"
+          done
+          echo "libraries: $libs"
+          {
+            echo "I2P_EMBED_INCLUDE_DIRS=$(cygpath -w "$root/include")"
+            echo "I2P_EMBED_LIB_DIRS=$(cygpath -w "$root/lib")"
+            echo "I2P_EMBED_LIBS=$libs"
+          } >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        shell: bash
+        run: cargo build --release -p i2p-embed --tests
+      - name: live test over i2p
+        shell: bash
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
+        run: |
+          set -o pipefail
+          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+
   # The oldest system the Linux bundles support (their glibc floor): does
   # libi2pd build against its boost (1.74), and link boost statically?
   jammy:

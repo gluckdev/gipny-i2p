@@ -9,6 +9,8 @@
 //!   I2P_EMBED_STATIC=1      link boost, OpenSSL and zlib statically
 //!   I2P_EMBED_STATIC_LIBS   or only these, comma separated (e.g.
 //!                           "boost_program_options")
+//!   I2P_EMBED_LIBS          the libraries' names, if not boost_program_options,
+//!                           ssl, crypto, z (vcpkg's on Windows)
 //!   I2P_EMBED_I2PD_SRC      another i2pd checkout (default: the submodule)
 //!   I2P_EMBED_CERTS_DIR     the reseed/family certificates to compile in
 //!                           (default: the checkout's contrib/certificates;
@@ -83,7 +85,21 @@ fn main() {
         }
     }
     if target_os == "windows" {
-        build.define("WIN32_LEAN_AND_MEAN", None).define("_WIN32_WINNT", "0x0A00");
+        // As upstream's CMake build: no <windows.h> min/max macros over std::.
+        build
+            .define("WIN32_LEAN_AND_MEAN", None)
+            .define("NOMINMAX", None)
+            .define("_WIN32_WINNT", "0x0A00")
+            .define("WINVER", "0x0A00");
+    }
+    if target_os == "macos" {
+        // FS.cpp and friends key the macOS paths off it, as upstream's builds.
+        build.define("MAC_OSX", None);
+    }
+    if env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc") {
+        // Libraries are named below, not by boost's #pragma autolink (whose
+        // names vcpkg's builds do not match); /bigobj for i2pd's larger units.
+        build.define("BOOST_ALL_NO_LIB", None).flag("/bigobj").flag("/utf-8");
     }
     build.compile("gipny_i2pd");
 
@@ -97,15 +113,28 @@ fn main() {
     let some_static: Vec<String> = env::var("I2P_EMBED_STATIC_LIBS")
         .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
         .unwrap_or_default();
-    for name in ["boost_program_options", "ssl", "crypto", "z"] {
+    // I2P_EMBED_LIBS overrides the names (vcpkg on Windows: e.g.
+    // "boost_program_options-vc143-mt,libssl,libcrypto,zlib").
+    println!("cargo:rerun-if-env-changed=I2P_EMBED_LIBS");
+    let libs: Vec<String> = env::var("I2P_EMBED_LIBS")
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_else(|_| ["boost_program_options", "ssl", "crypto", "z"].map(String::from).to_vec());
+    for name in &libs {
         let kind = if all_static || some_static.iter().any(|s| s == name) { "static=" } else { "" };
         println!("cargo:rustc-link-lib={kind}{name}");
     }
     match target_os.as_str() {
         "windows" => {
-            for name in ["ws2_32", "mswsock", "iphlpapi", "crypt32", "bcrypt"] {
+            // Winsock and interfaces for the router; the rest for a static
+            // OpenSSL and FS.cpp's known-folder lookup.
+            for name in ["ws2_32", "mswsock", "iphlpapi", "crypt32", "bcrypt", "advapi32", "user32", "shell32", "ole32"] {
                 println!("cargo:rustc-link-lib={name}");
             }
+        }
+        "macos" => {
+            // libc++ comes with cc; OpenSSL's rand and keychain bits.
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
+            println!("cargo:rustc-link-lib=framework=Security");
         }
         "linux" => {
             println!("cargo:rustc-link-lib=pthread");
