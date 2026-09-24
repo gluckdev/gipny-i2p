@@ -18,6 +18,7 @@
 
 - `.github/scripts/release-notes.sh <tag> <assets-dir> <owner/repo> [<git-ref>]` пишет текст страницы релиза. Сверху кладёт `docs/releases/<version>.md`, если файл есть, затем таблицу загрузок и changelog от предыдущего тега. Падает, если какого-то платформенного файла нет или среди файлов есть лишний.
 - `.github/scripts/vcpkg-i2p-deps.sh` ставит boost и OpenSSL из vcpkg для Windows (MSVC) одинаково в `i2p-embed.yml` и `release.yml`.
+- `.github/scripts/boost-po-pic.sh` собирает `boost_program_options` 1.74 статически с `-fPIC` для Linux-десктопа в `release.yml` (и проверки в `i2p-embed.yml` → `jammy`): крейт приложения — ещё и cdylib, а статическая boost из Ubuntu 22.04 на x86_64 собрана без `-fPIC` и в разделяемый объект не линкуется. Ключ `rust-cache` в релизных джобах — образ раннера: build-скрипты, собранные на 24.04 (`relay-testnet.yml`), на 22.04 не запускаются (GLIBC_2.39).
 - `.github/scripts/i2pd-under-test.sh <sha>` ставит сабмодуль на проверяемую ревизию для всех джоб `e2e-i2pd.yml`.
 - `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e, `relay-testnet.yml`), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.
 - `.github/codeql/codeql-config.yml`: `paths-ignore: '**/tests/**'`.

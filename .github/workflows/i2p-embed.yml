@@ -243,6 +243,18 @@ jobs:
           export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
           cargo build --release -p i2p-embed --tests
           ldd target/release/deps/live-* | grep -iE "boost|ssl|crypto|libz" || true
+      # The desktop app's crate is also a cdylib: a shared object takes only
+      # code built with -fPIC, which 22.04's static boost is not on x86_64
+      # (release run 36056978015). The same PIC build release.yml links.
+      - name: boost_program_options with -fPIC
+        run: .github/scripts/boost-po-pic.sh "$RUNNER_TEMP/boost-po-pic"
+      - name: and inside a shared object, as the app links it
+        env:
+          I2P_EMBED_STATIC_LIBS: boost_program_options
+        run: |
+          export I2P_EMBED_LIB_DIRS="$RUNNER_TEMP/boost-po-pic/lib:/usr/lib/$(gcc -dumpmachine)"
+          cargo rustc --release -p i2p-embed --crate-type cdylib
+          ls -l target/release/libi2p_embed.so
 
   # Two bots with their built-in relays, all on the router inside the harness
   # process: no i2pd process, no SAM, no port. The same scenario as
