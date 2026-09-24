@@ -229,16 +229,17 @@ impl Sending {
         let held = |i: u32| i < ack.received_up_to || (i < ack.seen_to && !ack.missing.contains(&i));
         flow.on_held(ack.file_id, held, now);
         self.acked = self.acked.max(ack.received_up_to.min(self.next));
-        let mut lost = false;
+        let mut lost: Option<i64> = None;
         for &m in &ack.missing {
             if m >= self.acked && m < self.next && !self.resend.contains(&m) && flow.overdue(ack.file_id, m, now) {
+                let at = flow.sent_at(ack.file_id, m).unwrap_or(i64::MIN / 2);
+                lost = Some(lost.map_or(at, |l| l.max(at)));
                 flow.unsent(ack.file_id, m);
                 self.resend.push(m);
-                lost = true;
             }
         }
-        if lost {
-            flow.on_loss(now);
+        if let Some(at) = lost {
+            flow.on_loss(at, now);
         }
         self.resend.retain(|&m| m >= self.acked);
         self.resend.sort_unstable();
@@ -252,17 +253,18 @@ impl Sending {
         let resend = self.resend.clone();
         flow.adopt(file_id, (self.acked..self.next).filter(|i| !resend.contains(i)), now);
         // The tail: nothing after it came, so no ack names it a hole.
-        let mut lost = false;
+        let mut lost: Option<i64> = None;
         for i in flow.overdue_parts(file_id, now) {
+            let at = flow.sent_at(file_id, i).unwrap_or(i64::MIN / 2);
             // Lost: no longer in flight, it goes again below.
             flow.unsent(file_id, i);
             if i >= self.acked && i < self.next && !self.resend.contains(&i) {
                 self.resend.push(i);
-                lost = true;
+                lost = Some(lost.map_or(at, |l| l.max(at)));
             }
         }
-        if lost {
-            flow.on_loss(now);
+        if let Some(at) = lost {
+            flow.on_loss(at, now);
         }
         self.resend.sort_unstable();
         let room = flow.room() as usize;
@@ -345,6 +347,10 @@ pub struct Flow {
     outliers: u32,
     last_cut: i64,
     last_ease: i64,
+    /// The timeout's multiplier after a loss, doubled each time up to 8 and
+    /// back to 1 at the next part measured: parts that were only slow are
+    /// not sent again and again at the old timeout (Karn's backoff).
+    backoff: i64,
     /// Parts in flight: when each went, and whether it was a resend.
     sent: std::collections::HashMap<([u8; 16], u32), (i64, bool)>,
     /// Files seen since this started (see [`Sending::due`]).
@@ -362,6 +368,7 @@ impl Default for Flow {
             outliers: 0,
             last_cut: i64::MIN / 2,
             last_ease: i64::MIN / 2,
+            backoff: 1,
             sent: Default::default(),
             known: Default::default(),
         }
@@ -386,7 +393,7 @@ impl Flow {
     pub fn rto_ms(&self) -> i64 {
         match self.srtt {
             None => RTO_FIRST_MS,
-            Some(s) => ((s + 4.0 * self.rttvar) as i64).clamp(RTO_MIN_MS, RTO_MAX_MS),
+            Some(s) => ((s + 4.0 * self.rttvar) as i64 * self.backoff).clamp(RTO_MIN_MS, RTO_MAX_MS),
         }
     }
 
@@ -467,6 +474,7 @@ impl Flow {
                 self.outliers = 0;
             }
         }
+        self.backoff = 1;
         self.recent.push_back(rtt);
         if self.recent.len() > BASE_SAMPLES {
             self.recent.pop_front();
@@ -481,6 +489,10 @@ impl Flow {
                 self.srtt = Some(0.875 * s + 0.125 * rtt);
             }
         }
+    }
+
+    fn sent_at(&self, file_id: [u8; 16], index: u32) -> Option<i64> {
+        self.sent.get(&(file_id, index)).map(|(at, _)| *at)
     }
 
     fn overdue(&self, file_id: [u8; 16], index: u32, now: i64) -> bool {
@@ -501,16 +513,19 @@ impl Flow {
         v
     }
 
-    fn on_loss(&mut self, now: i64) {
-        // Once per round trip: the parts of one burst lost together are one
-        // sign the path is full, not several.
+    /// A loss of a part sent at `sent_at`. The parts of one flight lost
+    /// together are one sign the path is full, not several: a loss of a part
+    /// sent before the last cut does not cut again (a recipient restarting
+    /// with 20 parts in flight halved the window hole after hole, down to 2).
+    fn on_loss(&mut self, sent_at: i64, now: i64) {
         let rtt = self.srtt.map(|s| s as i64).unwrap_or(RTO_FIRST_MS);
-        if now - self.last_cut < rtt {
+        if sent_at <= self.last_cut || now - self.last_cut < rtt {
             return;
         }
         self.last_cut = now;
         self.ssthresh = (self.cwnd / 2.0).max(2.0);
         self.cwnd = self.ssthresh;
+        self.backoff = (self.backoff * 2).min(8);
     }
 
     /// A file done, cancelled or rewound: its parts are no longer in flight.
@@ -718,10 +733,10 @@ mod tests {
         let mut flow = Flow::default();
         flow.cwnd = 16.0;
         flow.sample(5_000.0);
-        flow.on_loss(100_000);
-        flow.on_loss(101_000);
+        flow.on_loss(99_000, 100_000);
+        flow.on_loss(99_500, 101_000);
         assert_eq!(flow.window(), 8);
-        flow.on_loss(100_000 + 6_000);
+        flow.on_loss(105_000, 106_000);
         assert_eq!(flow.window(), 4);
     }
 
@@ -841,6 +856,37 @@ mod tests {
             s.on_ack(&ack(F, top, vec![], top), &mut flow, now);
         }
         assert!(flow.window() >= 8, "{} (queueing {})", flow.window(), flow.queueing());
+    }
+
+    #[test]
+    fn the_losses_of_one_flight_cut_the_window_once() {
+        let mut flow = Flow::default();
+        flow.cwnd = 20.0;
+        flow.sample(5_000.0);
+        // Twenty parts went out by 1 s; the recipient went away, all lost.
+        flow.on_loss(1_000, 40_000);
+        assert_eq!(flow.window(), 10);
+        // Their holes time out one by one, rounds later: no further cuts.
+        for k in 1..20 {
+            flow.on_loss(1_000, 40_000 + k * 6_000);
+        }
+        assert_eq!(flow.window(), 10);
+        // A part sent after the cut, lost too: that is news.
+        flow.on_loss(50_000, 200_000);
+        assert_eq!(flow.window(), 5);
+    }
+
+    #[test]
+    fn after_a_timeout_the_timeout_backs_off_until_a_part_is_measured() {
+        let mut flow = Flow::default();
+        flow.sample(5_000.0);
+        let rto = flow.rto_ms();
+        flow.on_loss(1_000, 20_000);
+        assert_eq!(flow.rto_ms(), (rto * 2).min(RTO_MAX_MS));
+        flow.on_loss(30_000, 60_000);
+        assert_eq!(flow.rto_ms(), (rto * 4).min(RTO_MAX_MS));
+        flow.sample(5_000.0);
+        assert!(flow.rto_ms() <= rto, "back to the measured one");
     }
 
     #[test]
