@@ -352,10 +352,9 @@ pub struct Core {
     /// Sessions we opened (contact → our init's ratchet key) not yet answered
     /// on: an X3dhInit from them meanwhile crossed ours. See `ours_stands`.
     own_inits: Arc<Mutex<HashMap<i64, [u8; 32]>>>,
-    /// Their inits that lost to ours (contact → that init's ratchet key): what
-    /// they sent on it cannot decrypt here, is no reason to resync, and is
-    /// resent by them on the session that stood.
-    lost_inits: Arc<Mutex<HashMap<i64, [u8; 32]>>>,
+    /// Their sessions that lost to ours, kept so what they sent on one before
+    /// taking ours is still read, not dropped and waited for again.
+    lost_inits: Arc<Mutex<HashMap<i64, RatchetState>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
@@ -2306,13 +2305,17 @@ impl Core {
                 let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
                 let crossed = self.own_inits.lock().await.get(&contact.id).is_some()
                     && self.sessions.lock().await.contains_key(&contact.id);
+                // A second init from them while their first lost to ours: they
+                // never took ours (it did not reach them, or they started over
+                // since — a reinstall, a resync), so this one is a new start.
+                let crossed = crossed && !self.lost_inits.lock().await.contains_key(&contact.id);
                 if crossed && ours_stands(&self.identity.card().sign_pk, &contact.identity_sign) {
                     // Both opened a session at once. Ours stands; theirs is
                     // read for what it says and set aside, and they take ours
                     // when it reaches them.
                     eprintln!("[relay-client] X3dhInit from contact {} crossed ours; ours stands", contact.id);
-                    let (_, plaintext) = self.accept_x3dh(&init, &ad).await?;
-                    self.lost_inits.lock().await.insert(contact.id, init.header.dh);
+                    let (theirs, plaintext) = self.accept_x3dh(&init, &ad).await?;
+                    self.lost_inits.lock().await.insert(contact.id, theirs);
                     let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
                     self.persist_incoming(contact.id, payload).await?;
                     if init.one_time_id.is_some() {
@@ -2380,15 +2383,33 @@ impl Core {
                 let (cid, pt, sb) = match decrypted {
                     Some(x) => x,
                     None => {
+                        // On a session of theirs that lost to ours: sent before
+                        // ours reached them. Read it on that session.
+                        let lost_hit = {
+                            let mut lost = self.lost_inits.lock().await;
+                            let mut hit = None;
+                            for (cid, state) in lost.iter_mut() {
+                                let Ok(Some(c)) = self.db.get_contact(*cid) else { continue };
+                                if !sealed && c.identity_sign.as_slice() != from_pk.as_slice() { continue; }
+                                let ad = build_ad(&self.identity.card().dh_pk, &c.identity_dh);
+                                if let Ok(pt) = state.decrypt(&header, &ciphertext, &ad) {
+                                    hit = Some((*cid, pt));
+                                    break;
+                                }
+                            }
+                            hit
+                        };
+                        if let Some((cid, pt)) = lost_hit {
+                            eprintln!("[relay-client] letter from contact {cid} on its session that lost to ours; read on it");
+                            let payload: WirePayload = decode_with_padding_fallback(&pt)?;
+                            self.persist_incoming(cid, payload).await?;
+                            return Ok(());
+                        }
                         if sealed {
                             eprintln!("[relay-client] sealed ratchet: no session matched, ACK and drop");
                             return Err(CoreError::SealedDrop);
                         }
                         if let Ok(Some(c)) = self.db.find_contact_by_sign_pk(from_pk) {
-                            if self.lost_inits.lock().await.get(&c.id) == Some(&header.dh) {
-                                eprintln!("[relay-client] letter from contact {} on its init that lost to ours; dropped, it resends", c.id);
-                                return Err(CoreError::SealedDrop);
-                            }
                             eprintln!("[relay-client] no session for contact {}, requesting resync", c.id);
                             let _ = self.request_resync(&c).await;
                         }
