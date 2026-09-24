@@ -66,5 +66,5 @@ windows-sys = { version = "0.61", features = [
 
 [features]
 # The i2pd router inside the process instead of SAM (needs boost, OpenSSL
-# and zlib at build time); chosen at run time with GIPNY_EMBEDDED_I2P=1.
+# and zlib at build time). No SAM, no port, no router process.
 embedded-i2p = ["gipny-libcore/embedded-i2p"]

@@ -17,5 +17,5 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 
 [features]
-# Run the bots on the router inside the process (GIPNY_EMBEDDED_I2P=1).
+# Run the bots on the router inside the process, with no SAM.
 embedded-i2p = ["gipny-libcore/embedded-i2p"]

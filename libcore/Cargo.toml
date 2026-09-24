@@ -61,6 +61,6 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [features]
-# Build the in-process router. Chosen at run time with GIPNY_EMBEDDED_I2P=1
-# until it has proved itself; SAM stays the default meanwhile.
+# The in-process router, and nothing else: no SAM, no router process, no
+# local port. Builds without it (platforms not moved yet) still use SAM.
 embedded-i2p = ["dep:i2p-embed"]

@@ -157,7 +157,7 @@ fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
 
 async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
     // On the shared router over SAM, or on the router inside this process
-    // (GIPNY_EMBEDDED_I2P=1): whichever the bots' node uses.
+    // (a build with embedded-i2p): whichever the bots' node uses.
     let port = if node.is_embedded() { 0 } else { node.sam_port() };
     eprintln!("[e2e] starting two in-process relays{}...", if port == 0 { " on the in-process router".to_string() } else { format!(" on SAM port {port}") });
     let t0 = Instant::now();
