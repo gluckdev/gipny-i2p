@@ -565,10 +565,11 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 3. Android. Builds the APK with i2pd embedded in-process via JNI: the
-  #    android-router job produces libi2pd.so (i2pd plus gipny's two JNI entry
-  #    points), the `stageI2pdJniLibs` Gradle task drops it into jniLibs, and
-  #    GipnyService.kt loads and starts it on service start.
+  # 3. Android. The android-router job produces libi2pd.so (libi2pd, the shim
+  #    and one JNI entry point), the `stageI2pdJniLibs` Gradle task drops it
+  #    into jniLibs, and the app's Rust side links it and runs the router in
+  #    process; GipnyService.kt only keeps the process in the foreground and
+  #    reports network changes.
   # ---------------------------------------------------------------------------
   # One job per ABI. Together they were the longest thing in the release
   # (~15 minutes), and they share nothing: two ABIs, two toolchains, two APKs.

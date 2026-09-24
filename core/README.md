@@ -16,7 +16,7 @@
 | `tauri.android.conf.json` | Переопределения для Android (идентификатор `app.gipny`, без ресурса роутера) |
 | `capabilities/default.json` | Разрешения Tauri для интерфейса |
 | `icons/` | Иконки; `icon.svg` — исходник, PNG генерирует `tools/gen-icons.sh` |
-| `resources/i2pd` | Роутер, который кладёт CI при сборке; в git не хранится |
+| `resources/i2pd-netdb-seed.tar.gz` | Снимок netDb для быстрого первого запуска, кладёт `release.yml`; в git не хранится. Роутер вкомпилирован (`i2p-embed`), бинаря i2pd здесь нет; `resolve_bundled_router` в `lib.rs` только передаёт путь к снимку в `GIPNY_I2P_SEED` |
 | `build.rs` | Сборочный скрипт Tauri |
 
 **`core.rs` по областям:**
@@ -27,9 +27,9 @@
   показывает экран загрузки. Релей и вход в сеть зеркалятся туда из `CoreEvent`
   в пересылке событий, чтобы экран не зависел от того, подписался ли уже главный вид.
 - **Свой релей:** `relay_mode`/`set_relay_mode`, `start_hosted_relay`/`run_hosted_relay`, `flush_relay_announcements` (адрес объявляется повторно, пока контакт не ответит — `note_heard_from`; контакт из списка не выбрасывается).
-- **Соединения с релеями:** `spawn_relay_loop` (свой релей), `relay_for` (релей контакта, пул `peer_relays`), `run_recv_loop`, `handle_relay_frame`.
+- **Соединения с релеями:** `spawn_relay_loop` (свой релей), `relay_for` (релей контакта, пул `peer_relays`), `warm_peer_relays`/`warm_relay_of` (дозвон заранее: при старте, при добавлении контакта, при новом адресе релея; неудача — повтор через 5 с с удвоением до 2 мин, `peer_relay_backoff`), `run_recv_loop`, `handle_relay_frame`.
 - **Приём:** `handle_incoming_envelope` (X3dhInit / Ratchet) → `persist_incoming`. Контакт-запрос обрабатывает `persist_from_requester`, имя и адрес отправителя — `apply_contact_hints`.
-- **Отправка:** `send_message` кладёт в базу, `spawn_send_loop` → `flush_all_pending` отправляет и повторяет, `send_payload_via_relay` шифрует, `ensure_session_for` открывает сессию (X3DH, тайбрейкер). Куда именно уходит письмо, решает `route_for` → `Route::Relay` (релей контакта) или `Route::Dht` (сеть релеев), отдаёт `deliver`.
+- **Отправка:** `send_message` кладёт в базу, `spawn_send_loop` → `flush_all_pending` отправляет и повторяет, `send_payload_via_relay` шифрует, `ensure_session_for` открывает сессию (X3DH сразу, без ожидания; скрестившиеся инициализации решает `ours_stands` — остаётся сессия меньшего ключа подписи, проигравшая хранится, чтобы прочитать письма по ней). Куда именно уходит письмо, решает `route_for` → `Route::Relay` (релей контакта) или `Route::Dht` (сеть релеев), отдаёт `deliver`.
 - **Сеть релеев:** `spawn_dht_loop` (обслуживание раз в 45 мин, сбор писем раз в 10 мин), `collect_from_dht` (письма и intro → `handle_incoming_envelope`, отметки в `dht_seen`, удаление из сети), `look_up_address`/`maybe_look_up_address` (новый адрес контакта), `publish_bundle_to_dht`. Всё, что не зависит от `Core`, — в `libcore/src/dht_client.rs`.
 - **Контакты:** `add_contact_via`, `accept_contact_request`, `decline_contact_request`, `delete_contact`, `request_resync`.
 - **Группы:** `create_group`, `send_to_group`, `ensure_group_from_wire`.
@@ -70,7 +70,7 @@
 - **`relay_for` никогда не ждёт дозвона.** Он возвращает `None` и дозванивается в фоне, иначе один недоступный контакт тормозит отправку всем.
 - **Отложенный установщик Windows запускается в `boot` до разблокировки vault**, а не в `Core::start`. Иначе пользователь ждёт роутер, после чего приложение всё равно закрывается.
 - **Контакту в состоянии `RequestState::Incoming` ничего не отправляется**, даже аки.
-- **Сборка `gipny` без роутера падает** на глобе `resources/i2pd*`. В CI кладётся заглушка — см. `build.yml`.
+- **Сборка `gipny` без файла в `resources/` падает** на глобе `resources/i2pd*` (tauri-build не принимает глоб без совпадений). В релизе он находит снимок netDb, в `build.yml` кладётся пустая заглушка.
 
 ## Как проверить
 

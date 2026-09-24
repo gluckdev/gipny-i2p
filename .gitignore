@@ -10,9 +10,10 @@ ui/.vite/
 release-artifacts/
 release-staging/
 
-# Bundled i2p router binary staged into core/resources at build time (not committed).
+# core/resources: the network snapshot release.yml stages, and build.yml's
+# placeholder for the resources glob (not committed).
 core/resources/i2pd
-core/resources/i2pd.exe
+core/resources/i2pd-netdb-seed.tar.gz
 *.AppImage
 *.deb
 *.tar.gz

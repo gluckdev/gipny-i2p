@@ -121,9 +121,8 @@ struct GhAsset {
 }
 
 pub struct Updater {
-    /// `None` when this router has no local HTTP proxy to use (Android, or
-    /// attached to a router we don't own) — every method then reports
-    /// unavailable rather than trying to dial nothing.
+    /// Always there: our own i2p stream to the outproxy. An `Option` so the
+    /// "not configured" outcomes keep one place to come from.
     client: Option<Transport>,
     component: Component,
 }

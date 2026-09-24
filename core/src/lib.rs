@@ -32,9 +32,8 @@ struct AppCtx {
 }
 
 /// A node started before any profile was opened, held for the profile it was
-/// started for. Exactly one of these exists at a time: a router left running
-/// beside the one `boot` spawns would be adopted through `previous_router`,
-/// and then killed under the running core when this slot was cleared.
+/// started for. Exactly one of these exists at a time: its destination and
+/// its relay's are dropped when another profile is picked.
 enum Prewarm {
     Building {
         profile: String,
@@ -740,8 +739,8 @@ async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle
             return Ok(());
         }
     }
-    // Strictly take-then-drop: two live routers for one profile mean the
-    // second adopts the first through `previous_router`, and then dies with it.
+    // Strictly take-then-drop: the old node's destinations go before new ones
+    // are built on the same router.
     if let Some(old) = slot.take() {
         drop_prewarm(old).await;
     }

@@ -2,6 +2,8 @@
 
 ## Context
 
+> **Состояние на 2026-09-24:** все восемь шагов сделаны на `fix/network-hygiene` (таблица «Состояние» ниже). Разделы «Context», «Что уже известно» и «План» описывают, как было до работы.
+
 Сейчас приложение, агент и встроенный релей говорят с i2pd по SAMv3 через TCP на
 `127.0.0.1` (`libcore/src/router.rs` запускает роутер с `--sam.address=127.0.0.1
 --sam.port=…`; на Android i2pd встроен через JNI, но общение то же, через SAM). Плюс
@@ -114,13 +116,13 @@ ID (`libi2pd_client/SAM.cpp`, `FindSession(m_ID)`). До 2026-09-24 наши ID 
 
 | Шаг | Где | Проверено в CI |
 |---|---|---|
-| 1. `i2p-embed` | `i2p-embed/` | live-тест Linux (сервер говорит первым), jammy/boost 1.74 static; macOS и Windows/MSVC — задачи в `i2p-embed.yml` |
+| 1. `i2p-embed` | `i2p-embed/` | `i2p-embed.yml`: live-тест Linux (сервер говорит первым), macOS (arm64 и intel), Windows/MSVC (vcpkg); jammy/boost 1.74 static |
 | 2–3. libcore, relay, DHT | `libcore/src/embedded.rs`, `net.rs`, `relay_server.rs` | e2e «релеи внутри ботов» на встроенном роутере, 5/5 |
-| 4. Обновления через аутпрокси | `libcore/src/i2p_http.rs`, `update.rs` | — |
-| 5. Android | `android-router/jni` (libi2pd + shim), `GipnyService.kt` (только foreground и сеть) | сборка `libi2pd.so` и линковка — задача `android` в `i2p-embed.yml`; APK — `release.yml` |
-| 6. Агент | собирается только со встроенным роутером | smoke в `release.yml` |
-| 7. Серверный релей | `core/relay` на `i2p-embed`, без i2pd рядом | `build.yml`, `relay-testnet.yml` |
-| 8. Удалить SAM, yosemite, дочерний роутер | — | после Windows и macOS |
+| 4. Обновления через аутпрокси | `libcore/src/i2p_http.rs`, `update.rs` | — (живой проверки нет) |
+| 5. Android | `android-router/jni` (libi2pd + shim + `nativeNetworkChanged`), `GipnyService.kt` (только foreground и сеть), снимок netDb в libcore (`GIPNY_NETDB_SEED`) | `i2p-embed.yml` → `android` (сборка `libi2pd.so` arm64, экспорт символов, линковка Rust) на каждый push; `release.yml` → `router (i2pd, android …)` и `android` (шаг `verify signed APKs`: `libi2pd.so` в APK, `libgipny_lib.so` с ней слинкована); `build.yml` → `android APK` с заглушкой `I2P_EMBED_STUB` |
+| 6. Агент | только встроенный роутер, `--sam` удалён; SIGTERM — как Ctrl-C | `e2e-i2pd.yml` → `e2e (agent binary)`; `release.yml` → smoke архива в `agent (linux …)` (i2pd нет нигде) |
+| 7. Серверный релей | `core/relay` на `i2p-embed`, без i2pd рядом, роутер под `<data>/router`; SIGTERM/SIGINT — чистая остановка | `e2e-i2pd.yml` → `e2e (relay + two bots)`, `e2e (relay network, each side away in turn)` (`--dht` как сид); `relay-testnet.yml`; архив — `release.yml` → `relay (linux …)` |
+| 8. Удалить SAM, yosemite, дочерний роутер | сделано, `61087a4`: нет `yosemite`, reqwest, `GIPNY_SAM_PORT`, `GIPNY_I2P_BIN`, `i2pd-build.yml`, `run-e2e.sh`, `start-router.sh`, `tools/sam-*.py`; снимок netDb — `cargo run -p i2p-embed --example netdb_snapshot` | все джобы выше; `e2e-i2pd.yml`: `head` выбирает ревизию апстрима, каждая e2e-джоба вкомпилирует её (`.github/scripts/i2pd-under-test.sh`), `bump` закрепляет доставившую |
 
 Грабли, найденные по дороге:
 
@@ -128,6 +130,9 @@ ID (`libi2pd_client/SAM.cpp`, `FindSession(m_ID)`). До 2026-09-24 наши ID 
 - **Сертификаты reseed.** `api.cpp` не вызывает `SetCertsDir`, а `reseed.verify` по умолчанию выключен, так что reseed принимался без проверки подписи. Теперь сертификаты вшиваются при сборке (свежие из upstream, `scripts/fresh-i2p-certs.sh`), раскладываются в `<datadir>/certificates`, везде `--reseed.verify=true`.
 - **Выход процесса.** На Linux `exit()` разрушал глобалы libi2pd с живыми потоками (`std::terminate`): прослойка останавливает роутер из `atexit`. На macOS `~Tunnels` переживал нужный ему мьютекс: clang собирает libi2pd с `-fno-c++-static-destructors`.
 - **Снимок netDb на Android** вшивается в libcore (`GIPNY_NETDB_SEED`): Rust не читает assets APK.
+- **Ранний дозвон и плоский бэкофф.** Релеи собеседников теперь дозваниваются заранее, а первый дозвон часто падает только потому, что LeaseSet релея ещё не дошёл до floodfill. С бэкоффом ровно 2 мин это превращалось в ожидание: в e2e (run 36033917903) эхо стояло 85 с. Теперь 5 с с удвоением до 2 мин, на каждый релей, сброс после успеха (`d504188`).
+- **Скрестившиеся X3DH-инициализации.** Без 10-секундного тайбрейкера обе стороны открывают сессию сразу, и инициализации могут скреститься. Остаётся сессия стороны с меньшим ключом подписи (`ours_stands`, одинаково в `core.rs` и `session.rs`). Сначала победитель выбрасывал вторую сессию вместе с письмами по ней — они ждали переотправки; теперь проигравшая сессия хранится, и письма по ней читаются. А контакт, не ответивший на нашу инициализацию, мог оказаться заперт: его новая инициализация (переустановка, сброс) «скрещивалась» с нашей устаревшей и проигрывала каждый раз. Вторая инициализация, пока первая отложена как проигравшая, — новое начало, она принимается (`4c8027e`, `cfa3f3f`; e2e с `E2E_BOTH_FIRST=1` в `i2p-embed.yml`).
+- **SIGTERM убивал процесс вместе с роутером** (systemd так останавливает релей и агента): netDb недописан, LeaseSet висит. Теперь релей выходит из `main`, агент ведёт себя как на Ctrl-C, роутер останавливается до выхода (`f740f85`).
 
 ## Проверка
 
