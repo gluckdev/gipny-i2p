@@ -404,7 +404,36 @@ export class ChatView extends View {
     this.typingHeader.style.display = '';
   }
 
+  /**
+   * On Android the file dialog hands back content:// URIs, which the core
+   * cannot open as paths, so nothing could be attached from a phone. There the
+   * webview's own chooser is used instead: the files are read here and copied
+   * into the app's cache, as a drop or a paste already is.
+   */
+  private pickFilesAndroid(): void {
+    const input = h('input', { type: 'file', multiple: true, style: 'display:none' }) as HTMLInputElement;
+    input.addEventListener('change', async () => {
+      try {
+        for (const f of Array.from(input.files ?? [])) {
+          const path = await pasteFileToTempPath(f);
+          this.pending.push({ name: f.name, path, size: f.size });
+        }
+        this.renderFileChips();
+      } catch (e) {
+        this.store.showToast('не удалось приложить файл: ' + String(e), true);
+      } finally {
+        input.remove();
+      }
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+
   private async pickFiles(): Promise<void> {
+    if (/Android/.test(navigator.userAgent)) {
+      this.pickFilesAndroid();
+      return;
+    }
     try {
       const sel = await open({ multiple: true });
       if (!sel) return;

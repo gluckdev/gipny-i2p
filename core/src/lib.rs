@@ -222,6 +222,7 @@ pub fn run() {
     }));
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .manage(ctx)
         .invoke_handler(tauri::generate_handler![
@@ -266,7 +267,17 @@ pub fn run() {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
-        .setup(|app| { install_tray(app)?; Ok(()) })
+        .setup(|app| {
+            // Where pasted, dropped and (on Android) picked files are copied
+            // before they are read. std::env::temp_dir() is /data/local/tmp on
+            // Android, which an app cannot write to.
+            use tauri::Manager;
+            if let Ok(dir) = app.path().app_cache_dir() {
+                let _ = PASTE_DIR.set(dir.join("gipny-i2p-paste"));
+            }
+            install_tray(app)?;
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -1329,6 +1340,13 @@ fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<Pen
     }
 }
 
+static PASTE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The directory temporary copies of attachments go to (see `setup`).
+fn paste_dir() -> std::path::PathBuf {
+    PASTE_DIR.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("gipny-i2p-paste"))
+}
+
 fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, String> {
     let path = std::path::PathBuf::from(p);
     let meta = std::fs::metadata(&path).map_err(err)?;
@@ -1348,7 +1366,7 @@ fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, Str
     // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
     // `paste_clipboard_image`). Remove it only after preparation succeeded: a
     // rejected format can then be retried after privacy mode is switched off.
-    if path.starts_with(std::env::temp_dir().join("gipny-i2p-paste")) {
+    if path.starts_with(paste_dir()) {
         let _ = std::fs::remove_file(&path);
     }
     Ok(attachment)
@@ -1488,17 +1506,27 @@ async fn load_attachment(attachment_id: i64, ctx: State<'_, AppCtx>) -> Result<S
 }
 
 #[tauri::command]
-async fn save_attachment(attachment_id: i64, dest_path: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+async fn save_attachment(attachment_id: i64, dest_path: String, app: AppHandle, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    use std::io::Write;
+    use std::str::FromStr;
+    use tauri_plugin_fs::FsExt;
     let core = core_of(&ctx).await?;
     let att = core.db().get_attachment(attachment_id).map_err(err)?.ok_or("not found")?;
     let bytes = core.read_attachment(&att).map_err(err)?;
-    std::fs::write(&dest_path, &bytes).map_err(err)?;
+    // On Android the save dialog returns a content:// URI, which std::fs
+    // cannot open; the fs plugin resolves it through the content resolver.
+    // On the desktop it is an ordinary path either way.
+    let path = tauri_plugin_fs::FilePath::from_str(&dest_path).map_err(|_| "bad path".to_string())?;
+    let mut opts = tauri_plugin_fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    let mut file = app.fs().open(path, opts).map_err(err)?;
+    file.write_all(&bytes).map_err(err)?;
     Ok(())
 }
 
 #[tauri::command]
 async fn save_paste_temp(name: String, data: Vec<u8>) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("gipny-i2p-paste");
+    let dir = paste_dir();
     std::fs::create_dir_all(&dir).map_err(err)?;
     let safe_name = name.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
@@ -1537,7 +1565,7 @@ async fn paste_clipboard_image() -> Result<Option<String>, String> {
         let mut writer = enc.write_header().map_err(|e| e.to_string())?;
         writer.write_image_data(&img.bytes).map_err(|e| e.to_string())?;
     }
-    let dir = std::env::temp_dir().join("gipny-i2p-paste");
+    let dir = paste_dir();
     std::fs::create_dir_all(&dir).map_err(err)?;
     let prefix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
