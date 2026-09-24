@@ -68,6 +68,10 @@ const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
 const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
+/// A bundle asked for ahead of use is used only this fresh: its one-time
+/// prekey may be handed to someone else meanwhile, and an init on a spent one
+/// is dropped at the far end.
+const BUNDLE_PREFETCH_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
 const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
@@ -646,6 +650,9 @@ pub struct SessionManager {
     /// Connections to other people's relays, keyed by destination.
     peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<tokio::sync::oneshot::Sender<Option<Vec<u8>>>>>>>,
+    /// Bundles asked for ahead of a first letter (see `relay_for`), by signing
+    /// key, with when they came: a new conversation then skips that round trip.
+    bundle_cache: Arc<Mutex<HashMap<[u8; 32], (Vec<u8>, std::time::Instant)>>>,
     /// Sessions we opened ourselves (contact → our init's ratchet key) that
     /// the contact has not answered on yet: an X3dhInit from them meanwhile
     /// crossed ours. See `crossing_init_stands`.
@@ -684,6 +691,7 @@ impl SessionManager {
             relay_out: Arc::new(RwLock::new(None)),
             peer_relays: Arc::new(Mutex::new(HashMap::new())),
             bundle_waiters: Arc::new(Mutex::new(HashMap::new())),
+            bundle_cache: Arc::new(Mutex::new(HashMap::new())),
             own_inits: Arc::new(Mutex::new(HashMap::new())),
             lost_inits: Arc::new(Mutex::new(HashMap::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
@@ -1224,6 +1232,7 @@ impl SessionManager {
 
             let this = self.clone();
             let key = theirs.to_string();
+            let (contact_id, contact_pk) = (contact.id, to_arr32(contact.identity_sign.clone()).ok());
             let handle = tokio::spawn(async move {
                 let short = &key[..16.min(key.len())];
                 let dial = tokio::time::timeout(
@@ -1252,6 +1261,13 @@ impl SessionManager {
                 eprintln!("[session] connected to peer relay {short}");
                 this.peer_relays.lock().await
                     .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
+                // No session with them yet: ask for their bundle now, so a
+                // first letter does not wait a round trip for it.
+                let no_session = !this.sessions.lock().await.contains_key(&contact_id)
+                    && this.db.get_session(contact_id).ok().flatten().is_none();
+                if let (true, Some(pk)) = (no_session, contact_pk) {
+                    let _ = client.out_tx.send(ClientToRelay::GetBundle { pk }).await;
+                }
                 this.send_kick.notify_one();
                 this.clone().run_recv_loop(client, None).await;
                 this.peer_relays.lock().await.remove(&key);
@@ -1407,9 +1423,17 @@ impl SessionManager {
                 }
             }
             RelayToClient::Bundle { pk, bundle } => {
-                let mut w = self.bundle_waiters.lock().await;
-                if let Some(vec) = w.remove(&pk) {
-                    for tx in vec { let _ = tx.send(bundle.clone()); }
+                let waiters = self.bundle_waiters.lock().await.remove(&pk);
+                match waiters {
+                    Some(vec) => {
+                        for tx in vec { let _ = tx.send(bundle.clone()); }
+                    }
+                    // Nobody waiting: the one asked for ahead of use.
+                    None => {
+                        if let Some(b) = bundle {
+                            self.bundle_cache.lock().await.insert(pk, (b, std::time::Instant::now()));
+                        }
+                    }
                 }
             }
             RelayToClient::Error(reason) => {
@@ -2015,7 +2039,12 @@ impl SessionManager {
 
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&contact.identity_sign);
+        let prefetched = {
+            let mut cache = self.bundle_cache.lock().await;
+            cache.remove(&pk).filter(|(_, at)| at.elapsed() < BUNDLE_PREFETCH_TTL).map(|(b, _)| b)
+        };
         let bundle_bytes = match route {
+            _ if prefetched.is_some() => prefetched,
             Route::Relay(out) => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);

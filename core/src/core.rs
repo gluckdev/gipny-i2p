@@ -141,6 +141,10 @@ const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
 const EVENTS_CAPACITY: usize = 1024;
 const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
+/// A bundle asked for ahead of use is used only this fresh: its one-time
+/// prekey may be handed to someone else meanwhile, and an init on a spent one
+/// is dropped at the far end.
+const BUNDLE_PREFETCH_TTL: Duration = Duration::from_secs(120);
 const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
@@ -348,6 +352,9 @@ pub struct Core {
     /// goes to where its recipient collects it, which is usually not here.
     peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<BundleWaiter>>>>,
+    /// Bundles asked for ahead of a first letter (see `relay_for`), by signing
+    /// key, with when they came: a new conversation then skips that round trip.
+    bundle_cache: Arc<Mutex<HashMap<[u8; 32], (Vec<u8>, Instant)>>>,
     send_kick: Arc<tokio::sync::Notify>,
     /// Sessions we opened (contact → our init's ratchet key) not yet answered
     /// on: an X3dhInit from them meanwhile crossed ours. See `ours_stands`.
@@ -519,6 +526,7 @@ impl Core {
             relay_out: Arc::new(RwLock::new(None)),
             peer_relays: Arc::new(Mutex::new(HashMap::new())),
             bundle_waiters: Arc::new(Mutex::new(HashMap::new())),
+            bundle_cache: Arc::new(Mutex::new(HashMap::new())),
             send_kick: Arc::new(tokio::sync::Notify::new()),
             own_inits: Arc::new(Mutex::new(HashMap::new())),
             lost_inits: Arc::new(Mutex::new(HashMap::new())),
@@ -2124,6 +2132,7 @@ impl Core {
             failures
         };
 
+        let (contact_id, contact_pk) = (contact.id, <[u8; 32]>::try_from(contact.identity_sign.as_slice()).ok());
         let this = self.clone();
         let key = theirs.to_string();
         let handle = tokio::spawn(async move {
@@ -2154,6 +2163,13 @@ impl Core {
             eprintln!("[relay-client] connected to peer relay {short}");
             this.peer_relays.lock().await
                 .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
+            // No session with them yet: ask for their bundle now, so a first
+            // letter does not wait a round trip for it.
+            let no_session = !this.sessions.lock().await.contains_key(&contact_id)
+                && this.db.get_session(contact_id).ok().flatten().is_none();
+            if let (true, Some(pk)) = (no_session, contact_pk) {
+                let _ = client.out_tx.send(ClientToRelay::GetBundle { pk }).await;
+            }
             this.send_kick.notify_one();
 
             // Drain it like our own: a relay we deposit on may also be holding
@@ -2255,9 +2271,17 @@ impl Core {
                 }
             }
             RelayToClient::Bundle { pk, bundle } => {
-                let mut w = self.bundle_waiters.lock().await;
-                if let Some(vec) = w.remove(&pk) {
-                    for tx in vec { let _ = tx.send(bundle.clone()); }
+                let waiters = self.bundle_waiters.lock().await.remove(&pk);
+                match waiters {
+                    Some(vec) => {
+                        for tx in vec { let _ = tx.send(bundle.clone()); }
+                    }
+                    // Nobody waiting: the one asked for ahead of use.
+                    None => {
+                        if let Some(b) = bundle {
+                            self.bundle_cache.lock().await.insert(pk, (b, Instant::now()));
+                        }
+                    }
                 }
             }
             RelayToClient::Error(reason) => {
@@ -3173,7 +3197,12 @@ impl Core {
 
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&contact.identity_sign);
+        let prefetched = {
+            let mut cache = self.bundle_cache.lock().await;
+            cache.remove(&pk).filter(|(_, at)| at.elapsed() < BUNDLE_PREFETCH_TTL).map(|(b, _)| b)
+        };
         let bundle_bytes = match route {
+            _ if prefetched.is_some() => prefetched,
             Route::Relay(out) => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
