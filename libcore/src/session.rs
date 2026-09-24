@@ -128,6 +128,49 @@ pub struct WirePayload {
     /// the contact itself, inside its ratchet session.
     #[serde(default)]
     pub wipe: Option<bool>,
+    /// Files too large to ride inside one letter, named here and sent in parts
+    /// on the same session ([`WireFileChunk`]); see `crate::files`.
+    #[serde(default)]
+    pub files: Vec<WireFileOffer>,
+    /// One part of an offered file. A letter carrying it has no text and no
+    /// `origin_msg_id`: it is not a message in the chat.
+    #[serde(default)]
+    pub file_chunk: Option<WireFileChunk>,
+    /// What the recipient holds of a file so far.
+    #[serde(default)]
+    pub file_ack: Option<WireFileAck>,
+    /// The sender stopped sending this file (or the recipient refused it).
+    #[serde(default)]
+    pub file_cancel: Option<[u8; 16]>,
+}
+
+/// A file sent in parts: what it is, so the recipient can take the parts in
+/// any order and check the whole at the end.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct WireFileOffer {
+    pub file_id: [u8; 16],
+    pub name: String,
+    pub size: u64,
+    pub sha256: [u8; 32],
+    /// Plaintext bytes per part; the last may be shorter.
+    pub chunk_size: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct WireFileChunk {
+    pub file_id: [u8; 16],
+    pub index: u32,
+    pub data: Vec<u8>,
+}
+
+/// Cumulative and selective: every part below `received_up_to` is here, and
+/// of those after it, `missing` are known lost (a later one arrived). Only
+/// `missing` makes the sender resend quickly; see `crate::files`.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct WireFileAck {
+    pub file_id: [u8; 16],
+    pub received_up_to: u32,
+    pub missing: Vec<u32>,
 }
 
 impl WirePayload {
@@ -136,7 +179,7 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
+            typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -284,6 +327,57 @@ struct WireV5 {
     reply_to: Option<WireReply>,
 }
 
+/// Everything up to `wipe`: the full payload up to the files sent in parts.
+#[derive(Serialize, Deserialize)]
+struct WireV9 {
+    origin_msg_id: u64,
+    body: String,
+    attachments: Vec<WireAttachment>,
+    sent_at: i64,
+    ttl_ms: Option<i64>,
+    group: Option<WireGroupRef>,
+    buttons: Option<Vec<Vec<WireButton>>>,
+    callback_data: Option<String>,
+    edit_of: Option<u64>,
+    pin: Option<WirePin>,
+    ack_for: Option<u64>,
+    sender_name: Option<String>,
+    reply_to: Option<WireReply>,
+    typing: Option<bool>,
+    notify_sound: Option<String>,
+    console: Option<WireConsole>,
+    relay_address: Option<String>,
+    wipe: Option<bool>,
+}
+
+impl From<&WirePayload> for WireV9 {
+    fn from(p: &WirePayload) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id, body: p.body.clone(), attachments: p.attachments.clone(),
+            sent_at: p.sent_at, ttl_ms: p.ttl_ms, group: p.group.clone(),
+            buttons: p.buttons.clone(), callback_data: p.callback_data.clone(),
+            edit_of: p.edit_of, pin: p.pin.clone(), ack_for: p.ack_for,
+            sender_name: p.sender_name.clone(), reply_to: p.reply_to.clone(),
+            typing: p.typing, notify_sound: p.notify_sound.clone(),
+            console: p.console.clone(), relay_address: p.relay_address.clone(), wipe: p.wipe,
+        }
+    }
+}
+
+impl From<WireV9> for WirePayload {
+    fn from(v: WireV9) -> Self {
+        Self {
+            origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
+            sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
+            buttons: v.buttons, callback_data: v.callback_data,
+            edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
+            reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound,
+            console: v.console, relay_address: v.relay_address, wipe: v.wipe,
+            files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+        }
+    }
+}
+
 /// Everything before `wipe`: the full payload up to 0.4.13.
 #[derive(Serialize, Deserialize)]
 struct WireV8 {
@@ -328,7 +422,7 @@ impl From<WireV8> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound,
-            console: v.console, relay_address: v.relay_address, wipe: None,
+            console: v.console, relay_address: v.relay_address, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -404,7 +498,7 @@ impl From<WireV7> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound, console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -417,7 +511,7 @@ impl From<WireV6> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: None, console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -485,7 +579,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -497,7 +591,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
+            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -509,7 +603,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -521,7 +615,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -532,7 +626,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
@@ -544,13 +638,15 @@ impl From<WireV0> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
             edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
-    if p.wipe.is_some()                                  { bincode::serialize(p) }
+    let has_files = !p.files.is_empty() || p.file_chunk.is_some() || p.file_ack.is_some() || p.file_cancel.is_some();
+    if has_files                                         { bincode::serialize(p) }
+    else if p.wipe.is_some()                             { bincode::serialize(&WireV9::from(p)) }
     else if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(&WireV8::from(p)) }
     else if p.notify_sound.is_some()                    { bincode::serialize(&WireV7::from(p)) }
     else if p.typing.is_some()                     { bincode::serialize(&WireV6::from(p)) }
@@ -563,6 +659,7 @@ pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::
 
 pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Ok(v) = bincode::deserialize::<WirePayload>(pt) { return Ok(v); }
+    if let Ok(v) = bincode::deserialize::<WireV9>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV8>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV7>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV6>(pt)      { return Ok(v.into()); }
@@ -924,7 +1021,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -953,7 +1050,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1069,7 +1166,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1107,7 +1204,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1879,7 +1976,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let Some(route) = self.route_for(contact).await else { return Ok(()) };
         if self.ensure_session_for(contact, &route).await.is_err() {
@@ -2527,6 +2624,46 @@ mod wire_tests {
         // A 0.4.13 client reads its own newest shape and ignores the rest.
         let old: WireV8 = bincode::deserialize(&bytes).expect("trailing field tolerated");
         assert_eq!(old.relay_address.as_deref(), Some("relay"));
+    }
+
+    #[test]
+    fn files_roundtrip_and_leave_other_payloads_as_they_were() {
+        let mut p = sample();
+        p.wipe = Some(true);
+        // No file fields: exactly the bytes of the build before them.
+        assert_eq!(encode_payload(&p).unwrap(), bincode::serialize(&WireV9::from(&p)).unwrap());
+        p.wipe = None;
+        p.files = vec![WireFileOffer { file_id: [7; 16], name: "big.bin".into(), size: 5 << 20, sha256: [9; 32], chunk_size: 196_608 }];
+        let back = decode_payload(&encode_payload(&p).unwrap()).unwrap();
+        assert_eq!(back.files, p.files);
+        assert_eq!(back.body, p.body);
+
+        let mut c = WirePayload::simple(0, String::new(), Vec::new(), 1, None);
+        c.file_chunk = Some(WireFileChunk { file_id: [7; 16], index: 3, data: vec![1, 2, 3] });
+        let back = decode_payload(&encode_payload(&c).unwrap()).unwrap();
+        assert_eq!(back.file_chunk, c.file_chunk);
+
+        let mut a = WirePayload::simple(0, String::new(), Vec::new(), 1, None);
+        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6] });
+        a.file_cancel = Some([8; 16]);
+        let back = decode_payload(&encode_payload(&a).unwrap()).unwrap();
+        assert_eq!(back.file_ack, a.file_ack);
+        assert_eq!(back.file_cancel, a.file_cancel);
+    }
+
+    #[test]
+    fn a_released_client_sees_a_part_as_an_empty_letter() {
+        // 0.4.11–0.4.13 read their newest shape (V8) and ignore the tail: a
+        // part is then a letter with no text, which persist_incoming drops.
+        let mut c = WirePayload::simple(0, String::new(), Vec::new(), 1, None);
+        c.file_chunk = Some(WireFileChunk { file_id: [7; 16], index: 0, data: vec![0; 1000] });
+        let old: WireV8 = bincode::deserialize(&encode_payload(&c).unwrap()).expect("trailing fields tolerated");
+        assert!(old.body.is_empty() && old.attachments.is_empty() && old.ack_for.is_none());
+        // And an offer shows its text.
+        let mut p = sample();
+        p.files = vec![WireFileOffer { file_id: [1; 16], name: "a".into(), size: 1, sha256: [0; 32], chunk_size: 1 }];
+        let old: WireV8 = bincode::deserialize(&encode_payload(&p).unwrap()).expect("trailing fields tolerated");
+        assert_eq!(old.body, p.body);
     }
 
     #[test]

@@ -1361,7 +1361,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1402,7 +1402,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1439,7 +1439,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1492,7 +1492,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1539,7 +1539,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
@@ -1606,7 +1606,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -2971,7 +2971,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = match self.route_for(contact).await {
             Some(x) => x,
@@ -3613,7 +3613,7 @@ fn make_typing_payload(group: Option<WireGroupRef>, typing: bool) -> WirePayload
         origin_msg_id: 0, body: String::new(), attachments: vec![], sent_at: now_ms(),
         ttl_ms: None, group, buttons: None, callback_data: None,
         edit_of: None, pin: None, ack_for: None, sender_name: None,
-        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None, wipe: None,
+        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
     }
 }
 
