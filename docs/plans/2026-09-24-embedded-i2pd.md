@@ -110,6 +110,25 @@ ID (`libi2pd_client/SAM.cpp`, `FindSession(m_ID)`). До 2026-09-24 наши ID 
    раз «никаких портов».
 8. Удалить yosemite и `router.rs`-запуск дочернего процесса, когда всё выше прошло e2e.
 
+## Состояние (ветка `fix/network-hygiene`)
+
+| Шаг | Где | Проверено в CI |
+|---|---|---|
+| 1. `i2p-embed` | `i2p-embed/` | live-тест Linux (сервер говорит первым), jammy/boost 1.74 static; macOS и Windows/MSVC — задачи в `i2p-embed.yml` |
+| 2–3. libcore, relay, DHT | `libcore/src/embedded.rs`, `net.rs`, `relay_server.rs` | e2e «релеи внутри ботов» на встроенном роутере, 5/5 |
+| 4. Обновления через аутпрокси | `libcore/src/i2p_http.rs`, `update.rs` | — |
+| 5. Android | `android-router/jni` (libi2pd + shim), `GipnyService.kt` (только foreground и сеть) | сборка `libi2pd.so` и линковка — задача `android` в `i2p-embed.yml`; APK — `release.yml` |
+| 6. Агент | собирается только со встроенным роутером | smoke в `release.yml` |
+| 7. Серверный релей | `core/relay` на `i2p-embed`, без i2pd рядом | `build.yml`, `relay-testnet.yml` |
+| 8. Удалить SAM, yosemite, дочерний роутер | — | после Windows и macOS |
+
+Грабли, найденные по дороге:
+
+- **SYN уходит только с первыми данными.** Исходящий поток i2pd не виден другой стороне, пока в него не записали; протокол релея начинает сервер (Challenge). Прослойка открывает поток пустой отправкой, как `STREAM CONNECT` в SAM.
+- **Сертификаты reseed.** `api.cpp` не вызывает `SetCertsDir`, а `reseed.verify` по умолчанию выключен, так что reseed принимался без проверки подписи. Теперь сертификаты вшиваются при сборке (свежие из upstream, `scripts/fresh-i2p-certs.sh`), раскладываются в `<datadir>/certificates`, везде `--reseed.verify=true`.
+- **Выход процесса.** На Linux `exit()` разрушал глобалы libi2pd с живыми потоками (`std::terminate`): прослойка останавливает роутер из `atexit`. На macOS `~Tunnels` переживал нужный ему мьютекс: clang собирает libi2pd с `-fno-c++-static-destructors`.
+- **Снимок netDb на Android** вшивается в libcore (`GIPNY_NETDB_SEED`): Rust не читает assets APK.
+
 ## Проверка
 
 - `cargo check`/`cargo test` локально (с разрешённой локальной компиляцией i2pd).
