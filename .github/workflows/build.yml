@@ -195,6 +195,10 @@ jobs:
       I2P_EMBED_STUB: '1'
     steps:
       - uses: actions/checkout@v7
+      # The stub carries no router, but the certificates go in all the same:
+      # upstream's current set, as every build compiles in.
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi
