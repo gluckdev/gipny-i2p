@@ -1031,9 +1031,18 @@ impl SessionManager {
                 let local = this.local_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
                     .filter(|r| r.address() == onion)
                     .map(|r| r.connect_local());
-                let connected = match local {
-                    Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
-                    None => relay::connect(&this.node, &onion, &this.identity).await,
+                // Bounded: nothing below has a timeout of its own, and a dial
+                // i2p leaves hanging would otherwise keep us off our own mail
+                // until restart (e2e run 35963073832: the master never got the
+                // agent's GRANT).
+                let connected = match tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, async {
+                    match local {
+                        Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
+                        None => relay::connect(&this.node, &onion, &this.identity).await,
+                    }
+                }).await {
+                    Ok(r) => r,
+                    Err(_) => Err(relay::RelayError::Proto(format!("no answer in {PEER_RELAY_CONNECT_TIMEOUT:?}"))),
                 };
                 match connected {
                     Ok(client) => {
