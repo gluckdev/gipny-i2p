@@ -1,3 +1,5 @@
+mod dht;
+mod dht_store;
 mod proto;
 mod storage;
 
@@ -12,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
 use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
+use crate::dht::DhtHandler;
 use crate::proto::*;
 use crate::storage::Storage;
 
@@ -21,8 +24,30 @@ type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
 /// system service exposing SAMv3 here (see gipny-i2pd.service).
 const DEFAULT_SAM_PORT: u16 = 7656;
 
+/// A relay-network connection is closed after this many requests, or when it
+/// sits idle this long (same limits as libcore's relay_server).
+const DHT_MAX_REQUESTS: usize = 64;
+const DHT_IDLE: Duration = Duration::from_secs(60);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `--dht` makes the relay a node of the relay network (a seed, when its
+    // destination is baked into releases as GIPNY_DHT_SEEDS). `--no-store`
+    // keeps it a router-only node; `--seeds` or GIPNY_DHT_SEEDS name other
+    // nodes to join through.
+    let mut dht_on = false;
+    let mut dht_stores = true;
+    let mut seeds = split_list(&std::env::var("GIPNY_DHT_SEEDS").unwrap_or_default());
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dht" => dht_on = true,
+            "--no-store" => dht_stores = false,
+            "--seeds" => seeds.extend(split_list(&args.next().unwrap_or_default())),
+            other => anyhow::bail!("unknown argument {other:?} (expected --dht, --no-store, --seeds LIST)"),
+        }
+    }
+
     let data_dir = std::env::var("GIPNY_RELAY_DATA").unwrap_or_else(|_| "./relay-data".to_string());
     let data_dir = PathBuf::from(data_dir);
     std::fs::create_dir_all(&data_dir)?;
@@ -44,6 +69,12 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
     eprintln!("{dest_pub}");
     eprintln!("========================================================");
+
+    let dht = if dht_on {
+        Some(dht::start(&data_dir, sam_port, &dest_pub, dht::Options { stores: dht_stores, seeds })?)
+    } else {
+        None
+    };
 
     let storage_gc = storage.clone();
     tokio::spawn(async move {
@@ -96,8 +127,9 @@ async fn main() -> anyhow::Result<()> {
         };
         let storage = storage.clone();
         let connections = connections.clone();
+        let dht = dht.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, storage, connections, destination_hash).await {
+            if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
                 eprintln!("[relay] client disconnected: {}", e);
             }
         });
@@ -106,15 +138,14 @@ async fn main() -> anyhow::Result<()> {
 
 /// Open a publishing STREAM session on the relay's persistent destination.
 async fn open_session(sam_port: u16, privkey: &str) -> anyhow::Result<Session<style::Stream>> {
-    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let opts = SessionOptions {
-        // Unique per process and per attempt. SAM session IDs are router-wide:
-        // two relays on one router with a fixed nickname collide, the second
-        // getting DUPLICATED_ID, which yosemite 0.7 cannot parse and reports
-        // only as "invalid message from router" (e2e run 35074027215). A
-        // rebuild can race the router's teardown of the previous session too.
-        nickname: format!("{HS_NICKNAME}-{}-{seq}", std::process::id()),
+        // Unique per process and per attempt, and secret (`sam_session_id`).
+        // SAM session IDs are router-wide: two relays on one router with a
+        // fixed nickname collide, the second getting DUPLICATED_ID, which
+        // yosemite 0.7 cannot parse and reports only as "invalid message from
+        // router" (e2e run 35074027215). A rebuild can race the router's
+        // teardown of the previous session too.
+        nickname: sam_session_id(HS_NICKNAME),
         destination: DestinationKind::Persistent { private_key: privkey.to_string() },
         samv3_tcp_port: sam_port,
         // Servers must publish their leaseSet so clients can reach them.
@@ -157,6 +188,7 @@ async fn handle_client<S>(
     storage: Arc<Storage>,
     connections: Connections,
     destination_hash: [u8; 32],
+    dht: Option<DhtHandler>,
 ) -> anyhow::Result<()>
 where S: AsyncRead + AsyncWrite + Unpin + Send
 {
@@ -170,10 +202,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
             (sign_pk, signature, auth_v2_message(&destination_hash, &challenge), true)
         }
         ClientToRelay::Auth { sign_pk, signature } => (sign_pk, signature, challenge.to_vec(), false),
-        ClientToRelay::Dht(_) => {
-            send_frame(&mut stream, &RelayToClient::Error("not a relay-network node".into())).await?;
-            return Ok(());
-        }
+        ClientToRelay::Dht(first) => return serve_dht(stream, challenge, first, dht).await,
         _ => anyhow::bail!("expected Auth first"),
     };
 
@@ -251,6 +280,37 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     }
     eprintln!("[relay] client gone {}", hex_short(&sign_pk));
     result
+}
+
+/// A relay-network connection: request, answer, until the other side is done.
+/// It never logs in, so nothing here touches the mailbox or `Connections`.
+async fn serve_dht<S>(mut stream: S, challenge: [u8; 32], first: Vec<u8>, dht: Option<DhtHandler>) -> anyhow::Result<()>
+where S: AsyncRead + AsyncWrite + Unpin + Send
+{
+    let Some(dht) = dht else {
+        send_frame(&mut stream, &RelayToClient::Error("not a relay-network node".into())).await?;
+        return Ok(());
+    };
+    let mut request = first;
+    for served in 1.. {
+        let answer = tokio::task::spawn_blocking({
+            let dht = dht.clone();
+            move || dht(&challenge, request)
+        })
+        .await?;
+        send_frame(&mut stream, &RelayToClient::Dht(answer)).await?;
+        if served >= DHT_MAX_REQUESTS {
+            return Ok(());
+        }
+        request = match tokio::time::timeout(DHT_IDLE, recv_frame::<_, ClientToRelay>(&mut stream)).await {
+            Err(_) => return Ok(()),
+            Ok(Err(e)) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::UnexpectedEof) => return Ok(()),
+            Ok(Err(e)) => return Err(e),
+            Ok(Ok(ClientToRelay::Dht(bytes))) => bytes,
+            Ok(Ok(_)) => anyhow::bail!("only relay-network frames after one"),
+        };
+    }
+    Ok(())
 }
 
 async fn client_loop<S>(
@@ -355,4 +415,8 @@ fn hex_short(b: &[u8]) -> String {
     let mut s = String::new();
     for &x in &b[..8.min(b.len())] { s.push_str(&format!("{:02x}", x)); }
     s
+}
+
+fn split_list(s: &str) -> Vec<String> {
+    s.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).map(str::to_string).collect()
 }

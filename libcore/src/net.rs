@@ -67,7 +67,22 @@ pub const MIN_HOPS: u8 = 2;
 
 /// Monotonic counter making each SAM session nickname unique, so a rebuilt
 /// session never collides (`DUPLICATED_ID`) with one the router hasn't dropped.
-pub(crate) static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
+static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// A SAM session ID that is unique and cannot be guessed.
+///
+/// i2pd's SAM has no authentication: `STREAM ACCEPT` and `STREAM CONNECT`
+/// find a session by its ID alone, and anything on this machine can reach the
+/// SAM port — on Android, any app. With a guessable ID (`prefix-pid-counter`)
+/// another program could take the connections meant for us or open ones from
+/// our destination. The pid and counter keep it unique; 128 random bits keep
+/// it secret. It is never logged.
+pub(crate) fn sam_session_id(prefix: &str) -> String {
+    let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
+    let secret: [u8; 16] = crate::crypto::random_array();
+    let secret: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{prefix}-{}-{seq}-{secret}", std::process::id())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
@@ -470,9 +485,8 @@ impl I2pNode {
 
 /// Build a SAMv3 STREAM session bound to our persistent destination.
 async fn build_session(sam_port: u16, privkey: &str, hops: u8) -> Result<Session<style::Stream>> {
-    let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let opts = SessionOptions {
-        nickname: format!("{NICKNAME}-{}-{}", std::process::id(), seq),
+        nickname: sam_session_id(NICKNAME),
         destination: DestinationKind::Persistent { private_key: privkey.to_string() },
         samv3_tcp_port: sam_port,
         // The client is outbound-only (all messaging is relay-mediated): no need
@@ -603,3 +617,22 @@ fn base32_encode_nopad(input: &[u8]) -> String {
 /// Backwards-compatible alias: the transport is now i2p, but the rest of the
 /// codebase still refers to the node type by its historical name.
 pub type TorNode = I2pNode;
+
+#[cfg(test)]
+mod tests {
+    use super::sam_session_id;
+
+    #[test]
+    fn sam_session_ids_are_unique_and_carry_a_secret() {
+        let (a, b) = (sam_session_id("gipny"), sam_session_id("gipny"));
+        assert_ne!(a, b);
+        for id in [&a, &b] {
+            let secret = id.rsplit('-').next().unwrap();
+            assert!(id.starts_with("gipny-"));
+            assert_eq!(secret.len(), 32, "{id}");
+            assert!(secret.chars().all(|c| c.is_ascii_hexdigit()), "{id}");
+        }
+        // Not just the counter: the secrets differ too.
+        assert_ne!(a.rsplit('-').next(), b.rsplit('-').next());
+    }
+}

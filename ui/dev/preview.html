@@ -66,7 +66,7 @@
           cap.textContent = s.label;
           const f = document.createElement('iframe');
           f.width = s.w; f.height = s.h; f.dataset.label = s.label;
-          f.src = `/dev/frame.html?scene=${sceneSel.value}&theme=${themeSel.value}`;
+          f.src = `/dev/frame.html?${new URLSearchParams({ scene: sceneSel.value, theme: themeSel.value })}`;
           fig.append(cap, f);
           frames.append(fig);
         }

@@ -43,7 +43,9 @@ class MainActivity : TauriActivity() {
    * calls this at the very first screen. To actually stop the app, swipe it out
    * of recents: the system kills the process outright, and a kill runs no
    * destructors and hits no destroyed mutex. */
-  @Suppress("DEPRECATION", "MissingSuperCall")
+  // OVERRIDE_DEPRECATION: overriding a deprecated member is its own warning
+  // (KT-47902); DEPRECATION covers only calls to one.
+  @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION", "MissingSuperCall")
   override fun onBackPressed() {
     moveTaskToBack(true)
   }

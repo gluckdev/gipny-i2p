@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# The relay network's seed nodes, baked into every client at compile time
+# (`option_env!` in libcore/src/dht_client.rs). A repository variable, not a
+# secret: the destinations are public, and each client ships them anyway.
+# Set it from the destination relay-testnet prints once it runs with `--dht`.
+env:
+  GIPNY_DHT_SEEDS: ${{ vars.GIPNY_DHT_SEEDS }}
+
 jobs:
   # ---------------------------------------------------------------------------
   # 0. On a tag, the version the tag names must be the version the code carries.

@@ -39,6 +39,18 @@ pub enum RelayToClient {
 }
 
 pub const HS_NICKNAME: &str = "gipny-relay";
+
+/// A SAM session ID that is unique and cannot be guessed. i2pd's SAM has no
+/// authentication: `STREAM ACCEPT` / `STREAM CONNECT` find a session by ID
+/// alone, and any process on the machine can reach the SAM port. A guessable
+/// ID would let one take the relay's incoming connections or dial from its
+/// destination. The pid and counter keep it unique; 128 random bits (the OS
+/// RNG, through rand's thread generator) keep it secret. Never logged.
+pub fn sam_session_id(prefix: &str) -> String {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{}-{seq}-{:032x}", std::process::id(), rand::random::<u128>())
+}
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
 
 pub const ERR_NEEDS_AUTH_V2: &str = "log in with AuthV2 to collect or publish";
@@ -85,6 +97,24 @@ pub fn destination_hash(dest_b64: &str) -> Option<[u8; 32]> {
 ///   - Vec<u8>: u64 LE length prefix + raw bytes
 ///   - [u8; N]: raw N bytes (no length prefix)
 ///   - Option<T>: u8 (0=None / 1=Some) then T if present
+#[cfg(test)]
+mod session_id {
+    use super::sam_session_id;
+
+    #[test]
+    fn unique_and_carrying_a_secret() {
+        let (a, b) = (sam_session_id(HS), sam_session_id(HS));
+        assert_ne!(a, b);
+        assert_ne!(a.rsplit('-').next(), b.rsplit('-').next());
+        let secret = a.rsplit('-').next().unwrap();
+        assert!(a.starts_with("gipny-relay-"));
+        assert_eq!(secret.len(), 32, "{a}");
+        assert!(secret.chars().all(|c| c.is_ascii_hexdigit()), "{a}");
+    }
+
+    const HS: &str = super::HS_NICKNAME;
+}
+
 #[cfg(test)]
 mod wire_compat {
     use super::*;

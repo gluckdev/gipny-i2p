@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
 use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
-use crate::net::{NetError, SESSION_SEQ};
+use crate::net::{sam_session_id, NetError};
 use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
 /// Answers one relay-network request, given the connection's challenge and the
@@ -557,6 +557,15 @@ impl EphemeralRelay {
                         }
                         continue;
                     };
+                    // Only the rebuild notice may interrupt an accept, and it
+                    // drops the session anyway. yosemite's accept is not
+                    // cancel-safe: dropped mid-handshake, it leaves the
+                    // controller between states and every later accept fails
+                    // with "invalid state". Reaping clients in this select did
+                    // exactly that whenever a connection closed, and
+                    // relay-network connections are short (e2e-dht run
+                    // 35946168184). Reap without waiting instead.
+                    while clients.try_join_next().is_some() {}
                     tokio::select! {
                         accepted = live.accept() => match accepted {
                             Ok(stream) => {
@@ -573,10 +582,16 @@ impl EphemeralRelay {
                             // fails while the destination drops off the router
                             // (e2e run 35076520090, both standalone relays). Drop
                             // it, releasing the destination, and reopen.
+                            //
+                            // Its clients go with it: their streams belong to
+                            // the dead session, and while they stay open the
+                            // router may keep the destination, refusing the
+                            // rebuild on the same key. They reconnect.
                             Err(e) => {
                                 failures += 1;
                                 eprintln!("[relay-server] accept err: {e}; rebuilding the session");
                                 session = None;
+                                clients.abort_all();
                             }
                         },
                         // A deliberate rebuild: the tunnel length changed. Drop
@@ -587,9 +602,6 @@ impl EphemeralRelay {
                             failures = 0;
                             session = None;
                         }
-                        // Reap finished clients so the set does not grow for the
-                        // life of the relay.
-                        Some(_) = clients.join_next(), if !clients.is_empty() => {}
                     }
                 }
             }
@@ -641,13 +653,13 @@ impl EphemeralRelay {
     }
 }
 
-/// A publishing STREAM session on `private_key`, under a nickname no other
-/// session on the router has: IDs are router-wide, and a rebuild can race the
-/// router's teardown of the session it replaces.
+/// A publishing STREAM session on `private_key`, under an ID no other session
+/// on the router has and nobody else can guess ([`sam_session_id`]): IDs are
+/// router-wide, and a rebuild can race the router's teardown of the session
+/// it replaces.
 async fn open_session(sam_port: u16, private_key: &str, hops: u8) -> Result<Session<style::Stream>, NetError> {
-    let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let opts = SessionOptions {
-        nickname: format!("gipny-relay-{}-{}", std::process::id(), seq),
+        nickname: sam_session_id("gipny-relay"),
         destination: DestinationKind::Persistent { private_key: private_key.to_string() },
         samv3_tcp_port: sam_port,
         publish: true,

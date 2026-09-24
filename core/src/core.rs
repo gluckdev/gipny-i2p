@@ -1802,9 +1802,27 @@ impl Core {
         if let Some(tx) = self.relay_for(contact).await {
             return Some(Route::Relay(tx));
         }
+        if self.peer_relay_settling(contact).await {
+            return None;
+        }
         // Their relay is down or unknown. The network holds the letter until
         // they come back, but only if we are in it.
         (self.dht.peer_count() > 0).then_some(Route::Dht)
+    }
+
+    /// Their relay is being dialled (or its old connection is still closing):
+    /// the letter waits in the queue for it rather than going to the network.
+    /// Otherwise the first letters of a burst would take the slow network
+    /// path while the later ones overtake them on the relay, and an agent
+    /// runs commands in the order they arrive.
+    async fn peer_relay_settling(&self, contact: &gipny_libcore::db::Contact) -> bool {
+        let Some(theirs) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else {
+            return false;
+        };
+        matches!(
+            self.peer_relays.lock().await.get(theirs),
+            Some(PeerRelay::Connecting) | Some(PeerRelay::Ready(_))
+        )
     }
 
     /// Hand one envelope to the contact by `route`.
@@ -2695,7 +2713,17 @@ impl Core {
                 && !self.sessions.lock().await.contains_key(&contact.id);
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
                 && self.sessions.lock().await.contains_key(&contact.id);
-            if pending.is_empty() && unacked.is_empty() && !needs_session && !needs_keepalive { continue; }
+            let group_pending = self.db.pending_outbound_for_recipient(
+                contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
+            )?;
+            if pending.is_empty()
+                && unacked.is_empty()
+                && group_pending.is_empty()
+                && !needs_session
+                && !needs_keepalive
+            {
+                continue;
+            }
             // Deposit on the relay this contact collects from, not on ours.
             let has_mail = !pending.is_empty() || !unacked.is_empty();
             eprintln!("[send] contact {} \"{}\": {} new, {} unacked, session={}, relay={}",
@@ -2710,6 +2738,8 @@ impl Core {
                     self.note_reachability(&contact, true, has_mail).await;
                     Route::Relay(tx)
                 }
+                // Still dialling: the next round sends it there, in order.
+                None if self.peer_relay_settling(&contact).await => continue,
                 // Their relay is away. Leave it in the network, where it waits
                 // for them — and keep the contact marked unreachable, because
                 // nothing has been handed over yet.
@@ -2758,9 +2788,6 @@ impl Core {
                     break;
                 }
             }
-            let group_pending = self.db.pending_outbound_for_recipient(
-                contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
-            )?;
             for msg_id in group_pending {
                 let msg = match self.db.get_message(msg_id)? { Some(m) => m, None => {
                     let _ = self.db.pending_outbound_remove(msg_id, contact.id);
@@ -3064,7 +3091,11 @@ impl Core {
             return;
         }
         let Ok(contacts) = self.db.list_contacts() else { return };
-        let mut letters = Vec::new();
+        // First letters from people who may not know us yet; an unknown sender
+        // becomes a contact request, exactly as over a relay. Introductions go
+        // first: the letters written after one open only with the session it
+        // starts (e2e-dht run 35950928731 lost all three otherwise).
+        let mut letters = dht_client::collect_intros(&self.dht, &self.identity, days).await;
         for c in &contacts {
             if c.trust == TrustLevel::Blocked || c.request_state == RequestState::Incoming {
                 continue;
@@ -3074,9 +3105,6 @@ impl Core {
             };
             letters.extend(dht_client::collect_mail(&self.dht, &self.identity, &their_sign, &their_dh, days).await);
         }
-        // First letters from people who may not know us yet; an unknown sender
-        // becomes a contact request, exactly as over a relay.
-        letters.extend(dht_client::collect_intros(&self.dht, &self.identity, days).await);
 
         for letter in letters {
             let hash = dht_client::letter_hash(&letter.envelope);
@@ -3086,10 +3114,16 @@ impl Core {
                 _ => continue,
             }
             match self.handle_incoming_envelope(&[0u8; 32], &letter.envelope).await {
-                Ok(()) | Err(CoreError::StaleOpk) | Err(CoreError::SealedDrop) => {
+                Ok(()) | Err(CoreError::StaleOpk) => {
                     // Ours and handled: take it out of the network so nobody
                     // holds it for the rest of its week.
                     dht_client::drop_letter(&self.dht, &letter).await;
+                }
+                // No session opens it yet. Over a relay the sender resends what
+                // is not acked; here the sender is away, so the letter stays in
+                // the network for a later pass, when the session may exist.
+                Err(CoreError::SealedDrop) => {
+                    let _ = self.db.dht_seen_forget(&hash);
                 }
                 Err(e) => {
                     eprintln!("[dht] letter from the network did not open: {e:?}");

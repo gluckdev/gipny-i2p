@@ -35,6 +35,8 @@ pub const MAINTAIN_EVERY: Duration = Duration::from_secs(45 * 60);
 
 /// Seed nodes baked in at build time, comma or whitespace separated
 /// (`GIPNY_DHT_SEEDS`, set from a repository variable in release.yml).
+/// Deliberately not read at run time: where a shipped client first looks for
+/// the network is decided by the build, not by whoever starts the process.
 pub fn builtin_seeds() -> Vec<String> {
     option_env!("GIPNY_DHT_SEEDS")
         .unwrap_or("")
@@ -112,8 +114,16 @@ fn add_candidates(node: &Arc<Node>, db: &Arc<Db>) {
     }
 }
 
+/// Replaces the saved table with the nodes that answered. Not when none did:
+/// that is a start before the tunnels are up, or no network at all, and
+/// saving then would erase every node remembered from earlier runs — the
+/// very ones the next start needs.
 fn save_peers(node: &Arc<Node>, db: &Arc<Db>) {
-    if let Err(e) = db.dht_peers_save(&node.known_peers()) {
+    let known = node.known_peers();
+    if known.is_empty() {
+        return;
+    }
+    if let Err(e) = db.dht_peers_save(&known) {
         eprintln!("[dht] saving the node table failed: {e}");
     }
 }

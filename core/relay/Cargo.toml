@@ -15,12 +15,16 @@ serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"
 bincode = { version = "2", features = ["serde"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
-yosemite = "0.7"
+# async-extra: `connect_detached`, so DHT dials share one session in parallel.
+yosemite = { version = "0.7", features = ["async-extra"] }
 ed25519-dalek = "3"
 sha2 = "0.11"
 rand = "0.10"
 thiserror = "2"
 anyhow = "1"
+futures = "0.3"
+# DHT protocol, node, store and items — no rusqlite inside, so no linker clash.
+gipny-dht = { path = "../../dht" }
 
 [profile.release]
 opt-level = 3
