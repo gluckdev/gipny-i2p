@@ -277,6 +277,13 @@ pub struct DialState {
     pub attempts: u32,
     /// Why the last one failed, in the transport's own words.
     pub last_error: Option<String>,
+    /// Checks in a row in which our built-in relay could not be reached from
+    /// the network, as a contact would reach it (`relay::probe`). We read the
+    /// relay over a pipe, so our own connection says nothing about this: on a
+    /// phone that lost its tunnels after a network change, mail read fine
+    /// and nobody could write to us.
+    pub unreachable_checks: u32,
+    pub unreachable_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -568,6 +575,53 @@ impl Core {
     }
 
     /// Record how the dial went and tell the interface, which is showing it.
+    fn note_relay_reach(&self, error: Option<String>) {
+        {
+            let mut d = self.relay_dial.write().unwrap_or_else(|p| p.into_inner());
+            match &error {
+                Some(_) => d.unreachable_checks = d.unreachable_checks.saturating_add(1),
+                None => d.unreachable_checks = 0,
+            }
+            d.unreachable_error = error;
+        }
+        let _ = self.events.try_send(CoreEvent::RelayInfoChanged { info: self.relay_info() });
+    }
+
+    /// While our built-in relay is up, reach it from the network now and then,
+    /// as a contact would. Stops with the relay; started again with it.
+    fn spawn_reach_check(self: &Arc<Self>, address: String) {
+        const EVERY: Duration = Duration::from_secs(180);
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            // Give the new LeaseSet a moment to reach the floodfills.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            loop {
+                let still_ours = matches!(
+                    &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()),
+                    HostedRelayState::Ready { address: a } if *a == address
+                );
+                if !still_ours {
+                    this.note_relay_reach(None);
+                    return;
+                }
+                let result = tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, relay::probe(&this.node, &address)).await;
+                match result {
+                    Ok(Ok(())) => this.note_relay_reach(None),
+                    Ok(Err(e)) => {
+                        eprintln!("[relay-hosted] not reachable from the network: {e:?}");
+                        this.note_relay_reach(Some(format!("{e:?}")));
+                    }
+                    Err(_) => {
+                        eprintln!("[relay-hosted] not reachable from the network: no answer in {PEER_RELAY_CONNECT_TIMEOUT:?}");
+                        this.note_relay_reach(Some(format!("no answer in {PEER_RELAY_CONNECT_TIMEOUT:?}")));
+                    }
+                }
+                tokio::time::sleep(EVERY).await;
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
     fn note_relay_dial(&self, error: Option<String>) {
         {
             let mut d = self.relay_dial.write().unwrap_or_else(|p| p.into_inner());
@@ -688,6 +742,7 @@ impl Core {
                         pending.extend(contacts.iter().filter(|c| c.trust != TrustLevel::Blocked).map(|c| c.id));
                     }
                     self.set_hosted_state(HostedRelayState::Ready { address: address.clone() });
+                    self.spawn_reach_check(address.clone());
                     self.send_kick.notify_one();
                     let (dht, db, identity) = (self.dht.clone(), self.db.clone(), self.identity.clone());
                     let this = self.clone();

@@ -214,6 +214,19 @@ pub async fn connect_peer(
     }
 }
 
+/// Reach a relay the way a contact would — over i2p, through our tunnels and
+/// its — and hang up at its first frame. Says whether the relay can be reached
+/// from the network, which reading our own relay over a pipe no longer shows.
+/// Never logs in: an owner login would take over the relay's live push.
+pub async fn probe(node: &Arc<TorNode>, onion: &str) -> Result<()> {
+    let stream = node.connect_service(onion, RELAY_PORT).await?;
+    let mut stream = stream.into_inner();
+    match recv::<_, RelayToClient>(&mut stream).await? {
+        RelayToClient::Challenge(_) => Ok(()),
+        _ => Err(RelayError::Proto("expected Challenge".into())),
+    }
+}
+
 /// Retrying with plain `Auth` is safe to allow: a current relay grants that
 /// nothing but depositing, so a relay that fakes being old gains nothing.
 fn predates_auth_v2(e: &RelayError) -> bool {

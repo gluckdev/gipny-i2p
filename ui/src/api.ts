@@ -82,7 +82,7 @@ export interface RelayInfo {
   external: string;
   hosted: HostedRelayState;
   /** How the attempt to reach our own relay is going. */
-  dial: { attempts: number; last_error: string | null };
+  dial: { attempts: number; last_error: string | null; unreachable_checks: number; unreachable_error: string | null };
 }
 
 /** A contact that put this client into agent mode, from `get_agent_mode`. */
