@@ -8,9 +8,9 @@ name: i2p-embed
 
 on:
   push:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/i2p-embed.yml' ]
   pull_request:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/i2p-embed.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -124,36 +124,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-installed
-          key: vcpkg-${{ env.VCPKG_TRIPLET }}-${{ hashFiles('.github/workflows/i2p-embed.yml') }}
+          key: vcpkg-x64-windows-static-md-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh') }}
       - name: boost and OpenSSL from vcpkg
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet "$VCPKG_TRIPLET" \
-            --x-install-root="$RUNNER_TEMP/vcpkg-installed" \
-            boost-asio boost-program-options boost-algorithm boost-property-tree \
-            boost-system boost-lexical-cast boost-beast boost-atomic boost-smart-ptr \
-            openssl zlib
-      - name: point the build at them
-        shell: bash
-        run: |
-          root="$RUNNER_TEMP/vcpkg-installed/$VCPKG_TRIPLET"
-          ls "$root/lib"
-          # vcpkg's boost library names carry the toolset; take what is there.
-          po="$(cd "$root/lib" && ls boost_program_options*.lib | head -1)"
-          # zlib's static library is zs.lib in a static triplet, zlib.lib otherwise.
-          z="$(cd "$root/lib" && ls zs.lib zlib.lib 2>/dev/null | head -1)"
-          libs="${po%.lib},libssl,libcrypto,${z%.lib}"
-          for extra in boost_atomic; do
-            f="$(cd "$root/lib" && ls $extra*.lib 2>/dev/null | head -1 || true)"
-            [ -n "$f" ] && libs="$libs,${f%.lib}"
-          done
-          echo "libraries: $libs"
-          {
-            echo "I2P_EMBED_INCLUDE_DIRS=$(cygpath -w "$root/include")"
-            echo "I2P_EMBED_LIB_DIRS=$(cygpath -w "$root/lib")"
-            echo "I2P_EMBED_LIBS=$libs"
-          } >> "$GITHUB_ENV"
+        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed"
       - uses: dtolnay/rust-toolchain@stable
       - name: build
         shell: bash

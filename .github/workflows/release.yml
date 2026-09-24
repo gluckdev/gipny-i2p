@@ -1,10 +1,11 @@
 name: release
 
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
-# Builds the bundled i2pd router and every desktop artifact (Linux AppImage/deb
-# for amd64 and arm64, Windows NSIS, macOS dmg for Apple Silicon and Intel),
-# the relay server for Linux amd64/arm64, plus Android arm64 and armv7 (i2pd embedded in-process via JNI; see
-# android-router/jni).
+# Builds every desktop artifact (Linux AppImage/deb for amd64 and arm64,
+# Windows NSIS, macOS dmg for Apple Silicon and Intel), the relay server and
+# the agent for Linux amd64/arm64, and Android arm64 and armv7. Each runs the
+# i2p router inside its own process (i2p-embed; android-router/jni on
+# Android): no i2pd binary ships, nothing listens on a local port.
 #
 # Trigger: a push to main that changes the version (core/tauri.conf.json).
 # That run builds everything, then tags the commit vX.Y.Z and publishes the
@@ -77,9 +78,9 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # 1. The i2pd binary, built from third_party/i2pd at the pinned commit: for
-  #    Windows, which still bundles it, and for the network snapshot below.
-  #    Every other build compiles the router in (i2p-embed).
+  # 1. The i2pd binary, built from third_party/i2pd at the pinned commit, only
+  #    to make the network snapshot below: every build compiles the router in
+  #    (i2p-embed) and ships no i2pd.
   # ---------------------------------------------------------------------------
   router:
     name: router (i2pd, ${{ matrix.label }})
@@ -93,9 +94,8 @@ jobs:
           # every distribution — Arch, Void, CentOS, Deepin — instead of
           # carrying a glibc floor from whatever image built it.
           - { label: linux/amd64, runs-on: ubuntu-latest, out: i2pd, artifact: router-linux-amd64 }
-          # Only for the network database snapshot below: every Linux and
-          # macOS build ships the router compiled in.
-          - { label: windows/amd64, runs-on: windows-latest, out: i2pd.exe, artifact: router-windows-amd64 }
+          # Only for the network database snapshot below: every build ships
+          # the router compiled in.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -274,8 +274,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 2. Desktop: Linux amd64/arm64 (AppImage + deb), Windows (NSIS), macOS
-  #    (dmg). Linux and macOS compile the router in; Windows still stages the
-  #    router binary into core/resources so Tauri bundles it (see tauri.conf).
+  #    (dmg). All compile the router in (i2p-embed); only the network snapshot
+  #    goes into core/resources.
   # ---------------------------------------------------------------------------
   desktop:
     name: desktop (${{ matrix.os }})
@@ -284,24 +284,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux runs the router inside the app (i2p-embed): no i2pd binary, no
-          # SAM, no port. `embedded` stages no router and builds with the feature.
-          - { os: ubuntu-22.04,   router: router-linux-amd64,   rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux, embedded: true }
+          # Every one runs the router inside the app (i2p-embed): no i2pd
+          # binary, no SAM, no port. boost is linked in; OpenSSL and zlib from
+          # the system on Linux, statically elsewhere (Homebrew; vcpkg, MSVC).
+          - { os: ubuntu-22.04,     bundles: 'appimage,deb', artifact: gipny-Linux }
           # 22.04 like amd64, so the arm64 bundles carry the same glibc floor.
-          - { os: ubuntu-22.04-arm, rbin: i2pd,     bundles: 'appimage,deb', artifact: gipny-Linux-arm64, embedded: true }
-          - { os: windows-latest, router: router-windows-amd64, rbin: i2pd.exe, bundles: 'nsis',         artifact: gipny-Windows }
-          # macOS too: Homebrew's boost and OpenSSL linked in statically.
-          - { os: macos-15,       rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-arm64, embedded: true }
-          - { os: macos-15-intel, rbin: i2pd,     bundles: 'app,dmg',      artifact: gipny-macOS-x86_64, embedded: true }
+          - { os: ubuntu-22.04-arm, bundles: 'appimage,deb', artifact: gipny-Linux-arm64 }
+          - { os: windows-latest,   bundles: 'nsis',         artifact: gipny-Windows }
+          - { os: macos-15,         bundles: 'app,dmg',      artifact: gipny-macOS-arm64 }
+          - { os: macos-15-intel,   bundles: 'app,dmg',      artifact: gipny-macOS-x86_64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - name: check out i2pd (compiled into the app)
-        if: ${{ matrix.embedded }}
+        shell: bash
         run: git submodule update --init --depth 1 third_party/i2pd
       - name: current reseed certificates (upstream i2pd now, not the pin)
-        if: ${{ matrix.embedded }}
+        shell: bash
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      # vcpkg builds boost for most of an hour; the result changes only with
+      # the script (its package list) and the image's vcpkg.
+      - name: restore boost and OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-installed
+          key: vcpkg-x64-windows-static-md-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh') }}
+      - name: boost and OpenSSL (Windows, compiled into the app)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed"
       - name: system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -324,7 +336,7 @@ jobs:
       # checks. MACOSX_DEPLOYMENT_TARGET matches tauri.conf's
       # minimumSystemVersion (Homebrew's archives are built for the image's OS).
       - name: boost and OpenSSL (macOS, compiled into the app)
-        if: runner.os == 'macOS' && matrix.embedded
+        if: runner.os == 'macOS'
         run: |
           brew install boost openssl@3
           b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
@@ -341,31 +353,21 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v7
         with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
-      - name: stage bundled router
-        if: ${{ !matrix.embedded }}
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ matrix.router }}
-          path: core/resources
       # Named i2pd-* so the existing resources glob picks it up.
       - name: stage the network database snapshot
         uses: actions/download-artifact@v8
         with:
           name: netdb-seed
           path: core/resources
-      # Artifacts do not keep the executable bit.
-      - name: mark router executable
-        if: runner.os != 'Windows' && !matrix.embedded
-        run: chmod +x core/resources/${{ matrix.rbin }}
       - name: build frontend
         run: cd ui && npm ci && npm run build
       - name: tauri build
         uses: tauri-apps/tauri-action@v1
         with:
           projectPath: core
-          args: --bundles ${{ matrix.bundles }}${{ matrix.embedded && ' --features embedded-i2p' || '' }}
+          args: --bundles ${{ matrix.bundles }} --features embedded-i2p
       - name: the app links nothing a Mac lacks
-        if: runner.os == 'macOS' && matrix.embedded
+        if: runner.os == 'macOS'
         run: |
           bin="$(find target/release/bundle/macos -path '*.app/Contents/MacOS/*' -type f | head -1)"
           test -n "$bin"
