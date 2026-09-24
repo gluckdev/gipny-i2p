@@ -69,7 +69,10 @@ pub fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
 }
 
 /// Parts in flight one lane carries well; a window of more spreads over more.
-const PARTS_PER_LANE: u32 = 8;
+/// Each i2p stream is held back by its own window, so a stream with a long
+/// queue is slow while another could take more: at 8 (2 MiB a stream) run
+/// 36056012101 held one extra lane and ~130 KiB/s.
+const PARTS_PER_LANE: u32 = 4;
 
 /// Lanes to a contact's relay for a window of `window` parts: one stream
 /// until it would hold more than [`PARTS_PER_LANE`], at most `FILE_LANES`.
