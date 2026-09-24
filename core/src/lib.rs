@@ -681,6 +681,12 @@ fn resolve_bundled_router(app: &AppHandle) {
                     break;
                 }
             }
+            for cand in [res.join("i2pd-netdb-seed.tar.gz"), res.join("resources").join("i2pd-netdb-seed.tar.gz")] {
+                if cand.exists() {
+                    std::env::set_var("GIPNY_I2P_SEED", cand);
+                    break;
+                }
+            }
         }
     }
     #[cfg(target_os = "android")]

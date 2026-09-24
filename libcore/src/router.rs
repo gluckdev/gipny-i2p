@@ -621,7 +621,12 @@ const SEED_BELOW_ROUTERS: usize = 90;
 /// router drops itself, and with too few left it reseeds as it always did.
 /// Returns how many RouterInfos were written.
 pub(crate) fn seed_netdb(bin: &Path, router_dir: &Path) -> std::io::Result<usize> {
-    let seed = bin.with_file_name("i2pd-netdb-seed.tar.gz");
+    seed_netdb_from(&bin.with_file_name("i2pd-netdb-seed.tar.gz"), router_dir)
+}
+
+/// As [`seed_netdb`], from the snapshot at `seed`.
+pub(crate) fn seed_netdb_from(seed: &Path, router_dir: &Path) -> std::io::Result<usize> {
+    let seed = seed.to_path_buf();
     if !seed.is_file() {
         return Ok(0);
     }
@@ -663,6 +668,31 @@ fn count_router_infos(netdb: &Path) -> usize {
         .flat_map(|files| files.flatten())
         .filter(|f| f.file_name().to_str().is_some_and(|n| n.starts_with("routerInfo-")))
         .count()
+}
+
+/// The bundled network database snapshot: `GIPNY_I2P_SEED` (the app sets it
+/// from its resource dir), next to the router binary, or next to this
+/// executable — where the agent's archive puts it once no router ships.
+#[cfg_attr(not(feature = "embedded-i2p"), allow(dead_code))]
+pub(crate) fn bundled_seed() -> Option<PathBuf> {
+    const NAME: &str = "i2pd-netdb-seed.tar.gz";
+    if let Some(p) = std::env::var_os("GIPNY_I2P_SEED").map(PathBuf::from) {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let mut candidates = Vec::new();
+    if let Ok(bin) = resolve_router_bin() {
+        candidates.push(bin.with_file_name(NAME));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for sub in ["", "resources", "../lib", "../Resources"] {
+                candidates.push(if sub.is_empty() { dir.join(NAME) } else { dir.join(sub).join(NAME) });
+            }
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 /// Resolve the bundled router binary: `GIPNY_I2P_BIN`, then next to the current

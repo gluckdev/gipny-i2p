@@ -53,6 +53,29 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # The oldest system the Linux bundles support (their glibc floor): does
+  # libi2pd build against its boost (1.74), and link boost statically?
+  jammy:
+    name: i2p-embed builds on Ubuntu 22.04 (boost 1.74, static)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        env:
+          I2P_EMBED_STATIC_LIBS: boost_program_options
+        run: |
+          export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
+          cargo build --release -p i2p-embed --tests
+          ldd target/release/deps/live-* | grep -iE "boost|ssl|crypto|libz" || true
+
   # Two bots with their built-in relays, all on the router inside the harness
   # process: no i2pd process, no SAM, no port. The same scenario as
   # "e2e (relays inside the bots)" in e2e-i2pd.yml.

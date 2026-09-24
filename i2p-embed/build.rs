@@ -7,6 +7,8 @@
 //!                           path separator
 //!   I2P_EMBED_LIB_DIRS      extra library dirs, likewise
 //!   I2P_EMBED_STATIC=1      link boost, OpenSSL and zlib statically
+//!   I2P_EMBED_STATIC_LIBS   or only these, comma separated (e.g.
+//!                           "boost_program_options")
 //!   I2P_EMBED_I2PD_SRC      another i2pd checkout (default: the submodule)
 //!   I2P_EMBED_SKIP_NATIVE=1 compile nothing native (a `cargo check` of the
 //!                           Rust side on a machine without boost)
@@ -65,8 +67,13 @@ fn main() {
             println!("cargo:rustc-link-search=native={}", d.display());
         }
     }
-    let kind = if env::var_os("I2P_EMBED_STATIC").is_some_and(|v| v == "1") { "static=" } else { "" };
+    println!("cargo:rerun-if-env-changed=I2P_EMBED_STATIC_LIBS");
+    let all_static = env::var_os("I2P_EMBED_STATIC").is_some_and(|v| v == "1");
+    let some_static: Vec<String> = env::var("I2P_EMBED_STATIC_LIBS")
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
     for name in ["boost_program_options", "ssl", "crypto", "z"] {
+        let kind = if all_static || some_static.iter().any(|s| s == name) { "static=" } else { "" };
         println!("cargo:rustc-link-lib={kind}{name}");
     }
     match target_os.as_str() {
