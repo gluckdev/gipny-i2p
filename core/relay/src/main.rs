@@ -138,15 +138,14 @@ async fn main() -> anyhow::Result<()> {
 
 /// Open a publishing STREAM session on the relay's persistent destination.
 async fn open_session(sam_port: u16, privkey: &str) -> anyhow::Result<Session<style::Stream>> {
-    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let opts = SessionOptions {
-        // Unique per process and per attempt. SAM session IDs are router-wide:
-        // two relays on one router with a fixed nickname collide, the second
-        // getting DUPLICATED_ID, which yosemite 0.7 cannot parse and reports
-        // only as "invalid message from router" (e2e run 35074027215). A
-        // rebuild can race the router's teardown of the previous session too.
-        nickname: format!("{HS_NICKNAME}-{}-{seq}", std::process::id()),
+        // Unique per process and per attempt, and secret (`sam_session_id`).
+        // SAM session IDs are router-wide: two relays on one router with a
+        // fixed nickname collide, the second getting DUPLICATED_ID, which
+        // yosemite 0.7 cannot parse and reports only as "invalid message from
+        // router" (e2e run 35074027215). A rebuild can race the router's
+        // teardown of the previous session too.
+        nickname: sam_session_id(HS_NICKNAME),
         destination: DestinationKind::Persistent { private_key: privkey.to_string() },
         samv3_tcp_port: sam_port,
         // Servers must publish their leaseSet so clients can reach them.

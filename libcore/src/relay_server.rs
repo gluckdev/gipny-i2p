@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
 use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
-use crate::net::{NetError, SESSION_SEQ};
+use crate::net::{sam_session_id, NetError};
 use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
 /// Answers one relay-network request, given the connection's challenge and the
@@ -653,13 +653,13 @@ impl EphemeralRelay {
     }
 }
 
-/// A publishing STREAM session on `private_key`, under a nickname no other
-/// session on the router has: IDs are router-wide, and a rebuild can race the
-/// router's teardown of the session it replaces.
+/// A publishing STREAM session on `private_key`, under an ID no other session
+/// on the router has and nobody else can guess ([`sam_session_id`]): IDs are
+/// router-wide, and a rebuild can race the router's teardown of the session
+/// it replaces.
 async fn open_session(sam_port: u16, private_key: &str, hops: u8) -> Result<Session<style::Stream>, NetError> {
-    let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let opts = SessionOptions {
-        nickname: format!("gipny-relay-{}-{}", std::process::id(), seq),
+        nickname: sam_session_id("gipny-relay"),
         destination: DestinationKind::Persistent { private_key: private_key.to_string() },
         samv3_tcp_port: sam_port,
         publish: true,

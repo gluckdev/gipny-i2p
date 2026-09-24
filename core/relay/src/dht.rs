@@ -137,12 +137,9 @@ impl RelayTransport {
         let fut = {
             let mut session = self.session.lock().await;
             if session.is_none() {
-                // SAM session IDs are router-wide: pid plus a counter, never
-                // random, so a rebuild cannot meet a name still in use.
-                static SEQ: AtomicU32 = AtomicU32::new(0);
-                let seq = SEQ.fetch_add(1, Ordering::Relaxed);
                 let opts = SessionOptions {
-                    nickname: format!("gipny-relay-dht-{}-{seq}", std::process::id()),
+                    // Unique and secret: see `sam_session_id`.
+                    nickname: sam_session_id("gipny-relay-dht"),
                     destination: DestinationKind::Transient,
                     samv3_tcp_port: self.sam_port,
                     // Outgoing only: nobody needs to find this destination.
