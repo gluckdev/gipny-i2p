@@ -15,8 +15,9 @@ serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"
 bincode = { version = "2", features = ["serde"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
-# async-extra: `connect_detached`, so DHT dials share one session in parallel.
-yosemite = { version = "0.7", features = ["async-extra"] }
+# The i2p router inside the process: no SAM, no router beside the relay, no
+# local port (needs boost, OpenSSL and zlib to build).
+i2p-embed = { path = "../../i2p-embed" }
 ed25519-dalek = "3"
 sha2 = "0.11"
 rand = "0.10"

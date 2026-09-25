@@ -82,7 +82,7 @@ export interface RelayInfo {
   external: string;
   hosted: HostedRelayState;
   /** How the attempt to reach our own relay is going. */
-  dial: { attempts: number; last_error: string | null };
+  dial: { attempts: number; last_error: string | null; unreachable_checks: number; unreachable_error: string | null };
 }
 
 /** A contact that put this client into agent mode, from `get_agent_mode`. */
@@ -229,6 +229,7 @@ export type CoreEvent =
   | { Typing: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; typing: boolean } }
   | { ContactAdded: { contact_id: number } }
   | { ContactUpdated: { contact_id: number } }
+  | { ContactWiped: { contact_id: number; name: string } }
   | { ContactRequest: { contact_id: number } }
   | { GroupUpdated: { group_id: string } }
   // The only presence signal: something arrived from them, written at
@@ -359,8 +360,9 @@ export class Api {
   static updateContact(id: number, name: string, trust: number): Promise<void> {
     return invoke('update_contact', { id, name, trust });
   }
-  static deleteContact(id: number): Promise<void> {
-    return invoke('delete_contact', { id });
+  /** `forBoth`: also ask the contact's client to delete the chat and us. */
+  static deleteContact(id: number, forBoth = false): Promise<void> {
+    return invoke('delete_contact', { id, forBoth });
   }
   static acceptContactRequest(id: number): Promise<void> {
     return invoke('accept_contact_request', { id });

@@ -4,10 +4,10 @@ name: build
 # Android APK on GitHub-hosted runners. Full release artifacts (installers) are
 # produced by release.yml on a tag. All builds are CI-only.
 #
-# The router is not built here. i2pd is C++ with boost and OpenSSL and takes
-# hours per Android ABI; it is built by i2pd-build.yml and by release.yml, which
-# caches it on the submodule pin. Everything in this workflow therefore checks
-# that *our* code compiles, not that the router does.
+# Every binary compiles the i2p router in (i2p-embed), so the desktop and
+# test jobs build libi2pd too, against the distro's boost. The Android APKs
+# here link a stub instead (I2P_EMBED_STUB): the real libi2pd.so takes an hour
+# of boost per ABI, and release.yml and i2p-embed.yml build it.
 
 on:
   push:
@@ -44,13 +44,21 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # tauri-build calls copy_resources() unconditionally and tauri-utils errors
       # on a glob with no match, so "resources/i2pd*" must match something even
-      # for a compile check. A placeholder is deliberate: this job proves our code
-      # builds, and only release.yml ships a real router.
+      # for a compile check. In a release it is the netDb snapshot; here a
+      # placeholder, not named like it, so nothing tries to unpack it.
       - name: stage router placeholder (tauri.conf resources glob needs a match)
         run: |
           mkdir -p core/resources
           printf 'placeholder: build.yml is a compile check and ships nothing\n' \
             > core/resources/i2pd
+      - name: i2pd sources and build deps (every binary compiles its router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: build libcore + relay
         run: |
           cargo build --release -p gipny-libcore
@@ -91,6 +99,20 @@ jobs:
           mkdir -p core/resources
           printf 'placeholder: build.yml is a compile check and ships nothing\n' \
             > core/resources/i2pd
+      - name: i2pd sources, boost and OpenSSL (the router is compiled in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          brew install boost openssl@3
+          b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
+          {
+            echo "I2P_EMBED_INCLUDE_DIRS=$b/include:$o/include"
+            echo "I2P_EMBED_LIB_DIRS=$b/lib:$o/lib"
+            echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto"
+            echo "MACOSX_DEPLOYMENT_TARGET=15.0"
+          } >> "$GITHUB_ENV"
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: libcore tests
         run: cargo test --release -p gipny-libcore
       - name: build app (frontend + tauri)
@@ -119,8 +141,16 @@ jobs:
         with:
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: i2pd sources and build deps (libcore and the relay compile the router in)
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       # pipefail: GitHub runs `bash -e` without it, so `cargo test | tee` took
       # tee's exit status and this step could never fail, whatever the tests did.
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: run libcore tests
         run: |
           set -o pipefail
@@ -159,15 +189,25 @@ jobs:
   # devices) and x86_64 (emulator), compile armeabi-v7a (32-bit devices), and
   # assert the Rust cdylib is packaged for each ABI.
   #
-  # Built with -PskipRouter, so these APKs carry no i2pd and cannot connect —
-  # they exist to prove the Kotlin/Rust/Tauri side compiles and packages. APKs
-  # that actually work come from release.yml, which stages a real libi2pd.so.
+  # Built with -PskipRouter and the stub shim, so these APKs carry no router
+  # and cannot connect — they exist to prove the Kotlin/Rust/Tauri side
+  # compiles, packages and starts. APKs that actually work come from
+  # release.yml, which builds and links a real libi2pd.so.
   # ---------------------------------------------------------------------------
   android:
     name: android APK
     runs-on: ubuntu-22.04
+    env:
+      # No libi2pd.so here (an hour of boost per ABI): the shim's interface
+      # over nothing (i2p-embed/shim/stub.c), so the app links and starts and
+      # its router never does. release.yml and i2p-embed.yml build the real one.
+      I2P_EMBED_STUB: '1'
     steps:
       - uses: actions/checkout@v7
+      # The stub carries no router, but the certificates go in all the same:
+      # upstream's current set, as every build compiles in.
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi

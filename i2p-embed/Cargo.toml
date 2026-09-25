@@ -1,0 +1,17 @@
+[package]
+name = "i2p-embed"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The i2pd router inside the process: no SAM, no local port."
+
+[dependencies]
+# Explicit rather than `workspace = true`: core/relay, a workspace of its own,
+# depends on this crate too.
+tokio = { version = "1", features = ["io-util", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "sync", "time", "rt-multi-thread", "macros"] }
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }

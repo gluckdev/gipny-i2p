@@ -303,10 +303,23 @@ class MainView extends View {
     const paintBanner = (): void => {
       const unconfigured = store.relayUnconfigured.get();
       const connected = store.relayConnected.get();
-      banner.classList.toggle('hidden', connected);
-      banner.classList.toggle('warn', unconfigured);
-      if (connected) return;
       const info = store.relayInfo.get();
+      // Our own relay is read over a pipe, so "connected" says nothing about
+      // whether anyone else can reach it. Two failed checks in a row from the
+      // network (one can be a LeaseSet still spreading) and we say so.
+      const unreachable = (info?.dial?.unreachable_checks ?? 0) >= 2;
+      banner.classList.toggle('hidden', connected && !unreachable);
+      banner.classList.toggle('warn', unconfigured || (connected && unreachable));
+      if (connected) {
+        if (unreachable) {
+          const why = info?.dial?.unreachable_error ? ` (${info.dial.unreachable_error.slice(0, 120)})` : '';
+          banner.replaceChildren(
+            `до вас сейчас не достучаться: встроенный релей не виден из сети i2p, проверка ${info?.dial?.unreachable_checks} раза подряд${why}. ` +
+              'Если телефон сменил сеть или просыпался — обычно проходит за пару минут. Ваши сообщения уходят как обычно'
+          );
+        }
+        return;
+      }
       const builtin = info?.mode === 'builtin';
       banner.classList.toggle('warn', unconfigured || (builtin && info?.hosted.state === 'failed'));
       // When the relay itself is up and we still cannot reach it, say what is

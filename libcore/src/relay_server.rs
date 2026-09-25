@@ -30,9 +30,8 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
-use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
-use crate::net::{sam_session_id, NetError};
+use crate::net::NetError;
 use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
 /// Answers one relay-network request, given the connection's challenge and the
@@ -46,12 +45,22 @@ const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
 
 /// Live connections by the signing key they authenticated as.
-pub type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
+/// Each key's live connection, with how far its mail has been pushed: the
+/// cursor is moved by whoever enqueues a push, so an Ack's sweep in between
+/// does not push the same message twice.
+pub type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>, Arc<Mutex<u64>>)>>>;
 
 /// Most messages one push batch carries; core/relay's `PENDING_LIMIT`.
 const PENDING_LIMIT: usize = 200;
 /// How often a connected client is re-offered messages it has not acked.
 const PUSH_REFRESH: Duration = Duration::from_secs(30);
+/// A client says something at least every 20 s (a ping, if nothing else); one
+/// silent this long is gone, though its close never came, and its connection
+/// is dropped rather than kept taking its mail into nowhere.
+#[cfg(not(test))]
+const CLIENT_SILENT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const CLIENT_SILENT: Duration = Duration::from_secs(2);
 const GC_INTERVAL: Duration = Duration::from_secs(600);
 const PUSH_CAPACITY: usize = 512;
 
@@ -159,6 +168,17 @@ impl Inner {
 pub struct MemStore {
     inner: std::sync::Mutex<Inner>,
     limits: MemStoreLimits,
+    serving: std::sync::RwLock<Serving>,
+}
+
+/// Whose mail a store takes.
+#[derive(Clone, Copy)]
+enum Serving {
+    Anyone,
+    Only([u8; 32]),
+    /// Built before its owner is known (tunnels built while the password is
+    /// typed): takes nothing from anyone until [`MemStore::claim`].
+    Nobody,
 }
 
 impl MemStore {
@@ -166,7 +186,31 @@ impl MemStore {
         // A recipient cap above the total cap would let one deposit push the
         // total over while evicting nothing of that recipient's.
         limits.max_recipient_bytes = limits.max_recipient_bytes.min(limits.max_total_bytes);
-        Self { inner: std::sync::Mutex::new(Inner::default()), limits }
+        let serving = match limits.only_for {
+            Some(owner) => Serving::Only(owner),
+            None => Serving::Anyone,
+        };
+        Self { inner: std::sync::Mutex::new(Inner::default()), limits, serving: std::sync::RwLock::new(serving) }
+    }
+
+    /// A personal store whose owner is not known yet: refuses everything.
+    pub fn unclaimed(limits: MemStoreLimits) -> Self {
+        let store = Self::new(limits);
+        *store.serving.write().unwrap_or_else(|p| p.into_inner()) = Serving::Nobody;
+        store
+    }
+
+    /// From now on serve `owner` alone.
+    pub fn claim(&self, owner: [u8; 32]) {
+        *self.serving.write().unwrap_or_else(|p| p.into_inner()) = Serving::Only(owner);
+    }
+
+    fn serves(&self, pk: &[u8; 32]) -> bool {
+        match *self.serving.read().unwrap_or_else(|p| p.into_inner()) {
+            Serving::Anyone => true,
+            Serving::Only(owner) => owner == *pk,
+            Serving::Nobody => false,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -176,7 +220,7 @@ impl MemStore {
     }
 
     pub fn store_bundle(&self, pk: &[u8; 32], bundle: &[u8]) -> Result<(), StoreError> {
-        if self.limits.only_for.is_some_and(|owner| owner != *pk) {
+        if !self.serves(pk) {
             return Err(StoreError::NotServed);
         }
         if bundle.len() > self.limits.max_bundle_bytes {
@@ -198,7 +242,7 @@ impl MemStore {
     }
 
     pub fn deposit(&self, to: &[u8; 32], blob: &[u8]) -> Result<u64, StoreError> {
-        if self.limits.only_for.is_some_and(|owner| owner != *to) {
+        if !self.serves(to) {
             return Err(StoreError::NotServed);
         }
         if blob.len() > self.limits.max_recipient_bytes {
@@ -370,7 +414,7 @@ where
         };
         return result;
     }
-    connections.write().await.insert(sign_pk, push_tx.clone());
+    connections.write().await.insert(sign_pk, (push_tx.clone(), cursor.clone()));
 
     let initial = tokio::spawn({
         let (store, push_tx, cursor) = (store.clone(), push_tx.clone(), cursor.clone());
@@ -412,7 +456,7 @@ where
     initial.abort();
     refresh.abort();
     let mut conns = connections.write().await;
-    if conns.get(&sign_pk).is_some_and(|tx| tx.same_channel(&push_tx)) {
+    if conns.get(&sign_pk).is_some_and(|(tx, _)| tx.same_channel(&push_tx)) {
         conns.remove(&sign_pk);
     }
     result
@@ -431,34 +475,57 @@ async fn client_loop<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // One read of a frame is kept across turns of the loop and polled by
+    // reference: `select!` must never drop it half-way, or the bytes it had
+    // read are gone and the next read takes the middle of a frame for its
+    // length ("frame too large", a dropped connection, and everything unacked
+    // pushed again).
+    let (rd, mut wr) = tokio::io::split(stream);
+    let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let silent = tokio::time::sleep(CLIENT_SILENT);
+    tokio::pin!(silent);
     loop {
         tokio::select! {
-            frame = recv::<_, ClientToRelay>(stream) => {
+            () = &mut silent => {
+                eprintln!("[relay-server] client silent for {CLIENT_SILENT:?}, dropping it");
+                break;
+            }
+            (rd, frame) = &mut reading => {
+                reading = Box::pin(read_frame(rd));
+                silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
                 match frame? {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
-                        send(stream, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
+                        send(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
                     }
                     ClientToRelay::Publish { bundle } => {
                         if let Err(e) = store.store_bundle(&sign_pk, &bundle) {
-                            send(stream, &RelayToClient::Error(e.to_string())).await?;
+                            send(&mut wr, &RelayToClient::Error(e.to_string())).await?;
                         }
                     }
                     ClientToRelay::GetBundle { pk } => {
                         let bundle = store.get_bundle(&pk);
-                        send(stream, &RelayToClient::Bundle { pk, bundle }).await?;
+                        send(&mut wr, &RelayToClient::Bundle { pk, bundle }).await?;
                     }
                     ClientToRelay::Send { to, blob } => match store.deposit(&to, &blob) {
                         Ok(id) => {
-                            send(stream, &RelayToClient::Deposited { id }).await?;
                             let online = connections.read().await.get(&to).cloned();
-                            if let Some(tx) = online {
+                            if let Some((tx, cur)) = online {
+                                // Counted as pushed now, not when it is written: an
+                                // Ack's sweep in between would push it a second time.
+                                {
+                                    let mut c = cur.lock().await;
+                                    if id > *c { *c = id; }
+                                }
                                 let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
                                 tokio::spawn(async move { let _ = tx.send(pkt).await; });
                             }
+                            // Answered after it is marked as pushed: the answer can wait on i2p,
+                            // and an Ack's sweep meanwhile would push it a second time.
+                            send(&mut wr, &RelayToClient::Deposited { id }).await?;
                         }
                         // No Deposited: the sender keeps the message unacked and
                         // tries again elsewhere or later.
-                        Err(e) => send(stream, &RelayToClient::Error(e.to_string())).await?,
+                        Err(e) => send(&mut wr, &RelayToClient::Error(e.to_string())).await?,
                     },
                     ClientToRelay::Ack { id } => {
                         store.ack(&sign_pk, id);
@@ -473,7 +540,7 @@ where
                             }
                         }
                     }
-                    ClientToRelay::Ping => send(stream, &RelayToClient::Pong).await?,
+                    ClientToRelay::Ping => send(&mut wr, &RelayToClient::Pong).await?,
                     ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
                 }
             }
@@ -483,15 +550,24 @@ where
                     let mut c = cursor.lock().await;
                     if *id > *c { *c = *id; }
                 }
-                send(stream, &msg).await?;
+                send(&mut wr, &msg).await?;
             }
         }
     }
     Ok(())
 }
+/// Read one frame, handing the reader back with it (see `client_loop`).
+async fn read_frame<R, T>(mut r: R) -> (R, Result<T, RelayError>)
+where
+    R: AsyncRead + Unpin,
+    T: serde::de::DeserializeOwned,
+{
+    let res = recv(&mut r).await;
+    (r, res)
+}
 
-/// A running in-process relay: its own publishing SAM session, memory-only
-/// storage, and the tasks serving both. Dropping it stops everything and
+/// A running in-process relay: its own published destination on the router
+/// in this process, memory-only storage, and the tasks serving both. Dropping it stops everything and
 /// releases the destination.
 pub struct EphemeralRelay {
     address: String,
@@ -507,105 +583,97 @@ pub struct EphemeralRelay {
     /// What [`Self::connect_local`] serves its connections with.
     connections: Connections,
     destination_hash: [u8; 32],
-    dht: Option<DhtHandler>,
+    /// Read for every connection, so a handler set after start (see
+    /// [`EphemeralRelay::claim`]) serves the next one.
+    dht: Arc<std::sync::RwLock<Option<DhtHandler>>>,
 }
 
 impl EphemeralRelay {
-    /// Generate a fresh destination and start serving it through the router
-    /// on `sam_port`.
+    /// Hand a relay from [`Self::start_unclaimed`] to its owner.
+    pub fn claim(&self, owner: [u8; 32], dht: Option<DhtHandler>) {
+        self.store.claim(owner);
+        *self.dht.write().unwrap_or_else(|p| p.into_inner()) = dht;
+    }
+
+    /// Generate a fresh destination and start serving it, published, on the
+    /// router in this process (started by the first node, or by
+    /// [`crate::embedded::router`]).
     ///
-    /// This needs its own SAM session: the client's is unpublished, and a relay
-    /// must publish a LeaseSet to be reachable at all. It returns once that
-    /// session exists, which for a published destination means its tunnels are
-    /// built, commonly a minute or two. Run it in a spawned task; never on a
+    /// It returns once the destination's tunnels are built and its LeaseSet
+    /// is up, commonly a minute or two. Run it in a spawned task; never on a
     /// path anything user-facing waits on.
     ///
     /// `dht` answers relay-network requests arriving here; `None` refuses them.
-    pub async fn start(sam_port: u16, limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
-        let (address, private_key) = RouterApi::new(sam_port)
-            .generate_destination()
-            .await
-            .map_err(|e| NetError::I2p(format!("relay destination: {e}")))?;
-        // Kept in memory only, for rebuilding the session on the same address.
-        // It is never written anywhere.
-        let private_key = zeroize::Zeroizing::new(private_key);
+    pub async fn start(limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+        Self::start_embedded(MemStore::new(limits), dht).await
+    }
+
+    /// Build the relay's tunnels before knowing whose it is — while the
+    /// profile's password is being typed — serving nobody until
+    /// [`Self::claim`]. Saves the 20–40 s of tunnel building after unlock.
+    pub async fn start_unclaimed() -> Result<Self, NetError> {
+        Self::start_embedded(MemStore::unclaimed(MemStoreLimits::default()), None).await
+    }
+
+    /// The relay as a published destination on the router inside this
+    /// process: no port. Same store, same `handle_client` as `connect_local`.
+    async fn start_embedded(store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+        let router = crate::embedded::running().ok_or(NetError::Closed)?;
+        // Kept in memory only, for rebuilding on the same address.
+        let private_key = zeroize::Zeroizing::new(i2p_embed::generate_keys());
         let hops = Arc::new(AtomicU8::new(crate::net::DEFAULT_HOPS));
         let rebuild = Arc::new(tokio::sync::Notify::new());
-        let first = open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await?;
-
-        let store = Arc::new(MemStore::new(limits));
+        let open = |hops: u8| {
+            i2p_embed::Destination::new(&router, Some(private_key.as_str()), &crate::embedded::destination_options(true, hops))
+                .map_err(|e| NetError::I2p(format!("relay destination: {e}")))
+        };
+        let first = open(hops.load(Ordering::Relaxed))?;
+        first.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("relay tunnels: {e}")))?;
+        let address = first.address().to_string();
+        let store = Arc::new(store);
+        let dht = Arc::new(std::sync::RwLock::new(dht));
         let connections: Connections = Arc::default();
-
-        // The session is owned by this task alone: `accept` holds `&mut` across
-        // its await, so sharing it would stall everything else behind a wait for
-        // the next caller. Client tasks live in the JoinSet, so aborting this
-        // task drops them with it.
         let destination_hash = crate::relay::destination_hash(&address)
             .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
-        let local = (connections.clone(), dht.clone());
         let accept = tokio::spawn({
-            let store = store.clone();
-            let (hops, rebuild) = (hops.clone(), rebuild.clone());
+            let (store, connections, dht, hops, rebuild) = (store.clone(), connections.clone(), dht.clone(), hops.clone(), rebuild.clone());
+            let router = router.clone();
+            let private_key = private_key.clone();
             async move {
-                let mut session = Some(first);
-                let mut failures = 0u32;
+                let mut dest = Some(first);
                 let mut clients = JoinSet::new();
                 loop {
-                    let Some(live) = session.as_mut() else {
-                        tokio::time::sleep(rebuild_backoff(failures)).await;
-                        match open_session(sam_port, &private_key, hops.load(Ordering::Relaxed)).await {
-                            Ok(s) => session = Some(s),
-                            Err(e) => {
-                                failures += 1;
-                                eprintln!("[relay-server] session rebuild failed: {e}");
-                            }
-                        }
-                        continue;
-                    };
-                    // Only the rebuild notice may interrupt an accept, and it
-                    // drops the session anyway. yosemite's accept is not
-                    // cancel-safe: dropped mid-handshake, it leaves the
-                    // controller between states and every later accept fails
-                    // with "invalid state". Reaping clients in this select did
-                    // exactly that whenever a connection closed, and
-                    // relay-network connections are short (e2e-dht run
-                    // 35946168184). Reap without waiting instead.
-                    while clients.try_join_next().is_some() {}
-                    tokio::select! {
-                        accepted = live.accept() => match accepted {
-                            Ok(stream) => {
-                                failures = 0;
-                                let (store, connections, dht) = (store.clone(), connections.clone(), dht.clone());
+                    let Some(live) = dest.as_ref() else { break };
+                    let mut inbound = live.accept();
+                    loop {
+                        while clients.try_join_next().is_some() {}
+                        tokio::select! {
+                            stream = inbound.recv() => {
+                                let Some(stream) = stream else { break };
+                                let (store, connections) = (store.clone(), connections.clone());
+                                let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
                                 clients.spawn(async move {
                                     if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
                                         eprintln!("[relay-server] client gone: {e}");
                                     }
                                 });
                             }
-                            // yosemite poisons the session's controller on any
-                            // reply it cannot parse, and every later accept on it
-                            // fails while the destination drops off the router
-                            // (e2e run 35076520090, both standalone relays). Drop
-                            // it, releasing the destination, and reopen.
-                            //
-                            // Its clients go with it: their streams belong to
-                            // the dead session, and while they stay open the
-                            // router may keep the destination, refusing the
-                            // rebuild on the same key. They reconnect.
-                            Err(e) => {
-                                failures += 1;
-                                eprintln!("[relay-server] accept err: {e}; rebuilding the session");
-                                session = None;
+                            // The tunnel length changed: the old destination goes
+                            // first (one key, one LeaseSet), then a new one at the
+                            // new length on the same key.
+                            () = rebuild.notified() => {
+                                dest = None;
                                 clients.abort_all();
+                                let opts = crate::embedded::destination_options(true, hops.load(Ordering::Relaxed));
+                                match i2p_embed::Destination::new(&router, Some(private_key.as_str()), &opts) {
+                                    Ok(d) => {
+                                        let _ = d.ready(Duration::from_secs(600)).await;
+                                        dest = Some(d);
+                                    }
+                                    Err(e) => eprintln!("[relay-server] rebuild failed: {e}"),
+                                }
+                                break;
                             }
-                        },
-                        // A deliberate rebuild: the tunnel length changed. Drop
-                        // the session so the next turn opens one at the new
-                        // length, and clear the failure count — this is not a
-                        // failure, and it should not inherit anyone's backoff.
-                        () = rebuild.notified() => {
-                            failures = 0;
-                            session = None;
                         }
                     }
                 }
@@ -623,8 +691,6 @@ impl EphemeralRelay {
                 }
             }
         });
-
-        let (connections, dht) = local;
         Ok(Self { address, store, tasks: vec![accept, gc], hops, rebuild, connections, destination_hash, dht })
     }
 
@@ -640,7 +706,8 @@ impl EphemeralRelay {
     /// nothing about who may collect changes.
     pub fn connect_local(&self) -> std::pin::Pin<Box<dyn crate::net::DuplexStream>> {
         let (client, server) = tokio::io::duplex(1 << 20);
-        let (store, connections, dht) = (self.store.clone(), self.connections.clone(), self.dht.clone());
+        let (store, connections) = (self.store.clone(), self.connections.clone());
+        let dht = self.dht.read().unwrap_or_else(|p| p.into_inner()).clone();
         let destination_hash = self.destination_hash;
         tokio::spawn(async move {
             if let Err(e) = handle_client(server, store, connections, destination_hash, dht).await {
@@ -679,34 +746,6 @@ impl EphemeralRelay {
     pub fn stats(&self) -> StoreStats {
         self.store.stats()
     }
-}
-
-/// A publishing STREAM session on `private_key`, under an ID no other session
-/// on the router has and nobody else can guess ([`sam_session_id`]): IDs are
-/// router-wide, and a rebuild can race the router's teardown of the session
-/// it replaces.
-async fn open_session(sam_port: u16, private_key: &str, hops: u8) -> Result<Session<style::Stream>, NetError> {
-    let opts = SessionOptions {
-        nickname: sam_session_id("gipny-relay"),
-        destination: DestinationKind::Persistent { private_key: private_key.to_string() },
-        samv3_tcp_port: sam_port,
-        publish: true,
-        // Payloads are E2E-encrypted and padded to size buckets already.
-        gzip: false,
-        // The leg everyone writing to us travels. Ours to shorten, and ours
-        // alone to pay for if we do.
-        inbound_len: hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS) as usize,
-        outbound_len: hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS) as usize,
-        ..Default::default()
-    };
-    Session::<style::Stream>::new(opts)
-        .await
-        .map_err(|e| NetError::I2p(format!("relay SAM session: {e}")))
-}
-
-/// 0.5 s doubling to a 30 s ceiling.
-fn rebuild_backoff(failures: u32) -> Duration {
-    Duration::from_millis(500u64.saturating_mul(1 << failures.min(6)).min(30_000))
 }
 
 impl Drop for EphemeralRelay {
@@ -844,13 +883,21 @@ mod tests {
         }
 
         fn open(&self) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
-            let (client, server) = tokio::io::duplex(1 << 20);
+            self.open_with(1 << 20)
+        }
+
+        fn open_with(&self, buffer: usize) -> (DuplexStream, JoinHandle<Result<(), RelayError>>) {
+            let (client, server) = tokio::io::duplex(buffer);
             let task = tokio::spawn(handle_client(server, self.store.clone(), self.connections.clone(), RIG_DESTINATION, self.dht.clone()));
             (client, task)
         }
 
         async fn login(&self, who: &Identity) -> DuplexStream {
-            let (mut c, _task) = self.open();
+            self.login_buffered(who, 1 << 20).await
+        }
+
+        async fn login_buffered(&self, who: &Identity, buffer: usize) -> DuplexStream {
+            let (mut c, _task) = self.open_with(buffer);
             let RelayToClient::Challenge(ch) = recv(&mut c).await.unwrap() else { panic!("no challenge") };
             let signature = who.sign(&crate::relay::auth_v2_message(&RIG_DESTINATION, &ch));
             let auth = ClientToRelay::AuthV2 { sign_pk: who.card().sign_pk, signature };
@@ -862,6 +909,117 @@ mod tests {
 
     async fn next(c: &mut DuplexStream) -> RelayToClient {
         tokio::time::timeout(Duration::from_secs(5), recv(c)).await.expect("frame within 5s").unwrap()
+    }
+
+    #[tokio::test]
+    async fn acking_while_mail_keeps_coming_pushes_nothing_twice() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        let mut a = rig.login(&alice).await;
+        const N: u8 = 60;
+        let sender = tokio::spawn(async move {
+            for i in 0..N {
+                send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![i; 10] }).await.unwrap();
+                assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+            }
+        });
+        // Bob acks each as it comes, so every deposit races an Ack's sweep.
+        let mut got = Vec::new();
+        while let Ok(Ok(frame)) = tokio::time::timeout(Duration::from_millis(500), recv::<_, RelayToClient>(&mut b)).await {
+            if let RelayToClient::Incoming { id, .. } = frame {
+                got.push(id);
+                send(&mut b, &ClientToRelay::Ack { id }).await.unwrap();
+            }
+        }
+        sender.await.unwrap();
+        let mut unique = got.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), N as usize, "every letter came");
+        assert_eq!(got.len(), N as usize, "none came twice: {got:?}");
+    }
+
+    /// Every `Incoming` a connection has within `wait`, by id.
+    async fn drain(c: &mut DuplexStream, wait: Duration) -> Vec<u64> {
+        let mut ids = Vec::new();
+        while let Ok(Ok(frame)) = tokio::time::timeout(wait, recv::<_, RelayToClient>(c)).await {
+            if let RelayToClient::Incoming { id, .. } = frame {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_deposit_slow_to_confirm_is_not_pushed_twice() {
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        // Alice's side takes two Deposited frames and then nothing, as an
+        // i2p stream with a full window would: the third deposit waits on
+        // its answer, with the letter already stored.
+        let a = rig.login_buffered(&alice, 40).await;
+        let to = bob.card().sign_pk;
+        let (mut ar, mut aw) = tokio::io::split(a);
+        let sender = tokio::spawn(async move {
+            for i in 0..3u8 {
+                send(&mut aw, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            }
+            aw
+        });
+        let first = match next(&mut b).await { RelayToClient::Incoming { id, .. } => id, f => panic!("{f:?}") };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Bob's Ack sweeps while the third deposit is still answering Alice.
+        send(&mut b, &ClientToRelay::Ack { id: first }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for _ in 0..3 {
+            let _: RelayToClient = tokio::time::timeout(Duration::from_secs(5), recv(&mut ar)).await.unwrap().unwrap();
+        }
+        let _aw = sender.await.unwrap();
+        let mut got = vec![first];
+        got.extend(drain(&mut b, Duration::from_millis(300)).await);
+        assert_eq!(got.len(), 3, "each once: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_silent_client_is_dropped() {
+        let rig = Rig::new();
+        let bob = Identity::generate();
+        let _quiet = rig.login(&bob).await;
+        assert!(rig.connections.read().await.contains_key(&bob.card().sign_pk));
+        tokio::time::sleep(CLIENT_SILENT + Duration::from_millis(500)).await;
+        assert!(!rig.connections.read().await.contains_key(&bob.card().sign_pk), "no longer taking its mail");
+    }
+
+    #[tokio::test]
+    async fn a_push_while_a_frame_is_half_read_loses_nothing() {
+        use tokio::io::AsyncWriteExt;
+        let rig = Rig::new();
+        let (bob, alice) = (Identity::generate(), Identity::generate());
+        let mut b = rig.login(&bob).await;
+        let mut a = rig.login(&alice).await;
+        // Bob starts a large frame and stops half-way ...
+        let frame = bincode::serialize(&ClientToRelay::Publish { bundle: vec![9; 8000] }).unwrap();
+        b.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
+        b.write_all(&frame[..4000]).await.unwrap();
+        b.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // ... a letter for him arrives and is pushed meanwhile ...
+        send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: vec![1; 10] }).await.unwrap();
+        assert!(matches!(next(&mut a).await, RelayToClient::Deposited { .. }));
+        assert!(matches!(next(&mut b).await, RelayToClient::Incoming { .. }));
+        // ... and the rest of his frame still parses: the connection lives.
+        b.write_all(&frame[4000..]).await.unwrap();
+        send(&mut b, &ClientToRelay::Ping).await.unwrap();
+        loop {
+            match next(&mut b).await {
+                RelayToClient::Pong => break,
+                RelayToClient::Error(e) => panic!("relay error: {e}"),
+                _ => {}
+            }
+        }
+        assert!(rig.store.get_bundle(&bob.card().sign_pk).is_some(), "the half-read Publish arrived whole");
     }
 
     #[tokio::test]
@@ -980,6 +1138,18 @@ mod tests {
     #[test]
     fn the_refusal_text_is_the_one_clients_look_for() {
         assert_eq!(StoreError::NotServed.to_string(), crate::relay::ERR_NOT_SERVED);
+    }
+
+    #[test]
+    fn an_unclaimed_store_takes_nothing_until_claimed() {
+        let (owner, stranger) = ([1u8; 32], [2u8; 32]);
+        let store = MemStore::unclaimed(MemStoreLimits::default());
+        assert_eq!(store.deposit(&owner, b"early"), Err(StoreError::NotServed));
+        assert_eq!(store.store_bundle(&owner, b"prekeys"), Err(StoreError::NotServed));
+        store.claim(owner);
+        assert!(store.deposit(&owner, b"for the owner").is_ok());
+        assert!(store.store_bundle(&owner, b"prekeys").is_ok());
+        assert_eq!(store.deposit(&stranger, b"not here"), Err(StoreError::NotServed));
     }
 
     #[tokio::test]

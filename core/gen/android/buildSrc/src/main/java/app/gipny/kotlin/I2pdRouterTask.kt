@@ -9,7 +9,7 @@ import java.io.File
  *
  * i2pd is C++ with boost and OpenSSL; building it from Gradle on every APK build
  * would add hours per ABI, so it is built once in CI
- * (.github/workflows/i2pd-build.yml, from android-router/jni) and consumed here.
+ * (release.yml and i2p-embed.yml, from android-router/jni) and consumed here.
  * The predecessor task cross-compiled the Go router inline, which was possible
  * only because pure Go builds in seconds.
  *
@@ -40,7 +40,7 @@ abstract class I2pdRouterTask : DefaultTask() {
             ?: throw GradleException(
                 "no prebuilt libi2pd.so for $abi. Looked in:\n" +
                     candidates.joinToString("\n") { "  - $it" } +
-                    "\nBuild it with the i2pd-build workflow and drop the artifact in " +
+                    "\nTake it from release.yml's router-android artifact and drop it in " +
                     "android-router/prebuilt/$abi/, or set GIPNY_I2PD_JNILIBS to a " +
                     "directory laid out as <abi>/libi2pd.so. " +
                     "Pass -PskipRouter to build an APK without a router (it will not connect)."
@@ -57,34 +57,5 @@ abstract class I2pdRouterTask : DefaultTask() {
         }
         source.copyTo(dest, overwrite = true)
         logger.lifecycle("staged i2pd router for $abi (${source.length() / 1024} KiB) from $source")
-    }
-}
-
-/**
- * Copies i2pd's reseed certificates into the APK assets.
- *
- * Without them a fresh router cannot verify a reseed and never joins the
- * network. GipnyService unpacks them into the profile's router directory on
- * first start.
- */
-abstract class I2pdCertificatesTask : DefaultTask() {
-    @get:Input
-    var rootDirRel: String = "../../../.."
-
-    @TaskAction
-    fun stage() {
-        val root = File(project.projectDir, rootDirRel).canonicalFile
-        val source = File(root, "third_party/i2pd/contrib/certificates")
-        if (!source.isDirectory) {
-            throw GradleException(
-                "i2pd certificates not found at $source — the third_party/i2pd " +
-                    "submodule is not checked out (git submodule update --init --recursive)."
-            )
-        }
-        val dest = File(project.projectDir, "src/main/assets/certificates")
-        dest.deleteRecursively()
-        source.copyRecursively(dest, overwrite = true)
-        val count = dest.walkTopDown().count { it.isFile }
-        logger.lifecycle("staged $count i2pd certificates into assets")
     }
 }

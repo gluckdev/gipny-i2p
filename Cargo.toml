@@ -7,6 +7,7 @@ members = [
     "bot-sdk",
     "tests/e2e-harness",
     "dht",
+    "i2p-embed",
 ]
 
 [workspace.dependencies]
@@ -26,8 +27,6 @@ hmac = "0.13"
 sha2 = "0.11"
 argon2 = "0.6"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
-# i2p transport: SAMv3 client. `async-extra` enables detached (concurrent) stream dials.
-yosemite = { version = "0.7", features = ["async-extra"] }
 futures = "0.3"
 libc = "0.2"
 

@@ -12,8 +12,9 @@ WorkingDirectory=/var/lib/gipny-agent
 # GIPNY_AGENT_ARGS holds the master's card, e.g.
 #   GIPNY_AGENT_ARGS=--master gipny:v2:...
 EnvironmentFile=-/etc/gipny-agent.env
-# The agent spawns its own i2pd; it looks for the binary next to itself first
-# (libcore/src/router.rs), which is where the tarball's install puts it.
+# The agent runs the i2p router inside its own process (no i2pd, no ports);
+# the network snapshot installed next to it speeds up its first start.
+# SIGTERM (systemctl stop) sends REVOKE to the master before it exits.
 ExecStart=/usr/local/bin/gipny-agent --data /var/lib/gipny-agent $GIPNY_AGENT_ARGS
 Restart=on-failure
 RestartSec=5

@@ -20,6 +20,9 @@ gipny-libcore = { path = "../libcore" }
 
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
+# Rust side only (no JS permissions granted): writing a saved attachment to
+# the content:// URI Android's save dialog returns, which std::fs cannot open.
+tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 
 argon2 = { workspace = true }
@@ -60,3 +63,4 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_UI_Shell",
 ] }
+

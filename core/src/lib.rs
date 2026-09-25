@@ -32,19 +32,21 @@ struct AppCtx {
 }
 
 /// A node started before any profile was opened, held for the profile it was
-/// started for. Exactly one of these exists at a time: a router left running
-/// beside the one `boot` spawns would be adopted through `previous_router`,
-/// and then killed under the running core when this slot was cleared.
+/// started for. Exactly one of these exists at a time: its destination and
+/// its relay's are dropped when another profile is picked.
 enum Prewarm {
     Building {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
-        task: tokio::task::JoinHandle<Result<Arc<I2pNode>, String>>,
+        task: tokio::task::JoinHandle<Result<(Arc<I2pNode>, core::PrebuiltRelay), String>>,
     },
     Ready {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
         node: Arc<I2pNode>,
+        /// The built-in relay's tunnels, building as soon as the router is up
+        /// (serving nobody until the core claims it after unlock).
+        relay: core::PrebuiltRelay,
     },
 }
 
@@ -222,6 +224,7 @@ pub fn run() {
     }));
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .manage(ctx)
         .invoke_handler(tauri::generate_handler![
@@ -266,7 +269,17 @@ pub fn run() {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
-        .setup(|app| { install_tray(app)?; Ok(()) })
+        .setup(|app| {
+            // Where pasted, dropped and (on Android) picked files are copied
+            // before they are read. std::env::temp_dir() is /data/local/tmp on
+            // Android, which an app cannot write to.
+            use tauri::Manager;
+            if let Ok(dir) = app.path().app_cache_dir() {
+                let _ = PASTE_DIR.set(dir.join("gipny-i2p-paste"));
+            }
+            install_tray(app)?;
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -626,7 +639,7 @@ fn boot_status(app: &AppHandle, stage: &'static str, state: &'static str, detail
     let _ = app.emit("boot_status", BootStatus { stage, state, detail: detail.into() });
 }
 
-/// The callback libcore reports router and SAM progress through. Stage ids come
+/// The callback libcore reports router and tunnel progress through. Stage ids come
 /// from there (`router`, `router-reused`, `tunnels`, `tunnels-done`, `session`,
 /// `session-done`); anything unknown still reaches the technical log.
 fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
@@ -645,25 +658,22 @@ fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
     })
 }
 
-/// Point the transport at the bundled i2pd shipped as a Tauri resource.
+/// Point the router at the network database snapshot shipped as a Tauri
+/// resource (the router itself is compiled in).
 ///
 /// `resource_dir()` is authoritative: the deb and AppImage put resources under
-/// `usr/lib/<product>/resources/`, which router.rs's relative probing does not
-/// reach. On Android the router is started in-process by the foreground
-/// service, so this is a no-op there.
+/// `usr/lib/<product>/resources/`, which relative probing does not reach. On
+/// Android the snapshot is compiled into the binary instead.
 ///
-/// Called before *any* router start — the prewarm below runs before `boot`,
-/// and a prewarm that could not find the binary would quietly do nothing on
-/// exactly the installs people use.
+/// Called before *any* router start — the prewarm below runs before `boot`.
 fn resolve_bundled_router(app: &AppHandle) {
     #[cfg(not(target_os = "android"))]
-    if std::env::var_os("GIPNY_I2P_BIN").is_none() {
+    if std::env::var_os("GIPNY_I2P_SEED").is_none() {
         use tauri::Manager;
         if let Ok(res) = app.path().resource_dir() {
-            let name = if cfg!(windows) { "i2pd.exe" } else { "i2pd" };
-            for cand in [res.join(name), res.join("resources").join(name)] {
+            for cand in [res.join("i2pd-netdb-seed.tar.gz"), res.join("resources").join("i2pd-netdb-seed.tar.gz")] {
                 if cand.exists() {
-                    std::env::set_var("GIPNY_I2P_BIN", cand);
+                    std::env::set_var("GIPNY_I2P_SEED", cand);
                     break;
                 }
             }
@@ -701,13 +711,11 @@ fn write_router_hint(dir: &std::path::Path, s: gipny_libcore::router::RouterSett
 }
 
 /// Whether a node started for `have` can be handed to a profile that wants
-/// `want`. On Android the settings are the foreground service's business and
-/// ours are ignored outright, so there is nothing to compare.
+/// `want`.
 fn router_settings_match(
     have: gipny_libcore::router::RouterSettings,
     want: gipny_libcore::router::RouterSettings,
 ) -> bool {
-    if cfg!(target_os = "android") { return true; }
     have == want
 }
 
@@ -715,7 +723,7 @@ fn router_settings_match(
 ///
 /// The interface calls this as soon as it knows which profile that is — on the
 /// unlock screen, and again after a logout — so the router, its tunnels and
-/// the SAM session are up by the time the password is typed. If the guess was
+/// our destination are up by the time the password is typed. If the guess was
 /// wrong (another profile is picked), the node is dropped and a new one built.
 #[tauri::command]
 async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle) -> Result<(), String> {
@@ -731,18 +739,22 @@ async fn prewarm_network(profile: String, ctx: State<'_, AppCtx>, app: AppHandle
             return Ok(());
         }
     }
-    // Strictly take-then-drop: two live routers for one profile mean the
-    // second adopts the first through `previous_router`, and then dies with it.
+    // Strictly take-then-drop: the old node's destinations go before new ones
+    // are built on the same router.
     if let Some(old) = slot.take() {
         drop_prewarm(old).await;
     }
     resolve_bundled_router(&app);
     let app2 = app.clone();
     let task = tokio::spawn(async move {
-        I2pNode::start_with_progress(&dir, settings, Some(boot_progress(&app2)))
+        let node = I2pNode::start_with_progress(&dir, settings, Some(boot_progress(&app2)))
             .await
             .map(Arc::new)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(|e| format!("{e:?}"))?;
+        // Our relay's tunnels take 20–40 s more; build them while the password
+        // is typed too. Whose relay it is is only known after unlock.
+        let relay = tokio::spawn(gipny_libcore::EphemeralRelay::start_unclaimed());
+        Ok((node, relay))
     });
     *slot = Some(Prewarm::Building { profile, settings, task });
     Ok(())
@@ -758,7 +770,7 @@ async fn prewarm_status(ctx: State<'_, AppCtx>) -> Result<&'static str, String> 
         if !task.is_finished() { return Ok("building"); }
         let Some(Prewarm::Building { profile, settings, task }) = slot.take() else { unreachable!() };
         match task.await {
-            Ok(Ok(node)) => { *slot = Some(Prewarm::Ready { profile, settings, node }); }
+            Ok(Ok((node, relay))) => { *slot = Some(Prewarm::Ready { profile, settings, node, relay }); }
             // A failed prewarm is not an error the person has to act on: the
             // ordinary boot path will try again, out loud, after the password.
             _ => return Ok("off"),
@@ -780,7 +792,8 @@ async fn drop_prewarm(p: Prewarm) {
             task.abort();
             let _ = task.await;
         }
-        Prewarm::Ready { node, .. } => {
+        Prewarm::Ready { node, relay, .. } => {
+            relay.abort();
             node.shutdown().await;
             drop(node);
         }
@@ -793,7 +806,7 @@ async fn drop_prewarm(p: Prewarm) {
 async fn take_prewarmed(
     ctx: &State<'_, AppCtx>, app: &AppHandle, profile: &str,
     settings: gipny_libcore::router::RouterSettings,
-) -> Option<Arc<I2pNode>> {
+) -> Option<(Arc<I2pNode>, core::PrebuiltRelay)> {
     let taken = ctx.prewarm.lock().await.take()?;
     if taken.profile() != profile || !router_settings_match(taken.settings(), settings) {
         boot_status(&app, "router", "active", if taken.profile() != profile {
@@ -804,13 +817,13 @@ async fn take_prewarmed(
         drop_prewarm(taken).await;
         return None;
     }
-    let node = match taken {
-        Prewarm::Ready { node, .. } => node,
+    let ready = match taken {
+        Prewarm::Ready { node, relay, .. } => (node, relay),
         Prewarm::Building { task, .. } => {
             // Still building: wait for it rather than start a second router.
             // Its progress is already reaching the same boot screen.
             match task.await {
-                Ok(Ok(node)) => node,
+                Ok(Ok(ready)) => ready,
                 _ => {
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                     return None;
@@ -821,8 +834,8 @@ async fn take_prewarmed(
     // The screen's own listener may have attached after these stages went by.
     boot_status(app, "router", "done", "router ready (started before unlocking)");
     boot_status(app, "tunnels", "done", "tunnels built before unlocking");
-    boot_status(app, "session", "done", "SAM session open");
-    Some(node)
+    boot_status(app, "session", "done", "destination ready");
+    Some(ready)
 }
 
 async fn boot(
@@ -882,20 +895,20 @@ async fn boot(
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let node = match take_prewarmed(ctx, &app, profile, settings).await {
-        Some(node) => node,
-        None => Arc::new(
+    let (node, prebuilt_relay) = match take_prewarmed(ctx, &app, profile, settings).await {
+        Some((node, relay)) => (node, Some(relay)),
+        None => (Arc::new(
             I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
                 .await
                 .map_err(|e| {
                     boot_status(&app, "router", "failed", format!("{e:?}"));
                     err(e)
                 })?,
-        ),
+        ), None),
     };
     let warning: Option<String> = None;
     boot_status(&app, "core", "active", "starting the messenger core");
-    let (core, mut events) = Core::start(dir.to_path_buf(), db, node).await.map_err(|e| {
+    let (core, mut events) = Core::start(dir.to_path_buf(), db, node, prebuilt_relay).await.map_err(|e| {
         boot_status(&app, "core", "failed", format!("{e:?}"));
         err(e)
     })?;
@@ -1126,8 +1139,11 @@ async fn add_contact(
 
 #[tauri::command]
 async fn list_contacts(ctx: State<'_, AppCtx>) -> Result<Vec<ContactDto>, String> {
-    let list = core_of(&ctx).await?.db().list_contacts().map_err(err)?;
-    Ok(list.into_iter().map(ContactDto::from).collect())
+    let core = core_of(&ctx).await?;
+    let list = core.db().list_contacts().map_err(err)?;
+    // Contacts being deleted for both sides are gone as far as anyone looking
+    // is concerned; they stay in the database only to carry the request.
+    Ok(list.into_iter().filter(|c| core.wipe_pending_since(c.id).is_none()).map(ContactDto::from).collect())
 }
 
 #[tauri::command]
@@ -1180,8 +1196,13 @@ async fn send_agent_off(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<i64, 
 }
 
 #[tauri::command]
-async fn delete_contact(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.delete_contact(id).await.map_err(err)
+async fn delete_contact(id: i64, for_both: Option<bool>, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let core = core_of(&ctx).await?;
+    if for_both == Some(true) {
+        core.delete_contact_for_both(id).await.map_err(err)
+    } else {
+        core.delete_contact(id).await.map_err(err)
+    }
 }
 
 #[tauri::command]
@@ -1329,6 +1350,13 @@ fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<Pen
     }
 }
 
+static PASTE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// The directory temporary copies of attachments go to (see `setup`).
+fn paste_dir() -> std::path::PathBuf {
+    PASTE_DIR.get().cloned().unwrap_or_else(|| std::env::temp_dir().join("gipny-i2p-paste"))
+}
+
 fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, String> {
     let path = std::path::PathBuf::from(p);
     let meta = std::fs::metadata(&path).map_err(err)?;
@@ -1348,7 +1376,7 @@ fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, Str
     // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
     // `paste_clipboard_image`). Remove it only after preparation succeeded: a
     // rejected format can then be retried after privacy mode is switched off.
-    if path.starts_with(std::env::temp_dir().join("gipny-i2p-paste")) {
+    if path.starts_with(paste_dir()) {
         let _ = std::fs::remove_file(&path);
     }
     Ok(attachment)
@@ -1488,17 +1516,27 @@ async fn load_attachment(attachment_id: i64, ctx: State<'_, AppCtx>) -> Result<S
 }
 
 #[tauri::command]
-async fn save_attachment(attachment_id: i64, dest_path: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+async fn save_attachment(attachment_id: i64, dest_path: String, app: AppHandle, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    use std::io::Write;
+    use std::str::FromStr;
+    use tauri_plugin_fs::FsExt;
     let core = core_of(&ctx).await?;
     let att = core.db().get_attachment(attachment_id).map_err(err)?.ok_or("not found")?;
     let bytes = core.read_attachment(&att).map_err(err)?;
-    std::fs::write(&dest_path, &bytes).map_err(err)?;
+    // On Android the save dialog returns a content:// URI, which std::fs
+    // cannot open; the fs plugin resolves it through the content resolver.
+    // On the desktop it is an ordinary path either way.
+    let path = tauri_plugin_fs::FilePath::from_str(&dest_path).map_err(|_| "bad path".to_string())?;
+    let mut opts = tauri_plugin_fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    let mut file = app.fs().open(path, opts).map_err(err)?;
+    file.write_all(&bytes).map_err(err)?;
     Ok(())
 }
 
 #[tauri::command]
 async fn save_paste_temp(name: String, data: Vec<u8>) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("gipny-i2p-paste");
+    let dir = paste_dir();
     std::fs::create_dir_all(&dir).map_err(err)?;
     let safe_name = name.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
@@ -1537,7 +1575,7 @@ async fn paste_clipboard_image() -> Result<Option<String>, String> {
         let mut writer = enc.write_header().map_err(|e| e.to_string())?;
         writer.write_image_data(&img.bytes).map_err(|e| e.to_string())?;
     }
-    let dir = std::env::temp_dir().join("gipny-i2p-paste");
+    let dir = paste_dir();
     std::fs::create_dir_all(&dir).map_err(err)?;
     let prefix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1734,9 +1772,6 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
     Ok(dtos)
 }
 
-/// Whether an update server destination is baked in. The UI hides the whole
-/// update surface when it is not: those buttons could only ever show a raw SAM
-/// error, and the APK listing fired on every Settings open.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct RouterSettingsDto {
     /// "frugal" | "balanced" | "generous"

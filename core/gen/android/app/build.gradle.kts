@@ -93,10 +93,11 @@ rust {
     rootDirRel = "../../../"
 }
 
-// Stages the embedded i2pd router (built in CI from android-router/jni) as a
-// per-ABI libi2pd.so in src/main/jniLibs, so it is packaged alongside the
-// Rust/Tauri cdylib, plus the reseed certificates it needs to bootstrap.
-// GipnyService.kt loads and starts it via JNI.
+// Stages the i2p router library (built in CI from android-router/jni: libi2pd
+// plus gipny's shim) as a per-ABI libi2pd.so in src/main/jniLibs, packaged
+// alongside the Rust/Tauri cdylib, which links it and runs the router in
+// process. The reseed certificates and the network database snapshot are
+// compiled into the Rust side; nothing of the router goes into assets.
 //
 // Unlike the pure-Go predecessor, i2pd is not built here: it is C++ with boost
 // and OpenSSL and takes hours per ABI. See I2pdRouterTask for where it looks.
@@ -113,15 +114,9 @@ if (!project.hasProperty("skipRouter")) {
         ?.map { it.trim() }
         ?.filter { it.isNotEmpty() }
         ?: listOf("arm64-v8a", "x86_64")
-    val certsTask = tasks.register("stageI2pdCertificates", I2pdCertificatesTask::class.java) {
-        group = "router"
-        description = "Copy i2pd reseed certificates into the APK assets"
-        rootDirRel = "../../../.."
-    }
     val routerUmbrella = tasks.register("stageI2pdJniLibs") {
         group = "router"
         description = "Stage the embedded i2pd router for all supported ABIs"
-        dependsOn(certsTask)
     }
     for (abi in routerAbis) {
         val abiCapitalized = abi.replace("-", "_").replaceFirstChar { it.uppercase() }
@@ -135,9 +130,6 @@ if (!project.hasProperty("skipRouter")) {
     }
     tasks.matching { it.name.endsWith("JniLibFolders") }.configureEach {
         dependsOn(routerUmbrella)
-    }
-    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-        dependsOn(certsTask)
     }
 }
 

@@ -8,6 +8,8 @@ name = "gipny_libcore"
 path = "src/lib.rs"
 
 [dependencies]
+# The i2pd router inside the process (no SAM, no port); see embedded.rs.
+i2p-embed = { path = "../i2p-embed" }
 gipny-dht = { path = "../dht" }
 futures = { workspace = true }
 tokio = { workspace = true }
@@ -26,20 +28,24 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 argon2 = { workspace = true }
 rusqlite = { workspace = true }
-yosemite = { workspace = true }
 libc = { workspace = true }
 # rustls, not native-tls/openssl: no system OpenSSL to fight with when cross
-# compiling (see the CC/CXX note for local `cargo check`), and one TLS stack
-# instead of two in the dependency tree. Explicit ring provider, not rustls's
-# own default (aws-lc-rs): aws-lc-sys needs cmake and a C toolchain per
-# target, which the Android cross-compiles (this crate builds into the APK)
-# are not set up for; ring is already in this tree and already cross-builds.
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "webpki-roots"] }
+# compiling (see the CC/CXX note for local `cargo check`). Explicit ring
+# provider, not rustls's own default (aws-lc-rs): aws-lc-sys needs cmake and a
+# C toolchain per target, which the Android cross-compiles (this crate builds
+# into the APK) are not set up for; ring already cross-builds.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-# Named directly, not just through reqwest's feature: the client is handed a
-# rustls config built from these roots, because reqwest's own default is the
-# platform verifier, which aborts the process on Android. See `webpki_tls()`.
+# The only roots the updater trusts; not the platform verifier, which aborts
+# the process on Android. See `webpki_tls()`.
 webpki-roots = "1"
+# HTTPS through the i2p outproxy (i2p_http.rs): TLS and HTTP/1.1 over our own
+# i2p stream, no local proxy.
+url = "2"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 flate2 = "1"
 tar = "0.4"
 [dev-dependencies]

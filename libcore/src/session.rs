@@ -38,14 +38,35 @@ impl From<bincode::Error> for SessionError { fn from(_: bincode::Error) -> Self 
 enum PeerRelay {
     Ready(mpsc::Sender<ClientToRelay>),
     Connecting,
-    Failed { until: std::time::Instant },
+    /// `failures` in a row: the next wait is [`peer_relay_backoff`] of it.
+    Failed { until: std::time::Instant, failures: u32 },
 }
 
-/// Give up on a peer relay's dial after this long: nothing below has a timeout,
-/// and opening an i2p destination means building tunnels.
-const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-/// Leave a failed peer relay alone this long instead of redialing every tick.
-const PEER_RELAY_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(120);
+/// Give up on a relay's dial after this long: nothing below has a timeout.
+/// Our tunnels exist by the time anything dials; finding the relay's LeaseSet
+/// and the handshake take seconds to a few tens. It was 90 s, and a dial that
+/// hung held a letter all of it before the retry (e2e run 36039568268: an
+/// echo 172 s, 90 of them one stuck dial); a retry now follows in 5–10 s.
+const PEER_RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// How long to leave a peer relay alone after `failures` failed dials in a
+/// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
+/// 2 min, and the first dial often fails only because the relay's LeaseSet
+/// has not reached the floodfills yet — a contact added a moment after their
+/// relay came up then waited two minutes for nothing (e2e run 36033917903:
+/// an echo held 85 s behind it).
+fn peer_relay_backoff(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
+}
+
+/// Failed dials to a peer relay after which it is dialled again on its own,
+/// without a letter asking: 5+10+20+40+80 s, a few minutes in all.
+const PEER_RELAY_REDIALS: u32 = 5;
+
+/// When to dial a peer relay again after `failures` failed dials before this
+/// one, if at all without a letter asking; see [`PEER_RELAY_REDIALS`].
+fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
+    (failures < PEER_RELAY_REDIALS).then(|| peer_relay_backoff(failures))
+}
 
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
@@ -60,7 +81,10 @@ const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
 const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
-const TIEBREAKER_TIMEOUT_MS: i64 = 10_000;
+/// A bundle asked for ahead of use is used only this fresh: its one-time
+/// prekey may be handed to someone else meanwhile, and an init on a spent one
+/// is dropped at the far end.
+const BUNDLE_PREFETCH_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
 const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
@@ -109,6 +133,11 @@ pub struct WirePayload {
     pub console: Option<WireConsole>,
     #[serde(default)]
     pub relay_address: Option<String>,
+    /// "Forget me": the sender deleted this contact and asks the recipient to
+    /// delete the conversation and the contact too. Only ever honoured from
+    /// the contact itself, inside its ratchet session.
+    #[serde(default)]
+    pub wipe: Option<bool>,
 }
 
 impl WirePayload {
@@ -117,7 +146,7 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None, notify_sound: None, console: None, relay_address: None,
+            typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -265,6 +294,55 @@ struct WireV5 {
     reply_to: Option<WireReply>,
 }
 
+/// Everything before `wipe`: the full payload up to 0.4.13.
+#[derive(Serialize, Deserialize)]
+struct WireV8 {
+    origin_msg_id: u64,
+    body: String,
+    attachments: Vec<WireAttachment>,
+    sent_at: i64,
+    ttl_ms: Option<i64>,
+    group: Option<WireGroupRef>,
+    buttons: Option<Vec<Vec<WireButton>>>,
+    callback_data: Option<String>,
+    edit_of: Option<u64>,
+    pin: Option<WirePin>,
+    ack_for: Option<u64>,
+    sender_name: Option<String>,
+    reply_to: Option<WireReply>,
+    typing: Option<bool>,
+    notify_sound: Option<String>,
+    console: Option<WireConsole>,
+    relay_address: Option<String>,
+}
+
+impl From<&WirePayload> for WireV8 {
+    fn from(p: &WirePayload) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id, body: p.body.clone(), attachments: p.attachments.clone(),
+            sent_at: p.sent_at, ttl_ms: p.ttl_ms, group: p.group.clone(),
+            buttons: p.buttons.clone(), callback_data: p.callback_data.clone(),
+            edit_of: p.edit_of, pin: p.pin.clone(), ack_for: p.ack_for,
+            sender_name: p.sender_name.clone(), reply_to: p.reply_to.clone(),
+            typing: p.typing, notify_sound: p.notify_sound.clone(),
+            console: p.console.clone(), relay_address: p.relay_address.clone(),
+        }
+    }
+}
+
+impl From<WireV8> for WirePayload {
+    fn from(v: WireV8) -> Self {
+        Self {
+            origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
+            sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
+            buttons: v.buttons, callback_data: v.callback_data,
+            edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
+            reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound,
+            console: v.console, relay_address: v.relay_address, wipe: None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct WireV7 {
     origin_msg_id: u64,
@@ -336,7 +414,7 @@ impl From<WireV7> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound, console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         }
     }
 }
@@ -349,7 +427,7 @@ impl From<WireV6> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: None, console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         }
     }
 }
@@ -417,7 +495,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -429,7 +507,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -441,7 +519,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -453,7 +531,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -464,7 +542,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None,
         }
     }
 }
@@ -476,13 +554,14 @@ impl From<WireV0> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
             edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
-    if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(p) }
+    if p.wipe.is_some()                                  { bincode::serialize(p) }
+    else if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(&WireV8::from(p)) }
     else if p.notify_sound.is_some()                    { bincode::serialize(&WireV7::from(p)) }
     else if p.typing.is_some()                     { bincode::serialize(&WireV6::from(p)) }
     else if p.reply_to.is_some()                   { bincode::serialize(&WireV5::from(p)) }
@@ -494,6 +573,7 @@ pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::
 
 pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Ok(v) = bincode::deserialize::<WirePayload>(pt) { return Ok(v); }
+    if let Ok(v) = bincode::deserialize::<WireV8>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV7>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV6>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV5>(pt)      { return Ok(v.into()); }
@@ -564,6 +644,9 @@ pub enum SessionEvent {
     MessageUnpinned { contact_id: Option<i64>, group_id: Option<Vec<u8>>, message_id: i64 },
     ContactAdded { contact_id: i64 },
     ContactUpdated { contact_id: i64 },
+    /// The contact deleted us and asked for the chat to go; the contact and
+    /// every message with them are gone here now.
+    ContactWiped { contact_id: i64 },
     /// A relay answered with an error frame: a deposit or a publish it would
     /// not take. `reason` is the relay's text, e.g. [`crate::relay::ERR_NOT_SERVED`].
     RelayError { reason: String },
@@ -580,7 +663,16 @@ pub struct SessionManager {
     /// Connections to other people's relays, keyed by destination.
     peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<tokio::sync::oneshot::Sender<Option<Vec<u8>>>>>>>,
-    tiebreaker_waits: Arc<Mutex<HashMap<i64, i64>>>,
+    /// Bundles asked for ahead of a first letter (see `relay_for`), by signing
+    /// key, with when they came: a new conversation then skips that round trip.
+    bundle_cache: Arc<Mutex<HashMap<[u8; 32], (Vec<u8>, std::time::Instant)>>>,
+    /// Sessions we opened ourselves (contact → our init's ratchet key) that
+    /// the contact has not answered on yet: an X3dhInit from them meanwhile
+    /// crossed ours. See `crossing_init_stands`.
+    own_inits: Arc<Mutex<HashMap<i64, [u8; 32]>>>,
+    /// Their sessions that lost to ours, kept so what they sent on one before
+    /// taking ours is still read, not dropped and waited for again.
+    lost_inits: Arc<Mutex<HashMap<i64, RatchetState>>>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     dht: Arc<dht_client::Node>,
@@ -612,7 +704,9 @@ impl SessionManager {
             relay_out: Arc::new(RwLock::new(None)),
             peer_relays: Arc::new(Mutex::new(HashMap::new())),
             bundle_waiters: Arc::new(Mutex::new(HashMap::new())),
-            tiebreaker_waits: Arc::new(Mutex::new(HashMap::new())),
+            bundle_cache: Arc::new(Mutex::new(HashMap::new())),
+            own_inits: Arc::new(Mutex::new(HashMap::new())),
+            lost_inits: Arc::new(Mutex::new(HashMap::new())),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             dht,
@@ -628,12 +722,26 @@ impl SessionManager {
         this.clone().spawn_send_loop();
         this.clone().spawn_bundle_refresh_loop();
         this.clone().spawn_dht_loop();
+        this.warm_peer_relays();
         Ok((this, events_rx))
+    }
+
+    /// Keep a task to stop with the rest at shutdown; finished ones go.
+    fn track(&self, handle: JoinHandle<()>) {
+        let mut v = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        v.retain(|h| !h.is_finished());
+        v.push(handle);
     }
 
     pub fn shutdown(&self) {
         let mut v = self.tasks.lock().unwrap();
         for h in v.drain(..) { h.abort(); }
+        drop(v);
+        // The last sender of a connection gone is what closes it. Held here,
+        // a stopped instance kept every connection open, and its relays went
+        // on dealing mail to them until they fell silent (90 s).
+        if let Ok(mut out) = self.relay_out.try_write() { *out = None; }
+        if let Ok(mut peers) = self.peer_relays.try_lock() { peers.clear(); }
     }
 
     pub fn my_card(&self) -> crate::crypto::IdentityCard { self.identity.card() }
@@ -699,7 +807,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn add_contact(&self, card: &crate::crypto::IdentityCard, onion: &str, name: &str) -> Result<i64> {
+    pub async fn add_contact(self: &Arc<Self>, card: &crate::crypto::IdentityCard, onion: &str, name: &str) -> Result<i64> {
         self.add_contact_via(card, onion, name, None).await
     }
 
@@ -709,13 +817,56 @@ impl SessionManager {
     /// there, not on whatever relay this client happens to use. `None` keeps the
     /// old behaviour of falling back to this client's configured relay.
     pub async fn add_contact_via(
-        &self, card: &crate::crypto::IdentityCard, onion: &str, name: &str, relay: Option<&str>,
+        self: &Arc<Self>, card: &crate::crypto::IdentityCard, onion: &str, name: &str, relay: Option<&str>,
     ) -> Result<i64> {
         let id = self.db.add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
         let _ = self.events.send(SessionEvent::ContactAdded { contact_id: id }).await;
         self.dht_kick.notify_one();
         self.send_kick.notify_one();
+        self.warm_relay_of(id);
         Ok(id)
+    }
+
+    /// Dial the relays of the most recent contacts now, in the background.
+    ///
+    /// Finding a relay's LeaseSet and opening the stream costs 5–30 s, and it
+    /// was paid by the first letter to each contact, on the way out and again
+    /// on the way back (e2e: 8 s and 32 s of a 64 s round trip). Dialled
+    /// ahead, the letter finds the connection open. `relay_for` never blocks.
+    fn warm_peer_relays(self: &Arc<Self>) {
+        const WARM: usize = 8;
+        let Ok(mut contacts) = self.db.list_contacts() else { return };
+        contacts.retain(|c| {
+            c.trust != TrustLevel::Blocked
+                && c.request_state != crate::db::RequestState::Incoming
+                && c.relay_address.as_deref().is_some_and(|r| !r.trim().is_empty())
+        });
+        contacts.sort_by_key(|c| std::cmp::Reverse(c.last_message_at));
+        contacts.truncate(WARM);
+        if contacts.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            for contact in &contacts {
+                let _ = this.relay_for(contact).await;
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+    }
+
+    /// As [`Self::warm_peer_relays`], for one contact whose relay just became
+    /// known: added, or a letter or the network named a new one.
+    fn warm_relay_of(self: &Arc<Self>, contact_id: i64) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            let Ok(Some(contact)) = this.db.get_contact(contact_id) else { return };
+            if contact.trust == TrustLevel::Blocked || contact.request_state == crate::db::RequestState::Incoming {
+                return;
+            }
+            let _ = this.relay_for(&contact).await;
+        });
+        self.tasks.lock().unwrap().push(handle);
     }
 
     pub async fn send_message(
@@ -796,7 +947,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -825,7 +976,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -941,7 +1092,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -979,7 +1130,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1022,9 +1173,11 @@ impl SessionManager {
                 let onion = this.relay_onion();
                 if onion.is_empty() {
                     // No relay configured yet (i2p: DEFAULT_RELAY not baked in and
-                    // none set in Settings). Wait quietly instead of hammering.
-                    tokio::time::sleep(Duration::from_millis(backoff)).await;
-                    backoff = (backoff * 2).min(RECONNECT_MAX_MS);
+                    // none set in Settings). Look again soon; the backoff is for
+                    // failed dials, and growing it here made the first real one
+                    // start late and its retry wait the full 15 s (e2e run
+                    // 36042483601: 20 s from the relay being set to connected).
+                    tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
                 eprintln!("[session] relay connect {}", &onion[..16.min(onion.len())]);
@@ -1089,19 +1242,25 @@ impl SessionManager {
             // Never dial on this path — see Core::relay_for. It runs inside the
             // send loop, and an unreachable relay has no timeout of its own, so
             // blocking here would stall delivery to every other contact.
-            {
+            let failures = {
                 let mut pool = self.peer_relays.lock().await;
                 match pool.get(theirs) {
                     Some(PeerRelay::Ready(tx)) if !tx.is_closed() => return Some(tx.clone()),
                     Some(PeerRelay::Ready(_)) | Some(PeerRelay::Connecting) => return None,
-                    Some(PeerRelay::Failed { until }) if std::time::Instant::now() < *until => return None,
+                    Some(PeerRelay::Failed { until, .. }) if std::time::Instant::now() < *until => return None,
                     _ => {}
                 }
+                let failures = match pool.get(theirs) {
+                    Some(PeerRelay::Failed { failures, .. }) => *failures,
+                    _ => 0,
+                };
                 pool.insert(theirs.to_string(), PeerRelay::Connecting);
-            }
+                failures
+            };
 
             let this = self.clone();
             let key = theirs.to_string();
+            let (contact_id, contact_pk) = (contact.id, to_arr32(contact.identity_sign.clone()).ok());
             let handle = tokio::spawn(async move {
                 let short = &key[..16.min(key.len())];
                 let dial = tokio::time::timeout(
@@ -1120,15 +1279,39 @@ impl SessionManager {
                         this.peer_relays.lock().await.insert(
                             key.clone(),
                             PeerRelay::Failed {
-                                until: std::time::Instant::now() + PEER_RELAY_RETRY_BACKOFF,
+                                until: std::time::Instant::now() + peer_relay_backoff(failures),
+                                failures: failures + 1,
                             },
                         );
+                        // Dialled again when the wait is over, letter or not: a first dial
+                        // fails mostly because the relay's LeaseSet has not spread yet, and the
+                        // first letter then waited for a dial of its own (e2e run 36042483601:
+                        // 7 s of a 16 s echo).
+                        if let Some(wait) = peer_relay_redial_after(failures) {
+                            // Tracked, so it stops with the session instead of dialling on
+                            // behalf of an instance already shut down.
+                            let again = this.clone();
+                            let handle = tokio::spawn(async move {
+                                tokio::time::sleep(wait).await;
+                                if let Ok(Some(c)) = again.db.get_contact(contact_id) {
+                                    let _ = again.relay_for(&c).await;
+                                }
+                            });
+                            this.track(handle);
+                        }
                         return;
                     }
                 };
                 eprintln!("[session] connected to peer relay {short}");
                 this.peer_relays.lock().await
                     .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
+                // No session with them yet: ask for their bundle now, so a
+                // first letter does not wait a round trip for it.
+                let no_session = !this.sessions.lock().await.contains_key(&contact_id)
+                    && this.db.get_session(contact_id).ok().flatten().is_none();
+                if let (true, Some(pk)) = (no_session, contact_pk) {
+                    let _ = client.out_tx.send(ClientToRelay::GetBundle { pk }).await;
+                }
                 this.send_kick.notify_one();
                 this.clone().run_recv_loop(client, None).await;
                 this.peer_relays.lock().await.remove(&key);
@@ -1284,9 +1467,17 @@ impl SessionManager {
                 }
             }
             RelayToClient::Bundle { pk, bundle } => {
-                let mut w = self.bundle_waiters.lock().await;
-                if let Some(vec) = w.remove(&pk) {
-                    for tx in vec { let _ = tx.send(bundle.clone()); }
+                let waiters = self.bundle_waiters.lock().await.remove(&pk);
+                match waiters {
+                    Some(vec) => {
+                        for tx in vec { let _ = tx.send(bundle.clone()); }
+                    }
+                    // Nobody waiting: the one asked for ahead of use.
+                    None => {
+                        if let Some(b) = bundle {
+                            self.bundle_cache.lock().await.insert(pk, (b, std::time::Instant::now()));
+                        }
+                    }
                 }
             }
             RelayToClient::Error(reason) => {
@@ -1322,10 +1513,38 @@ impl SessionManager {
                     return Err(SessionError::State);
                 }
                 let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
-                eprintln!("[session] received X3dhInit from contact {}, accepting", contact.id);
+                let crossed = self.own_inits.lock().await.get(&contact.id).is_some()
+                    && self.sessions.lock().await.contains_key(&contact.id);
+                // A second init from them while their first lost to ours: they
+                // never took ours (it did not reach them, or they started over
+                // since — a reinstall, a resync), so this one is a new start.
+                let crossed = crossed && !self.lost_inits.lock().await.contains_key(&contact.id);
+                if crossed && ours_stands(&self.identity.card().sign_pk, &contact.identity_sign) {
+                    // Both opened a session at once. Ours stands; theirs is
+                    // read for what it says (name, relay) and set aside, and
+                    // they will take ours when it reaches them.
+                    eprintln!("[session] X3dhInit from contact {} crossed ours; ours stands", contact.id);
+                    let (theirs, plaintext) = self.accept_x3dh(&init, &ad).await?;
+                    self.lost_inits.lock().await.insert(contact.id, theirs);
+                    let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
+                    self.persist_incoming(contact.id, payload).await?;
+                    if init.one_time_id.is_some() {
+                        self.republish_bundle().await;
+                    }
+                    return Ok(());
+                }
+                if crossed {
+                    // Theirs stands. What we sent on ours they read on it (they
+                    // keep it for that); anything that did not make it goes
+                    // again on the usual retry, so no resend of everything here.
+                    eprintln!("[session] X3dhInit from contact {} crossed ours; theirs stands", contact.id);
+                } else {
+                    eprintln!("[session] received X3dhInit from contact {}, accepting", contact.id);
+                }
+                self.own_inits.lock().await.remove(&contact.id);
+                self.lost_inits.lock().await.remove(&contact.id);
                 self.sessions.lock().await.remove(&contact.id);
                 let _ = self.db.delete_session(contact.id);
-                self.tiebreaker_waits.lock().await.remove(&contact.id);
                 let (state, plaintext) = self.accept_x3dh(&init, &ad).await?;
                 self.sessions.lock().await.insert(contact.id, state);
                 self.session_created_at.lock().await.insert(contact.id, now_ms());
@@ -1343,7 +1562,7 @@ impl SessionManager {
                 self.send_kick.notify_one();
             }
             EnvelopeBlob::Ratchet { header, ciphertext } => {
-                let mut decrypted: Option<(i64, Vec<u8>, Vec<u8>, Contact)> = None;
+                let mut decrypted: Option<(i64, Vec<u8>, Contact)> = None;
                 let candidates: Vec<Contact> = if sealed {
                     self.db.list_contacts()?.into_iter().filter(|c| c.trust != TrustLevel::Blocked).collect()
                 } else {
@@ -1367,16 +1586,48 @@ impl SessionManager {
                             None => continue,
                         },
                     };
+                    // Saved before the lock goes: two letters of one contact
+                    // read at once (several connections) must not write their
+                    // states back in the other order.
+                    let attempt = match attempt {
+                        Ok((pt, sb_res)) => {
+                            let sb = sb_res?;
+                            self.db.put_session(c.id, &sb)?;
+                            Ok(pt)
+                        }
+                        Err(e) => Err(e),
+                    };
                     drop(sess);
-                    if let Ok((pt, sb_res)) = attempt {
-                        let sb = sb_res?;
-                        decrypted = Some((c.id, pt, sb, c));
+                    if let Ok(pt) = attempt {
+                        decrypted = Some((c.id, pt, c));
                         break;
                     }
                 }
-                let (cid, pt, sb, contact) = match decrypted {
+                let (cid, pt, contact) = match decrypted {
                     Some(x) => x,
                     None => {
+                        // On a session of theirs that lost to ours: sent before
+                        // ours reached them. Read it on that session.
+                        let lost_hit = {
+                            let mut lost = self.lost_inits.lock().await;
+                            let mut hit = None;
+                            for (cid, state) in lost.iter_mut() {
+                                let Ok(Some(c)) = self.db.get_contact(*cid) else { continue };
+                                if !sealed && c.identity_sign.as_slice() != from_pk.as_slice() { continue; }
+                                let ad = build_ad(&self.identity.card().dh_pk, &c.identity_dh);
+                                if let Ok(pt) = state.decrypt(&header, &ciphertext, &ad) {
+                                    hit = Some((*cid, pt));
+                                    break;
+                                }
+                            }
+                            hit
+                        };
+                        if let Some((cid, pt)) = lost_hit {
+                            eprintln!("[session] letter from contact {cid} on its session that lost to ours; read on it");
+                            let payload: WirePayload = decode_with_padding_fallback(&pt)?;
+                            self.persist_incoming(cid, payload).await?;
+                            return Ok(());
+                        }
                         if sealed {
                             eprintln!("[session] sealed ratchet: no session matched, ACK and drop");
                             return Err(SessionError::SealedDrop);
@@ -1388,7 +1639,9 @@ impl SessionManager {
                         return Err(SessionError::Crypto(CryptoError::Mac));
                     }
                 };
-                self.db.put_session(cid, &sb)?;
+                // They answered on this session: it is settled, and an init
+                // from them from now on is a new start, not a crossing.
+                self.own_inits.lock().await.remove(&cid);
                 let payload: WirePayload = decode_with_padding_fallback(&pt)?;
                 let is_keepalive = payload.ack_for == Some(0)
                     && payload.origin_msg_id == 0
@@ -1431,6 +1684,18 @@ impl SessionManager {
     }
 
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        // As in the app: a contact who deleted us asks for the chat to go.
+        if payload.wipe == Some(true) {
+            eprintln!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
+            self.db.delete_contact(contact_id)?;
+            self.sessions.lock().await.remove(&contact_id);
+            self.session_created_at.lock().await.remove(&contact_id);
+            self.own_inits.lock().await.remove(&contact_id);
+            self.lost_inits.lock().await.remove(&contact_id);
+            self.incoming_since_send.lock().await.remove(&contact_id);
+            let _ = self.events.send(SessionEvent::ContactWiped { contact_id }).await;
+            return Ok(());
+        }
         if let Some(name) = payload.sender_name.as_deref() {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
@@ -1445,6 +1710,7 @@ impl SessionManager {
                     if current.as_deref() != Some(trimmed) {
                         eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
                         let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
+                        self.warm_relay_of(contact_id);
                     }
                 }
             }
@@ -1639,8 +1905,6 @@ impl SessionManager {
             self.sessions.lock().await.remove(&contact.id);
             self.session_created_at.lock().await.remove(&contact.id);
             let _ = self.db.delete_session(contact.id);
-            let mut w = self.tiebreaker_waits.lock().await;
-            w.insert(contact.id, now_ms() - TIEBREAKER_TIMEOUT_MS - 1);
         }
         self.send_kick.notify_one();
         Ok(())
@@ -1665,7 +1929,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None,
+            relay_address: None, wipe: None,
         };
         let Some(route) = self.route_for(contact).await else { return Ok(()) };
         if self.ensure_session_for(contact, &route).await.is_err() {
@@ -1824,25 +2088,17 @@ impl SessionManager {
             self.sessions.lock().await.insert(contact.id, RatchetState::from_bytes(&blob)?);
             return Ok(());
         }
-        let me_sign = self.identity.card().sign_pk;
-        let should_initiate = me_sign.as_slice() < contact.identity_sign.as_slice();
-        if !should_initiate {
-            let waited = {
-                let mut w = self.tiebreaker_waits.lock().await;
-                let now = now_ms();
-                let started = *w.entry(contact.id).or_insert(now);
-                now - started
-            };
-            if waited < TIEBREAKER_TIMEOUT_MS {
-                return Err(SessionError::State);
-            }
-            eprintln!("[session] tiebreaker timeout, initiating for contact {}", contact.id);
-        }
-        self.tiebreaker_waits.lock().await.remove(&contact.id);
+        // No waiting for the other side to go first (that cost every new
+        // conversation 10 s): if both open at once, `ours_stands` picks one.
 
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&contact.identity_sign);
+        let prefetched = {
+            let mut cache = self.bundle_cache.lock().await;
+            cache.remove(&pk).filter(|(_, at)| at.elapsed() < BUNDLE_PREFETCH_TTL).map(|(b, _)| b)
+        };
         let bundle_bytes = match route {
+            _ if prefetched.is_some() => prefetched,
             Route::Relay(out) => {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
@@ -1875,6 +2131,8 @@ impl SessionManager {
         }
         let pt = pad_payload(&encode_payload(&empty)?);
         let (state, init) = crypto::x3dh_initiate(&self.identity, &bundle, &pt, &ad)?;
+        self.own_inits.lock().await.insert(contact.id, init.header.dh);
+        self.lost_inits.lock().await.remove(&contact.id);
         self.db.put_session(contact.id, &state.to_bytes()?)?;
         self.sessions.lock().await.insert(contact.id, state);
         self.session_created_at.lock().await.insert(contact.id, now_ms());
@@ -2133,6 +2391,7 @@ impl SessionManager {
                 if let Some(old) = known.as_deref() {
                     this.peer_relays.lock().await.remove(old);
                 }
+                this.warm_relay_of(id);
                 this.send_kick.notify_one();
                 let _ = this.events.send(SessionEvent::ContactUpdated { contact_id: id }).await;
             }
@@ -2235,6 +2494,12 @@ fn to_hex(b: &[u8]) -> String {
     s
 }
 
+/// When two X3dhInits cross, the session opened by the side with the lower
+/// signing key stands — the same answer on both ends, with no waiting.
+fn ours_stands(my_sign: &[u8], their_sign: &[u8]) -> bool {
+    my_sign < their_sign
+}
+
 fn hex_short(b: &[u8]) -> String {
     let mut s = String::new();
     for x in &b[..8.min(b.len())] { s.push_str(&format!("{:02x}", x)); }
@@ -2243,6 +2508,12 @@ fn hex_short(b: &[u8]) -> String {
 
 #[cfg(test)]
 mod wire_tests {
+
+    #[test]
+    fn an_unreachable_relay_is_dialled_again_for_a_few_minutes_then_left() {
+        let waits: Vec<Option<u64>> = (0..7).map(|n| peer_relay_redial_after(n).map(|d| d.as_secs())).collect();
+        assert_eq!(waits, vec![Some(5), Some(10), Some(20), Some(40), Some(80), None, None]);
+    }
     use super::*;
 
     fn sample() -> WirePayload {
@@ -2298,6 +2569,20 @@ mod wire_tests {
         let old: WireV7 = bincode::deserialize(&bytes).expect("trailing field tolerated");
         assert_eq!(old.body, "[agent on]");
         assert_eq!(old.sender_name.as_deref(), Some("laptop"));
+    }
+
+    #[test]
+    fn wipe_roundtrips_and_leaves_other_payloads_as_they_were() {
+        let mut p = sample();
+        p.relay_address = Some("relay".into());
+        // Without wipe: exactly the 0.4.13 bytes.
+        assert_eq!(encode_payload(&p).unwrap(), bincode::serialize(&WireV8::from(&p)).unwrap());
+        p.wipe = Some(true);
+        let bytes = encode_payload(&p).unwrap();
+        assert_eq!(decode_payload(&bytes).unwrap().wipe, Some(true));
+        // A 0.4.13 client reads its own newest shape and ignores the rest.
+        let old: WireV8 = bincode::deserialize(&bytes).expect("trailing field tolerated");
+        assert_eq!(old.relay_address.as_deref(), Some("relay"));
     }
 
     #[test]

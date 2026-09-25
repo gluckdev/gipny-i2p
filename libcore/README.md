@@ -9,16 +9,17 @@
 | `crypto.rs` | Ключи личности, X3DH, Double Ratchet, шифрование вложений | `Identity`, `IdentityCard`, `PreKeyBundle`, `x3dh_initiate`/`x3dh_respond`, `RatchetState`, `AttachmentCipher`, `fill_random` |
 | `security.rs` | Хранилище ключей (vault), KDF, duress-пароль, бэкапы, защита памяти | `Vault`, `MasterKey`, `UnlockOutcome`, `DuressMode`, `backup_seal`/`backup_open`, `harden_process` |
 | `db.rs` | SQLCipher-база: контакты, сообщения, группы, сессии, prekeys, настройки, очереди отправки | `Db::open` / `open_plain`, `migrate` + `ensure_column`, `Contact`, `TrustLevel`, `RequestState`, `list_unacked_outgoing`, `RETRY_TTL_MS` |
-| `session.rs` | Мессенджер без UI для агента и ботов (`SessionManager`); здесь же формат сообщения. С 0.4.11 — тот же путь через сеть релеев, что у `Core`: `Route::{Relay,Dht}`, `dht_handler`/`join_dht`, `collect_from_dht` (вступительные письма первыми; неоткрывшееся остаётся в сети), `set_local_relay` (свой релей — по трубе) | `SessionManager`, `SessionEvent`, `WirePayload` и снимки `WireV0..WireV7`, `encode_payload`/`decode_payload`, `pad_payload` |
+| `session.rs` | Мессенджер без UI для агента и ботов (`SessionManager`); здесь же формат сообщения. С 0.4.11 — тот же путь через сеть релеев, что у `Core`: `Route::{Relay,Dht}`, `dht_handler`/`join_dht`, `collect_from_dht` (вступительные письма первыми; неоткрывшееся остаётся в сети), `set_local_relay` (свой релей — по трубе); релеи собеседников дозваниваются заранее (`warm_peer_relays`/`warm_relay_of`, повтор 5 с → 2 мин) и по тому же соединению запрашивается бандл (`bundle_cache`); X3DH без ожидания, скрещённые инициализации — `ours_stands` | `SessionManager`, `SessionEvent`, `WirePayload` и снимки `WireV0..WireV7`, `encode_payload`/`decode_payload`, `pad_payload` |
 | `relay.rs` | Клиент протокола релея и сам протокол | `ClientToRelay`/`RelayToClient`, `EnvelopeBlob`, `connect`/`connect_peer`/`connect_local` (свой релей в процессе, по трубе), `AuthV2` + `auth_v2_message` + `destination_hash`, `ERR_NOT_SERVED`, `ERR_NEEDS_AUTH_V2` |
-| `relay_server.rs` | Встроенный релей в процессе | `EphemeralRelay::start`, `EphemeralRelay::connect_local` (вход для владельца без i2p), `MemStore`, `MemStoreLimits` (`personal`), `handle_client`; первый кадр `Dht` — анонимный запрос к узлу сети (`serve_dht`, `DhtHandler`). Accept-цикл: accept в yosemite не cancel-safe — его ничто, кроме пересборки, не прерывает; клиенты убираются без ожидания |
+| `relay_server.rs` | Встроенный релей в процессе: опубликованная destination на роутере процесса | `EphemeralRelay::start(limits, dht)`, `start_unclaimed()` + `claim` (туннели строятся до разблокировки профиля), `connect_local` (вход для владельца по трубе, без i2p), `set_hops` (пересборка destination), `MemStore`, `MemStoreLimits` (`personal`), `handle_client`; первый кадр `Dht` — анонимный запрос к узлу сети (`serve_dht`, `DhtHandler`) |
 | `dht_client.rs` | Узел сети релеев (`gipny-dht`) в приложении и агенте | `new_node`, `handler` (для релея), `join` (релей поднялся), `maintain` (раз в 45 мин), `DbStorage` (таблицы `dht_items`, `dht_peers`), `I2pTransport`, `status`, сиды из `GIPNY_DHT_SEEDS` (только при сборке); `save_peers` не затирает таблицу, если никто не ответил |
-| `net.rs` | SAM-сессия клиента через `yosemite` | `I2pNode` (он же `TorNode`), `connect_relay`/`connect_service`, `sam_port`, `http_proxy_port`, `sam_session_id` (имя сессии: уникальное и секретное — у SAM нет аутентификации) |
-| `router.rs` | Запуск и настройка процесса i2pd; `BootProgress`/`note` — прогресс запуска наружу (его показывает экран открытия профиля) | `RouterHandle` (`spawn`/`attach`), `RouterSettings`, `TransitProfile`, `Yggdrasil`, `DEFAULT_OUTPROXY`; `alive`/`restart` — роутер, умерший во время работы (приложение иначе вечно стучится в мёртвый SAM: проверяется в `net.rs::ensure_router` перед каждой пересборкой сессии), `previous_router` — роутер, оставшийся от прошлого запуска профиля (живой SAM переиспользуется, зависший останавливается: i2pd держит блокировку на `i2pd.pid`, второй экземпляр иначе сразу падает) |
-| `update.rs` | Автообновление через GitHub Releases по i2p-outproxy | `Updater` (`check`/`download`/`install`), `Component`, `InstallOutcome`, `target_suffix`, `apply_staged_windows_installer`, `is_deb_install`/`install_deb_now` (пакет ставит менеджер пакетов через `pkexec`, поэтому там установка по кнопке, а не молча) |
+| `embedded.rs` | Роутер i2pd внутри процесса (`i2p-embed`), один на процесс, под `<data_dir>/i2p/router` | `router` (запуск: datadir, SAM/http/httpproxy/socks/upnp выключены, `--reseed.verify=true`, bandwidth/share/transittunnels из настроек, Yggdrasil; снимок netDb до старта), `running`, `destination_options`; `GIPNY_I2P_LOGLEVEL` — уровень `i2pd.log` для диагностики |
+| `net.rs` | Наша destination на роутере процесса, только исходящие | `I2pNode` (он же `TorNode`), `start`/`start_with_progress`, `connect_relay`/`connect_service`, `set_hops`, `recreate` (новая destination на тех же ключах) |
+| `router.rs` | Настройки роутера, прогресс запуска, снимок netDb | `RouterSettings`, `TransitProfile`, `Yggdrasil`; `BootProgress`/`note` — прогресс запуска наружу (его показывает экран открытия профиля); `seed_netdb_from`/`seed_netdb_reader` (раскладка снимка только в пустой netDb), `compiled_in_seed` (`GIPNY_NETDB_SEED` при сборке, Android), `bundled_seed` (`GIPNY_I2P_SEED` или рядом с исполняемым файлом) |
+| `i2p_http.rs` | HTTPS GET в clearnet через i2p без локального прокси: свой поток к outproxy, `CONNECT`, TLS (rustls/ring, корни webpki), HTTP/1.1 (hyper) | `get`, `Body`, `OUTPROXY` (b32 `exit.stormycloud.i2p`) |
+| `update.rs` | Автообновление через GitHub Releases по i2p-outproxy (транспорт — `i2p_http.rs`) | `Updater` (`check`/`download`/`install`), `Component`, `InstallOutcome`, `target_suffix`, `apply_staged_windows_installer`, `is_deb_install`/`install_deb_now` (пакет ставит менеджер пакетов через `pkexec`, поэтому там установка по кнопке, а не молча) |
 | `agent.rs` | Режим агента: выполнение команд мастера | `run_command`, `handle_console_request`, `parse_control`, `save_uploads`, `BODY_GRANT`/`BODY_REVOKE`/`BODY_OFF` |
 | `card.rs` | Текстовая карточка `gipny:v1:` / `gipny:v2:` для headless-бинарей | `ContactCard`, `is_valid_i2p_address` |
-| `proxy.rs` | Дочерний процесс sing-box | запуск и остановка клиента |
 | `lib.rs` | Реэкспорты | — |
 | `tests/` | `crypto.rs` (криптоядро), `compat.rs` + `fixtures/compat-0.4.0` (база и vault из 0.4.0 открываются), `first_run.rs` | — |
 
@@ -35,8 +36,10 @@
 | Состояние запроса в контакты | `db.rs`: `RequestState`, `set_contact_request_state`, `list_incoming_requests` |
 | Криптография сессий | `crypto.rs` + `tests/crypto.rs` |
 | Пароль, KDF, duress, бэкап | `security.rs` |
-| Флаги i2pd, транзит, outproxy, порты | `router.rs` (`spawn`) |
-| SAM-сессия, дозвон, восстановление | `net.rs` |
+| Флаги i2pd, транзит, Yggdrasil | `embedded.rs` (`router`), значения — `router.rs` (`TransitProfile`) |
+| Снимок netDb для первого запуска | `router.rs` (`seed_netdb_*`, `bundled_seed`, `compiled_in_seed`), `build.rs` (`GIPNY_NETDB_SEED`) |
+| Своя destination, дозвон, восстановление | `net.rs` |
+| Outproxy обновлений, TLS | `i2p_http.rs` (`OUTPROXY`) |
 | Имена ассетов автообновления, установка по платформам | `update.rs`: `target_suffix`, `install` |
 | Частота проверки обновлений | `update.rs`: `UPDATE_CHECK_INITIAL_SECS`, `UPDATE_CHECK_INTERVAL_SECS` |
 | Команды консоли агента | `agent.rs` (`handle_console_request`, `HELP_TEXT`) |
@@ -55,6 +58,8 @@
 - **bincode остаётся 1.x.** Версионирование `WirePayload` держится на том, что bincode 1 игнорирует лишние байты в конце. Мажорное обновление — это смена протокола, dependabot его блокирует.
 - **Новые поля и варианты — только в конец.** Старые клиенты декодируют по позиции.
 - **TLS для автообновления — `rustls` с провайдером `ring`, не `aws-lc-rs`.** `aws-lc-sys` требует cmake и C-тулчейн на каждую цель, что ломает кросс-сборку Android.
+- **Один роутер на процесс** (`embedded.rs`): libi2pd держит глобальное состояние. Настройки роутера — от первого открытого профиля до перезапуска приложения. Падение роутера роняет процесс: перезапускать нечего.
+- **Ни одного локального порта.** SAM, HTTP-прокси, SOCKS, веб-консоль, UPnP выключены флагами в `embedded.rs::router`; обновления ходят через `i2p_http.rs`, а не через прокси.
 - **Встроенный релей личный** (`MemStoreLimits::personal`): чужую почту он не принимает, а его адрес живёт только в памяти.
 - **Relay выдаёт `Incoming` с `from = [0; 32]` (sealed sender).** Получатель перебирает сессии всех контактов.
 - **Собирать и публиковать через релей можно только после `AuthV2`.** Простой `Auth` оставлен для 0.4.2 и даёт только право положить письмо.
@@ -66,4 +71,4 @@
 env -u CC -u CXX cargo test -p gipny-libcore
 ```
 
-`env -u CC -u CXX` обязателен: в оболочке экспортирован компилятор Android NDK, и OpenSSL иначе собирается не под хост. Строки `sqlcipher … error decrypting` в выводе тестов — это ожидаемый тест неверного пароля. Сборки бинарей и e2e по живой i2p — только на GitHub (`build.yml`, `e2e-i2pd.yml`).
+`env -u CC -u CXX` обязателен: в оболочке экспортирован компилятор Android NDK, и OpenSSL иначе собирается не под хост. Тесты компилируют libi2pd (`i2p-embed`), им нужны заголовки boost, OpenSSL и zlib; `I2P_EMBED_SKIP_NATIVE=1` — только для `cargo check` без них. Строки `sqlcipher … error decrypting` в выводе тестов — это ожидаемый тест неверного пароля. Сборки бинарей и e2e по живой i2p — только на GitHub (`build.yml`, `i2p-embed.yml`, `e2e-i2pd.yml`).

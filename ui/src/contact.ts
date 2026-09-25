@@ -62,7 +62,7 @@ export class ContactModal {
         h('button', {
           class: 'btn btn-danger',
           onClick: async () => {
-            const ok = await app.confirm('Удалить контакт', `Удалить «${c.name}» и переписку с ним?`, true);
+            const ok = await app.confirm('Удалить контакт', `Удалить «${c.name}» и переписку с ним у вас? У собеседника всё останется.`, true);
             if (!ok) return;
             await Api.deleteContact(c.id);
             await store.refreshContacts();
@@ -70,7 +70,25 @@ export class ContactModal {
             if (sel?.kind === 'contact' && sel.id === c.id) store.selectedChat.set(null);
             close();
           },
-        }, 'Удалить'),
+        }, 'Удалить у себя'),
+        h('button', {
+          class: 'btn btn-danger',
+          onClick: async () => {
+            const ok = await app.confirm(
+              'Удалить у обоих',
+              `Удалить «${c.name}» и переписку у вас, и попросить приложение собеседника удалить переписку и вас у себя? ` +
+                'У вас всё удалится сразу. У собеседника — когда запрос до него дойдёт (если он не в сети — когда появится). ' +
+                'Это просьба к его приложению: то, что он уже прочитал, скопировал или снял с экрана, не вернуть.',
+              true,
+            );
+            if (!ok) return;
+            await Api.deleteContact(c.id, true);
+            await store.refreshContacts();
+            const sel = store.selectedChat.get();
+            if (sel?.kind === 'contact' && sel.id === c.id) store.selectedChat.set(null);
+            close();
+          },
+        }, 'Удалить у обоих'),
         h('div', { class: 'grow' }),
         h('button', { class: 'btn btn-ghost', onClick: close }, 'Отмена'),
         h('button', {

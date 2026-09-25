@@ -1,0 +1,373 @@
+name: i2p-embed
+
+# libi2pd compiled into the process through our C shim (i2p-embed/): no SAM,
+# no local port. Builds it against the distro's boost/OpenSSL and runs the
+# live test — a router in the test process, two destinations, an echo over the
+# real i2p network. Runs on every push that touches the crate, on any branch,
+# so the C++ is checked without a PR (docs/plans/2026-09-24-embedded-i2pd.md).
+
+on:
+  push:
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/i2p-embed.yml' ]
+  pull_request:
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/i2p-embed.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch, the newest: a push to a branch with an open PR fired
+# both `push` and `pull_request`, two full runs of every job for one commit,
+# and an older commit's run went on after a newer one was pushed.
+concurrency:
+  group: i2p-embed-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    name: i2p-embed (in-process router, live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # only main writes it — see .github/workflows/README.md
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-embed
+      - name: build
+        run: cargo build --release -p i2p-embed --tests
+      - name: live test over i2p
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
+        run: |
+          set -o pipefail
+          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo '### i2p-embed live test'
+            echo '```'
+            grep -aE "ready in|connected in|echo in|test result|panicked|error" live.txt | head -40 || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # macOS: Homebrew's boost and OpenSSL, linked in statically (a user's Mac has
+  # neither), as release.yml does for the app.
+  macos:
+    name: i2p-embed on macOS (${{ matrix.os }}, live)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: boost and OpenSSL from Homebrew
+        run: |
+          brew install boost openssl@3
+          b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
+          echo "I2P_EMBED_INCLUDE_DIRS=$b/include:$o/include" >> "$GITHUB_ENV"
+          echo "I2P_EMBED_LIB_DIRS=$b/lib:$o/lib" >> "$GITHUB_ENV"
+          echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --release -p i2p-embed --tests
+      - name: links nothing outside the OS
+        run: |
+          bin="$(ls target/release/deps/live-* | grep -v '\.d$' | head -1)"
+          otool -L "$bin"
+          foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/Library/)' || true)"
+          [ -z "$foreign" ] || { echo "links what a user's Mac does not have: $foreign"; exit 1; }
+      - name: live test over i2p
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
+        run: |
+          set -o pipefail
+          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+      - name: where it crashed
+        if: failure()
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed-bt
+        run: |
+          bin="$(ls target/release/deps/live-* | grep -v '\.d$' | head -1)"
+          lldb --batch -o run -k "thread backtrace all" -- "$bin" --ignored --nocapture 2>&1 | tail -150
+
+  # Windows: MSVC (the toolchain the app builds with), boost and OpenSSL from
+  # vcpkg as static libraries against the dynamic CRT Rust uses.
+  windows:
+    name: i2p-embed on Windows (MSVC, live)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      VCPKG_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        shell: bash
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: restore vcpkg packages
+        id: vcpkg-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-installed
+          key: vcpkg-x64-windows-static-md-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh') }}
+      - name: boost and OpenSSL from vcpkg
+        shell: bash
+        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        shell: bash
+        run: cargo build --release -p i2p-embed --tests
+      - name: live test over i2p
+        shell: bash
+        env:
+          I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
+        run: |
+          set -o pipefail
+          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+
+  # Android: libi2pd.so as release.yml builds it (libi2pd + shim, ndk-build),
+  # then a Rust binary linked against it — the live test built for the phone,
+  # which proves the shim is exported and resolves. Not run: no device here.
+  # boost/OpenSSL come from release.yml's cache (written on main); cold, they
+  # are built, which takes most of an hour.
+  android:
+    name: i2p-embed for Android (arm64, libi2pd.so + link)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      NDK_VERSION: 27.3.13750724
+      BOOST_FOR_ANDROID_REV: 7943955c4d11a5bd61381a8b200c28619323eb0f
+      ABI: arm64-v8a
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: pins
+        id: pins
+        run: |
+          echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "i2pd_android=$(git -C third_party/i2pd-android rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # sdkmanager wants JDK 17; the image's default is 11.
+      - uses: actions/setup-java@v6
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v4
+        with: { packages: 'platform-tools ndk;27.3.13750724' }
+      - name: resolve NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - name: align the vendored sources
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          git -C i2pd fetch --quiet origin "$I2PD_REV" || git -C i2pd fetch --quiet --tags origin
+          git -C i2pd checkout --quiet "$I2PD_REV"
+          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
+          git -C boost checkout FETCH_HEAD
+          sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh
+      - name: restore cached dependencies (boost, openssl)
+        id: deps
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            third_party/i2pd-android/binary/jni/boost/build/out/${{ env.ABI }}
+            third_party/i2pd-android/binary/jni/openssl/out/${{ env.ABI }}
+          key: android-deps-${{ env.ABI }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-scripts${{ steps.pins.outputs.i2pd_android }}
+      - name: build dependencies (boost, openssl)
+        if: steps.deps.outputs.cache-hit != 'true'
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          ./build_boost.sh arm64
+          ./build_openssl.sh arm64
+      - name: build libi2pd.so
+        run: |
+          "$ANDROID_NDK_HOME/ndk-build" -C android-router/jni -j"$(nproc)" \
+            NDK_MODULE_PATH="$GITHUB_WORKSPACE/third_party/i2pd-android/binary/jni" \
+            NDK_PROJECT_PATH="$GITHUB_WORKSPACE/android-router" \
+            APP_ABI=$ABI APP_PLATFORM=android-24
+          LIB="android-router/libs/$ABI/libi2pd.so"
+          NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for sym in gipny_router_init gipny_router_start gipny_dest_create \
+                     gipny_dest_connect gipny_stream_recv gipny_stream_send \
+                     Java_app_gipny_GipnyService_nativeNetworkChanged; do
+            "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym" || { echo "libi2pd.so does not export $sym"; exit 1; }
+          done
+          mkdir -p prebuilt && cp "$LIB" prebuilt/ && ls -lh prebuilt/libi2pd.so
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: aarch64-linux-android }
+      - name: link a Rust binary against it
+        run: |
+          tc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$tc/aarch64-linux-android24-clang"
+          export I2P_EMBED_PREBUILT_DIR="$PWD/prebuilt"
+          cargo build --release -p i2p-embed --tests --target aarch64-linux-android
+          bin="$(ls target/aarch64-linux-android/release/deps/live-* | grep -v '\.d$' | head -1)"
+          "$tc/llvm-readelf" -d "$bin" | grep -F '[libi2pd.so]'
+
+  # The oldest system the Linux bundles support (their glibc floor): does
+  # libi2pd build against its boost (1.74), and link boost statically?
+  jammy:
+    name: i2p-embed builds on Ubuntu 22.04 (boost 1.74, static)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        env:
+          I2P_EMBED_STATIC_LIBS: boost_program_options
+        run: |
+          export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
+          cargo build --release -p i2p-embed --tests
+          ldd target/release/deps/live-* | grep -iE "boost|ssl|crypto|libz" || true
+      # The desktop app's crate is also a cdylib: a shared object takes only
+      # code built with -fPIC, which 22.04's static boost is not on x86_64
+      # (release run 36056978015). The same PIC build release.yml links.
+      - name: boost_program_options with -fPIC
+        run: .github/scripts/boost-po-pic.sh "$RUNNER_TEMP/boost-po-pic"
+      - name: and inside a shared object, as the app links it
+        env:
+          I2P_EMBED_STATIC_LIBS: boost_program_options
+        run: |
+          export I2P_EMBED_LIB_DIRS="$RUNNER_TEMP/boost-po-pic/lib:/usr/lib/$(gcc -dumpmachine)"
+          cargo rustc --release -p i2p-embed --crate-type cdylib
+          ls -l target/release/libi2p_embed.so
+
+  # Two bots with their built-in relays, all on the router inside the harness
+  # process: no i2pd process, no SAM, no port. The same scenario as
+  # "e2e (relays inside the bots)" in e2e-i2pd.yml.
+  e2e:
+    name: e2e on the in-process router (relays inside the bots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-embed-e2e
+      - name: build the harness on the in-process router
+        run: cargo build --release -p e2e-harness
+      - name: run
+        env:
+          E2E_IN_PROCESS_RELAYS: '1'
+          # bot-b writes first too: the two sessions open at once and cross.
+          E2E_BOTH_FIRST: '1'
+          E2E_N_MESSAGES: '5'
+          E2E_TIMEOUT_SECS: '900'
+          E2E_WORK_DIR: ${{ runner.temp }}/e2e
+          # The router's own log, for where letters stall (uploaded below).
+          GIPNY_I2P_LOGLEVEL: info
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee harness.log
+          grep -q '\[e2e\] SUCCESS' harness.log
+      - name: keep the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-in-process-logs
+          retention-days: 5
+          path: |
+            harness.log
+            ${{ runner.temp }}/e2e/**/i2pd.log
+          if-no-files-found: warn
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo '### e2e on the in-process router'
+            echo '```'
+            grep -aE "router ready|relays up|relay-connect|RTT|SUCCESS|Error|panicked" harness.log | head -30 || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  # The updater as an installed app runs it: the GitHub API and a release
+  # file through the i2p outproxy, from the router inside the process. The
+  # outproxy is someone else's service; a failure here is worth reading, and
+  # it gates nothing else.
+  updater:
+    name: updater through the outproxy (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Someone else's service, and the GitHub API unauthenticated from a
+    # shared exit (60 requests an hour for everyone behind it): red here is
+    # read in the summary, and does not fail the run.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: check out i2pd
+        run: git submodule update --init --depth 1 third_party/i2pd
+      - name: current reseed certificates (upstream i2pd now, not the pin)
+        shell: bash
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: install boost, OpenSSL, zlib
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-embed-e2e
+      - name: build the harness on the in-process router
+        run: cargo build --release -p e2e-harness
+      - name: run
+        env:
+          E2E_UPDATE_CHECK: '1'
+          E2E_TIMEOUT_SECS: '900'
+          E2E_WORK_DIR: ${{ runner.temp }}/e2e
+        run: |
+          set -o pipefail
+          ./target/release/e2e-harness 2>&1 | tee harness.log
+          grep -q '\[e2e\] SUCCESS' harness.log
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo '### updater through the outproxy'
+            echo '```'
+            grep -aE "router ready|listens|local ports|latest release|check from|update from|downloaded|SUCCESS|Error|panicked" harness.log | head -20 || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

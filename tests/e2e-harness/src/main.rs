@@ -1,6 +1,7 @@
 //! End-to-end messaging harness.
 //!
-//! Boots two headless bot instances (A and B) against a shared local relay,
+//! Boots two headless bot instances (A and B) on the i2p router inside this
+//! process (one per process, a destination per bot) against a relay,
 //! cross-adds them as contacts, sends N messages A→B with an attachment,
 //! verifies that B echoes every message back to A, and reports latency and
 //! resource metrics to stdout and to `$GITHUB_STEP_SUMMARY` when running in CI.
@@ -13,25 +14,28 @@
 //! # Optional environment variables
 //! * `E2E_RELAY_DEST_A` / `E2E_RELAY_DEST_B` — a separate relay per bot.
 //! * `E2E_IN_PROCESS_RELAYS=1` — no standalone relay: each bot gets an
-//!   in-process `EphemeralRelay` on the router at `GIPNY_SAM_PORT`, started
+//!   in-process `EphemeralRelay` on the router in this process, started
 //!   for that bot's key only (`MemStoreLimits::personal`) after the bot is up
 //!   — the app's built-in relay, in the order the app does it.
 //! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
 //!   far side is the real `gipny-agent` binary at that path, started with
-//!   bot-a's v2 card and attached to the shared router, with no `--relay` —
-//!   proving the agent hosts a personal relay for itself, the same as the
-//!   app does. Needs `GIPNY_SAM_PORT`; the master gets its own in-process
-//!   relay too. `E2E_N_MESSAGES` is the number of commands.
+//!   bot-a's v2 card, on its own router in its own process, with no
+//!   `--relay` — proving the agent hosts a personal relay for itself, the
+//!   same as the app does. The master gets its own in-process relay too.
+//!   `E2E_N_MESSAGES` is the number of commands.
 //! * `E2E_DHT_OFFLINE=1` — a different test: delivery through the relay
-//!   network while each side is away in turn. Needs `GIPNY_SAM_PORT` and
-//!   `E2E_DHT_SEED_DEST` (the destination of a `gipny-relay --dht` on the same
-//!   router). See [`run_dht_offline_mode`].
+//!   network while each side is away in turn. Needs `E2E_DHT_SEED_DEST` (the
+//!   destination of a `gipny-relay --dht`). See [`run_dht_offline_mode`].
+//! * `E2E_BOTH_FIRST=1` — bot-b writes to bot-a at the same moment bot-a
+//!   writes to bot-b: two sessions are opened at once and their X3dhInits
+//!   cross (session.rs `ours_stands`). Its letter must arrive too.
+//! * `E2E_UPDATE_CHECK=1` — a different test: one router, and the updater
+//!   asks GitHub for the latest release through the i2p outproxy and fetches
+//!   its smallest file, as an installed app would.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
 //!   `/tmp/e2e-harness`).
-//! * `GIPNY_I2P_BIN`    — path to the `i2pd` binary; libcore
-//!   falls back to the executable's directory and `$PATH` when not set.
 //! * `GITHUB_STEP_SUMMARY` — when set (always true in GitHub Actions), the
 //!   timing table is appended to this file.
 
@@ -50,9 +54,33 @@ use gipny_libcore::{
 };
 use tokio::sync::{Mutex, Notify};
 
+mod ports;
+
+/// Longest a router may take to be ready: reseed, then tunnels. Minutes at
+/// worst on a runner; past this something is stuck, and the run says so.
+const ROUTER_START: Duration = Duration::from_secs(600);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The run fails if `pid` (`"self"` for the harness, whose routers run in
+/// it) listens on loopback: nothing local may reach the router. Linux only.
+fn no_local_ports(who: &str, pid: &str) -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let listeners = ports::tcp_listeners(pid).with_context(|| format!("{who}: read /proc/{pid}"))?;
+    for l in &listeners {
+        eprintln!("[e2e] {who} listens on {}:{}{}", l.addr, l.port, if l.loopback { " (LOOPBACK)" } else { "" });
+    }
+    let local: Vec<_> = listeners.iter().filter(|l| l.loopback).map(|l| format!("{}:{}", l.addr, l.port)).collect();
+    if !local.is_empty() {
+        bail!("{who} listens on loopback: {}", local.join(", "));
+    }
+    eprintln!("[e2e] {who}: no local ports");
+    Ok(())
+}
 
 fn hex8(b: &[u8]) -> String {
     b.iter().take(8).map(|x| format!("{x:02x}")).collect()
@@ -66,7 +94,7 @@ struct BotHandle {
     session: Arc<SessionManager>,
     card: IdentityCard,
     onion: String,
-    /// Wall-clock milliseconds from `TorNode::start` call to SAM ready.
+    /// Wall-clock milliseconds from the `TorNode::start` call to its tunnels.
     router_ready_ms: u64,
 }
 
@@ -80,15 +108,14 @@ async fn start_bot(
     std::fs::create_dir_all(&data_dir)
         .with_context(|| format!("{name}: create data dir"))?;
 
-    if std::env::var("GIPNY_SAM_PORT").is_ok() {
-        eprintln!("[e2e] {name}: attaching to shared i2p router...");
-    } else {
-        eprintln!("[e2e] {name}: starting i2p router...");
-    }
+    eprintln!("[e2e] {name}: starting i2p router...");
     let t0 = Instant::now();
+    // Bounded: a reseed server that never answers left a run waiting on
+    // the router for 36 minutes without a word (the laptop, 2026-09-25).
     let node = Arc::new(
-        TorNode::start(&data_dir, Default::default())
+        tokio::time::timeout(ROUTER_START, TorNode::start(&data_dir, Default::default()))
             .await
+            .map_err(|_| anyhow::anyhow!("{name}: the router was not ready in {ROUTER_START:?}"))?
             .with_context(|| format!("{name}: TorNode::start failed"))?,
     );
     let router_ready_ms = t0.elapsed().as_millis() as u64;
@@ -155,18 +182,17 @@ fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn start_in_process_relays(owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
-    let port: u16 = std::env::var("GIPNY_SAM_PORT")
-        .context("E2E_IN_PROCESS_RELAYS needs GIPNY_SAM_PORT, the shared router's SAM port")?
-        .trim()
-        .parse()
-        .context("GIPNY_SAM_PORT is not a port")?;
-    eprintln!("[e2e] starting two in-process relays on SAM port {port}...");
+/// What bot-b writes first with E2E_BOTH_FIRST.
+const GREETING: &str = "hello from bot-b";
+
+async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
+    let _ = node; // up already: the relays share its router
+    eprintln!("[e2e] starting two in-process relays on the in-process router...");
     let t0 = Instant::now();
     let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
         tokio::join!(
-            EphemeralRelay::start(port, MemStoreLimits::personal(owner_a), None),
-            EphemeralRelay::start(port, MemStoreLimits::personal(owner_b), None),
+            EphemeralRelay::start(MemStoreLimits::personal(owner_a), None),
+            EphemeralRelay::start(MemStoreLimits::personal(owner_b), None),
         )
     })
     .await
@@ -284,7 +310,7 @@ where
 }
 
 /// bot-a is the master; the far side is `agent_bin`, run as the separate
-/// process it is on a server, on the shared router (`--sam`). Proves, over
+/// process it is on a server, with its own router. Proves, over
 /// live i2p: the agent's GRANT creates the contact on the master by itself;
 /// commands run one at a time in arrival order; a file sent with a command is
 /// there when the command runs; OFF is answered with REVOKE and exit 0.
@@ -293,11 +319,6 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600);
     let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
     std::fs::create_dir_all(&work_dir).context("create work dir")?;
-    let port: u16 = std::env::var("GIPNY_SAM_PORT")
-        .context("E2E_AGENT_BIN needs GIPNY_SAM_PORT, the shared router's SAM port")?
-        .trim()
-        .parse()
-        .context("GIPNY_SAM_PORT is not a port")?;
     let timeout = Duration::from_secs(timeout_secs);
     let t_start = Instant::now();
     let budget = |t_start: Instant| timeout.saturating_sub(t_start.elapsed());
@@ -307,9 +328,12 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     // No `--relay` is passed to the agent below: it hosts a personal relay
     // for itself and tells the master the address through its GRANT message,
     // exactly as any contact's relay is learned.
-    eprintln!("[e2e] starting the master's in-process relay on SAM port {port}...");
+    // The router first: the relay is a destination on it, and bot-a (below)
+    // takes the same one.
+    gipny_libcore::embedded::router(&work_dir.join("router"), Default::default()).context("i2p router")?;
+    eprintln!("[e2e] starting the master's in-process relay...");
     let t0 = Instant::now();
-    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(port, MemStoreLimits::default(), None))
+    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(MemStoreLimits::default(), None))
         .await
         .context("timeout: in-process relay did not come up in 300s")?
         .context("in-process relay")?;
@@ -338,7 +362,6 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
         .arg("--data").arg(&agent_data)
         .arg("--master").arg(&master_card)
         .arg("--name").arg("e2e-agent")
-        .arg("--sam").arg(port.to_string())
         .arg("--timeout").arg("30")
         .arg("--cwd").arg(&agent_cwd)
         .stdin(Stdio::null())
@@ -497,6 +520,13 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     };
     eprintln!("[e2e] command RTT — min: {rtt_min} ms  median: {rtt_median} ms  max: {rtt_max} ms");
 
+    // While both still run: neither listens on loopback.
+    if let Err(e) = no_local_ports("harness", "self") { failures.push(e.to_string()); }
+    match child.id() {
+        Some(pid) => if let Err(e) = no_local_ports("agent", &pid.to_string()) { failures.push(e.to_string()); },
+        None => failures.push("the agent exited before OFF".into()),
+    }
+
     // 5. OFF: the agent answers REVOKE and exits 0 once that is delivered.
     a.session
         .send_console(agent_cid, BODY_OFF.into(), WireConsole::new(CONSOLE_OFF), vec![])
@@ -578,13 +608,13 @@ struct LiveBot {
 impl LiveBot {
     /// Start (or restart, on the same data dir) and wait until the relay
     /// network has answered. Every start is a new relay address.
-    async fn start(name: &'static str, work_dir: &PathBuf, sam_port: u16, seeds: &[String], budget: Duration) -> Result<Self> {
+    async fn start(name: &'static str, work_dir: &PathBuf, seeds: &[String], budget: Duration) -> Result<Self> {
         let (bot, events) = start_bot(name, work_dir, "", seeds).await?;
         // The agent's arrangement: the personal relay also answers for the
         // session's own network node.
         let relay = tokio::time::timeout(
             Duration::from_secs(300),
-            EphemeralRelay::start(sam_port, MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
+            EphemeralRelay::start(MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
         )
         .await
         .with_context(|| format!("{name}: relay did not come up in 300s"))?
@@ -698,11 +728,6 @@ async fn run_dht_offline_mode() -> Result<()> {
     let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
     let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
     std::fs::create_dir_all(&work_dir).context("create work dir")?;
-    let sam_port: u16 = std::env::var("GIPNY_SAM_PORT")
-        .context("E2E_DHT_OFFLINE needs GIPNY_SAM_PORT, the shared router's SAM port")?
-        .trim()
-        .parse()
-        .context("GIPNY_SAM_PORT is not a port")?;
     let seeds: Vec<String> = std::env::var("E2E_DHT_SEED_DEST")
         .context("E2E_DHT_OFFLINE needs E2E_DHT_SEED_DEST, the seed's destination")?
         .split(|c: char| c == ',' || c.is_whitespace())
@@ -720,8 +745,8 @@ async fn run_dht_offline_mode() -> Result<()> {
 
     phase("1. both join the network");
     let (a, b) = tokio::try_join!(
-        LiveBot::start("bot-a", &work_dir, sam_port, &seeds, step),
-        LiveBot::start("bot-b", &work_dir, sam_port, &seeds, step),
+        LiveBot::start("bot-a", &work_dir, &seeds, step),
+        LiveBot::start("bot-b", &work_dir, &seeds, step),
     )?;
     let session = b.session.clone();
     poll(step, Duration::from_secs(10), || async { session.publish_bundle_to_dht().await })
@@ -748,7 +773,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     a.stop("bot-a");
 
     phase("4. B comes back elsewhere, reads, answers the absent A");
-    let mut b = LiveBot::start("bot-b", &work_dir, sam_port, &seeds, step).await?;
+    let mut b = LiveBot::start("bot-b", &work_dir, &seeds, step).await?;
     if b.relay_address == b_relay_before {
         bail!("bot-b came back on the same relay address; the run proves nothing about address change");
     }
@@ -768,7 +793,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     b.stop("bot-b");
 
     phase("5. A comes back elsewhere and reads the answers");
-    let mut a = LiveBot::start("bot-a", &work_dir, sam_port, &seeds, step).await?;
+    let mut a = LiveBot::start("bot-a", &work_dir, &seeds, step).await?;
     if a.relay_address == a_relay_before {
         bail!("bot-a came back on the same relay address; the run proves nothing about address change");
     }
@@ -786,6 +811,7 @@ async fn run_dht_offline_mode() -> Result<()> {
     .await
     .context("bot-a never learned bot-b's new relay address")?;
     eprintln!("[e2e] bot-a: knows bot-b's new relay address");
+    no_local_ports("harness", "self")?;
     a.stop("bot-a");
 
     let total = t0.elapsed().as_secs();
@@ -801,6 +827,59 @@ async fn run_dht_offline_mode() -> Result<()> {
     Ok(())
 }
 
+/// The updater over the outproxy, end to end: the release list from the
+/// GitHub API, then a file from it (a redirect to GitHub's storage host).
+async fn run_update_check_mode() -> Result<()> {
+    use gipny_libcore::update::{CheckOutcome, Component, Updater};
+    let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/gipny-e2e".into()));
+    let timeout = Duration::from_secs(std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600));
+    let data_dir = work_dir.join("updater");
+    std::fs::create_dir_all(&data_dir)?;
+    let t0 = Instant::now();
+    let node = Arc::new(
+        tokio::time::timeout(ROUTER_START, TorNode::start(&data_dir, Default::default()))
+            .await
+            .map_err(|_| anyhow::anyhow!("the router was not ready in {ROUTER_START:?}"))?
+            .context("TorNode::start")?,
+    );
+    eprintln!("[e2e] router ready in {} ms", t0.elapsed().as_millis());
+    no_local_ports("harness", "self")?;
+    let updater = Updater::new(node.clone(), Component::App);
+
+    // The outproxy's LeaseSet may not be found at the first try.
+    let t1 = Instant::now();
+    let release = loop {
+        match updater.latest_release().await {
+            Ok(r) => break r,
+            Err(e) if t0.elapsed() < timeout => {
+                eprintln!("[e2e] latest release: {e}; again in 15 s");
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+            Err(e) => bail!("no release list through the outproxy in {timeout:?}: {e}"),
+        }
+    };
+    eprintln!("[e2e] latest release {} with {} files in {} ms", release.version, release.assets.len(), t1.elapsed().as_millis());
+    match updater.check_detailed("0.0.0").await {
+        Ok(CheckOutcome::Update(u)) => eprintln!("[e2e] an update from 0.0.0 would be {}", u.version),
+        Ok(other) => eprintln!("[e2e] check from 0.0.0: {other:?}"),
+        Err(e) => bail!("check_detailed: {e}"),
+    }
+    let Some(asset) = release.assets.iter().filter(|a| a.size > 0).min_by_key(|a| a.size) else {
+        bail!("the latest release has no files");
+    };
+    let t2 = Instant::now();
+    let dest = data_dir.join("download").join(&asset.name);
+    updater.download_asset_to(asset, None, &dest, |_, _| {}).await.with_context(|| format!("download {}", asset.name))?;
+    let got = std::fs::metadata(&dest)?.len();
+    if got != asset.size {
+        bail!("{}: {got} bytes, the release says {}", asset.name, asset.size);
+    }
+    eprintln!("[e2e] downloaded {} ({got} bytes) in {} ms", asset.name, t2.elapsed().as_millis());
+    node.shutdown().await;
+    eprintln!("[e2e] SUCCESS — the updater reached GitHub through the outproxy");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -812,6 +891,9 @@ async fn main() -> Result<()> {
     }
     if std::env::var("E2E_DHT_OFFLINE").is_ok_and(|v| v == "1") {
         return run_dht_offline_mode().await;
+    }
+    if std::env::var("E2E_UPDATE_CHECK").is_ok_and(|v| v == "1") {
+        return run_update_check_mode().await;
     }
 
     // One relay or two. Two is the interesting case: each bot collects from its
@@ -864,7 +946,7 @@ async fn main() -> Result<()> {
     let (relay_a, relay_b, in_process_relays) = match standalone {
         Some((ra, rb)) => (ra, rb, None),
         None => {
-            let (ra, rb) = start_in_process_relays(a.card.sign_pk, b.card.sign_pk).await?;
+            let (ra, rb) = start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk).await?;
             let (dest_a, dest_b) = (ra.address().to_string(), rb.address().to_string());
             a.session.set_relay_onion(&dest_a).context("bot-a: set_relay_onion")?;
             b.session.set_relay_onion(&dest_b).context("bot-b: set_relay_onion")?;
@@ -929,12 +1011,18 @@ async fn main() -> Result<()> {
     // Send times recorded by A: body → send_instant.
     let a_send_times: Arc<Mutex<HashMap<String, Instant>>> = Default::default();
 
+    // E2E_BOTH_FIRST: B's own first letter, as A received it.
+    let both_first = std::env::var("E2E_BOTH_FIRST").is_ok_and(|v| v == "1");
+    let a_greeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let a_greeted_notify = Arc::new(Notify::new());
+
     // Bot A event loop
     {
         let connect_notify = a_connect_notify.clone();
         let connect_at = a_connect_at.clone();
         let echoes = a_echoes.clone();
         let echo_notify = a_echo_notify.clone();
+        let (greeted, greeted_notify) = (a_greeted.clone(), a_greeted_notify.clone());
         tokio::spawn(async move {
             while let Some(ev) = a_events.recv().await {
                 match ev {
@@ -954,6 +1042,9 @@ async fn main() -> Result<()> {
                         if payload.body.starts_with("echo:") {
                             echoes.lock().await.push((payload.body, Instant::now()));
                             echo_notify.notify_one();
+                        } else if payload.body == GREETING {
+                            greeted.store(true, std::sync::atomic::Ordering::SeqCst);
+                            greeted_notify.notify_one();
                         }
                     }
                     _ => {}
@@ -1064,6 +1155,15 @@ async fn main() -> Result<()> {
     // -----------------------------------------------------------------------
     // 5. A sends N messages to B (first message includes an attachment).
     // -----------------------------------------------------------------------
+    if both_first {
+        eprintln!("[e2e] bot-b writes first too, at the same moment: the sessions cross");
+        let b_session = b.session.clone();
+        tokio::spawn(async move {
+            if let Err(e) = b_session.send_message(contact_a_in_b, GREETING.into(), vec![], None, None, None).await {
+                eprintln!("[e2e] bot-b: greeting send error: {e}");
+            }
+        });
+    }
     eprintln!("[e2e] sending {n_messages} messages A→B...");
     {
         let mut send_times = a_send_times.lock().await;
@@ -1186,6 +1286,21 @@ async fn main() -> Result<()> {
     // -----------------------------------------------------------------------
     // 8. Assert and exit.
     // -----------------------------------------------------------------------
+    if both_first {
+        let left = timeout.saturating_sub(t_start.elapsed());
+        let arrived = tokio::time::timeout(left, async {
+            while !a_greeted.load(std::sync::atomic::Ordering::SeqCst) {
+                let n = a_greeted_notify.notified();
+                if a_greeted.load(std::sync::atomic::Ordering::SeqCst) { break; }
+                n.await;
+            }
+        }).await.is_ok();
+        if !arrived {
+            bail!("crossing sessions: bot-b's own first letter never reached bot-a");
+        }
+        eprintln!("[e2e] crossing sessions: bot-b's own first letter arrived too");
+    }
+
     a.session.shutdown();
     b.session.shutdown();
 
@@ -1208,6 +1323,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    no_local_ports("harness", "self")?;
     eprintln!("[e2e] SUCCESS — all {n_messages} messages delivered and echoed");
     Ok(())
 }

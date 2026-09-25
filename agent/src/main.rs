@@ -17,8 +17,6 @@
 //!   --relay <dest>          external relay to collect from, remembered in <data>/relay.txt;
 //!                           default: none — the agent hosts a personal relay for itself,
 //!                           the same way the app does for its own inbox
-//!   --sam <port>            attach to a running SAM bridge on this port instead of
-//!                           spawning our own router (for dev/CI)
 //!   --cwd <dir>             working directory for commands (default: home dir)
 //!   --timeout <secs>        per-command timeout (default: 120 s)
 //!
@@ -58,7 +56,7 @@ const REVOKE_WAIT: Duration = Duration::from_secs(60);
 fn usage() -> ! {
     eprintln!(
         "Usage: gipny-agent --data <dir> [--master <card>] [--name <name>] \
-        [--relay <dest>] [--sam <port>] [--cwd <dir>] [--timeout <secs>]"
+        [--relay <dest>] [--cwd <dir>] [--timeout <secs>]"
     );
     std::process::exit(1);
 }
@@ -69,7 +67,6 @@ struct Args {
     master_card: Option<String>,
     name: Option<String>,
     relay: Option<String>,
-    sam_port: Option<u16>,
     cwd: Option<PathBuf>,
     timeout_secs: Option<u64>,
 }
@@ -83,7 +80,6 @@ fn parse_args() -> Args {
             "--master"  => a.master_card = it.next(),
             "--name"    => a.name        = it.next(),
             "--relay"   => a.relay       = it.next(),
-            "--sam"     => a.sam_port    = it.next().and_then(|s| s.parse().ok()),
             "--cwd"     => a.cwd         = it.next().map(PathBuf::from),
             "--timeout" => a.timeout_secs = it.next().and_then(|s| s.parse().ok()),
             "--help" | "-h" => usage(),
@@ -213,14 +209,7 @@ async fn main() -> Result<()> {
         Db::open_plain(&data_dir.join("agent.db")).context("open agent database")?,
     );
 
-    // `--sam` attaches to a router someone else started; I2pNode reads the
-    // port from the environment, as the e2e harness does.
-    if let Some(port) = args.sam_port {
-        std::env::set_var("GIPNY_SAM_PORT", port.to_string());
-        eprintln!("[agent] attaching to SAM on port {port}");
-    } else {
-        eprintln!("[agent] starting i2p router…");
-    }
+    eprintln!("[agent] starting the i2p router (in this process, no ports)…");
     let node = Arc::new(
         I2pNode::start(&data_dir, RouterSettings::default()).await.context("start i2p node")?,
     );
@@ -248,7 +237,6 @@ async fn main() -> Result<()> {
         None => {
             eprintln!("[agent] starting the built-in relay (this can take a minute or two)…");
             let relay = gipny_libcore::EphemeralRelay::start(
-                node.sam_port(),
                 gipny_libcore::MemStoreLimits::personal(me.sign_pk),
                 Some(session.dht_handler()),
             )
@@ -339,11 +327,19 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Event loop. Stopping — on the master's OFF or on Ctrl-C — sends REVOKE
+    // Event loop. Stopping — on the master's OFF, Ctrl-C or SIGTERM — sends REVOKE
     // and waits for its delivery (bounded), so the master's app shows the
     // console closed rather than an agent that silently went away.
     let mut stopping: Option<(i64, tokio::time::Instant)> = None;
+    // systemd stops the service with SIGTERM: the same as Ctrl-C, so the
+    // master hears REVOKE and the router in this process stops before exit.
+    #[cfg(unix)]
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).context("SIGTERM handler")?;
     loop {
+        #[cfg(unix)]
+        let terminate = sigterm.recv();
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<Option<()>>();
         let deadline = async {
             match stopping {
                 Some((_, at)) => tokio::time::sleep_until(at).await,
@@ -351,7 +347,7 @@ async fn main() -> Result<()> {
             }
         };
         tokio::select! {
-            _ = signal::ctrl_c() => {
+            _ = async { tokio::select! { _ = signal::ctrl_c() => {}, _ = terminate => {} } } => {
                 if stopping.is_some() {
                     eprintln!("[agent] interrupted again — exiting now");
                     break;

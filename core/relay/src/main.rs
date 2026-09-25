@@ -12,22 +12,27 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use rand::Rng;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
-use yosemite::{style, DestinationKind, RouterApi, Session, SessionOptions};
 
 use crate::dht::DhtHandler;
 use crate::proto::*;
 use crate::storage::Storage;
 
-type Connections = Arc<RwLock<HashMap<[u8; 32], mpsc::Sender<RelayToClient>>>>;
+/// Each key's live connection, with how far its mail has been pushed (moved
+/// by whoever enqueues a push; see the deposit in `client_loop`).
+type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>, Arc<tokio::sync::Mutex<i64>>)>>>;
 
-/// Default SAMv3 port. The relay is server-side infrastructure: run i2pd as a
-/// system service exposing SAMv3 here (see gipny-i2pd.service).
-const DEFAULT_SAM_PORT: u16 = 7656;
 
 /// A relay-network connection is closed after this many requests, or when it
 /// sits idle this long (same limits as libcore's relay_server).
 const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
+/// A client says something at least every 20 s (a ping, if nothing else); one
+/// silent this long is gone, though its close never came, and its connection
+/// is dropped rather than kept taking its mail into nowhere.
+#[cfg(not(test))]
+const CLIENT_SILENT: Duration = Duration::from_secs(90);
+#[cfg(test)]
+const CLIENT_SILENT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -55,23 +60,42 @@ async fn main() -> anyhow::Result<()> {
     let storage = Arc::new(Storage::open(&data_dir.join("relay.db"))?);
     let connections: Connections = Arc::new(RwLock::new(HashMap::new()));
 
-    let sam_port: u16 = std::env::var("GIPNY_SAM_PORT").ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_SAM_PORT);
+    // The i2p router runs inside this process (i2p-embed): no SAM, no router
+    // to install beside it, no local port. Its state lives in the data dir.
+    let router_dir = data_dir.join("router");
+    std::fs::create_dir_all(&router_dir)?;
+    eprintln!("[relay] starting the i2p router in-process ({})...", router_dir.display());
+    // GIPNY_I2P_LOGLEVEL: diagnostics only (CI's e2e), i2pd's own log level.
+    let loglevel = std::env::var("GIPNY_I2P_LOGLEVEL").ok()
+        .filter(|l| matches!(l.as_str(), "critical" | "error" | "warn" | "info" | "debug"))
+        .map(|l| format!("--loglevel={l}"));
+    let router = Arc::new(i2p_embed::Router::start(&[
+        format!("--datadir={}", router_dir.display()),
+        loglevel.unwrap_or_else(|| "--loglevel=warn".into()),
+        "--sam.enabled=false".into(),
+        "--http.enabled=false".into(),
+        "--httpproxy.enabled=false".into(),
+        "--socksproxy.enabled=false".into(),
+        "--upnp.enabled=false".into(),
+        // Against the reseed certificates i2p-embed compiles in.
+        "--reseed.verify=true".into(),
+    ], router_dir.join("i2pd.log").to_str()).map_err(|e| anyhow::anyhow!("i2p router: {e}"))?);
 
-    eprintln!("[relay] connecting to SAMv3 bridge on 127.0.0.1:{sam_port}...");
-    let (dest_pub, privkey) = load_or_create_identity(&data_dir, sam_port).await?;
+    let (dest_pub, privkey) = load_or_create_identity(&data_dir)?;
 
     let destination_hash = destination_hash(&dest_pub)
         .ok_or_else(|| anyhow::anyhow!("dest.pub is not an i2p destination"))?;
-    let mut session = Some(open_session(sam_port, &privkey).await?);
     eprintln!("========================================================");
     eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
     eprintln!("{dest_pub}");
     eprintln!("========================================================");
+    let dest = i2p_embed::Destination::new(&router, Some(&privkey), &i2p_embed::DestinationOptions { publish: true, ..Default::default() })
+        .map_err(|e| anyhow::anyhow!("relay destination: {e}"))?;
+    dest.ready(Duration::from_secs(1800)).await.map_err(|e| anyhow::anyhow!("relay tunnels: {e}"))?;
+    eprintln!("[relay] tunnels up; accepting");
 
     let dht = if dht_on {
-        Some(dht::start(&data_dir, sam_port, &dest_pub, dht::Options { stores: dht_stores, seeds })?)
+        Some(dht::start(&data_dir, router.clone(), &dest_pub, dht::Options { stores: dht_stores, seeds })?)
     } else {
         None
     };
@@ -89,82 +113,55 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let mut failures = 0u32;
+    let mut inbound = dest.accept();
+    let stop = shutdown_signal();
+    tokio::pin!(stop);
     loop {
-        let Some(live) = session.as_mut() else {
-            // Rebuild on the same key, so the destination clients have stays
-            // valid. Back off: a router that is restarting refuses for a while.
-            tokio::time::sleep(rebuild_backoff(failures)).await;
-            match open_session(sam_port, &privkey).await {
-                Ok(s) => {
-                    eprintln!("[relay] SAM session rebuilt after {failures} failure(s)");
-                    session = Some(s);
-                }
-                Err(e) => {
-                    failures += 1;
-                    eprintln!("[relay] SAM session rebuild failed: {e}");
-                }
+        tokio::select! {
+            stream = inbound.recv() => {
+                let Some(stream) = stream else { anyhow::bail!("the relay destination stopped accepting") };
+                let storage = storage.clone();
+                let connections = connections.clone();
+                let dht = dht.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
+                        eprintln!("[relay] client disconnected: {}", e);
+                    }
+                });
             }
-            continue;
-        };
-        let stream = match live.accept().await {
-            Ok(s) => {
-                failures = 0;
-                s
+            // systemd's stop, or Ctrl-C: return, so the router in this process
+            // is stopped before exit — its netDb written out, its LeaseSet
+            // no longer served — rather than killed mid-flight.
+            () = &mut stop => {
+                eprintln!("[relay] stopping");
+                return Ok(());
             }
-            Err(e) => {
-                // A reply yosemite cannot parse leaves the session's controller
-                // poisoned for good, and every later accept on it is dead: in e2e
-                // run 35076520090 both relays hit this once, stayed up, and
-                // their destinations dropped off the router ("Destination to
-                // connect not found") for the rest of the run. Drop the session
-                // — closing it releases the destination — and open a new one.
-                failures += 1;
-                eprintln!("[relay] accept err: {e}; rebuilding the SAM session");
-                session = None;
-                continue;
-            }
-        };
-        let storage = storage.clone();
-        let connections = connections.clone();
-        let dht = dht.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
-                eprintln!("[relay] client disconnected: {}", e);
-            }
-        });
+        }
     }
 }
 
-/// Open a publishing STREAM session on the relay's persistent destination.
-async fn open_session(sam_port: u16, privkey: &str) -> anyhow::Result<Session<style::Stream>> {
-    let opts = SessionOptions {
-        // Unique per process and per attempt, and secret (`sam_session_id`).
-        // SAM session IDs are router-wide: two relays on one router with a
-        // fixed nickname collide, the second getting DUPLICATED_ID, which
-        // yosemite 0.7 cannot parse and reports only as "invalid message from
-        // router" (e2e run 35074027215). A rebuild can race the router's
-        // teardown of the previous session too.
-        nickname: sam_session_id(HS_NICKNAME),
-        destination: DestinationKind::Persistent { private_key: privkey.to_string() },
-        samv3_tcp_port: sam_port,
-        // Servers must publish their leaseSet so clients can reach them.
-        publish: true,
-        // Relay payloads are already E2E-encrypted/padded; SAM gzip is wasted work.
-        gzip: false,
-        ..Default::default()
-    };
-    Session::<style::Stream>::new(opts).await.map_err(|e| anyhow::anyhow!("SAM session: {e}"))
-}
-
-/// 0.5 s doubling to a 30 s ceiling.
-fn rebuild_backoff(failures: u32) -> Duration {
-    Duration::from_millis(500u64.saturating_mul(1 << failures.min(6)).min(30_000))
+/// SIGTERM or SIGINT (Ctrl-C on Windows).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let (Ok(mut term), Ok(mut int)) = (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = int.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Load the persistent i2p identity, generating it on first run.
 /// Returns `(public_destination, private_key)`.
-async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> anyhow::Result<(String, String)> {
+fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<(String, String)> {
     let key_path = data_dir.join("dest.key");
     let pub_path = data_dir.join("dest.pub");
     if let (Ok(k), Ok(p)) = (std::fs::read_to_string(&key_path), std::fs::read_to_string(&pub_path)) {
@@ -174,8 +171,10 @@ async fn load_or_create_identity(data_dir: &Path, sam_port: u16) -> anyhow::Resu
         }
     }
     eprintln!("[relay] generating persistent destination (first run)...");
-    let (dest, key) = RouterApi::new(sam_port).generate_destination().await
-        .map_err(|e| anyhow::anyhow!("generate destination: {e}"))?;
+    // Same format SAM's DEST GENERATE wrote, so a relay made before keeps its
+    // address.
+    let key = i2p_embed::generate_keys();
+    let dest = i2p_embed::public_of(&key).map_err(|e| anyhow::anyhow!("generate destination: {e}"))?;
     std::fs::write(&key_path, &key)?;
     std::fs::write(&pub_path, &dest)?;
     Ok((dest, key))
@@ -220,7 +219,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     if !owner {
         return client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &storage, &connections, cursor).await;
     }
-    connections.write().await.insert(sign_pk, push_tx.clone());
+    connections.write().await.insert(sign_pk, (push_tx.clone(), cursor.clone()));
 
     let storage_init = storage.clone();
     let push_tx_init = push_tx.clone();
@@ -274,7 +273,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     // would drop the new one and leave the recipient unreachable for live push.
     {
         let mut conns = connections.write().await;
-        if conns.get(&sign_pk).is_some_and(|tx| tx.same_channel(&push_tx)) {
+        if conns.get(&sign_pk).is_some_and(|(tx, _)| tx.same_channel(&push_tx)) {
             conns.remove(&sign_pk);
         }
     }
@@ -325,29 +324,50 @@ async fn client_loop<S>(
 ) -> anyhow::Result<()>
 where S: AsyncRead + AsyncWrite + Unpin + Send
 {
+    // One read of a frame is kept across turns and polled by reference:
+    // `select!` must never drop it half-read, or the next read takes the
+    // middle of a frame for its length (as in libcore's relay_server.rs).
+    let (rd, mut wr) = tokio::io::split(stream);
+    let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let silent = tokio::time::sleep(CLIENT_SILENT);
+    tokio::pin!(silent);
     loop {
         tokio::select! {
-            frame = recv_frame::<_, ClientToRelay>(stream) => {
+            () = &mut silent => {
+                eprintln!("[relay] client silent for {CLIENT_SILENT:?}, dropping it");
+                break;
+            }
+            (rd, frame) = &mut reading => {
+                reading = Box::pin(read_frame(rd));
+                silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
                 let frame = frame?;
                 match frame {
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
-                        send_frame(stream, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
+                        send_frame(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
                     }
                     ClientToRelay::Publish { bundle } => {
                         storage.store_bundle(&sign_pk, &bundle)?;
                     }
                     ClientToRelay::GetBundle { pk } => {
                         let bundle = storage.get_bundle(&pk)?;
-                        send_frame(stream, &RelayToClient::Bundle { pk, bundle }).await?;
+                        send_frame(&mut wr, &RelayToClient::Bundle { pk, bundle }).await?;
                     }
                     ClientToRelay::Send { to, blob } => {
                         let id = storage.deposit(&to, &blob)?;
-                        send_frame(stream, &RelayToClient::Deposited { id: id as u64 }).await?;
                         let tx_opt = connections.read().await.get(&to).cloned();
-                        if let Some(tx) = tx_opt {
+                        if let Some((tx, cur)) = tx_opt {
+                            // Counted as pushed now, not when written: an Ack's
+                            // sweep in between would push it a second time.
+                            {
+                                let mut c = cur.lock().await;
+                                if id > *c { *c = id; }
+                            }
                             let pkt = RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob };
                             tokio::spawn(async move { let _ = tx.send(pkt).await; });
                         }
+                        // Answered after it is marked as pushed: the answer can wait on i2p,
+                        // and an Ack's sweep meanwhile would push it a second time.
+                        send_frame(&mut wr, &RelayToClient::Deposited { id: id as u64 }).await?;
                     }
                     ClientToRelay::Ack { id } => {
                         storage.ack(&sign_pk, id as i64)?;
@@ -368,7 +388,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                         }
                     }
                     ClientToRelay::Ping => {
-                        send_frame(stream, &RelayToClient::Pong).await?;
+                        send_frame(&mut wr, &RelayToClient::Pong).await?;
                     }
                     ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
                 }
@@ -380,11 +400,21 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     let mut c = cursor.lock().await;
                     if i > *c { *c = i; }
                 }
-                send_frame(stream, &msg).await?;
+                send_frame(&mut wr, &msg).await?;
             }
         }
     }
     Ok(())
+}
+
+/// Read one frame, handing the reader back with it (see `client_loop`).
+async fn read_frame<R, T>(mut r: R) -> (R, anyhow::Result<T>)
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> serde::Deserialize<'de>,
+{
+    let res = recv_frame(&mut r).await;
+    (r, res)
 }
 
 async fn send_frame<W, T>(w: &mut W, frame: &T) -> anyhow::Result<()>

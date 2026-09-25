@@ -6,15 +6,14 @@ APP_STL := c++_static
 # c++20. The pinned revision builds either way, so this costs nothing today and
 # keeps the pin bump from breaking the Android router.
 APP_CPPFLAGS += -std=c++20 -fexceptions -frtti
+# As i2p-embed/build.rs: libi2pd's globals are not destroyed at exit (their
+# order is the linker's, and ~Tunnels outlived a mutex it needs on macOS); the
+# router is stopped before exit by the shim.
+APP_CPPFLAGS += -fno-c++-static-destructors
 
-# NO_TORRENTS: the Android.mk wildcard picks up upstream's BitTorrent client and
-# its JSON-RPC server, which need boost_json — a library build_boost.sh does not
-# build. The desktop builds pass TORRENTS=no, which defines the same thing.
-APP_CPPFLAGS += -DNO_TORRENTS
-
-# No USE_UPNP: gipny only ever talks to a loopback SAM port, so UPnP is a
-# dependency (miniupnpc) and a hole-punching side effect nobody asked for. This
-# matches the desktop build, which passes USE_UPNP=no.
+# No USE_UPNP: the router is only ever reached through its own api in this
+# process, so UPnP is a dependency (miniupnpc) and a hole-punching side effect
+# nobody asked for. The desktop builds do not enable it either.
 APP_CPPFLAGS += -DANDROID -D__ANDROID__ -Wno-deprecated-declarations
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
 APP_CPPFLAGS += -DANDROID_ARM7A
@@ -27,12 +26,7 @@ BOOST_PATH    = $(NDK_MODULE_PATH)/boost
 OPENSSL_PATH  = $(NDK_MODULE_PATH)/openssl
 
 I2PD_SRC_PATH = $(NDK_MODULE_PATH)/i2pd
+LIB_SRC_PATH  = $(I2PD_SRC_PATH)/libi2pd
 
-LIB_SRC_PATH        = $(I2PD_SRC_PATH)/libi2pd
-LIB_CLIENT_SRC_PATH = $(I2PD_SRC_PATH)/libi2pd_client
-LANG_SRC_PATH       = $(I2PD_SRC_PATH)/i18n
-DAEMON_SRC_PATH     = $(I2PD_SRC_PATH)/daemon
-
-# DaemonAndroid.cpp lives in i2pd-android's app/jni; we compile it, not its
-# i2pd_android.cpp, so the only JNI symbols in the library are ours.
-UPSTREAM_JNI_PATH = $(NDK_MODULE_PATH)/../../app/jni
+# gipny's C interface over libi2pd/api.h, shared with the desktop builds.
+SHIM_PATH = $(abspath $(NDK_PROJECT_PATH)/../i2p-embed/shim)

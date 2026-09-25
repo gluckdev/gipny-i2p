@@ -8,8 +8,8 @@
 //!
 //! Requests come in on the relay's own connections: a `Dht` frame in place of
 //! `Auth` (see `handle_client` in main.rs), exactly as libcore's relay_server
-//! serves them. Outgoing requests go through one transient, unpublished SAM
-//! session, as libcore's `I2pTransport` does through the app's session.
+//! serves them. Outgoing requests go through one transient, unpublished
+//! destination on the router inside this process.
 
 use std::path::Path;
 use std::pin::Pin;
@@ -22,7 +22,6 @@ use gipny_dht::node::{self as dht_node, Connection, DhtNode, NetError, NodeConfi
 use gipny_dht::proto::{DhtEnvelope, DhtResponse, NodeInfo, PROTOCOL_VERSION};
 use gipny_dht::store::StoreLimits;
 use tokio::sync::Mutex;
-use yosemite::{style, DestinationKind, Session, SessionOptions, Stream as I2pStream};
 
 use crate::dht_store::{PeerStore, SqliteStorage};
 use crate::proto::*;
@@ -39,7 +38,7 @@ const MAINTAIN_EVERY: Duration = Duration::from_secs(45 * 60);
 const BOOTSTRAP_DELAY: Duration = Duration::from_secs(90);
 /// Nodes silent this long are dropped from the saved table.
 const PEER_FORGET_MS: u64 = 14 * 24 * 3600 * 1000;
-/// Dials failed in a row before the outgoing SAM session is rebuilt.
+/// Dials failed in a row before the outgoing destination is rebuilt.
 const REBUILD_AFTER_FAILURES: u32 = 8;
 
 pub struct Options {
@@ -49,11 +48,11 @@ pub struct Options {
 
 /// Open the node's stores, announce it at `destination` and start its upkeep.
 /// Returns the handler the relay's accept loop passes `Dht` frames to.
-pub fn start(data_dir: &Path, sam_port: u16, destination: &str, opts: Options) -> anyhow::Result<DhtHandler> {
+pub fn start(data_dir: &Path, router: Arc<i2p_embed::Router>, destination: &str, opts: Options) -> anyhow::Result<DhtHandler> {
     let items = Arc::new(SqliteStorage::open(&data_dir.join("dht-items.db"), StoreLimits::default())?);
     let peers = Arc::new(PeerStore::open(&data_dir.join("dht-peers.db"))?);
     let node: Arc<Node> = Arc::new(DhtNode::new(
-        Arc::new(RelayTransport { sam_port, session: Mutex::new(None), failures: AtomicU32::new(0) }),
+        Arc::new(RelayTransport { router, dest: Mutex::new(None), failures: AtomicU32::new(0) }),
         items,
         NodeConfig::default(),
         dht_node::system_clock(),
@@ -118,55 +117,41 @@ fn net_err(e: impl std::fmt::Display) -> NetError {
 // ── transport ────────────────────────────────────────────────────────────
 
 pub struct RelayTransport {
-    sam_port: u16,
-    /// Opened on first dial, dropped on a failed one so the next dial rebuilds
-    /// it. A tunnel pool per call would cost tens of seconds each.
-    session: Mutex<Option<Session<style::Stream>>>,
-    /// Dials failed in a row. One node being away is normal; every dial
-    /// failing means the session died with a router restart.
+    router: Arc<i2p_embed::Router>,
+    /// A transient, unpublished destination for our outgoing requests, made
+    /// on first dial and replaced after `REBUILD_AFTER_FAILURES` failures in a
+    /// row (a router whose tunnels died with a network change).
+    dest: Mutex<Option<Arc<i2p_embed::Destination>>>,
     failures: AtomicU32,
 }
 
 pub struct RelayConn {
-    stream: Pin<Box<I2pStream>>,
+    stream: Pin<Box<i2p_embed::I2pStream>>,
     challenge: [u8; 32],
 }
 
 impl RelayTransport {
-    async fn dial(&self, destination: &str) -> Result<I2pStream, NetError> {
-        let fut = {
-            let mut session = self.session.lock().await;
-            if session.is_none() {
-                let opts = SessionOptions {
-                    // Unique and secret: see `sam_session_id`.
-                    nickname: sam_session_id("gipny-relay-dht"),
-                    destination: DestinationKind::Transient,
-                    samv3_tcp_port: self.sam_port,
-                    // Outgoing only: nobody needs to find this destination.
-                    publish: false,
-                    gzip: false,
-                    ..Default::default()
-                };
-                *session = Some(Session::<style::Stream>::new(opts).await.map_err(|e| NetError(format!("SAM session: {e}")))?);
+    async fn dial(&self, destination: &str) -> Result<i2p_embed::I2pStream, NetError> {
+        let dest = {
+            let mut slot = self.dest.lock().await;
+            if slot.is_none() {
+                let d = i2p_embed::Destination::new(&self.router, None, &i2p_embed::DestinationOptions::default())
+                    .map_err(|e| NetError(format!("destination: {e}")))?;
+                *slot = Some(Arc::new(d));
             }
-            // Only the clone of the controller happens under the lock;
-            // concurrent dials of a lookup proceed in parallel.
-            session.as_mut().expect("just set").connect_detached(destination)
+            slot.as_ref().expect("just set").clone()
         };
-        match fut.await {
+        match dest.connect(destination, 0).await {
             Ok(stream) => {
                 self.failures.store(0, Ordering::Relaxed);
                 Ok(stream)
             }
             Err(e) => {
-                // A reply yosemite cannot parse poisons the session's controller
-                // (see main.rs); a router restart kills it without a word. Either
-                // way the next dial opens a new one.
                 let failed = self.failures.fetch_add(1, Ordering::Relaxed) + 1;
-                if matches!(e, yosemite::Error::Malformed) || failed >= REBUILD_AFTER_FAILURES {
-                    eprintln!("[dht] {failed} dial(s) failed in a row ({e}); opening a new SAM session");
+                if failed >= REBUILD_AFTER_FAILURES {
+                    eprintln!("[dht] {failed} dial(s) failed in a row ({e}); a new outgoing destination");
                     self.failures.store(0, Ordering::Relaxed);
-                    *self.session.lock().await = None;
+                    *self.dest.lock().await = None;
                 }
                 Err(net_err(e))
             }

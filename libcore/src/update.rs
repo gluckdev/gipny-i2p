@@ -3,8 +3,8 @@
 //! the session that is running — the new build takes effect the *next* time
 //! this process starts, never this one.
 //!
-//! Reached through the local i2pd HTTP proxy with an outproxy
-//! (`libcore::router::DEFAULT_OUTPROXY`), never straight over clearnet: this
+//! Reached over our own i2p stream to an outproxy
+//! (`libcore::i2p_http::OUTPROXY`), never straight over clearnet: this
 //! is an i2p-first app, and a direct HTTPS call to GitHub at every launch
 //! would tell GitHub (and anyone watching that link) which real IP runs
 //! gipny. The outproxy only ever sees an encrypted CONNECT to
@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -45,7 +45,7 @@ pub type Result<T> = std::result::Result<T, UpdateError>;
 
 #[derive(Debug, Error)]
 pub enum UpdateError {
-    #[error("http: {0}")] Http(#[from] reqwest::Error),
+    #[error("{0}")] I2pHttp(#[from] crate::i2p_http::HttpError),
     #[error("io: {0}")] Io(#[from] std::io::Error),
     #[error("bad json: {0}")] Json(String),
     #[error("downloaded file does not match the release's SHA256SUMS.txt")] BadSha256,
@@ -121,15 +121,14 @@ struct GhAsset {
 }
 
 pub struct Updater {
-    /// `None` when this router has no local HTTP proxy to use (Android, or
-    /// attached to a router we don't own) — every method then reports
-    /// unavailable rather than trying to dial nothing.
-    client: Option<reqwest::Client>,
+    /// Always there: our own i2p stream to the outproxy. An `Option` so the
+    /// "not configured" outcomes keep one place to come from.
+    client: Option<Transport>,
     component: Component,
 }
 
-/// `reqwest`'s `rustls-no-provider` feature means TLS has no default crypto
-/// backend until one is installed process-wide; `ring` is the one this crate
+/// rustls has no default crypto backend until one is installed process-wide
+/// (no aws-lc here); `ring` is the one this crate
 /// depends on (see `Cargo.toml`). Installing it twice is a (harmless) error,
 /// so this runs at most once even if more than one `Updater` is created (the
 /// app and an in-process bot, say).
@@ -140,10 +139,27 @@ fn ensure_crypto_provider() {
     });
 }
 
+/// How the updater reaches GitHub: our own i2p stream to the outproxy, then
+/// TLS to GitHub inside it (`i2p_http`). No proxy, no port.
+struct Transport {
+    node: Arc<TorNode>,
+    tls: Arc<rustls::ClientConfig>,
+}
+
+impl Transport {
+    async fn text(&self, url: &str, accept: Option<&str>) -> Result<String> {
+        Ok(crate::i2p_http::get(&self.node, &self.tls, url, accept).await?.text().await?)
+    }
+
+    async fn body(&self, url: &str) -> Result<crate::i2p_http::Body> {
+        Ok(crate::i2p_http::get(&self.node, &self.tls, url, None).await?)
+    }
+}
+
 /// TLS that trusts Mozilla's root list and nothing else.
 ///
-/// Without this, `reqwest` verifies with `rustls-platform-verifier`, which on
-/// Android calls back into Java and aborts the whole process if it was never
+/// Not the platform verifier: `rustls-platform-verifier` on Android calls
+/// back into Java and aborts the whole process if it was never
 /// handed a JNI environment — `Expect rustls-platform-verifier to be
 /// initialized`, SIGABRT on a tokio worker, the app gone mid-sentence. It is
 /// reached the moment the update check opens its first connection, which is why
@@ -185,17 +201,7 @@ pub enum CheckOutcome {
 impl Updater {
     pub fn new(node: Arc<TorNode>, component: Component) -> Self {
         ensure_crypto_provider();
-        let client = node.http_proxy_port().and_then(|port| {
-            reqwest::Client::builder()
-                // `Some(..)`: reqwest downcasts to `Option<ClientConfig>` and a
-                // bare config silently falls through to "unknown TLS backend".
-                .use_preconfigured_tls(Some(webpki_tls()))
-                .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).ok()?)
-                .timeout(Duration::from_secs(1800))
-                .user_agent("gipny-i2p-updater")
-                .build()
-                .ok()
-        });
+        let client = Some(Transport { node, tls: Arc::new(webpki_tls()) });
         Self { client, component }
     }
 
@@ -207,12 +213,10 @@ impl Updater {
     /// sideload picker, which is not about *this* platform at all.
     pub async fn latest_release(&self) -> Result<ReleaseInfo> {
         let client = self.client.as_ref().ok_or(UpdateError::NotConfigured)?;
-        let text = client
-            .get(format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"))
-            .header("Accept", "application/vnd.github+json")
-            .send().await?
-            .error_for_status()?
-            .text().await?;
+        let text = client.text(
+            &format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"),
+            Some("application/vnd.github+json"),
+        ).await?;
         let release: GhRelease = serde_json::from_str(&text).map_err(|e| UpdateError::Json(e.to_string()))?;
         let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name).to_string();
         Ok(ReleaseInfo {
@@ -284,7 +288,7 @@ impl Updater {
             "{}.partial", dest.extension().and_then(|s| s.to_str()).unwrap_or("")
         ));
 
-        let mut resp = client.get(&asset.download_url).send().await?.error_for_status()?;
+        let mut resp = client.body(&asset.download_url).await?;
         let mut file = std::fs::File::create(&partial)?;
         let mut hasher = Sha256::new();
         let mut total: u64 = 0;
@@ -450,9 +454,9 @@ fn target_suffix(component: Component) -> Option<(&'static str, &'static str)> {
 /// `SHA256SUMS.txt` is `sha256sum -- *` output: `<hex>  <filename>` per line
 /// (sometimes `*filename` in binary mode). Best-effort — a miss just means no
 /// extra check on top of TLS, not a failure.
-async fn find_sha256(client: &reqwest::Client, assets: &[ReleaseAsset], asset_name: &str) -> Option<String> {
+async fn find_sha256(client: &Transport, assets: &[ReleaseAsset], asset_name: &str) -> Option<String> {
     let sums = assets.iter().find(|a| a.name == "SHA256SUMS.txt")?;
-    let text = client.get(&sums.download_url).send().await.ok()?.error_for_status().ok()?.text().await.ok()?;
+    let text = client.text(&sums.download_url, None).await.ok()?;
     text.lines().find_map(|line| {
         let mut parts = line.split_whitespace();
         let hash = parts.next()?;
