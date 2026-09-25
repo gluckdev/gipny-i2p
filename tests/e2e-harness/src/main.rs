@@ -62,6 +62,10 @@ use tokio::sync::{Mutex, Notify};
 
 mod ports;
 
+/// Longest a router may take to be ready: reseed, then tunnels. Minutes at
+/// worst on a runner; past this something is stuck, and the run says so.
+const ROUTER_START: Duration = Duration::from_secs(600);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -112,9 +116,12 @@ async fn start_bot(
 
     eprintln!("[e2e] {name}: starting i2p router...");
     let t0 = Instant::now();
+    // Bounded: a reseed server that never answers left a run waiting on
+    // the router for 36 minutes without a word (the laptop, 2026-09-25).
     let node = Arc::new(
-        TorNode::start(&data_dir, Default::default())
+        tokio::time::timeout(ROUTER_START, TorNode::start(&data_dir, Default::default()))
             .await
+            .map_err(|_| anyhow::anyhow!("{name}: the router was not ready in {ROUTER_START:?}"))?
             .with_context(|| format!("{name}: TorNode::start failed"))?,
     );
     let router_ready_ms = t0.elapsed().as_millis() as u64;
@@ -837,7 +844,12 @@ async fn run_update_check_mode() -> Result<()> {
     let data_dir = work_dir.join("updater");
     std::fs::create_dir_all(&data_dir)?;
     let t0 = Instant::now();
-    let node = Arc::new(TorNode::start(&data_dir, Default::default()).await.context("TorNode::start")?);
+    let node = Arc::new(
+        tokio::time::timeout(ROUTER_START, TorNode::start(&data_dir, Default::default()))
+            .await
+            .map_err(|_| anyhow::anyhow!("the router was not ready in {ROUTER_START:?}"))?
+            .context("TorNode::start")?,
+    );
     eprintln!("[e2e] router ready in {} ms", t0.elapsed().as_millis());
     no_local_ports("harness", "self")?;
     let updater = Updater::new(node.clone(), Component::App);
