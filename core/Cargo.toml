@@ -11,6 +11,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "gipny"
 path = "src/main.rs"
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 image = { version = "0.25", features = ["png", "ico"], default-features = false }

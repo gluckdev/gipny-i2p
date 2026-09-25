@@ -247,6 +247,7 @@ pub fn run() {
             forward_message,
             list_attachments, load_attachment, save_attachment, save_paste_temp,
             list_media_contact, list_media_group, search_messages,
+            files_progress, cancel_files,
             list_muted, set_muted,
             paste_clipboard_image,
             press_button, press_group_button,
@@ -1284,7 +1285,7 @@ async fn forward_message(
     let mut pending: Vec<PendingAttachment> = Vec::with_capacity(attachments.len());
     for a in &attachments {
         let data = core.read_attachment(a).map_err(err)?;
-        pending.push(PendingAttachment { name: a.name.clone(), data });
+        pending.push(PendingAttachment { name: a.name.clone(), data, from: None });
     }
     if let Some(cid) = contact_id {
         core.send_message(cid, src.body, pending, None, None).await.map_err(err)
@@ -1308,7 +1309,7 @@ async fn send_message(
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("file").to_string();
         let data_b64 = a.get("data").and_then(|v| v.as_str()).ok_or("bad attachment")?;
         let data = base64_decode(data_b64).ok_or("bad base64")?;
-        pending.push(PendingAttachment { name, data });
+        pending.push(PendingAttachment { name, data, from: None });
     }
     let ttl = ttl_secs.map(std::time::Duration::from_secs);
     core_of(&ctx).await?.send_message(contact_id, body, pending, ttl, reply_to).await.map_err(err)
@@ -1337,16 +1338,20 @@ async fn send_message_paths(
     Ok(last_id)
 }
 
-const MAX_ATTACHMENT_BYTES: u64 = 12 * 1024 * 1024;
+/// Past 128 KiB a file goes in parts (libcore::files), so the old 12 MiB cap
+/// (one letter) is gone. Most large files are sent from disk (up to
+/// files::MAX_FILE_BYTES); this caps the ones read into memory to be
+/// cleaned of metadata (photos, PDF).
+const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024 * 1024;
 
 fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<PendingAttachment, String> {
     if sanitize {
         let (name, data) = sanitizer::sanitize_attachment_data(&name, &data)?;
-        Ok(PendingAttachment { name, data })
+        Ok(PendingAttachment { name, data, from: None })
     } else {
         // Console uploads are operational files: scripts, configs and command
         // arguments rely on the original name and exact bytes.
-        Ok(PendingAttachment { name, data })
+        Ok(PendingAttachment { name, data, from: None })
     }
 }
 
@@ -1360,6 +1365,28 @@ fn paste_dir() -> std::path::PathBuf {
 fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, String> {
     let path = std::path::PathBuf::from(p);
     let meta = std::fs::metadata(&path).map_err(err)?;
+    let name = path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "file".into());
+    // Large, and nothing the privacy filter would change: sent from disk in
+    // parts, never read whole (pasted copies stay the in-memory way: they are
+    // removed right after). Up to what files in parts carry.
+    if meta.len() > gipny_libcore::files::INLINE_MAX as u64 && !path.starts_with(paste_dir()) {
+        use std::io::Read;
+        let mut head = [0u8; 64];
+        let n = std::fs::File::open(&path).and_then(|mut f| f.read(&mut head)).map_err(err)?;
+        if !sanitize || sanitizer::passes_through(&name, &head[..n]) {
+            if meta.len() > gipny_libcore::files::MAX_FILE_BYTES {
+                return Err(format!(
+                    "файл слишком большой: {} ({} МБ, лимит {} МБ)",
+                    p, meta.len() / (1024 * 1024), gipny_libcore::files::MAX_FILE_BYTES / (1024 * 1024)
+                ));
+            }
+            let name = if sanitize { sanitizer::passed_name(&name) } else { name };
+            return Ok(PendingAttachment { name, data: Vec::new(), from: Some(path) });
+        }
+    }
     if meta.len() > MAX_ATTACHMENT_BYTES {
         return Err(format!(
             "файл слишком большой: {} ({} МБ, лимит {} МБ)",
@@ -1367,10 +1394,6 @@ fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, Str
         ));
     }
     let data = std::fs::read(&path).map_err(err)?;
-    let name = path.file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| "file".into());
     let attachment = prepare_attachment(name, data, sanitize)?;
 
     // Pasted images and drops arrive through a temp copy (`save_paste_temp`,
@@ -1384,7 +1407,42 @@ fn read_one_attachment(p: &str, sanitize: bool) -> Result<PendingAttachment, Str
 
 #[cfg(test)]
 mod attachment_path_tests {
-    use super::prepare_attachment;
+    use super::{prepare_attachment, read_one_attachment};
+
+    fn file(dir: &std::path::Path, name: &str, head: &[u8], size: usize) -> String {
+        let mut data = head.to_vec();
+        data.resize(size, 7);
+        let p = dir.join(name);
+        std::fs::write(&p, &data).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_large_file_the_filter_passes_goes_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = gipny_libcore::files::INLINE_MAX + 1;
+        let p = file(dir.path(), "backup.tar.gz", b"\x1f\x8b", big);
+        let a = read_one_attachment(&p, true).unwrap();
+        assert!(a.from.is_some() && a.data.is_empty(), "streamed, not read");
+        assert_eq!(a.name, "backup.tar.gz");
+    }
+
+    #[test]
+    fn a_large_photo_is_read_to_be_cleaned_and_a_small_file_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = gipny_libcore::files::INLINE_MAX + 1;
+        // A JPEG by content: the filter must see it whole (here it refuses the
+        // made-up bytes, which proves it looked rather than streaming them).
+        let p = file(dir.path(), "photo.jpg", b"\xff\xd8\xff\xe0", big);
+        assert!(read_one_attachment(&p, true).is_err());
+        // With the filter off the same file goes from disk.
+        let a = read_one_attachment(&p, false).unwrap();
+        assert!(a.from.is_some());
+        // Small: in memory, as before.
+        let p = file(dir.path(), "note.txt", b"hi", 10);
+        let a = read_one_attachment(&p, true).unwrap();
+        assert!(a.from.is_none() && a.data.len() == 10);
+    }
 
     #[test]
     fn console_attachment_keeps_the_original_name_and_bytes() {
@@ -1434,6 +1492,29 @@ async fn list_attachments(message_id: i64, ctx: State<'_, AppCtx>) -> Result<Vec
     Ok(list.into_iter().map(|a| AttachmentDto {
         id: a.id, message_id: a.message_id, name: a.name, size: a.size,
     }).collect())
+}
+
+#[derive(serde::Serialize)]
+struct FileProgressDto {
+    name: String,
+    size: u64,
+    done: u32,
+    total: u32,
+    incoming: bool,
+}
+
+/// Files of a message still moving in parts (not yet attachments, or not yet
+/// at every recipient).
+#[tauri::command]
+async fn files_progress(message_id: i64, ctx: State<'_, AppCtx>) -> Result<Vec<FileProgressDto>, String> {
+    let rows = core_of(&ctx).await?.files_progress(message_id).map_err(err)?;
+    Ok(rows.into_iter().map(|(name, size, done, total, incoming)| FileProgressDto { name, size, done, total, incoming }).collect())
+}
+
+/// Stop sending a message's files in parts.
+#[tauri::command]
+async fn cancel_files(message_id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.cancel_files(message_id).await.map_err(err)
 }
 
 #[tauri::command]
@@ -1522,15 +1603,17 @@ async fn save_attachment(attachment_id: i64, dest_path: String, app: AppHandle, 
     use tauri_plugin_fs::FsExt;
     let core = core_of(&ctx).await?;
     let att = core.db().get_attachment(attachment_id).map_err(err)?.ok_or("not found")?;
-    let bytes = core.read_attachment(&att).map_err(err)?;
     // On Android the save dialog returns a content:// URI, which std::fs
     // cannot open; the fs plugin resolves it through the content resolver.
     // On the desktop it is an ordinary path either way.
     let path = tauri_plugin_fs::FilePath::from_str(&dest_path).map_err(|_| "bad path".to_string())?;
     let mut opts = tauri_plugin_fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
-    let mut file = app.fs().open(path, opts).map_err(err)?;
-    file.write_all(&bytes).map_err(err)?;
+    let file = app.fs().open(path, opts).map_err(err)?;
+    // Part by part for a file sent in parts: never whole in memory.
+    let mut out = std::io::BufWriter::new(file);
+    core.write_attachment_to(&att, &mut out).map_err(err)?;
+    out.flush().map_err(err)?;
     Ok(())
 }
 
@@ -1650,7 +1733,7 @@ async fn send_group_message(
         let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("file").to_string();
         let data_b64 = a.get("data").and_then(|v| v.as_str()).ok_or("bad attachment")?;
         let data = base64_decode(data_b64).ok_or("bad base64")?;
-        pending.push(PendingAttachment { name, data });
+        pending.push(PendingAttachment { name, data, from: None });
     }
     let ttl = ttl_secs.map(std::time::Duration::from_secs);
     core_of(&ctx).await?.send_to_group(&gid, body, pending, ttl, reply_to).await.map_err(err)
@@ -2044,13 +2127,17 @@ fn update_tray_badge(app: AppHandle, count: u32) -> Result<(), String> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct BackupV2 {
+/// Version 2 carried attachments sealed whole; version 3 also says how each
+/// was sealed (`chunk_size`, files sent in parts). bincode is positional, so
+/// the attachment type is the parameter and `version` (first, fixed width)
+/// says which to read.
+struct BackupV2<A = BackupAttachment> {
     version: u32,
     settings: Vec<(String, Vec<u8>)>,
     contacts: Vec<BackupContact>,
     groups: Vec<BackupGroup>,
     messages: Vec<BackupMessage>,
-    attachments: Vec<BackupAttachment>,
+    attachments: Vec<A>,
     pinned: Vec<(Option<i64>, Option<Vec<u8>>, i64, i64)>,
     prekeys: Vec<BackupPreKey>,
     exported_at: i64,
@@ -2111,6 +2198,42 @@ struct BackupAttachment {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+struct BackupAttachmentV3 {
+    id: i64,
+    message_id: i64,
+    name: String,
+    size: i64,
+    key: Vec<u8>,
+    path: String,
+    bytes: Vec<u8>,
+    chunk_size: Option<i64>,
+}
+
+/// A backup of either version, as version 3 (`version` is its first field).
+fn decode_backup(plain: &[u8]) -> Result<BackupV2<BackupAttachmentV3>, String> {
+    let version = plain.get(..4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]])).unwrap_or(0);
+    let unknown = || "backup format unknown / corrupted".to_string();
+    match version {
+        2 => {
+            let b: BackupV2<BackupAttachment> = bincode::deserialize(plain).map_err(|_| unknown())?;
+            Ok(BackupV2 {
+                version: b.version, settings: b.settings, contacts: b.contacts, groups: b.groups,
+                messages: b.messages, attachments: b.attachments.into_iter().map(Into::into).collect(),
+                pinned: b.pinned, prekeys: b.prekeys, exported_at: b.exported_at,
+            })
+        }
+        3 => bincode::deserialize(plain).map_err(|_| unknown()),
+        v => Err(format!("unsupported backup version: {v}")),
+    }
+}
+
+impl From<BackupAttachment> for BackupAttachmentV3 {
+    fn from(a: BackupAttachment) -> Self {
+        Self { id: a.id, message_id: a.message_id, name: a.name, size: a.size, key: a.key, path: a.path, bytes: a.bytes, chunk_size: None }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 struct BackupPreKey {
     id: i64,
     kind: u8,
@@ -2148,12 +2271,12 @@ async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, A
         expires_at: m.expires_at, last_attempt_at: m.last_attempt_at,
         send_attempts: m.send_attempts as i32, reply_to: m.reply_to,
     }).collect();
-    let mut attachments: Vec<BackupAttachment> = Vec::new();
+    let mut attachments: Vec<BackupAttachmentV3> = Vec::new();
     for a in db.list_all_attachments().map_err(err)? {
         let bytes = std::fs::read(&a.path).unwrap_or_default();
-        attachments.push(BackupAttachment {
+        attachments.push(BackupAttachmentV3 {
             id: a.id, message_id: a.message_id, name: a.name, size: a.size,
-            key: a.key, path: a.path, bytes,
+            key: a.key, path: a.path, bytes, chunk_size: a.chunk_size,
         });
     }
     let pinned = db.list_all_pinned().map_err(err)?;
@@ -2161,7 +2284,7 @@ async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, A
         id: p.id, kind: p.kind as u8, private: p.private, public: p.public, created_at: p.created_at,
     }).collect();
     let backup = BackupV2 {
-        version: 2, settings, contacts, groups, messages, attachments, pinned, prekeys,
+        version: 3, settings, contacts, groups, messages, attachments, pinned, prekeys,
         exported_at: now_ms_helper(),
     };
     let bytes = bincode::serialize(&backup).map_err(err)?;
@@ -2181,8 +2304,7 @@ async fn import_identity_to_profile(
     if vault_pass.len() < 8 { return Err("vault passphrase too short".into()); }
     let blob = std::fs::read(&backup_path).map_err(err)?;
     let plain = gipny_libcore::security::backup_open(&backup_pass, &blob).map_err(|_| "wrong backup passphrase or corrupt file".to_string())?;
-    let backup: BackupV2 = bincode::deserialize(&plain).map_err(|_| "backup format unknown / corrupted".to_string())?;
-    if backup.version != 2 { return Err(format!("unsupported backup version: {}", backup.version)); }
+    let backup = decode_backup(&plain)?;
     let dir = ctx.base_dir.join("profiles").join(&profile);
     if dir.exists() {
         if Vault::exists(&dir) { return Err("profile already exists".into()); }
@@ -2251,7 +2373,7 @@ async fn import_identity_to_profile(
         }
         attachments_db.push(gipny_libcore::db::Attachment {
             id: a.id, message_id: a.message_id, name: a.name, size: a.size, key: a.key,
-            path: new_path.to_string_lossy().to_string(),
+            path: new_path.to_string_lossy().to_string(), chunk_size: a.chunk_size,
         });
     }
     db.bulk_insert_attachments(&attachments_db).map_err(err)?;
@@ -2361,4 +2483,30 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    fn empty<A>(version: u32, attachments: Vec<A>) -> BackupV2<A> {
+        BackupV2 {
+            version, settings: vec![], contacts: vec![], groups: vec![], messages: vec![],
+            attachments, pinned: vec![], prekeys: vec![], exported_at: 1,
+        }
+    }
+
+    #[test]
+    fn a_version_2_backup_still_restores_and_version_3_keeps_chunk_size() {
+        let v2 = BackupAttachment { id: 1, message_id: 2, name: "a".into(), size: 3, key: vec![4], path: "p".into(), bytes: vec![5] };
+        let b = decode_backup(&bincode::serialize(&empty(2, vec![v2])).unwrap()).unwrap();
+        assert_eq!(b.attachments[0].chunk_size, None);
+        assert_eq!(b.attachments[0].bytes, vec![5]);
+
+        let v3 = BackupAttachmentV3 { id: 1, message_id: 2, name: "a".into(), size: 3, key: vec![4], path: "p".into(), bytes: vec![5], chunk_size: Some(196_608) };
+        let b = decode_backup(&bincode::serialize(&empty(3, vec![v3])).unwrap()).unwrap();
+        assert_eq!(b.attachments[0].chunk_size, Some(196_608));
+
+        assert!(decode_backup(&bincode::serialize(&empty::<BackupAttachment>(9, vec![])).unwrap()).is_err());
+        assert!(decode_backup(b"").is_err());
+    }
 }

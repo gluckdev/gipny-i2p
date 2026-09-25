@@ -267,9 +267,19 @@ jobs:
   # process: no i2pd process, no SAM, no port. The same scenario as
   # "e2e (relays inside the bots)" in e2e-i2pd.yml.
   e2e:
-    name: e2e on the in-process router (relays inside the bots)
+    name: e2e on the in-process router (${{ matrix.what }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # bot-b writes first too: the two sessions open at once and cross.
+          # Then a 20 MiB file in parts, its throughput in the log (one
+          # stream, window 16: 5 MiB at 210 KiB/s, run 36046190496).
+          - { key: crossing, what: 'crossing sessions, 20 MiB in parts', both_first: '1', big_file: '20971520', restart: '0' }
+          # A file in parts survives the recipient going away midway.
+          - { key: restart, what: '10 MiB, the recipient restarting midway', both_first: '0', big_file: '10485760', restart: '1' }
     steps:
       - uses: actions/checkout@v7
       - name: check out i2pd
@@ -291,10 +301,11 @@ jobs:
       - name: run
         env:
           E2E_IN_PROCESS_RELAYS: '1'
-          # bot-b writes first too: the two sessions open at once and cross.
-          E2E_BOTH_FIRST: '1'
+          E2E_BOTH_FIRST: ${{ matrix.both_first }}
+          E2E_BIG_FILE: ${{ matrix.big_file }}
+          E2E_BIG_FILE_RESTART: ${{ matrix.restart }}
           E2E_N_MESSAGES: '5'
-          E2E_TIMEOUT_SECS: '900'
+          E2E_TIMEOUT_SECS: '2100'
           E2E_WORK_DIR: ${{ runner.temp }}/e2e
           # The router's own log, for where letters stall (uploaded below).
           GIPNY_I2P_LOGLEVEL: info
@@ -306,7 +317,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-in-process-logs
+          name: e2e-in-process-logs-${{ matrix.key }}
           retention-days: 5
           path: |
             harness.log
@@ -316,9 +327,9 @@ jobs:
         if: always()
         run: |
           {
-            echo '### e2e on the in-process router'
+            echo '### e2e on the in-process router: ${{ matrix.what }}'
             echo '```'
-            grep -aE "router ready|relays up|relay-connect|RTT|SUCCESS|Error|panicked" harness.log | head -30 || echo 'no output'
+            grep -aE "router ready|relays up|relay-connect|RTT|big file|window to contact|stopping with|started again|SUCCESS|Error|panicked" harness.log | head -30 || echo 'no output'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

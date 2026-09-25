@@ -311,6 +311,24 @@ export class ChatView extends View {
     );
 
     this.sub(store.messages, () => this.renderLog());
+    // A file in parts moved on: repaint its bar where it is on screen.
+    this.sub(store.fileProgress, (m) => {
+      for (const [mid, p] of m) {
+        // First news of this message's files: draw the bar.
+        if (!this.el.querySelector(`[data-files-mid="${mid}"]`) && this.el.querySelector(`[data-mid="${mid}"]`)) {
+          this.renderLog();
+          return;
+        }
+        const el = this.el.querySelector(`[data-files-mid="${mid}"] .file-progress-bar`) as HTMLElement | null;
+        if (el) el.style.width = `${p.total ? Math.floor((100 * p.done) / p.total) : 0}%`;
+        const label = this.el.querySelector(`[data-files-mid="${mid}"] .file-progress-label`);
+        if (label) label.textContent = `${p.done} из ${p.total} частей`;
+      }
+    }, false);
+    // One became whole: show it as an attachment.
+    this.sub(store.fileArrived, (v) => {
+      if (v.mid) { this.attachmentCache.delete(v.mid); this.renderLog(); }
+    }, false);
     this.sub(store.groupMembers, () => {
       subEl.textContent = computeSub();
       if (isGroup) this.renderLog();
@@ -873,6 +891,32 @@ export class ChatView extends View {
     if (!list) {
       list = await Api.listAttachments(msgId);
       this.attachmentCache.set(msgId, list);
+    }
+    // Files still moving in parts: a bar each, and a cancel for ours.
+    // Asked only for messages a progress event named: not one call per row.
+    const moving = this.store.fileProgress.get().has(msgId)
+      ? await Api.filesProgress(msgId).catch(() => [])
+      : [];
+    if (moving.length > 0) {
+      const box = h('div', { class: 'msg-files-moving', 'data-files-mid': String(msgId) });
+      for (const f of moving) {
+        const pct = f.total ? Math.floor((100 * f.done) / f.total) : 0;
+        const row = h('div', { class: 'file-progress' },
+          h('div', { class: 'file-progress-name' }, `${f.incoming ? '⇣' : '⇡'} ${f.name} (${humanSize(f.size)})`),
+          h('div', { class: 'file-progress-track' }, h('div', { class: 'file-progress-bar', style: `width:${pct}%` })),
+          h('div', { class: 'file-progress-label' }, `${f.done} из ${f.total} частей`),
+        );
+        if (!f.incoming) {
+          row.appendChild(h('button', {
+            class: 'file-progress-cancel',
+            onClick: async () => {
+              try { await Api.cancelFiles(msgId); row.remove(); } catch (e) { this.store.showToast('cancel failed: ' + String(e), true); }
+            },
+          }, 'Отменить'));
+        }
+        box.appendChild(row);
+      }
+      container.appendChild(box);
     }
     if (list.length === 0) return;
     const bar = h('div', { class: 'msg-attachments' });

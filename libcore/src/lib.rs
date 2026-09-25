@@ -5,6 +5,7 @@ pub mod db;
 pub mod dht_client;
 pub mod i2p_http;
 pub mod embedded;
+pub mod files;
 pub mod net;
 pub mod relay;
 pub mod relay_server;

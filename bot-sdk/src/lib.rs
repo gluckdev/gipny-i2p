@@ -268,6 +268,9 @@ impl Bot {
         let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
             let session = session_for_loop;
             let _hh = house_handle;
+            // Messages whose files are still coming in parts: handed to the
+            // bot when they are whole, attachments and all.
+            let mut held: HashMap<i64, (i64, gipny_libcore::WirePayload)> = HashMap::new();
             while let Some(ev) = events.recv().await {
                 match &ev {
                     SessionEvent::Connected => eprintln!("[bot] relay connected"),
@@ -276,6 +279,10 @@ impl Bot {
                     SessionEvent::ContactUpdated { contact_id } => eprintln!("[bot] contact updated id={}", contact_id),
                     SessionEvent::ContactWiped { contact_id } => eprintln!("[bot] contact {} deleted us; chat removed", contact_id),
                     SessionEvent::MessageDelivered { message_id } => eprintln!("[bot] delivered mid={}", message_id),
+                    SessionEvent::MessageFailed { message_id, reason } => eprintln!("[bot] not sent mid={}: {}", message_id, reason),
+                    SessionEvent::FileProgress { .. } => {}
+                    SessionEvent::FileReceived { message_id, attachment_id } => eprintln!("[bot] file whole mid={} att={}", message_id, attachment_id),
+                    SessionEvent::FileFailed { message_id, reason, .. } => eprintln!("[bot] file mid={}: {}", message_id, reason),
                     SessionEvent::MessageEdited { message_id, .. } => eprintln!("[bot] edited mid={}", message_id),
                     SessionEvent::MessagePinned { message_id, .. } => eprintln!("[bot] pinned mid={}", message_id),
                     SessionEvent::MessageUnpinned { message_id, .. } => eprintln!("[bot] unpinned mid={}", message_id),
@@ -287,6 +294,27 @@ impl Bot {
                             payload.body, payload.callback_data,
                             payload.attachments.len(), payload.buttons.as_ref().map(|b| b.len()).unwrap_or(0)),
                 }
+                let coming = |mid: i64| !session.db.files_in_for_message(mid).unwrap_or_default().is_empty();
+                let ev = match ev {
+                    SessionEvent::IncomingPayload { contact_id, payload, message_id }
+                        if !payload.files.is_empty() && coming(message_id) =>
+                    {
+                        held.insert(message_id, (contact_id, payload));
+                        continue;
+                    }
+                    SessionEvent::FileReceived { message_id, .. } | SessionEvent::FileFailed { message_id, .. } => {
+                        if coming(message_id) { continue; }
+                        let Some((contact_id, mut payload)) = held.remove(&message_id) else { continue };
+                        for a in session.db.list_attachments(message_id).unwrap_or_default() {
+                            if a.chunk_size.is_none() { continue; }
+                            if let Ok(data) = session.read_attachment(&a) {
+                                payload.attachments.push(WireAttachment { name: a.name.clone(), data });
+                            }
+                        }
+                        SessionEvent::IncomingPayload { contact_id, payload, message_id }
+                    }
+                    other => other,
+                };
                 let SessionEvent::IncomingPayload { contact_id, payload, message_id } = ev else { continue; };
 
                 let target = match &payload.group {

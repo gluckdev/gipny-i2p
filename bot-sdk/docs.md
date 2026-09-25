@@ -97,7 +97,7 @@ Bot::builder()
 - `body: String`;
 - `sender_sign_pk: Vec<u8>` — открытый ключ пользователя;
 - `sent_at: i64` — unix-время в миллисекундах;
-- `attachments: Vec<WireAttachment>`;
+- `attachments: Vec<WireAttachment>` — все файлы сообщения; файл больше 128 КБ идёт частями, и сообщение приходит в обработчик, когда такой файл собран целиком;
 - `message_id: i64` — локальный идентификатор в базе бота.
 
 **`on_command(name, fn)`** — сообщения, начинающиеся с `/name`. Аргументы — всё,

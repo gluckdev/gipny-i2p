@@ -710,6 +710,23 @@ a:hover { text-decoration: underline; }
   margin-top: 6px;
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+/* A file on its way in parts. */
+.msg-files-moving { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.file-progress {
+  display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center;
+  padding: 4px 8px; border: 1px solid var(--border-bright); font-size: 11px;
+  max-width: 360px;
+}
+.file-progress-name { color: var(--amber); grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-progress-track { height: 4px; background: var(--border-bright); }
+.file-progress-bar { height: 100%; background: var(--amber); transition: width .3s ease; }
+.file-progress-label { opacity: .7; }
+.file-progress-cancel {
+  grid-column: 1 / -1; justify-self: start;
+  background: none; border: 1px solid var(--border-bright); color: inherit;
+  font-size: 11px; padding: 2px 6px; cursor: pointer;
+}
+.file-progress-cancel:hover { border-color: var(--amber); }
 .attachment {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 8px;

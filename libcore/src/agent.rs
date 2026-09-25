@@ -36,7 +36,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// full page of output costs the same on the wire as a short one.
 pub const DEFAULT_MAX_OUTPUT: usize = 60_000;
 /// Largest file `/agent get` will send back.
-pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// Past 128 KiB a file goes back in parts (crate::files), so this is only
+/// what is read into memory at once.
+pub const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct ExecOptions {

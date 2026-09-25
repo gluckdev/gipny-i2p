@@ -152,6 +152,9 @@ jobs:
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
+          # A file in parts through server relays: bot-b collects them over
+          # several connections to its relay at once.
+          E2E_BIG_FILE: '10485760'
           # The routers' own logs, uploaded below, for where a letter waits.
           GIPNY_I2P_LOGLEVEL: info
         run: |
@@ -185,6 +188,8 @@ jobs:
             else
               echo '_harness log not available or timing block missing_'
             fi
+            echo ''
+            grep -aE 'big file:|window to contact|another connection to our relay' e2e-logs/harness.log 2>/dev/null | head -8 || true
             echo ''
             if grep -q 'Maximum resident' e2e-logs/harness.log 2>/dev/null; then
               echo '**Peak RSS (harness process):**'

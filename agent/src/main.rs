@@ -37,7 +37,6 @@ use gipny_libcore::{
     WireConsole, CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OFF, CONSOLE_REVOKE,
 };
 use gipny_libcore::agent::{self, ExecOptions, BODY_GRANT, BODY_REVOKE};
-use gipny_libcore::crypto::AttachmentCipher;
 use gipny_libcore::router::RouterSettings;
 use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SECS};
 
@@ -168,16 +167,45 @@ fn load_attachments(db: &Db, data_dir: &Path, msg_id: i64) -> Vec<(String, Vec<u
             Err(_) => { eprintln!("[agent] bad attachment key"); continue; }
         };
         let path = data_dir.join("attachments").join(&a.path);
-        let enc = match std::fs::read(&path) {
-            Ok(e) => e,
-            Err(e) => { eprintln!("[agent] read {}: {e}", path.display()); continue; }
-        };
-        match AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc) {
+        match gipny_libcore::files::read_attachment(&path, key, a.size as u64, a.chunk_size) {
             Ok(data) => out.push((a.name, data)),
-            Err(e) => eprintln!("[agent] decrypt {}: {e:?}", path.display()),
+            Err(e) => eprintln!("[agent] read {}: {e}", path.display()),
         }
     }
     out
+}
+
+/// Commands in arrival order. One whose files are still coming in parts is
+/// not ready; it and everything after it wait.
+#[derive(Default)]
+struct Held {
+    q: std::collections::VecDeque<(Job, bool)>,
+}
+
+impl Held {
+    /// Queue a command; returns what may run now, in order.
+    fn push(&mut self, job: Job, ready: bool) -> Vec<Job> {
+        self.q.push_back((job, ready));
+        self.drain()
+    }
+
+    /// A command's files are all in; returns what may run now, in order.
+    fn ready(&mut self, message_id: i64) -> Vec<Job> {
+        for (job, ready) in self.q.iter_mut() {
+            if job.message_id == message_id {
+                *ready = true;
+            }
+        }
+        self.drain()
+    }
+
+    fn drain(&mut self) -> Vec<Job> {
+        let mut out = Vec::new();
+        while self.q.front().is_some_and(|(_, ready)| *ready) {
+            out.push(self.q.pop_front().unwrap().0);
+        }
+        out
+    }
 }
 
 /// One command waiting for the worker: the row id (its attachments are looked
@@ -331,6 +359,9 @@ async fn main() -> Result<()> {
     // and waits for its delivery (bounded), so the master's app shows the
     // console closed rather than an agent that silently went away.
     let mut stopping: Option<(i64, tokio::time::Instant)> = None;
+    // Commands in arrival order; one whose files are still coming in parts
+    // waits for them, and those after it wait behind it.
+    let mut held = Held::default();
     // systemd stops the service with SIGTERM: the same as Ctrl-C, so the
     // master hears REVOKE and the router in this process stops before exit.
     #[cfg(unix)]
@@ -372,7 +403,14 @@ async fn main() -> Result<()> {
                         match console.kind {
                             CONSOLE_COMMAND => {
                                 if stopping.is_some() { continue; }
-                                let _ = queue_tx.send(Job { message_id, body: payload.body.clone() });
+                                let waiting = !payload.files.is_empty()
+                                    && !session.db.files_in_for_message(message_id).unwrap_or_default().is_empty();
+                                if waiting {
+                                    eprintln!("[agent] command {message_id} waits for its files");
+                                }
+                                for job in held.push(Job { message_id, body: payload.body.clone() }, !waiting) {
+                                    let _ = queue_tx.send(job);
+                                }
                             }
                             CONSOLE_OFF => {
                                 if stopping.is_none() {
@@ -395,6 +433,14 @@ async fn main() -> Result<()> {
                             the master the new card from card.txt."
                         );
                         std::process::exit(2);
+                    }
+                    // A command's files are in (or will not come): it may run.
+                    SessionEvent::FileReceived { message_id, .. } | SessionEvent::FileFailed { message_id, .. } => {
+                        if session.db.files_in_for_message(message_id).unwrap_or_default().is_empty() {
+                            for job in held.ready(message_id) {
+                                let _ = queue_tx.send(job);
+                            }
+                        }
                     }
                     SessionEvent::MessageDelivered { message_id } => {
                         if stopping.map(|(id, _)| id == message_id).unwrap_or(false) {
@@ -473,4 +519,28 @@ async fn begin_stop(session: &SessionManager, master_id: i64) -> (i64, tokio::ti
         Err(e) => { eprintln!("[agent] could not queue REVOKE: {e}"); -1 }
     };
     (id, tokio::time::Instant::now() + REVOKE_WAIT)
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn job(id: i64) -> Job {
+        Job { message_id: id, body: String::new() }
+    }
+
+    fn ids(v: Vec<Job>) -> Vec<i64> {
+        v.into_iter().map(|j| j.message_id).collect()
+    }
+
+    #[test]
+    fn a_command_waiting_for_its_files_holds_those_after_it() {
+        let mut h = Held::default();
+        assert_eq!(ids(h.push(job(1), true)), vec![1]);
+        assert!(h.push(job(2), false).is_empty(), "its files are coming");
+        assert!(h.push(job(3), true).is_empty(), "behind 2, in order");
+        assert!(h.ready(99).is_empty(), "not a held command");
+        assert_eq!(ids(h.ready(2)), vec![2, 3]);
+        assert_eq!(ids(h.push(job(4), true)), vec![4]);
+    }
 }

@@ -17,9 +17,72 @@ use crate::dht::DhtHandler;
 use crate::proto::*;
 use crate::storage::Storage;
 
-/// Each key's live connection, with how far its mail has been pushed (moved
-/// by whoever enqueues a push; see the deposit in `client_loop`).
-type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>, Arc<tokio::sync::Mutex<i64>>)>>>;
+type Connections = Arc<RwLock<HashMap<[u8; 32], Lanes>>>;
+
+/// The connections one key has open at once (as libcore's relay_server.rs):
+/// usually one; more while it takes a file in parts, and new letters go to
+/// the least loaded. One cursor for all, and catching up on what was stored
+/// is the first live connection's job, so nothing goes down twice.
+struct Lanes {
+    senders: Vec<Lane>,
+    next: std::sync::atomic::AtomicUsize,
+    cursor: Arc<tokio::sync::Mutex<Pushed>>,
+}
+
+/// What of a key's mail has been handed to one of its connections and not
+/// acked; whoever marks a message first pushes it (as libcore's
+/// relay_server.rs `Pushed`: a high-water mark set only after the deposit
+/// answered its sender let an Ack's sweep push it too).
+#[derive(Default, Debug)]
+struct Pushed {
+    high: i64,
+    ids: std::collections::HashSet<i64>,
+}
+
+impl Pushed {
+    fn claim(&mut self, id: i64) -> bool {
+        self.high = self.high.max(id);
+        self.ids.insert(id)
+    }
+
+    fn acked(&mut self, id: i64) {
+        self.ids.remove(&id);
+    }
+}
+
+/// One connection of a key: where its pushes go, and how many it was given
+/// and has not acked.
+struct Lane {
+    tx: mpsc::Sender<RelayToClient>,
+    unacked: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Lane {
+    /// Given and not acked, and queued to be written.
+    fn load(&self) -> usize {
+        self.unacked.load(std::sync::atomic::Ordering::Relaxed) + (self.tx.max_capacity() - self.tx.capacity())
+    }
+}
+
+impl Lanes {
+    /// The live connection with the least outstanding, round the lanes among
+    /// equals (as libcore's relay_server.rs: dealt strictly in turn, one slow
+    /// or broken one way took its share of every file all the same).
+    fn pick(&self) -> Option<mpsc::Sender<RelayToClient>> {
+        let live: Vec<&Lane> = self.senders.iter().filter(|l| !l.tx.is_closed()).collect();
+        if live.is_empty() {
+            return None;
+        }
+        let least = live.iter().map(|l| l.load()).min()?;
+        let even: Vec<&&Lane> = live.iter().filter(|l| l.load() == least).collect();
+        let i = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(even[i % even.len()].tx.clone())
+    }
+
+    fn is_first(&self, tx: &mpsc::Sender<RelayToClient>) -> bool {
+        self.senders.iter().find(|l| !l.tx.is_closed()).is_some_and(|l| l.tx.same_channel(tx))
+    }
+}
 
 
 /// A relay-network connection is closed after this many requests, or when it
@@ -27,8 +90,10 @@ type Connections = Arc<RwLock<HashMap<[u8; 32], (mpsc::Sender<RelayToClient>, Ar
 const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
 /// A client says something at least every 20 s (a ping, if nothing else); one
-/// silent this long is gone, though its close never came, and its connection
-/// is dropped rather than kept taking its mail into nowhere.
+/// silent this long is gone, though its close never came. Its connection is
+/// dropped and what it was given goes to the key's others — kept, it went on
+/// taking a share of new mail into nowhere (a recipient restarted with three
+/// extra connections open: one close arrived, three did not).
 #[cfg(not(test))]
 const CLIENT_SILENT: Duration = Duration::from_secs(90);
 #[cfg(test)]
@@ -215,25 +280,44 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     eprintln!("[relay] auth ok {} ({})", hex_short(&sign_pk), if owner { "v2" } else { "v1, deposit only" });
 
     let (push_tx, mut push_rx) = mpsc::channel::<RelayToClient>(512);
-    let cursor = Arc::new(tokio::sync::Mutex::new(0i64));
     if !owner {
-        return client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &storage, &connections, cursor).await;
+        let cursor = Arc::new(tokio::sync::Mutex::new(Pushed::default()));
+        let mut given = std::collections::HashSet::new();
+        return client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &storage, &connections, cursor, &mut given, &Default::default()).await;
     }
-    connections.write().await.insert(sign_pk, (push_tx.clone(), cursor.clone()));
+    let unacked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (cursor, first) = {
+        let mut conns = connections.write().await;
+        let lanes = conns.entry(sign_pk).or_insert_with(|| Lanes {
+            senders: Vec::new(),
+            next: std::sync::atomic::AtomicUsize::new(0),
+            cursor: Arc::new(tokio::sync::Mutex::new(Pushed::default())),
+        });
+        lanes.senders.retain(|l| !l.tx.is_closed());
+        let first = lanes.senders.is_empty();
+        if first {
+            // Nothing live for this key: what an earlier connection was pushed
+            // and did not ack goes again.
+            lanes.cursor = Arc::new(tokio::sync::Mutex::new(Pushed::default()));
+        }
+        lanes.senders.push(Lane { tx: push_tx.clone(), unacked: unacked.clone() });
+        (lanes.cursor.clone(), first)
+    };
 
     let storage_init = storage.clone();
     let push_tx_init = push_tx.clone();
     let cursor_init = cursor.clone();
     tokio::spawn(async move {
+        // Another connection of this key is catching up already.
+        if !first { return; }
         match storage_init.pending_for(&sign_pk) {
             Ok(pending) => {
                 if !pending.is_empty() {
                     eprintln!("[relay] pushing {} pending to {}", pending.len(), hex_short(&sign_pk));
                 }
                 for (id, blob) in pending {
-                    {
-                        let mut c = cursor_init.lock().await;
-                        if id > *c { *c = id; }
+                    if !cursor_init.lock().await.claim(id) {
+                        continue;
                     }
                     if push_tx_init.send(RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob }).await.is_err() {
                         break;
@@ -247,15 +331,22 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     let storage_refresh = storage.clone();
     let push_tx_refresh = push_tx.clone();
     let cursor_refresh = cursor.clone();
+    let connections_refresh = connections.clone();
     let refresh_handle = tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(30));
         tick.tick().await;
         loop {
             tick.tick().await;
-            let cur = *cursor_refresh.lock().await;
+            // One connection of a key sweeps, not each of them.
+            let sweeps = connections_refresh.read().await.get(&sign_pk).is_some_and(|l| l.is_first(&push_tx_refresh));
+            if !sweeps { continue; }
+            let cur = cursor_refresh.lock().await.high;
             match storage_refresh.pending_above(&sign_pk, cur) {
                 Ok(more) => {
                     for (mid, blob) in more {
+                        if !cursor_refresh.lock().await.claim(mid) {
+                            continue;
+                        }
                         if push_tx_refresh.try_send(RelayToClient::Incoming { id: mid as u64, from: [0u8; 32], blob }).is_err() {
                             break;
                         }
@@ -266,19 +357,43 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
         }
     });
 
-    let result = client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &storage, &connections, cursor.clone()).await;
+    let mut given = std::collections::HashSet::new();
+    let result = client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &storage, &connections, cursor.clone(), &mut given, &unacked).await;
     refresh_handle.abort();
+    push_rx.close();
+    while let Ok(msg) = push_rx.try_recv() {
+        if let RelayToClient::Incoming { id, .. } = msg { given.insert(id as i64); }
+    }
     // Only our own entry. A client that reconnects registers a new sender under
     // the same key; when the old connection finally errors out, removing by key
     // would drop the new one and leave the recipient unreachable for live push.
     {
         let mut conns = connections.write().await;
-        if conns.get(&sign_pk).is_some_and(|(tx, _)| tx.same_channel(&push_tx)) {
-            conns.remove(&sign_pk);
+        if let Some(lanes) = conns.get_mut(&sign_pk) {
+            lanes.senders.retain(|l| !l.tx.same_channel(&push_tx) && !l.tx.is_closed());
+            if lanes.senders.is_empty() {
+                conns.remove(&sign_pk);
+            } else if let Some(low) = given.iter().min() {
+                match storage.pending_above(&sign_pk, low - 1) {
+                    Ok(pending) => redeal(lanes, &pending, &given),
+                    Err(e) => eprintln!("[relay] pending_above err: {}", e),
+                }
+            }
         }
     }
     eprintln!("[relay] client gone {}", hex_short(&sign_pk));
     result
+}
+
+/// What a closed connection of a key was given and never acked goes to the
+/// others still open. The cursor is past it, so without this it would wait
+/// until every connection of the key had closed.
+fn redeal(lanes: &Lanes, pending: &[(i64, Vec<u8>)], given: &std::collections::HashSet<i64>) {
+    for (id, blob) in pending.iter().filter(|(id, _)| given.contains(id)) {
+        let Some(tx) = lanes.pick() else { return };
+        let pkt = RelayToClient::Incoming { id: *id as u64, from: [0u8; 32], blob: blob.clone() };
+        tokio::spawn(async move { let _ = tx.send(pkt).await; });
+    }
 }
 
 /// A relay-network connection: request, answer, until the other side is done.
@@ -320,7 +435,9 @@ async fn client_loop<S>(
     owner: bool,
     storage: &Arc<Storage>,
     connections: &Connections,
-    cursor: Arc<tokio::sync::Mutex<i64>>,
+    cursor: Arc<tokio::sync::Mutex<Pushed>>,
+    given: &mut std::collections::HashSet<i64>,
+    unacked: &Arc<std::sync::atomic::AtomicUsize>,
 ) -> anyhow::Result<()>
 where S: AsyncRead + AsyncWrite + Unpin + Send
 {
@@ -354,30 +471,46 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     }
                     ClientToRelay::Send { to, blob } => {
                         let id = storage.deposit(&to, &blob)?;
-                        let tx_opt = connections.read().await.get(&to).cloned();
-                        if let Some((tx, cur)) = tx_opt {
-                            // Counted as pushed now, not when written: an Ack's
-                            // sweep in between would push it a second time.
-                            {
-                                let mut c = cur.lock().await;
-                                if id > *c { *c = id; }
-                            }
-                            let pkt = RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob };
-                            tokio::spawn(async move { let _ = tx.send(pkt).await; });
-                        }
-                        // Answered after it is marked as pushed: the answer can wait on i2p,
-                        // and an Ack's sweep meanwhile would push it a second time.
+                        // Marked before the answer to its sender, which can wait
+                        // on i2p: an Ack's sweep meanwhile would push it too.
+                        let tx_opt = match connections.read().await.get(&to) {
+                            Some(l) => match l.pick() {
+                                Some(tx) if l.cursor.lock().await.claim(id) => Some(tx),
+                                _ => None,
+                            },
+                            None => None,
+                        };
                         send_frame(&mut wr, &RelayToClient::Deposited { id: id as u64 }).await?;
+                        if let Some(tx) = tx_opt {
+                            let pkt = RelayToClient::Incoming { id: id as u64, from: [0u8; 32], blob };
+                            let conns = connections.clone();
+                            tokio::spawn(async move {
+                                // That connection closed just now: to another of the key's, or
+                                // it would wait below the cursor until the last one closed.
+                                if let Err(mpsc::error::SendError(pkt)) = tx.send(pkt).await {
+                                    let again = conns.read().await.get(&to).and_then(|l| l.pick());
+                                    if let Some(tx) = again {
+                                        let _ = tx.send(pkt).await;
+                                    }
+                                }
+                            });
+                        }
                     }
                     ClientToRelay::Ack { id } => {
                         storage.ack(&sign_pk, id as i64)?;
-                        let cur_val = *cursor.lock().await;
+                        if given.remove(&(id as i64)) {
+                            unacked.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        let cur_val = {
+                            let mut c = cursor.lock().await;
+                            c.acked(id as i64);
+                            c.high
+                        };
                         match storage.pending_above(&sign_pk, cur_val) {
                             Ok(more) => {
                                 for (mid, blob) in more {
-                                    {
-                                        let mut c = cursor.lock().await;
-                                        if mid > *c { *c = mid; }
+                                    if !cursor.lock().await.claim(mid) {
+                                        continue;
                                     }
                                     if push_tx.try_send(RelayToClient::Incoming { id: mid as u64, from: [0u8; 32], blob }).is_err() {
                                         break;
@@ -397,8 +530,11 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                 let Some(msg) = push else { break };
                 if let RelayToClient::Incoming { id, .. } = &msg {
                     let i = *id as i64;
-                    let mut c = cursor.lock().await;
-                    if i > *c { *c = i; }
+                    // Claimed by whoever queued it; a redeal's is claimed already.
+                    cursor.lock().await.claim(i);
+                    if given.insert(i) {
+                        unacked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                 }
                 send_frame(&mut wr, &msg).await?;
             }
@@ -449,4 +585,207 @@ fn hex_short(b: &[u8]) -> String {
 
 fn split_list(s: &str) -> Vec<String> {
     s.split(|c: char| c == ',' || c.is_whitespace()).filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
+#[cfg(test)]
+mod lanes_tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    use tokio::io::DuplexStream;
+
+    fn key() -> SigningKey {
+        let mut b = [0u8; 32];
+        rand::rng().fill_bytes(&mut b);
+        SigningKey::from_bytes(&b)
+    }
+
+    async fn login(storage: &Arc<Storage>, conns: &Connections, key: &SigningKey) -> DuplexStream {
+        login_buffered(storage, conns, key, 1 << 20).await
+    }
+
+    async fn login_buffered(storage: &Arc<Storage>, conns: &Connections, key: &SigningKey, buffer: usize) -> DuplexStream {
+        let (mut c, server) = tokio::io::duplex(buffer);
+        tokio::spawn(handle_client(server, storage.clone(), conns.clone(), [0; 32], None));
+        let RelayToClient::Challenge(ch) = recv_frame(&mut c).await.unwrap() else { panic!("no challenge") };
+        let signature = key.sign(&auth_v2_message(&[0; 32], &ch)).to_bytes();
+        send_frame(&mut c, &ClientToRelay::AuthV2 { sign_pk: key.verifying_key().to_bytes(), signature }).await.unwrap();
+        assert!(matches!(recv_frame::<_, RelayToClient>(&mut c).await.unwrap(), RelayToClient::AuthOk));
+        c
+    }
+
+    async fn drain(c: &mut DuplexStream) -> Vec<u64> {
+        let mut ids = Vec::new();
+        while let Ok(Ok(frame)) = tokio::time::timeout(Duration::from_millis(300), recv_frame::<_, RelayToClient>(c)).await {
+            if let RelayToClient::Incoming { id, .. } = frame {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn a_silent_connection_is_dropped_and_its_share_goes_to_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b1 = login(&storage, &conns, &bob).await;
+        let mut b2 = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        let to = bob.verifying_key().to_bytes();
+        for i in 0..2u8 {
+            send_frame(&mut a, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+        }
+        let to_b1 = drain(&mut b1).await;
+        let to_b2 = drain(&mut b2).await;
+        assert_eq!((to_b1.len(), to_b2.len()), (1, 1), "dealt round both");
+        send_frame(&mut b2, &ClientToRelay::Ack { id: to_b2[0] }).await.unwrap();
+        let mut got = Vec::new();
+        let deadline = tokio::time::Instant::now() + CLIENT_SILENT + Duration::from_secs(1);
+        while tokio::time::Instant::now() < deadline {
+            send_frame(&mut b2, &ClientToRelay::Ping).await.unwrap();
+            got.extend(drain(&mut b2).await);
+        }
+        assert_eq!(got, to_b1, "b1's letter came to b2 once b1 was dropped");
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_does_not_ack_stops_getting_new_mail() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b1 = login(&storage, &conns, &bob).await;
+        let mut b2 = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        let to = bob.verifying_key().to_bytes();
+        let mut to_b2 = 0;
+        for i in 0..20u8 {
+            send_frame(&mut a, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+            while let Ok(Ok(RelayToClient::Incoming { id, .. })) =
+                tokio::time::timeout(Duration::from_millis(50), recv_frame::<_, RelayToClient>(&mut b2)).await
+            {
+                send_frame(&mut b2, &ClientToRelay::Ack { id }).await.unwrap();
+                to_b2 += 1;
+            }
+        }
+        let to_b1 = drain(&mut b1).await.len();
+        assert_eq!(to_b1 + to_b2, 20);
+        assert!(to_b1 <= 2, "the one not acking got {to_b1} of 20");
+    }
+
+    #[tokio::test]
+    async fn a_deposit_slow_to_confirm_is_not_pushed_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b = login(&storage, &conns, &bob).await;
+        // Alice's side takes two Deposited frames and then nothing, as an i2p
+        // stream with a full window: the third deposit waits on its answer.
+        let a = login_buffered(&storage, &conns, &alice, 40).await;
+        let to = bob.verifying_key().to_bytes();
+        let (mut ar, mut aw) = tokio::io::split(a);
+        let sender = tokio::spawn(async move {
+            for i in 0..3u8 {
+                send_frame(&mut aw, &ClientToRelay::Send { to, blob: vec![i; 10] }).await.unwrap();
+            }
+            aw
+        });
+        let first = match tokio::time::timeout(Duration::from_secs(5), recv_frame::<_, RelayToClient>(&mut b)).await.unwrap().unwrap() {
+            RelayToClient::Incoming { id, .. } => id,
+            f => panic!("{f:?}"),
+        };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        send_frame(&mut b, &ClientToRelay::Ack { id: first }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        for _ in 0..3 {
+            let _: RelayToClient = tokio::time::timeout(Duration::from_secs(5), recv_frame(&mut ar)).await.unwrap().unwrap();
+        }
+        let _aw = sender.await.unwrap();
+        let mut got = vec![first];
+        got.extend(drain(&mut b).await);
+        assert_eq!(got.len(), 3, "each once: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_push_while_a_frame_is_half_read_loses_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        let frame = bincode::serde::encode_to_vec(&ClientToRelay::Publish { bundle: vec![9; 8000] }, bincode::config::legacy()).unwrap();
+        b.write_all(&(frame.len() as u32).to_be_bytes()).await.unwrap();
+        b.write_all(&frame[..4000]).await.unwrap();
+        b.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        send_frame(&mut a, &ClientToRelay::Send { to: bob.verifying_key().to_bytes(), blob: vec![1; 10] }).await.unwrap();
+        assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+        assert!(matches!(recv_frame::<_, RelayToClient>(&mut b).await.unwrap(), RelayToClient::Incoming { .. }));
+        b.write_all(&frame[4000..]).await.unwrap();
+        send_frame(&mut b, &ClientToRelay::Ping).await.unwrap();
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), recv_frame::<_, RelayToClient>(&mut b)).await.expect("an answer").unwrap() {
+                RelayToClient::Pong => break,
+                RelayToClient::Error(e) => panic!("relay error: {e}"),
+                _ => {}
+            }
+        }
+        assert!(storage.get_bundle(&bob.verifying_key().to_bytes()).unwrap().is_some(), "the half-read Publish arrived whole");
+    }
+
+    #[tokio::test]
+    async fn what_a_closed_connection_left_unacked_goes_to_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b1 = login(&storage, &conns, &bob).await;
+        let mut b2 = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        for i in 0..6u8 {
+            send_frame(&mut a, &ClientToRelay::Send { to: bob.verifying_key().to_bytes(), blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+        }
+        let mut lost = drain(&mut b1).await;
+        let got2 = drain(&mut b2).await;
+        assert!(!lost.is_empty() && !got2.is_empty());
+        for id in &got2 {
+            send_frame(&mut b2, &ClientToRelay::Ack { id: *id }).await.unwrap();
+        }
+        // b1 goes without acking; b2 stays open all along.
+        drop(b1);
+        let mut again = drain(&mut b2).await;
+        again.sort_unstable();
+        lost.sort_unstable();
+        assert_eq!(again, lost, "b1's share comes to b2, and nothing else twice");
+    }
+
+    #[tokio::test]
+    async fn a_second_connection_shares_the_mail_without_doubling_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(Storage::open(&dir.path().join("r.db")).unwrap());
+        let conns: Connections = Arc::default();
+        let (bob, alice) = (key(), key());
+        let mut b1 = login(&storage, &conns, &bob).await;
+        let mut b2 = login(&storage, &conns, &bob).await;
+        let mut a = login(&storage, &conns, &alice).await;
+        for i in 0..8u8 {
+            send_frame(&mut a, &ClientToRelay::Send { to: bob.verifying_key().to_bytes(), blob: vec![i; 10] }).await.unwrap();
+            assert!(matches!(recv_frame::<_, RelayToClient>(&mut a).await.unwrap(), RelayToClient::Deposited { .. }));
+        }
+        let (g1, g2) = (drain(&mut b1).await, drain(&mut b2).await);
+        assert!(!g1.is_empty() && !g2.is_empty(), "dealt round both: {g1:?} {g2:?}");
+        assert_eq!(g1.len() + g2.len(), 8, "nothing pushed twice");
+
+        // Both go without acking; the next connection gets all eight again.
+        drop((b1, b2));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut b3 = login(&storage, &conns, &bob).await;
+        assert_eq!(drain(&mut b3).await.len(), 8, "the unacked come again from the start");
+    }
 }

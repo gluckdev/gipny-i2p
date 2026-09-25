@@ -103,6 +103,16 @@ export const CONSOLE_GRANT = 2;
 export const CONSOLE_REVOKE = 3;
 export const CONSOLE_OFF = 4;
 
+/** A file of a message on its way in parts (libcore::files). */
+export interface FileProgress {
+  name: string;
+  size: number;
+  /** Parts done: received, or acknowledged by every recipient. */
+  done: number;
+  total: number;
+  incoming: boolean;
+}
+
 export interface Message {
   id: number;
   contact_id: number | null;
@@ -226,6 +236,10 @@ export type CoreEvent =
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageSent: { message_id: number } }
   | { MessageDelivered: { message_id: number } }
+  | { MessageFailed: { message_id: number; reason: string } }
+  | { FileProgress: { message_id: number; contact_id: number; incoming: boolean; done: number; total: number } }
+  | { FileReceived: { message_id: number; attachment_id: number } }
+  | { FileFailed: { message_id: number; contact_id: number; reason: string } }
   | { Typing: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; typing: boolean } }
   | { ContactAdded: { contact_id: number } }
   | { ContactUpdated: { contact_id: number } }
@@ -427,6 +441,13 @@ export class Api {
   }
   static listAttachments(messageId: number): Promise<Attachment[]> {
     return invoke('list_attachments', { messageId });
+  }
+  /** Files of a message still moving in parts. */
+  static filesProgress(messageId: number): Promise<FileProgress[]> {
+    return invoke('files_progress', { messageId });
+  }
+  static cancelFiles(messageId: number): Promise<void> {
+    return invoke('cancel_files', { messageId });
   }
   static loadAttachment(attachmentId: number): Promise<string> {
     return invoke('load_attachment', { attachmentId });

@@ -29,6 +29,12 @@
 //! * `E2E_BOTH_FIRST=1` — bot-b writes to bot-a at the same moment bot-a
 //!   writes to bot-b: two sessions are opened at once and their X3dhInits
 //!   cross (session.rs `ours_stands`). Its letter must arrive too.
+//! * `E2E_BIG_FILE=<bytes>` — after the echoes, bot-a sends bot-b a file of
+//!   that size; it goes in parts (libcore::files) and must arrive whole and
+//!   equal. The throughput is printed.
+//! * `E2E_BIG_FILE_RESTART=1` — with E2E_BIG_FILE: bot-b stops once a third
+//!   of the parts are in and starts again on the same data, and the file
+//!   must still arrive whole — the transfer picks up where it was.
 //! * `E2E_UPDATE_CHECK=1` — a different test: one router, and the updater
 //!   asks GitHub for the latest release through the i2p outproxy and fetches
 //!   its smallest file, as an installed app would.
@@ -184,6 +190,8 @@ fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
 
 /// What bot-b writes first with E2E_BOTH_FIRST.
 const GREETING: &str = "hello from bot-b";
+/// The text of the letter carrying E2E_BIG_FILE; not echoed.
+const BIG_FILE_BODY: &str = "big file";
 
 async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
     let _ = node; // up already: the relays share its router
@@ -1016,6 +1024,14 @@ async fn main() -> Result<()> {
     let a_greeted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let a_greeted_notify = Arc::new(Notify::new());
 
+    // E2E_BIG_FILE: what bot-b ended up with.
+    let big_file: usize = std::env::var("E2E_BIG_FILE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let b_file: Arc<Mutex<Option<Vec<u8>>>> = Default::default();
+    let b_file_notify = Arc::new(Notify::new());
+    let restart = std::env::var("E2E_BIG_FILE_RESTART").is_ok_and(|v| v == "1");
+    // Parts bot-b holds of the big file, and of how many.
+    let b_parts = Arc::new((std::sync::atomic::AtomicU32::new(0), std::sync::atomic::AtomicU32::new(0)));
+
     // Bot A event loop
     {
         let connect_notify = a_connect_notify.clone();
@@ -1058,6 +1074,7 @@ async fn main() -> Result<()> {
         let connect_notify = b_connect_notify.clone();
         let connect_at = b_connect_at.clone();
         let b_session = b.session.clone();
+        let (b_file, b_file_notify, b_parts) = (b_file.clone(), b_file_notify.clone(), b_parts.clone());
         tokio::spawn(async move {
             while let Some(ev) = b_events.recv().await {
                 match ev {
@@ -1072,8 +1089,25 @@ async fn main() -> Result<()> {
                     SessionEvent::Disconnected => {
                         eprintln!("[e2e] bot-b: relay disconnected");
                     }
+                    SessionEvent::FileProgress { done, total, incoming: true, .. } => {
+                        b_parts.0.store(done, std::sync::atomic::Ordering::SeqCst);
+                        b_parts.1.store(total, std::sync::atomic::Ordering::SeqCst);
+                        if done % 8 == 0 {
+                            eprintln!("[e2e] bot-b: file part {done}/{total}");
+                        }
+                    }
+                    SessionEvent::FileReceived { attachment_id, .. } => {
+                        let got = b_session.db.get_attachment(attachment_id).ok().flatten()
+                            .and_then(|a| b_session.read_attachment(&a).ok());
+                        eprintln!("[e2e] bot-b: file whole ({} bytes)", got.as_ref().map_or(0, |g| g.len()));
+                        *b_file.lock().await = got;
+                        b_file_notify.notify_one();
+                    }
+                    SessionEvent::FileFailed { reason, .. } => {
+                        eprintln!("[e2e] bot-b: file failed: {reason}");
+                    }
                     SessionEvent::IncomingPayload { contact_id, payload, .. } => {
-                        if payload.body.is_empty() {
+                        if payload.body.is_empty() || payload.body == BIG_FILE_BODY {
                             continue;
                         }
                         let echo_body = format!("echo:{}", payload.body);
@@ -1299,6 +1333,64 @@ async fn main() -> Result<()> {
             bail!("crossing sessions: bot-b's own first letter never reached bot-a");
         }
         eprintln!("[e2e] crossing sessions: bot-b's own first letter arrived too");
+    }
+
+    if big_file > 0 {
+        let data: Vec<u8> = (0..big_file).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let t0 = Instant::now();
+        a.session
+            .send_message(contact_b_in_a, BIG_FILE_BODY.into(), vec![("big.bin".into(), data.clone())], None, None, None)
+            .await
+            .context("send the big file")?;
+        eprintln!("[e2e] bot-a: sent a {big_file}-byte file in parts");
+        if restart {
+            // A third in, bot-b goes away and comes back on the same data.
+            let left = timeout.saturating_sub(t_start.elapsed());
+            tokio::time::timeout(left, async {
+                loop {
+                    let (done, total) = (b_parts.0.load(std::sync::atomic::Ordering::SeqCst), b_parts.1.load(std::sync::atomic::Ordering::SeqCst));
+                    if total > 0 && done * 3 >= total { break; }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }).await.context("timeout: bot-b never got a third of the file")?;
+            let held = b_parts.0.load(std::sync::atomic::Ordering::SeqCst);
+            eprintln!("[e2e] bot-b: stopping with {held} parts in");
+            b.session.shutdown();
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let (again, mut again_events) = SessionManager::start(work_dir.join("bot-b"), b.session.db.clone(), b.session.node.clone())
+                .await
+                .context("bot-b: start again")?;
+            eprintln!("[e2e] bot-b: started again");
+            let (b_file, b_file_notify) = (b_file.clone(), b_file_notify.clone());
+            tokio::spawn(async move {
+                while let Some(ev) = again_events.recv().await {
+                    if let SessionEvent::FileReceived { attachment_id, .. } = ev {
+                        let got = again.db.get_attachment(attachment_id).ok().flatten()
+                            .and_then(|a| again.read_attachment(&a).ok());
+                        eprintln!("[e2e] bot-b (again): file whole ({} bytes)", got.as_ref().map_or(0, |g| g.len()));
+                        *b_file.lock().await = got;
+                        b_file_notify.notify_one();
+                    }
+                }
+            });
+        }
+        let left = timeout.saturating_sub(t_start.elapsed());
+        tokio::time::timeout(left, async {
+            loop {
+                let n = b_file_notify.notified();
+                if b_file.lock().await.is_some() { break; }
+                n.await;
+            }
+        }).await.context("timeout: the big file never arrived whole")?;
+        let got = b_file.lock().await.take().unwrap_or_default();
+        if got != data {
+            bail!("big file: {} bytes arrived, not equal to the {} sent", got.len(), data.len());
+        }
+        let secs = t0.elapsed().as_secs_f64();
+        eprintln!(
+            "[e2e] big file: {big_file} bytes whole and equal in {secs:.1} s ({:.0} KiB/s)",
+            big_file as f64 / 1024.0 / secs
+        );
     }
 
     a.session.shutdown();

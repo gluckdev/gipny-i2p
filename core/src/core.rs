@@ -129,25 +129,16 @@ fn wipe_key(contact_id: i64) -> String {
 /// As in libcore's session.rs: 45 s, not 90 — a hung dial is retried in
 /// 5–10 s instead of holding a letter a minute and a half.
 const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
-/// How long to leave a peer relay alone after `failures` failed dials in a
-/// row, instead of redialing every tick: 5 s doubling to 2 min. It was a flat
-/// 2 min, and the first dial often fails only because the relay's LeaseSet
-/// has not reached the floodfills yet — a contact added a moment after their
-/// relay came up then waited two minutes for nothing (e2e run 36033917903:
-/// an echo held 85 s behind it).
-fn peer_relay_backoff(failures: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((5u64 << failures.min(5)).min(120))
-}
+/// A part unacknowledged this long, by a recipient heard from since, goes again.
+const FILE_RESEND_IDLE_MS: i64 = 30 * 60 * 1000;
+/// Streams to a recipient's relay carrying parts at once (the usual one included).
+const FILE_LANES: usize = 4;
+/// A recipient alive this long without acknowledging a single part cannot
+/// take files in parts (an older build).
+const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;
+/// Unfinished incoming transfers are dropped after the relay's letter TTL.
+const FILE_IN_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 
-/// Failed dials to a peer relay after which it is dialled again on its own,
-/// without a letter asking: 5+10+20+40+80 s, a few minutes in all.
-const PEER_RELAY_REDIALS: u32 = 5;
-
-/// When to dial a peer relay again after `failures` failed dials before this
-/// one, if at all without a letter asking; see [`PEER_RELAY_REDIALS`].
-fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
-    (failures < PEER_RELAY_REDIALS).then(|| peer_relay_backoff(failures))
-}
 const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
@@ -157,7 +148,11 @@ const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
 /// prekey may be handed to someone else meanwhile, and an init on a spent one
 /// is dropped at the far end.
 const BUNDLE_PREFETCH_TTL: Duration = Duration::from_secs(120);
-const MAX_PAYLOAD_BYTES: usize = 14 * 1024 * 1024;
+/// The largest letter a relay frame carries once padded: the next padding
+/// bucket (16 MiB) plus the ratchet header and AEAD tag is over `MAX_FRAME`,
+/// so anything past the 4 MiB bucket never arrived (it was 14 MiB, and was
+/// dropped at the relay). Large files go in parts; see `files`.
+const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const FRESH_SESSION_GRACE_MS: i64 = 60_000;
@@ -196,6 +191,16 @@ pub enum CoreEvent {
     },
     MessageSent { message_id: i64 },
     MessageDelivered { message_id: i64 },
+    /// It will not go: too large for one letter (files go in parts; this is
+    /// a letter that could not). Marked sent so it is not retried forever.
+    MessageFailed { message_id: i64, reason: String },
+    /// A file in parts moved on: `done` of `total` parts, sent (acknowledged
+    /// by `contact_id`) or received.
+    FileProgress { message_id: i64, contact_id: i64, incoming: bool, done: u32, total: u32 },
+    /// A file in parts is whole and is now attachment `attachment_id`.
+    FileReceived { message_id: i64, attachment_id: i64 },
+    /// A file in parts will not get there (not taken, cancelled, or broken).
+    FileFailed { message_id: i64, contact_id: i64, reason: String },
     /// Something arrived from this contact that they wrote at `at_ms`.
     ///
     /// The only presence signal there is: nobody announces that they are
@@ -337,7 +342,7 @@ fn hex_bytes(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
-use gipny_libcore::session::{WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
+use gipny_libcore::session::{collect_lane_holds, collect_lane_wanted, lanes_for, ours_stands, peer_relay_backoff, peer_relay_redial_after, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply, encode_payload, decode_payload, pad_payload, pack_payload, unpad_payload};
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Some(unpadded) = unpad_payload(pt) {
@@ -346,7 +351,13 @@ fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, b
     decode_payload(pt)
 }
 
-pub struct PendingAttachment { pub name: String, pub data: Vec<u8> }
+pub struct PendingAttachment {
+    pub name: String,
+    pub data: Vec<u8>,
+    /// Sent from this file instead of `data` (empty then): sealed in parts
+    /// straight from disk, never whole in memory.
+    pub from: Option<std::path::PathBuf>,
+}
 
 type BundleWaiter = tokio::sync::oneshot::Sender<Option<Vec<u8>>>;
 
@@ -374,6 +385,21 @@ pub struct Core {
     /// Their sessions that lost to ours, kept so what they sent on one before
     /// taking ours is still read, not dropped and waited for again.
     lost_inits: Arc<Mutex<HashMap<i64, RatchetState>>>,
+    /// When each contact was last heard from: a part is resent on a timer
+    /// only to someone alive since it went.
+    heard: Arc<std::sync::Mutex<HashMap<i64, i64>>>,
+    /// Extra connections to a contact's relay for file parts (by relay
+    /// destination); see libcore's session.rs `file_lanes`.
+    file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
+    file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// When the last file part came (ms), and the extra connections to our
+    /// own relay taking them; see libcore's session.rs `spawn_collect_lanes`.
+    part_seen: Arc<std::sync::atomic::AtomicI64>,
+    /// How parts go to each contact (window, round trip); see libcore's
+    /// files.rs `Flow`.
+    flows: Arc<std::sync::Mutex<HashMap<i64, gipny_libcore::files::Flow>>>,
+    collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
+    collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
@@ -542,6 +568,13 @@ impl Core {
             send_kick: Arc::new(tokio::sync::Notify::new()),
             own_inits: Arc::new(Mutex::new(HashMap::new())),
             lost_inits: Arc::new(Mutex::new(HashMap::new())),
+            heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            file_lanes: Arc::new(Mutex::new(HashMap::new())),
+            file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            flows: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             updater,
@@ -565,6 +598,8 @@ impl Core {
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
         core.clone().spawn_relay_loop();
+        core.clone().spawn_collect_lanes();
+        core.clone().spawn_resume_acks();
         core.clone().spawn_send_loop();
         core.clone().spawn_purge_loop();
         core.clone().spawn_update_loop();
@@ -602,6 +637,7 @@ impl Core {
         // on dealing mail to them until they fell silent (90 s).
         if let Ok(mut out) = self.relay_out.try_write() { *out = None; }
         if let Ok(mut peers) = self.peer_relays.try_lock() { peers.clear(); }
+        if let Ok(mut lanes) = self.file_lanes.try_lock() { lanes.clear(); }
     }
 
     /// The relay named in Settings, used in external mode.
@@ -1012,16 +1048,11 @@ impl Core {
         attachments: Vec<PendingAttachment>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let mut stored = Vec::with_capacity(attachments.len());
-        for a in &attachments {
-            let (key, path, size) = self.store_attachment(&a.data)?;
-            stored.push(NewAttachment {
-                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
-            });
-        }
+        let (stored, parts) = self.store_outgoing(&attachments)?;
         let msg_id = self.db.insert_message(
             contact_id, Direction::Out, &body, sent_at, None, &stored,
         )?;
+        self.register_offers(msg_id, &parts, &[contact_id])?;
         self.db.set_setting(&format!("console_{}", msg_id), &bincode::serialize(&console)?)?;
         self.send_kick.notify_one();
         Ok(msg_id)
@@ -1048,6 +1079,17 @@ impl Core {
             Ok(Some(m)) if m.contact_id == Some(master.contact_id) && matches!(m.direction, Direction::In) => m,
             _ => { let _ = self.db.delete_setting(&pending_key); return; }
         };
+        // Files still coming in parts: the command waits for them (and, the
+        // worker being one queue, so do those after it). An hour at most;
+        // then it runs with what is there.
+        let waited_since = tokio::time::Instant::now();
+        while !self.db.files_in_for_message(mid).unwrap_or_default().is_empty() {
+            if waited_since.elapsed() > Duration::from_secs(3600) {
+                eprintln!("[agent] command {mid}: its files did not all arrive; running without them");
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
         let _ = self.db.delete_setting(&pending_key);
         let files = self.load_attachment_data(mid).unwrap_or_default();
         eprintln!(
@@ -1061,7 +1103,7 @@ impl Core {
             reply.console.exit_code, reply.console.duration_ms, reply.console.truncated,
         );
         let atts = reply.attachments.into_iter()
-            .map(|(name, data)| PendingAttachment { name, data })
+            .map(|(name, data)| PendingAttachment { name, data, from: None })
             .collect();
         match self.send_console(master.contact_id, reply.body, reply.console, atts).await {
             Ok(_) => { let _ = self.events.try_send(CoreEvent::ConsoleActivity { contact_id: master.contact_id }); }
@@ -1074,8 +1116,7 @@ impl Core {
         for a in self.db.list_attachments(msg_id)? {
             let key = to_arr32(a.key.clone())?;
             let full = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
-            let enc = std::fs::read(&full)?;
-            let data = AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc)?;
+            let data = gipny_libcore::files::read_attachment(&full, key, a.size as u64, a.chunk_size)?;
             out.push((a.name, data));
         }
         Ok(out)
@@ -1323,16 +1364,11 @@ impl Core {
     ) -> Result<i64> {
         let sent_at = now_ms();
         let expires_at = ttl.map(|d| sent_at + d.as_millis() as i64);
-        let mut stored = Vec::with_capacity(attachments.len());
-        for a in &attachments {
-            let (key, path, size) = self.store_attachment(&a.data)?;
-            stored.push(NewAttachment {
-                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
-            });
-        }
+        let (stored, parts) = self.store_outgoing(&attachments)?;
         let msg_id = self.db.insert_message(
             contact_id, Direction::Out, &body, sent_at, expires_at, &stored,
         )?;
+        self.register_offers(msg_id, &parts, &[contact_id])?;
         if let Some(rt) = reply_to {
             self.db.set_reply_to(msg_id, Some(rt))?;
         }
@@ -1384,7 +1420,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1425,7 +1461,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1462,7 +1498,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1515,7 +1551,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1562,7 +1598,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
@@ -1629,7 +1665,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1909,13 +1945,7 @@ impl Core {
         let sent_at = now_ms();
         let expires_at: Option<i64> = None;
         let ttl: Option<Duration> = None;
-        let mut stored = Vec::with_capacity(attachments.len());
-        for a in &attachments {
-            let (key, path, size) = self.store_attachment(&a.data)?;
-            stored.push(NewAttachment {
-                name: a.name.clone(), size: size as i64, key: key.to_vec(), path,
-            });
-        }
+        let (stored, parts) = self.store_outgoing(&attachments)?;
         let msg_id = self.db.insert_group_message(
             group_id, Some(&self.identity.card().sign_pk), Direction::Out,
             &body, sent_at, expires_at, &stored,
@@ -1928,8 +1958,17 @@ impl Core {
             None => None,
         };
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
+            .filter(|a| a.from.is_none() && a.data.len() <= gipny_libcore::files::INLINE_MAX)
             .map(|a| WireAttachment { name: a.name, data: a.data }).collect();
         let members = self.db.list_group_members(group_id)?;
+        let recipients: Vec<i64> = members.iter()
+            .filter(|m| !m.is_self)
+            .filter_map(|m| self.db.find_contact_by_identity(&m.dh_pk).ok().flatten())
+            .filter(|c| c.trust != TrustLevel::Blocked)
+            .map(|c| c.id)
+            .collect();
+        self.register_offers(msg_id, &parts, &recipients)?;
+        let offers = self.offers_for(msg_id)?;
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
             sign_pk: m.sign_pk.clone(),
             dh_pk: m.dh_pk.clone(),
@@ -1952,6 +1991,7 @@ impl Core {
             );
             payload.group = Some(gref.clone());
             payload.reply_to = wire_reply.clone();
+            payload.files = offers.clone();
             match self.send_to_contact(contact.id, &mut payload).await {
                 Ok(()) => { let _ = self.db.pending_outbound_remove(msg_id, contact.id); }
                 Err(e) => eprintln!("[relay-client] group send to contact {} failed (msg {}): {:?} — kept in pending_outbound", contact.id, msg_id, e),
@@ -1972,12 +2012,94 @@ impl Core {
         Ok((*cipher.key(), hex, data.len() as u64))
     }
 
+    /// Write an attachment out without holding it whole: part by part when
+    /// it was sealed in parts.
+    pub fn write_attachment_to(&self, att: &Attachment, out: &mut impl std::io::Write) -> Result<()> {
+        match att.chunk_size {
+            Some(cs) => {
+                let full = self.data_dir.join(ATTACHMENTS_DIR).join(&att.path);
+                let cipher = AttachmentCipher::from_key(to_arr32(att.key.clone())?);
+                gipny_libcore::files::open_to(&full, &cipher, att.size as u64, cs as u32, out)?;
+            }
+            None => out.write_all(&self.read_attachment(att)?)?,
+        }
+        Ok(())
+    }
+
     pub fn read_attachment(&self, att: &Attachment) -> Result<Vec<u8>> {
         let key = to_arr32(att.key.clone())?;
         let full = self.data_dir.join(ATTACHMENTS_DIR).join(&att.path);
-        let enc = std::fs::read(&full)?;
-        let pt = AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc)?;
-        Ok(pt)
+        Ok(gipny_libcore::files::read_attachment(&full, key, att.size as u64, att.chunk_size)?)
+    }
+
+    /// Keep extra connections to our own relay while file parts come, when it
+    /// Just started: tell everyone sending us a file what we hold of it, so
+    /// what was in flight when we stopped goes again at once instead of at
+    /// its timeout. Tried every 10 s for five minutes, until each went.
+    fn spawn_resume_acks(self: Arc<Self>) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            let Ok(files) = this.db.files_in_stale(i64::MAX) else { return };
+            let mut left: Vec<_> = files.into_iter().collect();
+            for _ in 0..30 {
+                if left.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let mut still = Vec::new();
+                for fin in left {
+                    let total = gipny_libcore::files::chunk_count(fin.size as u64, fin.chunk_size);
+                    let ack = gipny_libcore::files::Received::from_bits(fin.bits.clone(), total).resume_ack(fin.file_id);
+                    if this.send_file_message(fin.contact_id, |p| p.file_ack = Some(ack)).await {
+                        eprintln!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
+                    } else {
+                        still.push(fin);
+                    }
+                }
+                left = still;
+            }
+        });
+        self.track(handle);
+    }
+
+    /// runs elsewhere. Mirrors libcore's session.rs `spawn_collect_lanes`.
+    fn spawn_collect_lanes(self: Arc<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let _ = tokio::time::timeout(Duration::from_secs(5), this.collect_kick.notified()).await;
+                let onion = this.relay_onion();
+                let external = !onion.is_empty()
+                    && this.relay_out.read().await.is_some()
+                    && !this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| r.address() == onion);
+                if !collect_lane_wanted(external, this.part_seen.load(Relaxed), now_ms(), this.collect_lanes.load(Relaxed)) {
+                    continue;
+                }
+                let dial = tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, relay::connect(&this.node, &onion, &this.identity)).await;
+                let Ok(Ok(client)) = dial else { continue };
+                let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
+                eprintln!("[files] another connection to our relay for parts ({n} extra)");
+                let lane = this.clone();
+                // Tracked like every task of ours: one left running after
+                // shutdown kept reading mail on the old instance, with its own
+                // copy of the ratchet, and wrote it over the new one's (e2e
+                // run 36056788336, the recipient restarting midway).
+                let handle = tokio::spawn(async move {
+                    // Ends when parts stop coming or our relay changes; what it was
+                    // given and did not ack the relay deals to the others.
+                    let quiet = {
+                        let lane = lane.clone();
+                        let onion = onion.clone();
+                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || lane.relay_onion() != onion
+                    };
+                    lane.clone().run_recv_loop(client, Some(onion.clone()), Some(&quiet)).await;
+                    lane.collect_lanes.fetch_sub(1, Relaxed);
+                });
+                this.track(handle);
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
     }
 
     fn spawn_relay_loop(self: Arc<Self>) {
@@ -2028,7 +2150,7 @@ impl Core {
                             }
                         }
                         this.send_kick.notify_one();
-                        this.clone().run_recv_loop(client, Some(onion.clone())).await;
+                        this.clone().run_recv_loop(client, Some(onion.clone()), None).await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.try_send(CoreEvent::RelayDisconnected);
                     }
@@ -2184,13 +2306,9 @@ impl Core {
                         key.clone(),
                         PeerRelay::Failed { until: Instant::now() + peer_relay_backoff(failures), failures: failures + 1 },
                     );
-                    // Dialled again when the wait is over, letter or not: a first dial
-                    // fails mostly because the relay's LeaseSet has not spread yet, and the
-                    // first letter then waited for a dial of its own (e2e run 36042483601:
-                    // 7 s of a 16 s echo).
+                    // Dialled again when the wait is over, letter or not; see
+                    // libcore's `peer_relay_redial_after`.
                     if let Some(wait) = peer_relay_redial_after(failures) {
-                        // Tracked, so it stops with the session instead of dialling on
-                        // behalf of an instance already shut down.
                         let again = this.clone();
                         let handle = tokio::spawn(async move {
                             tokio::time::sleep(wait).await;
@@ -2219,7 +2337,7 @@ impl Core {
             // mail for us, and the frame handling is identical. No
             // RelayConnected event — that state is about our own relay, and
             // flipping it here would tell the user the wrong thing.
-            this.clone().run_recv_loop(client, None).await;
+            this.clone().run_recv_loop(client, None, None).await;
             this.peer_relays.lock().await.remove(&key);
             eprintln!("[relay-client] peer relay {short} disconnected");
         });
@@ -2232,7 +2350,7 @@ impl Core {
     /// When the relay we collect from changes — another mode, another address
     /// in Settings — the connection ends at its next ping and the loop redials;
     /// before, a new address only took effect when the old relay went away.
-    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, own: Option<String>) {
+    async fn run_recv_loop(self: Arc<Self>, client: RelayClient, own: Option<String>, done: Option<&(dyn Fn() -> bool + Send + Sync)>) {
         let in_rx = client.in_rx.clone();
         let out_tx = client.out_tx.clone();
         let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -2243,6 +2361,10 @@ impl Core {
         loop {
             tokio::select! {
                 _ = ping.tick() => {
+                    // Checked between frames, never in the middle of one: a letter
+                    // half-handled when the connection went could have moved the
+                    // ratchet on and not be saved.
+                    if done.is_some_and(|d| d()) { break; }
                     if own.as_ref().is_some_and(|o| *o != self.relay_onion()) {
                         eprintln!("[relay-client] our relay changed, reconnecting");
                         break;
@@ -2680,7 +2802,7 @@ impl Core {
         let mut atts = Vec::with_capacity(payload.attachments.len());
         for a in &payload.attachments {
             let (key, path, size) = store_attachment_raw(&self.data_dir, &a.data)?;
-            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path });
+            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
         }
         self.db.insert_message_with_origin(
             contact_id, Direction::In, &payload.body, payload.sent_at, expires_at, &atts,
@@ -2733,6 +2855,17 @@ impl Core {
                 let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
             }
             _ => {}
+        }
+        self.heard.lock().unwrap_or_else(|p| p.into_inner()).insert(contact_id, now_ms());
+        // Files in parts: these letters are nothing else.
+        if let Some(ack) = &payload.file_ack {
+            self.on_file_ack(contact_id, ack).await?;
+        }
+        if let Some(chunk) = &payload.file_chunk {
+            self.on_file_chunk(contact_id, chunk, payload.sent_at).await?;
+        }
+        if let Some(file_id) = &payload.file_cancel {
+            self.on_file_cancel(contact_id, file_id).await?;
         }
         if let Some(typing) = payload.typing {
             let group_id_hex = payload.group.as_ref().map(|g| hex_bytes(&g.id));
@@ -2849,7 +2982,7 @@ impl Core {
             return Ok(());
         }
 
-        let is_empty = payload.body.is_empty() && payload.attachments.is_empty() && payload.group.is_none() && payload.callback_data.is_none() && payload.console.is_none();
+        let is_empty = payload.body.is_empty() && payload.attachments.is_empty() && payload.files.is_empty() && payload.group.is_none() && payload.callback_data.is_none() && payload.console.is_none();
         if is_empty { return Ok(()); }
 
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
@@ -2872,10 +3005,10 @@ impl Core {
         let mut atts = Vec::with_capacity(payload.attachments.len());
         for a in &payload.attachments {
             let (key, path, size) = store_attachment_raw(&self.data_dir, &a.data)?;
-            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path });
+            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
         }
         let (mid, group_id_for_event) = if let Some(gref) = &payload.group {
-            if payload.body.is_empty() && payload.attachments.is_empty() {
+            if payload.body.is_empty() && payload.attachments.is_empty() && payload.files.is_empty() {
                 let _ = self.events.try_send(CoreEvent::GroupUpdated { group_id: to_hex(&gref.id) });
                 return Ok(());
             }
@@ -2892,6 +3025,9 @@ impl Core {
             )?;
             (mid, None)
         };
+        if !payload.files.is_empty() {
+            self.accept_offers(contact_id, mid, &payload.files).await?;
+        }
         if let Some(btns) = &payload.buttons {
             if let Ok(b) = bincode::serialize(btns) {
                 self.db.set_setting(&format!("buttons_{}", mid), &b)?;
@@ -3021,7 +3157,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
         };
         let out = match self.route_for(contact).await {
             Some(x) => x,
@@ -3092,11 +3228,13 @@ impl Core {
             let group_pending = self.db.pending_outbound_for_recipient(
                 contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
             )?;
+            let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
                 && !needs_session
                 && !needs_keepalive
+                && !file_work
             {
                 continue;
             }
@@ -3162,6 +3300,13 @@ impl Core {
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
                     eprintln!("[relay-client] retry err to contact {}: {:?}", contact.id, e);
                     break;
+                }
+            }
+            // Parts only to their relay: the relay network holds too little
+            // per key for a file (dht/src/store.rs); they wait for it.
+            if file_work && matches!(out, Route::Relay(_)) {
+                if let Err(e) = self.send_file_parts(&contact, &out).await {
+                    eprintln!("[files] parts to contact {}: {:?}", contact.id, e);
                 }
             }
             for msg_id in group_pending {
@@ -3345,7 +3490,7 @@ impl Core {
             eprintln!("[relay-client] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
             if payload.origin_msg_id > 0 {
                 let _ = self.db.mark_sent(payload.origin_msg_id as i64);
-                let _ = self.events.try_send(CoreEvent::MessageSent { message_id: payload.origin_msg_id as i64 });
+                let _ = self.events.try_send(CoreEvent::MessageFailed { message_id: payload.origin_msg_id as i64, reason: "too large for one letter".into() });
             }
             return Err(CoreError::State);
         }
@@ -3379,6 +3524,8 @@ impl Core {
         let atts = self.db.list_attachments(msg.id)?;
         let mut wire_atts = Vec::with_capacity(atts.len());
         for a in atts {
+            // Sealed in parts: offered below and sent from file_out.
+            if a.chunk_size.is_some() { continue; }
             let key = to_arr32(a.key.clone())?;
             let full = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let enc = std::fs::read(&full)?;
@@ -3393,6 +3540,7 @@ impl Core {
         p.console = self.db.get_setting(&format!("console_{}", msg.id))
             .ok().flatten()
             .and_then(|b| bincode::deserialize::<WireConsole>(&b).ok());
+        p.files = self.offers_for(msg.id)?;
         Ok(p)
     }
 
@@ -3409,6 +3557,7 @@ impl Core {
                 tokio::select! {
                     _ = tick.tick() => {
                         let _ = this.db.purge_expired(now_ms());
+                        this.gc_files();
                         let _ = this.db.purge_old_deferred_pins(now_ms() - 7 * 24 * 3600 * 1000);
                     }
                     _ = bundle_refresh.tick() => {
@@ -3636,6 +3785,353 @@ async fn ensure_group_from_wire(
     Ok(())
 }
 
+/// Files sent in parts (`gipny_libcore::files`), as in libcore's session.rs.
+impl Core {
+    fn store_outgoing(&self, attachments: &[PendingAttachment]) -> Result<(Vec<NewAttachment>, Vec<[u8; 32]>)> {
+        let mut stored = Vec::with_capacity(attachments.len());
+        let mut parts = Vec::new();
+        for a in attachments {
+            if a.from.is_some() || a.data.len() > gipny_libcore::files::INLINE_MAX {
+                let cipher = AttachmentCipher::generate();
+                let mut name = [0u8; 24];
+                fill_random(&mut name);
+                let hex = to_hex(&name);
+                let path = self.data_dir.join(ATTACHMENTS_DIR).join(&hex);
+                let cs = gipny_libcore::files::CHUNK_SIZE;
+                let (size, sha) = match &a.from {
+                    Some(src) => gipny_libcore::files::seal_from(std::io::BufReader::new(std::fs::File::open(src)?), &path, &cipher, cs)?,
+                    None => gipny_libcore::files::seal_from(&a.data[..], &path, &cipher, cs)?,
+                };
+                stored.push(NewAttachment {
+                    name: a.name.clone(), size: size as i64, key: cipher.key().to_vec(), path: hex,
+                    chunk_size: Some(gipny_libcore::files::CHUNK_SIZE as i64),
+                });
+                parts.push(sha);
+            } else {
+                let (key, path, size) = self.store_attachment(&a.data)?;
+                stored.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
+            }
+        }
+        Ok((stored, parts))
+    }
+
+    fn register_offers(&self, msg_id: i64, shas: &[[u8; 32]], recipients: &[i64]) -> Result<()> {
+        let parted = self.db.list_attachments(msg_id)?.into_iter().filter(|a| a.chunk_size.is_some());
+        for (a, sha) in parted.zip(shas) {
+            let file_id: [u8; 16] = crypto::random_array();
+            self.db.file_out_add(&file_id, a.id, msg_id, sha, recipients)?;
+        }
+        Ok(())
+    }
+
+    fn offers_for(&self, msg_id: i64) -> Result<Vec<WireFileOffer>> {
+        Ok(self.db.files_out_for_message(msg_id)?.into_iter()
+            .filter(|f| !f.cancelled)
+            .map(|f| WireFileOffer {
+                file_id: f.file_id,
+                name: f.attachment.name,
+                size: f.attachment.size as u64,
+                sha256: f.sha256,
+                chunk_size: f.attachment.chunk_size.unwrap_or(gipny_libcore::files::CHUNK_SIZE as i64) as u32,
+            })
+            .collect())
+    }
+
+    async fn accept_offers(self: &Arc<Self>, contact_id: i64, message_id: i64, offers: &[WireFileOffer]) -> Result<()> {
+        use gipny_libcore::files;
+        for o in offers {
+            if o.size > files::MAX_FILE_BYTES || o.chunk_size == 0 || o.chunk_size > files::CHUNK_SIZE {
+                eprintln!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
+                continue;
+            }
+            if self.db.file_in(&o.file_id, contact_id)?.is_some() {
+                continue;
+            }
+            let cipher = AttachmentCipher::generate();
+            let mut name = [0u8; 24];
+            fill_random(&mut name);
+            let total = files::chunk_count(o.size, o.chunk_size);
+            let fin = gipny_libcore::db::FileIn {
+                file_id: o.file_id, contact_id, message_id, name: o.name.clone(), size: o.size,
+                sha256: o.sha256, chunk_size: o.chunk_size, path: to_hex(&name), key: cipher.key().to_vec(),
+                bits: files::Received::new(total).bits().to_vec(), received: 0, created_at: now_ms(),
+            };
+            if !self.db.file_in_add(&fin)? {
+                continue;
+            }
+            eprintln!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
+            let _ = self.events.try_send(CoreEvent::FileProgress { message_id, contact_id, incoming: true, done: 0, total });
+            for (index, data) in self.db.file_early_take(&o.file_id, contact_id)? {
+                let chunk = WireFileChunk { file_id: o.file_id, index, data };
+                self.on_file_chunk(contact_id, &chunk, 0).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `sent_at` is the part's letter's, echoed in the ack (0 for a part set
+    /// aside before its offer: no round trip to measure on it).
+    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64) -> Result<()> {
+        use gipny_libcore::files;
+        let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        if !collect_lane_holds(before, now_ms()) {
+            self.collect_kick.notify_one();
+        }
+        let Some(fin) = self.db.file_in(&chunk.file_id, contact_id)? else {
+            if chunk.data.len() <= files::CHUNK_SIZE as usize {
+                self.db.file_early_put(&chunk.file_id, contact_id, chunk.index, &chunk.data)?;
+            }
+            return Ok(());
+        };
+        let total = files::chunk_count(fin.size, fin.chunk_size);
+        let mut got = files::Received::from_bits(fin.bits.clone(), total);
+        let path = self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path);
+        let cipher = AttachmentCipher::from_key(to_arr32(fin.key.clone())?);
+        let fresh = if got.has(chunk.index) {
+            false
+        } else {
+            files::write_part(&path, &cipher, fin.size, fin.chunk_size, chunk.index, &chunk.data)?;
+            got.mark(chunk.index);
+            self.db.file_in_save(&fin.file_id, contact_id, got.bits(), got.count())?;
+            true
+        };
+        if got.complete() {
+            let sha = files::open_to(&path, &cipher, fin.size, fin.chunk_size, &mut std::io::sink())?;
+            if sha != fin.sha256 {
+                eprintln!("[files] {} from contact {contact_id} came broken (sha256); dropped", fin.name);
+                let _ = std::fs::remove_file(&path);
+                self.db.file_in_delete(&fin.file_id, contact_id)?;
+                let _ = self.events.try_send(CoreEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "came broken".into() });
+            } else {
+                let attachment_id = self.db.file_in_finish(&fin)?;
+                eprintln!("[files] {} from contact {contact_id} is whole ({} bytes)", fin.name, fin.size);
+                let _ = self.events.try_send(CoreEvent::FileReceived { message_id: fin.message_id, attachment_id });
+            }
+        } else if fresh {
+            let _ = self.events.try_send(CoreEvent::FileProgress {
+                message_id: fin.message_id, contact_id, incoming: true, done: got.count(), total,
+            });
+        }
+        let hole = !got.missing().is_empty();
+        if !fresh || got.complete() || hole || got.count() % files::ACK_EVERY == 0 {
+            self.send_file_message(contact_id, |p| p.file_ack = Some(WireFileAck { echo_index: chunk.index, echo_sent_at: sent_at, ..got.ack(fin.file_id) })).await;
+        }
+        Ok(())
+    }
+
+    async fn on_file_ack(self: &Arc<Self>, contact_id: i64, ack: &WireFileAck) -> Result<()> {
+        use gipny_libcore::files;
+        let Some(mut peer) = self.db.file_peer(&ack.file_id, contact_id)? else { return Ok(()) };
+        let Some(file) = self.db.file_out(&ack.file_id)? else { return Ok(()) };
+        let total = files::chunk_count(file.attachment.size as u64, file.attachment.chunk_size.unwrap_or(1) as u32);
+        let mut s = files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
+        {
+            let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+            let flow = flows.entry(contact_id).or_default();
+            eprintln!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
+                ack.received_up_to, ack.missing, ack.seen_to);
+            s.on_ack(ack, flow, now_ms());
+            if s.done(total) {
+                flow.forget(ack.file_id);
+                eprintln!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
+            }
+        }
+        peer.acked = s.acked;
+        peer.resend = s.resend.clone();
+        peer.last_ack_at = Some(now_ms());
+        self.db.file_peer_save(&peer)?;
+        let _ = self.events.try_send(CoreEvent::FileProgress {
+            message_id: file.message_id, contact_id, incoming: false, done: peer.acked, total,
+        });
+        self.send_kick.notify_one();
+        Ok(())
+    }
+
+    async fn on_file_cancel(&self, contact_id: i64, file_id: &[u8; 16]) -> Result<()> {
+        if let Some(fin) = self.db.file_in(file_id, contact_id)? {
+            let _ = std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path));
+            self.db.file_in_delete(file_id, contact_id)?;
+            let _ = self.events.try_send(CoreEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "cancelled".into() });
+        }
+        if let Some(mut peer) = self.db.file_peer(file_id, contact_id)? {
+            peer.failed = true;
+            self.db.file_peer_save(&peer)?;
+        }
+        Ok(())
+    }
+
+    /// Stop sending the files of a message, to everyone, and tell them.
+    pub async fn cancel_files(self: &Arc<Self>, message_id: i64) -> Result<()> {
+        for f in self.db.files_out_for_message(message_id)? {
+            self.db.file_out_cancel(&f.file_id)?;
+            for peer in self.db.file_peers_of(&f.file_id)? {
+                if let Some(flow) = self.flows.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&peer.contact_id) {
+                    flow.forget(f.file_id);
+                }
+                let id = f.file_id;
+                self.send_file_message(peer.contact_id, move |p| p.file_cancel = Some(id)).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Where the files of a message stand, for the chat: (name, size, done,
+    /// total, incoming) of each still moving.
+    pub fn files_progress(&self, message_id: i64) -> Result<Vec<(String, u64, u32, u32, bool)>> {
+        use gipny_libcore::files;
+        let mut out = Vec::new();
+        for f in self.db.files_in_for_message(message_id)? {
+            out.push((f.name, f.size, f.received, files::chunk_count(f.size, f.chunk_size), true));
+        }
+        for f in self.db.files_out_for_message(message_id)? {
+            let a = &f.attachment;
+            let total = files::chunk_count(a.size as u64, a.chunk_size.unwrap_or(1) as u32);
+            let peers = self.db.file_peers_of(&f.file_id)?;
+            let done = peers.iter().map(|p| p.acked).min().unwrap_or(total);
+            if done < total && !f.cancelled {
+                out.push((a.name.clone(), a.size as u64, done, total, false));
+            }
+        }
+        Ok(out)
+    }
+
+    async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) -> bool {
+        let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return false };
+        let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
+        fill(&mut payload);
+        let Some(route) = self.route_for(&contact).await else { return false };
+        if self.ensure_session_for(&contact, &route).await.is_err() {
+            return false;
+        }
+        self.send_payload_via_relay(&contact, &mut payload, &route).await.is_ok()
+    }
+
+    /// The usual connection to this contact's relay and up to
+    /// `FILE_LANES - 1` more, dialled in the background as needed: parts
+    /// spread over several i2p streams go that many times faster.
+    async fn file_lanes(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, main: &mpsc::Sender<ClientToRelay>, want: usize) -> Vec<mpsc::Sender<ClientToRelay>> {
+        let mut out = vec![main.clone()];
+        let Some(relay) = contact.relay_address.as_deref().map(str::trim).filter(|r| !r.is_empty()) else { return out };
+        let relay = relay.to_string();
+        let live = {
+            let mut lanes = self.file_lanes.lock().await;
+            let v = lanes.entry(relay.clone()).or_default();
+            v.retain(|tx| !tx.is_closed());
+            v.clone()
+        };
+        let want_more = live.len() + 1 < want.min(FILE_LANES);
+        out.extend(live.into_iter().take(want.saturating_sub(1)));
+        let dialling = !self.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).insert(relay.clone());
+        if want_more && !dialling {
+            let this = self.clone();
+            let handle = tokio::spawn(async move {
+                let dial = tokio::time::timeout(
+                    PEER_RELAY_CONNECT_TIMEOUT,
+                    relay::connect_peer(&this.node, &relay, &this.identity),
+                ).await;
+                this.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
+                if let Ok(Ok(client)) = dial {
+                    eprintln!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
+                    this.file_lanes.lock().await.entry(relay.clone()).or_default().push(client.out_tx.clone());
+                    this.send_kick.notify_one();
+                    this.clone().run_recv_loop(client, None, None).await;
+                }
+            });
+            self.tasks.lock().unwrap().push(handle);
+        } else if !want_more && !dialling {
+            self.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
+        }
+        out
+    }
+
+    async fn send_file_parts(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, route: &Route) -> Result<()> {
+        use gipny_libcore::files;
+        let now = now_ms();
+        let Route::Relay(main) = route else { return Ok(()) };
+        // As many lanes as the contact's window needs; see libcore `lanes_for`.
+        let window = self.flows.lock().unwrap_or_else(|p| p.into_inner()).entry(contact.id).or_default().window();
+        let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
+        let mut lane = 0usize;
+        let heard = self.heard.lock().unwrap_or_else(|p| p.into_inner()).get(&contact.id).copied();
+        for mut peer in self.db.file_peers_for(contact.id)? {
+            let Some(file) = self.db.file_out(&peer.file_id)? else { continue };
+            let a = &file.attachment;
+            let chunk_size = a.chunk_size.unwrap_or(files::CHUNK_SIZE as i64) as u32;
+            let total = files::chunk_count(a.size as u64, chunk_size);
+            let mut s = files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
+            if let Some(sent) = peer.last_sent_at {
+                let alive_since = heard.is_some_and(|h| h > sent);
+                let no_ack_since = peer.last_ack_at.is_none_or(|a| a < sent);
+                if peer.last_ack_at.is_none() && alive_since && now - sent > FILE_GIVE_UP_MS {
+                    peer.failed = true;
+                    self.db.file_peer_save(&peer)?;
+                    let _ = self.events.try_send(CoreEvent::FileFailed {
+                        message_id: file.message_id, contact_id: contact.id, reason: "not taken".into(),
+                    });
+                    continue;
+                }
+                if s.resend.is_empty() && s.next > s.acked && alive_since && no_ack_since && now - sent > FILE_RESEND_IDLE_MS {
+                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                    s.rewind(file.file_id, flows.entry(contact.id).or_default());
+                }
+            }
+            let next_before = s.next;
+            let (due, window, in_flight, rto, srtt) = {
+                let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                let flow = flows.entry(contact.id).or_default();
+                let due = s.due(file.file_id, total, flow, now);
+                (due, flow.window(), flow.in_flight(), flow.rto_ms(), flow.srtt_ms())
+            };
+            if due.is_empty() {
+                continue;
+            }
+            // One line a part (192 KiB): what went, and why it was its turn.
+            let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
+            eprintln!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
+                a.name, contact.id, due, again);
+            let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
+            let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
+            let mut sent_any = false;
+            for index in &due {
+                let data = files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
+                let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
+                payload.file_chunk = Some(WireFileChunk { file_id: file.file_id, index: *index, data });
+                let via = Route::Relay(lanes[lane % lanes.len()].clone());
+                lane += 1;
+                if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &via).await {
+                    eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
+                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
+                    let flow = flows.entry(contact.id).or_default();
+                    for i in due.iter().copied().filter(|i| i >= index) {
+                        flow.unsent(file.file_id, i);
+                        s.resend.push(i);
+                    }
+                    break;
+                }
+                sent_any = true;
+            }
+            peer.next = s.next;
+            peer.resend = s.resend;
+            if sent_any {
+                peer.last_sent_at = Some(now);
+            }
+            self.db.file_peer_save(&peer)?;
+        }
+        Ok(())
+    }
+
+    fn gc_files(&self) {
+        let cutoff = now_ms() - FILE_IN_TTL_MS;
+        if let Ok(stale) = self.db.files_in_stale(cutoff) {
+            for f in stale {
+                let _ = std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&f.path));
+                let _ = self.db.file_in_delete(&f.file_id, f.contact_id);
+            }
+        }
+        let _ = self.db.file_early_gc(cutoff);
+    }
+}
+
 fn store_attachment_raw(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], String, u64)> {
     let cipher = AttachmentCipher::generate();
     let encrypted = cipher.encrypt_chunk(0, &[], data)?;
@@ -3663,7 +4159,7 @@ fn make_typing_payload(group: Option<WireGroupRef>, typing: bool) -> WirePayload
         origin_msg_id: 0, body: String::new(), attachments: vec![], sent_at: now_ms(),
         ttl_ms: None, group, buttons: None, callback_data: None,
         edit_of: None, pin: None, ack_for: None, sender_name: None,
-        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None, wipe: None,
+        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
     }
 }
 
@@ -3681,13 +4177,6 @@ fn to_hex(b: &[u8]) -> String {
     s
 }
 
-/// When two X3dhInits cross, the session opened by the side with the lower
-/// signing key stands — the same answer on both ends (libcore's session.rs
-/// decides the same way).
-fn ours_stands(my_sign: &[u8], their_sign: &[u8]) -> bool {
-    my_sign < their_sign
-}
-
 fn hex_short(b: &[u8]) -> String {
     let mut s = String::new();
     for x in &b[..8.min(b.len())] { s.push_str(&format!("{:02x}", x)); }
@@ -3696,13 +4185,7 @@ fn hex_short(b: &[u8]) -> String {
 
 #[cfg(test)]
 mod relay_mode_tests {
-    use super::{peer_relay_redial_after, resolve_relay_mode, RelayMode};
-
-    #[test]
-    fn an_unreachable_relay_is_dialled_again_for_a_few_minutes_then_left() {
-        let waits: Vec<Option<u64>> = (0..7).map(|n| peer_relay_redial_after(n).map(|d| d.as_secs())).collect();
-        assert_eq!(waits, vec![Some(5), Some(10), Some(20), Some(40), Some(80), None, None]);
-    }
+    use super::{resolve_relay_mode, RelayMode};
 
     #[test]
     fn a_fresh_profile_gets_the_built_in_relay() {
