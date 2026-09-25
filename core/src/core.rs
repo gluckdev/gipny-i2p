@@ -596,6 +596,12 @@ impl Core {
     pub fn shutdown(&self) {
         let mut v = self.tasks.lock().unwrap();
         for h in v.drain(..) { h.abort(); }
+        drop(v);
+        // The last sender of a connection gone is what closes it. Held here,
+        // a stopped instance kept every connection open, and its relays went
+        // on dealing mail to them until they fell silent (90 s).
+        if let Ok(mut out) = self.relay_out.try_write() { *out = None; }
+        if let Ok(mut peers) = self.peer_relays.try_lock() { peers.clear(); }
     }
 
     /// The relay named in Settings, used in external mode.
