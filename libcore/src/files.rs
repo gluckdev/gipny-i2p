@@ -27,7 +27,7 @@ pub const CHUNK_SIZE: u32 = 192 * 1024;
 /// can wait on their relay at once — ~8 MiB, a third of the built-in relay's
 /// per-recipient limit, so nobody else's mail is pushed out. [`Flow`] keeps
 /// the window under it, as large as the path carries.
-pub const WINDOW: u32 = 32;
+pub const WINDOW: u32 = 16;
 /// Largest file sent in parts.
 pub const MAX_FILE_BYTES: u64 = 2 << 30;
 /// A receiver acknowledges at least this often, in parts: every one. The
@@ -303,22 +303,6 @@ const RTO_MIN_MS: i64 = 10_000;
 const RTO_MAX_MS: i64 = 120_000;
 /// The timeout before a single round trip has been measured.
 const RTO_FIRST_MS: i64 = 30_000;
-/// A round trip this many times the path's usual fast one means parts are
-/// queueing on the way: the window stops growing ...
-const QUEUE_GROWS: f64 = 2.0;
-/// ... and past this many times it gives back a fifth, once per round trip.
-/// An i2p round trip jumps by half or more from one part to the next, so at
-/// 1.5 and 2.5 against the plain minimum the brake read noise as a queue and
-/// held the window at 2 for good (the laptop, 2026-09-25: ~25 KiB/s). The
-/// queue it guards against is also bounded by the lanes, four parts a stream.
-const QUEUE_TOO_LONG: f64 = 3.0;
-/// The path's fast round trip is the lower quartile of this many latest
-/// samples — not their minimum, which one lucky part sets: after
-/// new tunnels, or a recipient gone and back, the brake takes the path as it
-/// is now within a window or two, instead of measuring against a start long
-/// past (e2e run 36062035277: after the recipient restarted, the window sat
-/// at 2 for the rest of the file and the run timed out).
-const BASE_SAMPLES: usize = 32;
 /// A sample this many times the smoothed round trip is not the path: a part
 /// that waited on the relay while its recipient was away. It is left out,
 /// unless more come in a row than a window holds — the parts delayed together
@@ -330,10 +314,11 @@ const OUTLIER: f64 = 4.0;
 /// one per window; a loss halves it, once per round trip. The round trip is
 /// measured on parts sent once (not on resends, whose ack could answer
 /// either copy), and a part in flight longer than `srtt + 4·rttvar` is lost.
-/// i2p streams are reliable, so losses are rare and a window grown only
-/// until one would fill every queue on the way; the round trip against the
-/// fastest seen tells a queue building up, and the window stops there
-/// (as LEDBAT and Vegas do), so pings and letters still get through.
+/// There is no brake on the round trip itself (as LEDBAT or Vegas have): an
+/// i2p round trip jumps between 6 and 40 s from part to part with nothing
+/// queued, and every version of such a brake read that as a queue and held
+/// the window at 2 (the laptop, 2026-09-25: a file at 8 KiB/s). What would
+/// queue is bounded instead: at most [`WINDOW`] parts, four to a stream.
 /// Every recipient's path is its own: a slow phone on three hops and a relay
 /// on a server each get the window their path carries.
 #[derive(Clone, Debug)]
@@ -342,11 +327,8 @@ pub struct Flow {
     ssthresh: f64,
     srtt: Option<f64>,
     rttvar: f64,
-    /// Latest samples, for the fastest round trip: the path with nothing queued.
-    recent: std::collections::VecDeque<f64>,
     outliers: u32,
     last_cut: i64,
-    last_ease: i64,
     /// The timeout's multiplier after a loss: 2 until any part arrives again,
     /// so parts that were only slow are not sent again at the old timeout.
     /// Not TCP's doubling up to 8 kept until a part sent once is measured:
@@ -370,10 +352,8 @@ impl Default for Flow {
             ssthresh: WINDOW as f64,
             srtt: None,
             rttvar: 0.0,
-            recent: Default::default(),
             outliers: 0,
             last_cut: i64::MIN / 2,
-            last_ease: i64::MIN / 2,
             backoff: 1,
             undo: None,
             sent: Default::default(),
@@ -408,15 +388,6 @@ impl Flow {
         self.srtt.map(|s| s as i64)
     }
 
-    /// The path's fast round trip: the lower quartile of the latest samples.
-    pub fn base_ms(&self) -> Option<f64> {
-        if self.recent.is_empty() {
-            return None;
-        }
-        let mut v: Vec<f64> = self.recent.iter().copied().collect();
-        v.sort_by(|a, b| a.total_cmp(b));
-        Some(v[(v.len() - 1) / 4])
-    }
 
     fn adopt(&mut self, file_id: [u8; 16], outstanding: impl Iterator<Item = u32>, now: i64) {
         if self.known.insert(file_id) {
@@ -464,27 +435,12 @@ impl Flow {
             if !resend {
                 self.sample((now - at).max(0) as f64);
             }
-            match self.queueing() {
-                q if q >= QUEUE_TOO_LONG => {
-                    let rtt = self.srtt.unwrap_or(0.0) as i64;
-                    if now - self.last_ease >= rtt {
-                        self.last_ease = now;
-                        self.cwnd = (self.cwnd * 0.8).max(2.0);
-                    }
-                }
-                q if q >= QUEUE_GROWS => {}
-                _ if self.cwnd < self.ssthresh => self.cwnd += 1.0,
-                _ => self.cwnd += 1.0 / self.cwnd,
+            if self.cwnd < self.ssthresh {
+                self.cwnd += 1.0;
+            } else {
+                self.cwnd += 1.0 / self.cwnd;
             }
             self.cwnd = self.cwnd.min(WINDOW as f64);
-        }
-    }
-
-    /// The smoothed round trip over the fastest: 1 on an empty path.
-    fn queueing(&self) -> f64 {
-        match (self.srtt, self.base_ms()) {
-            (Some(s), Some(b)) if b > 0.0 => s / b,
-            _ => 1.0,
         }
     }
 
@@ -500,10 +456,6 @@ impl Flow {
             }
         }
         self.backoff = 1;
-        self.recent.push_back(rtt);
-        if self.recent.len() > BASE_SAMPLES {
-            self.recent.pop_front();
-        }
         match self.srtt {
             None => {
                 self.srtt = Some(rtt);
@@ -793,45 +745,13 @@ mod tests {
     }
 
     #[test]
-    fn a_queue_building_up_stops_the_window_then_shrinks_it() {
-        let mut flow = Flow::default();
-        flow.cwnd = 10.0;
-        let grow = |flow: &mut Flow, rtt: i64, now: i64| {
-            flow.on_sent(F, 0, now - rtt, false);
-            flow.on_held(F, |_| true, now);
-        };
-        let mut now = 0;
-        for _ in 0..10 {
-            now += 1_000;
-            grow(&mut flow, 2_000, now);
-        }
-        assert!(flow.window() > 10, "an empty path: it grows");
-        // Round trips climb to 3.5x within a few parts: a queue filling up.
-        let w = flow.cwnd;
-        let mut stopped = false;
-        for _ in 0..6 {
-            now += 1_000;
-            grow(&mut flow, 7_000, now);
-            stopped |= flow.queueing() >= QUEUE_GROWS && flow.queueing() < QUEUE_TOO_LONG;
-        }
-        assert!(stopped, "held while the queue grows");
-        let mut eased = false;
-        for _ in 0..12 {
-            now += 10_000;
-            grow(&mut flow, 7_000, now);
-            eased |= flow.cwnd < w;
-        }
-        assert!(eased, "then it gives some back: {} vs {w}", flow.cwnd);
-    }
-
-    #[test]
-    fn a_path_slower_for_good_becomes_the_new_normal() {
+    fn a_path_slower_for_good_becomes_the_round_trip() {
         let mut flow = Flow::default();
         flow.sample(1_000.0);
         for _ in 0..600 {
             flow.sample(5_000.0);
         }
-        assert!(flow.queueing() < QUEUE_GROWS, "{}", flow.queueing());
+        assert!(flow.srtt_ms().unwrap() > 4_000, "the round trip follows the slower path: {:?}", flow.srtt_ms());
     }
 
     #[test]
@@ -846,7 +766,6 @@ mod tests {
             flow.sample(60_000.0);
         }
         assert_eq!((flow.srtt_ms(), flow.rto_ms()), (srtt, rto), "left out");
-        assert!(flow.queueing() < QUEUE_GROWS);
         // The next is ordinary again: the count starts over.
         flow.sample(2_000.0);
         flow.sample(60_000.0);
@@ -864,7 +783,6 @@ mod tests {
             let top = d.iter().max().map_or(s.acked, |t| t + 1);
             s.on_ack(&ack(F, top, vec![], top), &mut flow, now);
         }
-        assert!(flow.queueing() < QUEUE_GROWS, "the slower path is the new normal: {}", flow.queueing());
         assert!(flow.window() > 4, "and the window opens on it: {}", flow.window());
     }
 
@@ -881,7 +799,7 @@ mod tests {
             let top = d.iter().max().map_or(s.acked, |t| t + 1);
             s.on_ack(&ack(F, top, vec![], top), &mut flow, now);
         }
-        assert!(flow.window() >= 8, "{} (queueing {})", flow.window(), flow.queueing());
+        assert!(flow.window() >= 8, "{}", flow.window());
     }
 
     #[test]
