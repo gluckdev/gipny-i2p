@@ -347,10 +347,16 @@ pub struct Flow {
     outliers: u32,
     last_cut: i64,
     last_ease: i64,
-    /// The timeout's multiplier after a loss, doubled each time up to 8 and
-    /// back to 1 at the next part measured: parts that were only slow are
-    /// not sent again and again at the old timeout (Karn's backoff).
+    /// The timeout's multiplier after a loss: 2 until any part arrives again,
+    /// so parts that were only slow are not sent again at the old timeout.
+    /// Not TCP's doubling up to 8 kept until a part sent once is measured:
+    /// after a recipient restarted nearly every part in flight was a resend,
+    /// none could be measured, and each hole waited out 120 s (the laptop,
+    /// 2026-09-25).
     backoff: i64,
+    /// The window and threshold before the last cut, and when it was: if the
+    /// cut turns out to have been for parts only slow, it is taken back.
+    undo: Option<(f64, f64, i64)>,
     /// Parts in flight: when each went, and whether it was a resend.
     sent: std::collections::HashMap<([u8; 16], u32), (i64, bool)>,
     /// Files seen since this started (see [`Sending::due`]).
@@ -369,6 +375,7 @@ impl Default for Flow {
             last_cut: i64::MIN / 2,
             last_ease: i64::MIN / 2,
             backoff: 1,
+            undo: None,
             sent: Default::default(),
             known: Default::default(),
         }
@@ -434,8 +441,26 @@ impl Flow {
             .filter(|((f, i), _)| *f == file_id && held(*i))
             .map(|((_, i), (t, r))| (*i, *t, *r))
             .collect();
+        if !arrived.is_empty() {
+            // The path delivers: whatever the loss was, it is over.
+            self.backoff = 1;
+        }
         for (i, at, resend) in arrived {
             self.sent.remove(&(file_id, i));
+            // A resend acked sooner than half a round trip after it went: the
+            // ack is for the first copy, which was only slow, and the cut it
+            // caused is taken back (as TCP's Eifel detection does). An i2p
+            // round trip jumps enough that such cuts were common: 15 resends
+            // in 96 in CI run 36074756163, the window held at 3 to 5.
+            if resend {
+                if let (Some(s), Some((cwnd, ssthresh, cut))) = (self.srtt, self.undo) {
+                    if at >= cut && ((now - at) as f64) < s / 2.0 {
+                        self.cwnd = self.cwnd.max(cwnd);
+                        self.ssthresh = ssthresh;
+                        self.undo = None;
+                    }
+                }
+            }
             if !resend {
                 self.sample((now - at).max(0) as f64);
             }
@@ -523,9 +548,10 @@ impl Flow {
             return;
         }
         self.last_cut = now;
+        self.undo = Some((self.cwnd, self.ssthresh, now));
         self.ssthresh = (self.cwnd / 2.0).max(2.0);
         self.cwnd = self.ssthresh;
-        self.backoff = (self.backoff * 2).min(8);
+        self.backoff = 2;
     }
 
     /// A file done, cancelled or rewound: its parts are no longer in flight.
@@ -877,16 +903,42 @@ mod tests {
     }
 
     #[test]
-    fn after_a_timeout_the_timeout_backs_off_until_a_part_is_measured() {
+    fn after_a_loss_the_timeout_doubles_until_a_part_arrives() {
         let mut flow = Flow::default();
         flow.sample(5_000.0);
         let rto = flow.rto_ms();
         flow.on_loss(1_000, 20_000);
         assert_eq!(flow.rto_ms(), (rto * 2).min(RTO_MAX_MS));
         flow.on_loss(30_000, 60_000);
-        assert_eq!(flow.rto_ms(), (rto * 4).min(RTO_MAX_MS));
-        flow.sample(5_000.0);
-        assert!(flow.rto_ms() <= rto, "back to the measured one");
+        assert_eq!(flow.rto_ms(), (rto * 2).min(RTO_MAX_MS), "twice at most");
+        // A resend arrives: no sample (it could answer either copy), but the
+        // path delivers again, and the timeout is the measured one.
+        flow.on_sent(F, 7, 60_000, true);
+        flow.on_held(F, |i| i == 7, 70_000);
+        assert_eq!(flow.rto_ms(), rto);
+    }
+
+    #[test]
+    fn a_cut_for_a_part_only_slow_is_taken_back() {
+        let mut flow = Flow::default();
+        flow.cwnd = 12.0;
+        flow.sample(8_000.0);
+        flow.on_sent(F, 3, 0, false);
+        flow.on_loss(0, 30_000);
+        assert_eq!(flow.window(), 6);
+        // Sent again at 30 s; its ack at 31 s is far too soon to answer the
+        // resend — the first copy arrived.
+        flow.on_sent(F, 3, 30_000, true);
+        flow.on_held(F, |i| i == 3, 31_000);
+        assert!(flow.window() >= 12, "{}", flow.window());
+        // A real loss: the resend's own ack, a round trip later. The cut stands.
+        let mut lost = Flow::default();
+        lost.cwnd = 12.0;
+        lost.sample(8_000.0);
+        lost.on_loss(0, 30_000);
+        lost.on_sent(F, 3, 30_000, true);
+        lost.on_held(F, |i| i == 3, 39_000);
+        assert!(lost.window() < 12, "{}", lost.window());
     }
 
     #[test]
