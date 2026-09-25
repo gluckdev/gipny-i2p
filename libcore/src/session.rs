@@ -227,6 +227,9 @@ pub struct WireFileAck {
     /// One past the last part held: parts below it and not `missing` are
     /// there, so the sender knows what it put in flight has arrived.
     pub seen_to: u32,
+    /// Sent by a recipient just started: whatever was in flight to it and is
+    /// not held is gone, and goes again now rather than at its timeout.
+    pub resumed: bool,
 }
 
 impl WirePayload {
@@ -898,6 +901,7 @@ impl SessionManager {
         this.ensure_prekeys().await?;
         this.clone().spawn_relay_loop();
         this.clone().spawn_collect_lanes();
+        this.clone().spawn_resume_acks();
         this.clone().spawn_send_loop();
         this.clone().spawn_bundle_refresh_loop();
         this.clone().spawn_dht_loop();
@@ -1397,6 +1401,35 @@ impl SessionManager {
     }
 
     /// Keep extra connections to our own relay while file parts come, when it
+    /// Just started: tell everyone sending us a file what we hold of it, so
+    /// what was in flight when we stopped goes again at once instead of at
+    /// its timeout. Tried every 10 s for five minutes, until each went.
+    fn spawn_resume_acks(self: Arc<Self>) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            let Ok(files) = this.db.files_in_stale(i64::MAX) else { return };
+            let mut left: Vec<_> = files.into_iter().collect();
+            for _ in 0..30 {
+                if left.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let mut still = Vec::new();
+                for fin in left {
+                    let total = crate::files::chunk_count(fin.size as u64, fin.chunk_size);
+                    let ack = crate::files::Received::from_bits(fin.bits.clone(), total).resume_ack(fin.file_id);
+                    if this.send_file_message(fin.contact_id, |p| p.file_ack = Some(ack)).await {
+                        eprintln!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
+                    } else {
+                        still.push(fin);
+                    }
+                }
+                left = still;
+            }
+        });
+        self.track(handle);
+    }
+
     /// runs elsewhere (one in this process is a pipe, no faster for more).
     fn spawn_collect_lanes(self: Arc<Self>) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -2904,15 +2937,15 @@ impl SessionManager {
 
     /// A letter about files (an ack, a cancel): no text, not a message, not
     /// retried — the next part or ack supersedes it.
-    async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) {
-        let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return };
+    async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) -> bool {
+        let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return false };
         let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
         fill(&mut payload);
-        let Some(route) = self.route_for(&contact).await else { return };
+        let Some(route) = self.route_for(&contact).await else { return false };
         if self.ensure_session_for(&contact, &route).await.is_err() {
-            return;
+            return false;
         }
-        let _ = self.send_payload_via_relay(&contact, &mut payload, &route).await;
+        self.send_payload_via_relay(&contact, &mut payload, &route).await.is_ok()
     }
 
     /// Connections to carry parts to this contact's relay: the usual one and
@@ -3199,7 +3232,7 @@ mod wire_tests {
         assert_eq!(back.file_chunk, c.file_chunk);
 
         let mut a = WirePayload::simple(0, String::new(), Vec::new(), 1, None);
-        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6], seen_to: 7 });
+        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6], seen_to: 7, resumed: true });
         a.file_cancel = Some([8; 16]);
         let back = decode_payload(&encode_payload(&a).unwrap()).unwrap();
         assert_eq!(back.file_ack, a.file_ack);

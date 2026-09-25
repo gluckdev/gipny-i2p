@@ -204,7 +204,13 @@ impl Received {
 
     pub fn ack(&self, file_id: [u8; 16]) -> WireFileAck {
         let seen_to = (0..self.total).rev().find(|&i| self.has(i)).map_or(0, |i| i + 1);
-        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing(), seen_to }
+        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing(), seen_to, resumed: false }
+    }
+
+    /// The ack a recipient sends as it starts: what it holds, and that
+    /// anything else once in flight to it is gone.
+    pub fn resume_ack(&self, file_id: [u8; 16]) -> WireFileAck {
+        WireFileAck { resumed: true, ..self.ack(file_id) }
     }
 }
 
@@ -229,6 +235,22 @@ impl Sending {
         let held = |i: u32| i < ack.received_up_to || (i < ack.seen_to && !ack.missing.contains(&i));
         flow.on_held(ack.file_id, held, now);
         self.acked = self.acked.max(ack.received_up_to.min(self.next));
+        if ack.resumed {
+            // The recipient restarted: what it does not hold of what was out
+            // is gone. Sent again now, without a cut — the path is not full,
+            // the other end was away (the laptop, 2026-09-25: 106 s of
+            // waiting out timeouts after a restart).
+            for i in flow.in_flight_of(ack.file_id) {
+                if i >= self.acked && !held(i) && !self.resend.contains(&i) {
+                    flow.unsent(ack.file_id, i);
+                    self.resend.push(i);
+                }
+            }
+            flow.recovered();
+            self.resend.retain(|&m| m >= self.acked);
+            self.resend.sort_unstable();
+            return;
+        }
         let mut lost: Option<i64> = None;
         for &m in &ack.missing {
             if m >= self.acked && m < self.next && !self.resend.contains(&m) && flow.overdue(ack.file_id, m, now) {
@@ -468,6 +490,17 @@ impl Flow {
         }
     }
 
+    fn in_flight_of(&self, file_id: [u8; 16]) -> Vec<u32> {
+        let mut v: Vec<u32> = self.sent.keys().filter(|(f, _)| *f == file_id).map(|(_, i)| *i).collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// The other end is back: the timeout is the measured one again.
+    fn recovered(&mut self) {
+        self.backoff = 1;
+    }
+
     fn sent_at(&self, file_id: [u8; 16], index: u32) -> Option<i64> {
         self.sent.get(&(file_id, index)).map(|(at, _)| *at)
     }
@@ -606,7 +639,7 @@ mod tests {
     }
 
     fn ack(file: [u8; 16], up_to: u32, missing: Vec<u32>, seen_to: u32) -> WireFileAck {
-        WireFileAck { file_id: file, received_up_to: up_to, missing, seen_to }
+        WireFileAck { file_id: file, received_up_to: up_to, missing, seen_to, resumed: false }
     }
 
     const F: [u8; 16] = [1; 16];
@@ -857,6 +890,23 @@ mod tests {
         lost.on_sent(F, 3, 30_000, true);
         lost.on_held(F, |i| i == 3, 39_000);
         assert!(lost.window() < 12, "{}", lost.window());
+    }
+
+    #[test]
+    fn a_restarted_recipient_gets_what_it_lost_at_once_and_the_window_stays() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        flow.cwnd = 8.0;
+        let out = s.due(F, 100, &mut flow, 0);
+        assert_eq!(out, (0..8).collect::<Vec<_>>());
+        // It restarted holding 0..3 and 5; 3, 4, 6, 7 were lost with it.
+        let mut r = Received::new(100);
+        for i in [0, 1, 2, 5] {
+            r.mark(i);
+        }
+        s.on_ack(&r.resume_ack(F), &mut flow, 2_000);
+        assert_eq!(s.resend, vec![3, 4, 6, 7], "not waiting out their timeouts");
+        assert!(flow.window() >= 8, "no cut: the path was not the trouble ({})", flow.window());
+        assert_eq!(&s.due(F, 100, &mut flow, 2_000)[..4], &[3, 4, 6, 7]);
     }
 
     #[test]

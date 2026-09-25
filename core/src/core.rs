@@ -599,6 +599,7 @@ impl Core {
         let _ = core.db.cleanup_orphan_pins();
         core.clone().spawn_relay_loop();
         core.clone().spawn_collect_lanes();
+        core.clone().spawn_resume_acks();
         core.clone().spawn_send_loop();
         core.clone().spawn_purge_loop();
         core.clone().spawn_update_loop();
@@ -2032,6 +2033,35 @@ impl Core {
     }
 
     /// Keep extra connections to our own relay while file parts come, when it
+    /// Just started: tell everyone sending us a file what we hold of it, so
+    /// what was in flight when we stopped goes again at once instead of at
+    /// its timeout. Tried every 10 s for five minutes, until each went.
+    fn spawn_resume_acks(self: Arc<Self>) {
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            let Ok(files) = this.db.files_in_stale(i64::MAX) else { return };
+            let mut left: Vec<_> = files.into_iter().collect();
+            for _ in 0..30 {
+                if left.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let mut still = Vec::new();
+                for fin in left {
+                    let total = gipny_libcore::files::chunk_count(fin.size as u64, fin.chunk_size);
+                    let ack = gipny_libcore::files::Received::from_bits(fin.bits.clone(), total).resume_ack(fin.file_id);
+                    if this.send_file_message(fin.contact_id, |p| p.file_ack = Some(ack)).await {
+                        eprintln!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
+                    } else {
+                        still.push(fin);
+                    }
+                }
+                left = still;
+            }
+        });
+        self.track(handle);
+    }
+
     /// runs elsewhere. Mirrors libcore's session.rs `spawn_collect_lanes`.
     fn spawn_collect_lanes(self: Arc<Self>) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -3963,15 +3993,15 @@ impl Core {
         Ok(out)
     }
 
-    async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) {
-        let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return };
+    async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) -> bool {
+        let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return false };
         let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
         fill(&mut payload);
-        let Some(route) = self.route_for(&contact).await else { return };
+        let Some(route) = self.route_for(&contact).await else { return false };
         if self.ensure_session_for(&contact, &route).await.is_err() {
-            return;
+            return false;
         }
-        let _ = self.send_payload_via_relay(&contact, &mut payload, &route).await;
+        self.send_payload_via_relay(&contact, &mut payload, &route).await.is_ok()
     }
 
     /// The usual connection to this contact's relay and up to
