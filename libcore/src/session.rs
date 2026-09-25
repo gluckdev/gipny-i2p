@@ -230,6 +230,13 @@ pub struct WireFileAck {
     /// Sent by a recipient just started: whatever was in flight to it and is
     /// not held is gone, and goes again now rather than at its timeout.
     pub resumed: bool,
+    /// The part this ack answers and its letter's `sent_at`, echoed: the
+    /// sender measures the round trip of the very copy that arrived, resends
+    /// included (as TCP timestamps do). Without it a resend could not be
+    /// measured, and after a recipient restarted on a slower path every part
+    /// timed out at the old timeout, went again, and was never measured.
+    pub echo_index: u32,
+    pub echo_sent_at: i64,
 }
 
 impl WirePayload {
@@ -1941,7 +1948,7 @@ impl SessionManager {
             self.on_file_ack(contact_id, ack).await?;
         }
         if let Some(chunk) = &payload.file_chunk {
-            self.on_file_chunk(contact_id, chunk).await?;
+            self.on_file_chunk(contact_id, chunk, payload.sent_at).await?;
         }
         if let Some(file_id) = &payload.file_cancel {
             self.on_file_cancel(contact_id, file_id).await?;
@@ -2815,13 +2822,15 @@ impl SessionManager {
             let early = self.db.file_early_take(&o.file_id, contact_id)?;
             for (index, data) in early {
                 let chunk = WireFileChunk { file_id: o.file_id, index, data };
-                self.on_file_chunk(contact_id, &chunk).await?;
+                self.on_file_chunk(contact_id, &chunk, 0).await?;
             }
         }
         Ok(())
     }
 
-    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk) -> Result<()> {
+    /// `sent_at` is the part's letter's, echoed in the ack (0 for a part set
+    /// aside before its offer: no round trip to measure on it).
+    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64) -> Result<()> {
         let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
         if !collect_lane_holds(before, now_ms()) {
             self.collect_kick.notify_one();
@@ -2867,7 +2876,7 @@ impl SessionManager {
         // hole, or every few parts: say where we are.
         let hole = !got.missing().is_empty();
         if !fresh || got.complete() || hole || got.count() % crate::files::ACK_EVERY == 0 {
-            self.send_file_message(contact_id, |p| p.file_ack = Some(got.ack(fin.file_id))).await;
+            self.send_file_message(contact_id, |p| p.file_ack = Some(WireFileAck { echo_index: chunk.index, echo_sent_at: sent_at, ..got.ack(fin.file_id) })).await;
         }
         Ok(())
     }
@@ -3232,7 +3241,7 @@ mod wire_tests {
         assert_eq!(back.file_chunk, c.file_chunk);
 
         let mut a = WirePayload::simple(0, String::new(), Vec::new(), 1, None);
-        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6], seen_to: 7, resumed: true });
+        a.file_ack = Some(WireFileAck { file_id: [7; 16], received_up_to: 4, missing: vec![6], seen_to: 7, resumed: true, echo_index: 5, echo_sent_at: 1_234 });
         a.file_cancel = Some([8; 16]);
         let back = decode_payload(&encode_payload(&a).unwrap()).unwrap();
         assert_eq!(back.file_ack, a.file_ack);

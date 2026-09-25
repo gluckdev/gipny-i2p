@@ -2862,7 +2862,7 @@ impl Core {
             self.on_file_ack(contact_id, ack).await?;
         }
         if let Some(chunk) = &payload.file_chunk {
-            self.on_file_chunk(contact_id, chunk).await?;
+            self.on_file_chunk(contact_id, chunk, payload.sent_at).await?;
         }
         if let Some(file_id) = &payload.file_cancel {
             self.on_file_cancel(contact_id, file_id).await?;
@@ -3863,13 +3863,15 @@ impl Core {
             let _ = self.events.try_send(CoreEvent::FileProgress { message_id, contact_id, incoming: true, done: 0, total });
             for (index, data) in self.db.file_early_take(&o.file_id, contact_id)? {
                 let chunk = WireFileChunk { file_id: o.file_id, index, data };
-                self.on_file_chunk(contact_id, &chunk).await?;
+                self.on_file_chunk(contact_id, &chunk, 0).await?;
             }
         }
         Ok(())
     }
 
-    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk) -> Result<()> {
+    /// `sent_at` is the part's letter's, echoed in the ack (0 for a part set
+    /// aside before its offer: no round trip to measure on it).
+    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64) -> Result<()> {
         use gipny_libcore::files;
         let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
         if !collect_lane_holds(before, now_ms()) {
@@ -3912,7 +3914,7 @@ impl Core {
         }
         let hole = !got.missing().is_empty();
         if !fresh || got.complete() || hole || got.count() % files::ACK_EVERY == 0 {
-            self.send_file_message(contact_id, |p| p.file_ack = Some(got.ack(fin.file_id))).await;
+            self.send_file_message(contact_id, |p| p.file_ack = Some(WireFileAck { echo_index: chunk.index, echo_sent_at: sent_at, ..got.ack(fin.file_id) })).await;
         }
         Ok(())
     }

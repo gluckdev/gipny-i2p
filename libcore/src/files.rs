@@ -204,7 +204,7 @@ impl Received {
 
     pub fn ack(&self, file_id: [u8; 16]) -> WireFileAck {
         let seen_to = (0..self.total).rev().find(|&i| self.has(i)).map_or(0, |i| i + 1);
-        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing(), seen_to, resumed: false }
+        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing(), seen_to, resumed: false, echo_index: 0, echo_sent_at: 0 }
     }
 
     /// The ack a recipient sends as it starts: what it holds, and that
@@ -233,7 +233,10 @@ impl Sending {
     /// other, and a hole is most often a part still on its way.
     pub fn on_ack(&mut self, ack: &WireFileAck, flow: &mut Flow, now: i64) {
         let held = |i: u32| i < ack.received_up_to || (i < ack.seen_to && !ack.missing.contains(&i));
-        flow.on_held(ack.file_id, held, now);
+        if ack.echo_sent_at > 0 && ack.echo_sent_at <= now {
+            flow.sample((now - ack.echo_sent_at) as f64);
+        }
+        flow.on_held(ack.file_id, held, now, ack.echo_sent_at > 0);
         self.acked = self.acked.max(ack.received_up_to.min(self.next));
         if ack.resumed {
             // The recipient restarted: what it does not hold of what was out
@@ -429,7 +432,10 @@ impl Flow {
         self.sent.remove(&(file_id, index));
     }
 
-    fn on_held(&mut self, file_id: [u8; 16], held: impl Fn(u32) -> bool, now: i64) {
+    /// `echoed`: the ack carried its part's send time and the round trip is
+    /// measured from that; otherwise from when each arrived part went out,
+    /// parts sent once only (Karn).
+    fn on_held(&mut self, file_id: [u8; 16], held: impl Fn(u32) -> bool, now: i64, echoed: bool) {
         let arrived: Vec<(u32, i64, bool)> = self.sent.iter()
             .filter(|((f, i), _)| *f == file_id && held(*i))
             .map(|((_, i), (t, r))| (*i, *t, *r))
@@ -454,7 +460,7 @@ impl Flow {
                     }
                 }
             }
-            if !resend {
+            if !resend && !echoed {
                 self.sample((now - at).max(0) as f64);
             }
             if self.cwnd < self.ssthresh {
@@ -639,7 +645,7 @@ mod tests {
     }
 
     fn ack(file: [u8; 16], up_to: u32, missing: Vec<u32>, seen_to: u32) -> WireFileAck {
-        WireFileAck { file_id: file, received_up_to: up_to, missing, seen_to, resumed: false }
+        WireFileAck { file_id: file, received_up_to: up_to, missing, seen_to, resumed: false, echo_index: 0, echo_sent_at: 0 }
     }
 
     const F: [u8; 16] = [1; 16];
@@ -865,7 +871,7 @@ mod tests {
         // A resend arrives: no sample (it could answer either copy), but the
         // path delivers again, and the timeout is the measured one.
         flow.on_sent(F, 7, 60_000, true);
-        flow.on_held(F, |i| i == 7, 70_000);
+        flow.on_held(F, |i| i == 7, 70_000, false);
         assert_eq!(flow.rto_ms(), rto);
     }
 
@@ -880,7 +886,7 @@ mod tests {
         // Sent again at 30 s; its ack at 31 s is far too soon to answer the
         // resend — the first copy arrived.
         flow.on_sent(F, 3, 30_000, true);
-        flow.on_held(F, |i| i == 3, 31_000);
+        flow.on_held(F, |i| i == 3, 31_000, false);
         assert!(flow.window() >= 12, "{}", flow.window());
         // A real loss: the resend's own ack, a round trip later. The cut stands.
         let mut lost = Flow::default();
@@ -888,7 +894,7 @@ mod tests {
         lost.sample(8_000.0);
         lost.on_loss(0, 30_000);
         lost.on_sent(F, 3, 30_000, true);
-        lost.on_held(F, |i| i == 3, 39_000);
+        lost.on_held(F, |i| i == 3, 39_000, false);
         assert!(lost.window() < 12, "{}", lost.window());
     }
 
@@ -907,6 +913,23 @@ mod tests {
         assert_eq!(s.resend, vec![3, 4, 6, 7], "not waiting out their timeouts");
         assert!(flow.window() >= 8, "no cut: the path was not the trouble ({})", flow.window());
         assert_eq!(&s.due(F, 100, &mut flow, 2_000)[..4], &[3, 4, 6, 7]);
+    }
+
+    #[test]
+    fn an_ack_that_echoes_its_part_measures_a_resend_too() {
+        let (mut s, mut flow) = (Sending::default(), Flow::default());
+        for _ in 0..5 {
+            flow.sample(5_000.0);
+        }
+        let rto = flow.rto_ms();
+        s.due(F, 10, &mut flow, 0);
+        // The path got slower: every part now takes 15 s, and resends too.
+        let mut a = ack(F, 1, vec![], 1);
+        a.echo_index = 0;
+        a.echo_sent_at = 40_000;
+        s.on_ack(&a, &mut flow, 55_000);
+        assert!(flow.srtt_ms().unwrap() > 5_000, "the resend was measured: {:?}", flow.srtt_ms());
+        assert!(flow.rto_ms() > rto, "and the timeout follows the slower path");
     }
 
     #[test]
