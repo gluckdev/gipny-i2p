@@ -13,6 +13,7 @@ import { GroupModal } from './group';
 import { SearchModal } from './search';
 import { MediaModal } from './media';
 import { ForwardModal } from './forward';
+import { t } from './i18n';
 
 interface PendingFile { name: string; path: string; size: number }
 
@@ -300,8 +301,8 @@ export class ChatView extends View {
         h('div', { class: 'chat-input-row' },
           this.promptEl = h('div', { class: 'prompt' }, '>'),
           this.input,
-          h('button', { class: 'icon-btn', title: 'Прикрепить файл', onClick: () => this.pickFiles() }, icon('attach')),
-          h('button', { class: 'btn chat-send', title: 'Отправить', onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, 'Отправить')),
+          h('button', { class: 'icon-btn', title: t('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
+          h('button', { class: 'btn chat-send', title: t('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, t('chat.send'))),
         ),
         h('div', { class: 'chat-input-meta' },
           h('span', { class: 'chat-e2e' }, icon('lock', 13), 'Сквозное шифрование'),
@@ -442,7 +443,7 @@ export class ChatView extends View {
         }
         this.renderFileChips();
       } catch (e) {
-        this.store.showToast('не удалось приложить файл: ' + String(e), true);
+        this.store.showToast(t('chat.attach_failed', { error: String(e) }), true);
       } finally {
         input.remove();
       }

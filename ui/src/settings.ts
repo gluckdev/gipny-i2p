@@ -3,6 +3,7 @@ import { Api } from './api';
 import type { RelayInfo, RelayMode, RouterSettings, TransitProfile, YggdrasilMode } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
+import { t, getLang, setLang, type Lang } from './i18n';
 import type { Store } from './state';
 import { h, busy, humanSize, short } from './view';
 import type { App } from './app';
@@ -95,11 +96,11 @@ export class SettingsModal {
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, `Настройки · ${store.currentProfile.get() ?? ''}`),
-        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: closeWrapped }, icon('close')),
+        h('div', { class: 'modal-title' }, `${t('settings.title')} · ${store.currentProfile.get() ?? ''}`),
+        h('button', { class: 'icon-btn', title: t('common.close'), onClick: closeWrapped }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'card-label' }, 'Версия'),
+        h('div', { class: 'card-label' }, t('settings.version')),
         verSlot,
         (() => {
           // A found-but-not-installed version: either auto-update is off, or
@@ -364,14 +365,43 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, 'Оформление'),
+        h('div', { class: 'divider-text' }, t('settings.language')),
+        (() => {
+          const choices: { id: Lang; title: string }[] = [
+            { id: 'ru', title: t('settings.lang_ru') },
+            { id: 'en', title: t('settings.lang_en') },
+          ];
+          const current = getLang();
+          const rows = choices.map(({ id, title }) => {
+            const r = h('input', {
+              type: 'radio', name: 'language', id: `opt-lang-${id}`,
+            }) as HTMLInputElement;
+            r.checked = id === current;
+            r.addEventListener('change', () => {
+              if (r.checked) {
+                setLang(id);
+                // Re-open settings to refresh texts
+                close();
+                app.openModal((c) => new SettingsModal(store, app, c).el);
+              }
+            });
+            return h('label', { class: 'opt', for: `opt-lang-${id}` },
+              r,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, title)),
+            );
+          });
+          return h('div', { class: 'opt-group' }, ...rows);
+        })(),
+
+        h('div', { class: 'divider-text' }, t('settings.theme')),
         (() => {
           // Applied the moment it is picked — unlike the router settings there is
           // nothing to restart, so there is no "takes effect later" to explain.
           const choices: { id: Theme; title: string; blurb: string }[] = [
-            { id: 'light', title: 'светлая', blurb: 'светлая и воздушная' },
-            { id: 'dark', title: 'тёмная', blurb: 'тёмная, для работы вечером' },
-            { id: 'system', title: 'как в системе', blurb: 'следовать настройке операционной системы' },
+            { id: 'light', title: t('settings.theme_light'), blurb: t('settings.theme_light_blurb') },
+            { id: 'dark', title: t('settings.theme_dark'), blurb: t('settings.theme_dark_blurb') },
+            { id: 'system', title: t('settings.theme_system'), blurb: t('settings.theme_system_blurb') },
           ];
           const current = getTheme();
           const rows = choices.map(({ id, title, blurb }) => {

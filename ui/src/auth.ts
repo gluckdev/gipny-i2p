@@ -1,6 +1,7 @@
 import { Api } from './api';
 import type { Store, BootStep, BootStepId } from './state';
 import { View, h, busy, logo } from './view';
+import { t } from './i18n';
 
 export class AuthCreate extends View {
   el: HTMLElement;
@@ -33,37 +34,37 @@ export class AuthCreate extends View {
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
-        h('div', { class: 'auth-title' }, 'New profile'),
-        h('div', { class: 'auth-sub' }, 'у каждого профиля свой i2p-адрес, ключи, контакты'),
+        h('div', { class: 'auth-title' }, t('auth.new_profile_title')),
+        h('div', { class: 'auth-sub' }, t('auth.new_profile_sub')),
         h('div', { class: 'field' },
-          h('label', null, 'profile name'), this.nameI,
-          h('div', { class: 'hint' }, 'локально на этом устройстве (alphanumeric + dash/underscore)'),
+          h('label', null, t('auth.profile_name')), this.nameI,
+          h('div', { class: 'hint' }, t('auth.profile_name_hint')),
         ),
         h('div', { class: 'field' },
-          h('label', null, 'display name'), this.displayI,
-          h('div', { class: 'hint' }, 'имя которое увидят твои контакты — приходит в каждом сообщении'),
+          h('label', null, t('auth.display_name')), this.displayI,
+          h('div', { class: 'hint' }, t('auth.display_name_hint')),
         ),
-        h('div', { class: 'field' }, h('label', null, 'passphrase'), this.passI),
-        h('div', { class: 'field' }, h('label', null, 'confirm'), this.confirmI),
-        h('div', { class: 'divider-text' }, 'duress protection'),
-        h('div', { class: 'field' }, h('label', null, 'duress passphrase'), this.duressI,
-          h('div', { class: 'hint' }, 'alternate pass that triggers fail-safe')),
+        h('div', { class: 'field' }, h('label', null, t('auth.passphrase')), this.passI),
+        h('div', { class: 'field' }, h('label', null, t('auth.confirm_pass')), this.confirmI),
+        h('div', { class: 'divider-text' }, t('auth.duress_title')),
+        h('div', { class: 'field' }, h('label', null, t('auth.duress_pass')), this.duressI,
+          h('div', { class: 'hint' }, t('auth.duress_pass_hint'))),
         h('label', { class: 'chk', style: { marginBottom: '14px' } },
           this.wipeC, h('span', { class: 'box' }),
-          h('span', null, 'on duress: WIPE everything')),
-        h('div', { class: 'field' }, h('label', null, 'max attempts (0 = unlimited)'), this.attemptsI),
+          h('span', null, t('auth.duress_wipe'))),
+        h('div', { class: 'field' }, h('label', null, t('auth.max_attempts')), this.attemptsI),
         this.err,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           hasProfiles && h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, 'Назад'),
+          }, t('common.back')),
           (() => {
             const b = h('button', {
               class: 'btn',
               style: { flex: '1' },
               onClick: () => busy(b, () => this.create()),
-            }, 'Создать профиль') as HTMLButtonElement;
+            }, t('auth.create_btn')) as HTMLButtonElement;
             this.confirmI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.create());
             });
@@ -120,27 +121,27 @@ export class AuthUnlock extends View {
   constructor(private store: Store) {
     super();
     const profile = store.currentProfile.get() ?? 'unknown';
-    this.passI = h('input', { class: 'input', type: 'password', placeholder: 'пароль', autofocus: true });
+    this.passI = h('input', { class: 'input', type: 'password', placeholder: t('auth.passphrase'), autofocus: true });
     this.err = h('div', { class: 'err' });
     this.net = h('div', { class: 'auth-net' });
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
         h('div', { class: 'auth-title' }, profile),
-        h('div', { class: 'auth-sub' }, 'Введите пароль профиля'),
-        h('div', { class: 'field' }, h('label', null, 'Пароль'), this.passI),
+        h('div', { class: 'auth-sub' }, t('auth.unlock_sub')),
+        h('div', { class: 'field' }, h('label', null, t('auth.passphrase')), this.passI),
         this.err,
         this.net,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, 'Назад'),
+          }, t('common.back')),
           (() => {
             const b = h('button', {
               class: 'btn', style: { flex: '1' },
               onClick: () => busy(b, () => this.unlock()),
-            }, 'Открыть') as HTMLButtonElement;
+            }, t('auth.open_btn')) as HTMLButtonElement;
             this.passI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.unlock());
             });
@@ -151,8 +152,8 @@ export class AuthUnlock extends View {
     );
     this.sub(store.prewarm, (s) => {
       this.net.textContent = s === 'building'
-        ? 'Сеть i2p: строятся туннели, не дожидайтесь — вводите пароль'
-        : s === 'ready' ? 'Сеть i2p: туннели построены' : '';
+        ? t('auth.net_building')
+        : s === 'ready' ? t('auth.net_ready') : '';
       this.net.className = 'auth-net' + (s === 'ready' ? ' ok' : '');
     });
   }
@@ -160,9 +161,9 @@ export class AuthUnlock extends View {
   private async unlock(): Promise<void> {
     this.err.textContent = '';
     const profile = this.store.currentProfile.get();
-    if (!profile) { this.err.textContent = 'Профиль не выбран'; return; }
+    if (!profile) { this.err.textContent = t('auth.profile_not_selected'); return; }
     const pass = this.passI.value;
-    if (!pass) { this.err.textContent = 'Введите пароль'; return; }
+    if (!pass) { this.err.textContent = t('auth.pass_required'); return; }
     // The loading screen goes up *before* the call: everything slow (argon2id,
     // the router, tunnels) happens inside it, and this used to be a disabled
     // button and nothing else for up to three minutes.
@@ -175,8 +176,8 @@ export class AuthUnlock extends View {
       const msg = String(e);
       this.store.endBoot();
       this.store.view.set('auth-unlock');
-      if (msg.includes('wiped')) this.store.showToast('Профиль стёрт', true);
-      else if (msg.includes('invalid passphrase')) this.store.showToast('Неверный пароль', true);
+      if (msg.includes('wiped')) this.store.showToast(t('auth.profile_wiped'), true);
+      else if (msg.includes('invalid passphrase')) this.store.showToast(t('auth.wrong_pass'), true);
       else this.store.showToast(msg, true);
     }
   }
@@ -201,23 +202,22 @@ export class AuthBooting extends View {
       list.appendChild(row);
     }
 
-    this.elapsedEl = h('div', { class: 'boot-elapsed' }, 'прошло 0.0 с');
+    this.elapsedEl = h('div', { class: 'boot-elapsed' }, t('boot.elapsed', { time: '0.0' }));
     this.logEl = h('pre', { class: 'boot-log' }, '');
     this.enterBtn = h('button', {
       class: 'btn btn-ghost boot-enter hidden',
       onClick: () => store.enterMain(),
-    }, 'Открыть чаты сейчас') as HTMLButtonElement;
+    }, t('boot.enter_now')) as HTMLButtonElement;
 
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card boot-card' },
         logo(),
-        h('div', { class: 'auth-title' }, 'Открываю профиль'),
-        h('div', { class: 'auth-sub' },
-          'Первый запуск занимает минуты: роутер ищет узлы i2p и строит туннели. Дальше быстрее.'),
+        h('div', { class: 'auth-title' }, t('boot.title')),
+        h('div', { class: 'auth-sub' }, t('boot.sub')),
         list,
         h('div', { class: 'row-between boot-foot' }, this.elapsedEl, this.enterBtn),
         h('details', { class: 'boot-details' },
-          h('summary', null, 'Технические подробности'),
+          h('summary', null, t('boot.details')),
           this.logEl,
         ),
       ),
@@ -260,7 +260,9 @@ export class AuthBooting extends View {
   }
 
   private tick(): void {
-    this.elapsedEl.textContent = `прошло ${fmtSecs(Date.now() - this.startedAt)}`;
+    const s = Math.max(0, Date.now() - this.startedAt) / 1000;
+    const timeStr = s < 10 ? s.toFixed(1) : String(Math.round(s));
+    this.elapsedEl.textContent = t('boot.elapsed', { time: timeStr });
     // The active step's own clock keeps moving between backend messages, so a
     // long tunnel build never looks stuck.
     const active = this.store.bootSteps.get().find((s) => s.state === 'active');
@@ -277,16 +279,16 @@ export class AuthBooting extends View {
 
 /** What each backend stage is called on screen, and what it is doing. */
 const BOOT_LABELS: [BootStepId, string, string][] = [
-  ['vault', 'Расшифровываю профиль', 'argon2id, это нагружает процессор'],
-  ['router', 'Запускаю роутер i2p', 'он живёт рядом с приложением'],
-  ['tunnels', 'Строю туннели', 'самая долгая часть первого запуска'],
-  ['session', 'Получаю адрес в сети', 'новый на каждый запуск'],
-  ['core', 'Готовлю переписку', 'ключи, база, очереди'],
-  ['relay', 'Поднимаю свой релей', 'через него вам пишут'],
-  ['dht', 'Вхожу в сеть релеев', 'нужна для доставки в офлайне'],
+  ['vault', t('boot.step.vault'), t('boot.step.vault_hint')],
+  ['router', t('boot.step.router'), t('boot.step.router_hint')],
+  ['tunnels', t('boot.step.tunnels'), t('boot.step.tunnels_hint')],
+  ['session', t('boot.step.session'), t('boot.step.session_hint')],
+  ['core', t('boot.step.core'), t('boot.step.core_hint')],
+  ['relay', t('boot.step.relay'), t('boot.step.relay_hint')],
+  ['dht', t('boot.step.dht'), t('boot.step.dht_hint')],
 ];
 
 function fmtSecs(ms: number): string {
   const s = Math.max(0, ms) / 1000;
-  return s < 10 ? `${s.toFixed(1)} с` : `${Math.round(s)} с`;
+  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
 }

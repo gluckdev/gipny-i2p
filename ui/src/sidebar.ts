@@ -12,6 +12,7 @@ import { AboutModal } from './about';
 import { SearchModal } from './search';
 import { icon } from './icons';
 import { loadAvatarChoices, onAvatarsChanged } from './avatars';
+import { t } from './i18n';
 
 /** Built-in sections that can be folded, remembered per device. */
 type Section = 'groups' | 'requests' | 'contacts';
@@ -61,22 +62,22 @@ export class Sidebar extends View {
 
     const collapseBtn = h('button', {
       class: 'icon-btn sidebar-collapse',
-      title: 'Свернуть панель',
+      title: t('sidebar.collapse'),
       onClick: () => this.store.toggleSidebar(),
     }, icon(store.sidebarCollapsed.get() ? 'chevronRight' : 'chevronLeft'));
     this.sub(store.sidebarCollapsed, (c) => { collapseBtn.replaceChildren(icon(c ? 'chevronRight' : 'chevronLeft')); }, false);
 
-    const newBtn = h('button', { class: 'icon-btn icon-btn-accent', title: 'Создать' }, icon('plus'));
+    const newBtn = h('button', { class: 'icon-btn icon-btn-accent', title: t('sidebar.new_chat') }, icon('plus'));
     newBtn.addEventListener('click', () => {
       const r = newBtn.getBoundingClientRect();
       ContextMenu.open(r.left, r.bottom + 4, [
-        { label: 'Добавить контакт', onClick: () => this.addContact() },
-        { label: 'Новая группа', onClick: () => this.newGroup() },
-        { label: 'Новая папка', onClick: () => void this.newFolder() },
+        { label: t('sidebar.new_contact'), onClick: () => this.addContact() },
+        { label: t('sidebar.new_group'), onClick: () => this.newGroup() },
+        { label: t('sidebar.new_folder'), onClick: () => void this.newFolder() },
       ]);
     });
 
-    const search = h('input', { class: 'sidebar-search', type: 'search', placeholder: 'Поиск контактов' });
+    const search = h('input', { class: 'sidebar-search', type: 'search', placeholder: t('sidebar.search_placeholder') });
     search.addEventListener('input', () => { this.filter = search.value.trim().toLowerCase(); this.renderList(); });
 
     this.el = h('div', { class: 'sidebar' },
@@ -84,16 +85,16 @@ export class Sidebar extends View {
         me,
         h('div', { class: 'row sidebar-actions' },
           newBtn,
-          h('button', { class: 'icon-btn', title: 'Поиск по сообщениям', onClick: () => this.search() }, icon('search')),
-          h('button', { class: 'icon-btn', title: 'Настройки', onClick: () => this.settings() }, icon('settings')),
+          h('button', { class: 'icon-btn', title: t('sidebar.search_messages'), onClick: () => this.search() }, icon('search')),
+          h('button', { class: 'icon-btn', title: t('sidebar.settings'), onClick: () => this.settings() }, icon('settings')),
           collapseBtn,
         ),
       ),
       h('div', { class: 'sidebar-search-wrap' }, search),
       this.listEl,
       h('div', { class: 'sidebar-footer' },
-        h('button', { class: 'sidebar-link', onClick: () => this.about() }, icon('shield', 16), 'О gipny и безопасности'),
-        h('button', { class: 'icon-btn', title: 'Заблокировать', onClick: () => this.store.lock() }, icon('lock', 18)),
+        h('button', { class: 'sidebar-link', onClick: () => this.about() }, icon('shield', 16), t('sidebar.about')),
+        h('button', { class: 'icon-btn', title: t('sidebar.lock'), onClick: () => this.store.lock() }, icon('lock', 18)),
       ),
     );
     this.sub(store.contacts, () => this.renderList());

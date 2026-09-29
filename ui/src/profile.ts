@@ -3,6 +3,7 @@ import { Api } from './api';
 import type { Store } from './state';
 import { View, h, logo } from './view';
 import type { App } from './app';
+import { t } from './i18n';
 
 export class ProfileSelect extends View {
   el: HTMLElement;
@@ -16,19 +17,19 @@ export class ProfileSelect extends View {
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
-        h('div', { class: 'auth-title' }, 'Select profile'),
+        h('div', { class: 'auth-title' }, t('profile.select_title')),
         this.subTitle,
         this.list,
-        h('div', { class: 'divider-text' }, 'or'),
+        h('div', { class: 'divider-text' }, t('common.or')),
         h('button', {
           class: 'btn btn-block btn-amber',
           onClick: () => store.goToCreate(),
-        }, '+ New profile'),
+        }, t('profile.new_profile')),
         h('button', {
           class: 'btn btn-block btn-ghost',
           style: { marginTop: '6px' },
           onClick: () => this.startImport(),
-        }, 'Import backup'),
+        }, t('profile.import_backup')),
       ),
     );
     this.sub(store.profiles, (p) => this.renderList(p));
@@ -95,13 +96,13 @@ export class ProfileSelect extends View {
         h('button', {
           class: 'btn btn-danger',
           style: { padding: '10px 12px' },
-          title: 'delete profile',
+          title: t('profile.wipe_title'),
           onClick: async () => {
-            const ok = await this.app.confirm('delete profile', `wipe "${p}" and all its data?`, true);
+            const ok = await this.app.confirm(t('profile.wipe_title'), t('profile.delete_confirm', { name: p }), true);
             if (!ok) return;
             try {
               await this.store.deleteProfile(p);
-              this.store.showToast(`profile "${p}" wiped`);
+              this.store.showToast(t('profile.wiped_toast', { name: p }));
               this.store.view.set(this.store.profiles.get().length > 0 ? 'profile-select' : 'auth-create');
             } catch (e) { this.store.showToast(String(e), true); }
           },

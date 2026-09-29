@@ -268,7 +268,6 @@ pub fn run() {
             update_tray_badge,
         ]);
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
         .setup(|app| {
             // Where pasted, dropped and (on Android) picked files are copied
@@ -278,9 +277,13 @@ pub fn run() {
             if let Ok(dir) = app.path().app_cache_dir() {
                 let _ = PASTE_DIR.set(dir.join("gipny-i2p-paste"));
             }
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             install_tray(app)?;
             Ok(())
-        })
+        });
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
