@@ -9,10 +9,34 @@ name: build
 # here link a stub instead (I2P_EMBED_STUB): the real libi2pd.so takes an hour
 # of boost per ABI, and release.yml and i2p-embed.yml build it.
 
+# The paths matter more than they look: every job here compiles the C++
+# router, so a commit that only rewords the README should not cost a native
+# build. Mirrors the filter i2p-embed.yml already carries, plus the release
+# inputs, so a version bump is still checked.
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'agent/**'
+      - 'core/**'
+      - 'i2p-embed/**'
+      - 'libcore/**'
+      - 'scripts/**'
+      - 'third_party/**'
+      - 'ui/**'
+      - '.github/scripts/**'
+      - '.github/workflows/build.yml'
   pull_request:
+    paths:
+      - 'agent/**'
+      - 'core/**'
+      - 'i2p-embed/**'
+      - 'libcore/**'
+      - 'scripts/**'
+      - 'third_party/**'
+      - 'ui/**'
+      - '.github/scripts/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 # Least privilege: this workflow only reads the repo.
@@ -54,6 +78,7 @@ jobs:
       - name: i2pd sources and build deps (every binary compiles its router in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
+          .github/scripts/assert-i2pd-pin.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
@@ -102,6 +127,7 @@ jobs:
       - name: i2pd sources, boost and OpenSSL (the router is compiled in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
+          .github/scripts/assert-i2pd-pin.sh
           brew install boost openssl@3
           b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
           {
@@ -144,6 +170,7 @@ jobs:
       - name: i2pd sources and build deps (libcore and the relay compile the router in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
+          .github/scripts/assert-i2pd-pin.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       # pipefail: GitHub runs `bash -e` without it, so `cargo test | tee` took
