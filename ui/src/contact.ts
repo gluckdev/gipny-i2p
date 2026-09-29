@@ -3,6 +3,7 @@ import type { Store } from './state';
 import { targetKey } from './state';
 import { h, fmtFp } from './view';
 import type { App } from './app';
+import { t } from './i18n';
 
 import { avatarPicker } from './avatar-picker';
 import { QrScanner, scanQrInFile } from './qr-scan';
@@ -193,7 +194,7 @@ export class AddContactModal {
     const fileBtn = h('button', {
       class: 'btn btn-ghost',
       onClick: () => fileI.click(),
-    }, 'Загрузить фото / файл');
+    }, t('qr.load_file'));
 
     pasteI.addEventListener('input', () => {
       const parsed = decodeCard(pasteI.value);

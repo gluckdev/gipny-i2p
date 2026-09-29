@@ -113,6 +113,10 @@ export const translations = {
     'chat.ttl_off': 'сообщения не исчезают',
     'chat.peer_keeps': 'Собеседник не удаляет сообщения по таймеру — у него эта переписка остаётся.',
     'chat.ttl_on': 'исчезнут через {time}',
+    'chat.ttl_minutes': '{n} мин',
+    'chat.ttl_hours': '{n} ч',
+    'chat.ttl_days': '{n} д',
+    'qr.load_file': 'Загрузить фото / файл',
     'chat.ttl_save_failed': 'Не удалось сохранить срок жизни сообщений',
     'chat.ttl_title': 'Срок жизни новых сообщений. Старые не меняются. Удаляется у обоих собеседников.',
 
@@ -246,6 +250,10 @@ export const translations = {
     'chat.ttl_off': 'messages are kept',
     'chat.peer_keeps': 'Your contact is not deleting messages on a timer — this conversation stays on their side.',
     'chat.ttl_on': 'disappear after {time}',
+    'chat.ttl_minutes': '{n} min',
+    'chat.ttl_hours': '{n} h',
+    'chat.ttl_days': '{n} d',
+    'qr.load_file': 'Load a photo or file',
     'chat.ttl_save_failed': 'Could not save the message lifetime',
     'chat.ttl_title': 'How long new messages live. Older ones are unaffected. Deleted for both people.',
 

@@ -13,7 +13,7 @@ import { GroupModal } from './group';
 import { SearchModal } from './search';
 import { MediaModal } from './media';
 import { ForwardModal } from './forward';
-import { t } from './i18n';
+import { t, onLangChange } from './i18n';
 
 interface PendingFile { name: string; path: string; size: number }
 
@@ -30,11 +30,15 @@ const TTL_OPTIONS: Array<[string, number | null]> = [
   ['off', null], ['5m', 300], ['1h', 3600], ['1d', 86_400], ['7d', 604_800],
 ];
 
+/** The chips say "5m" and "1d"; the note has to say what that is, in the
+ * language the rest of the window is in. Units are keys rather than literals
+ * because a half-translated sentence ("disappear after 5 мин") reads as a bug,
+ * and a wholly untranslated one is at least honest about being untranslated. */
 function ttlSpoken(secs: number | null): string {
   if (secs === null) return t('chat.ttl_off');
-  if (secs < 3600) return t('chat.ttl_on', { time: `${Math.round(secs / 60)} мин` });
-  if (secs < 86_400) return t('chat.ttl_on', { time: `${Math.round(secs / 3600)} ч` });
-  return t('chat.ttl_on', { time: `${Math.round(secs / 86_400)} д` });
+  if (secs < 3600) return t('chat.ttl_on', { time: t('chat.ttl_minutes', { n: Math.round(secs / 60) }) });
+  if (secs < 86_400) return t('chat.ttl_on', { time: t('chat.ttl_hours', { n: Math.round(secs / 3600) }) });
+  return t('chat.ttl_on', { time: t('chat.ttl_days', { n: Math.round(secs / 86_400) }) });
 }
 
 /** One reminder per launch, not one per chat opened. */
@@ -289,6 +293,14 @@ export class ChatView extends View {
     this.peerNote = h('div', { class: 'chat-notice hidden' },
       icon('lock', 13), h('span', {}, t('chat.peer_keeps')));
     this.sub(store.messages, () => this.updatePeerNote(), true);
+
+    // Changing the language reopens the settings window and nothing else, so a
+    // chat left open behind it would keep speaking the old one. These two lines
+    // are written once, at construction, so they have to be rewritten by hand.
+    this.subs.push(onLangChange(() => {
+      this.peerNote.replaceChildren(icon('lock', 13), h('span', {}, t('chat.peer_keeps')));
+      if (this.target.kind !== 'group') this.renderTtlPicker();
+    }));
 
     // What the channel is doing, in the user's own terms. Groups have no
     // single channel — each member collects somewhere else — so this is a
@@ -1097,7 +1109,11 @@ export class ChatView extends View {
    * about the people in it. */
   private updatePeerNote(): void {
     const list = this.store.messages.get().get(targetKey(this.target)) ?? [];
-    const newest = [...list].reverse().find((m) => !m.outgoing && m.console == null);
+    // `group_id === null` is what keeps groups out, and it is load-bearing
+    // rather than tidiness: a group message is always sent with no timer, so
+    // judging a group by the expiry would read as "they keep everything" for
+    // every group, forever, and mean nothing at all.
+    const newest = [...list].reverse().find((m) => !m.outgoing && m.console == null && m.group_id == null);
     this.peerNote.classList.toggle('hidden', newest == null || newest.expires_at != null);
   }
 
