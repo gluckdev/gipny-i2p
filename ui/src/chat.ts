@@ -1024,9 +1024,9 @@ export class ChatView extends View {
       const dest = await save({ defaultPath: name });
       if (!dest) return;
       await Api.saveAttachment(id, dest);
-      this.store.showToast('saved');
+      this.store.showToast(t('chat.saved'));
     } catch (e) {
-      this.store.showToast('save failed: ' + String(e), true);
+      this.store.showToast(t('chat.save_failed', { error: String(e) }), true);
     }
   }
 
@@ -1083,7 +1083,7 @@ export class ChatView extends View {
     try {
       await this.store.sendMessage(this.target, body, paths, ttl, replyToId);
     } catch (e) {
-      this.store.showToast('send failed: ' + String(e), true);
+      this.store.showToast(t('chat.send_failed', { error: String(e) }), true);
     }
   }
 
