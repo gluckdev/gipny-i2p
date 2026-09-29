@@ -13,6 +13,10 @@ name: build
 # router, so a commit that only rewords the README should not cost a native
 # build. Mirrors the filter i2p-embed.yml already carries, plus the release
 # inputs, so a version bump is still checked.
+#
+# Cargo.toml and Cargo.lock are listed on their own: the workspace manifests
+# sit at the root, outside agent/ and core/, and a lockfile-only bump is
+# exactly the change that can still break a build.
 on:
   push:
     branches: [ main ]
@@ -24,8 +28,11 @@ on:
       - 'scripts/**'
       - 'third_party/**'
       - 'ui/**'
+      - '.cargo/**'
       - '.github/scripts/**'
       - '.github/workflows/build.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     paths:
       - 'agent/**'
@@ -35,8 +42,11 @@ on:
       - 'scripts/**'
       - 'third_party/**'
       - 'ui/**'
+      - '.cargo/**'
       - '.github/scripts/**'
       - '.github/workflows/build.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
 
 # Least privilege: this workflow only reads the repo.
