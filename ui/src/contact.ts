@@ -5,7 +5,7 @@ import { h, fmtFp } from './view';
 import type { App } from './app';
 
 import { avatarPicker } from './avatar-picker';
-import { QrScanner } from './qr-scan';
+import { QrScanner, scanQrInFile } from './qr-scan';
 import { icon } from './icons';
 export class ContactModal {
   el: HTMLElement;
@@ -148,18 +148,19 @@ export class AddContactModal {
       scanSlot.classList.add('hidden');
       scanBtn.textContent = 'Сканировать QR';
     };
+    // A scanned card lands here whatever it was read from — camera or file — so
+    // there is one place that fills the fields and one place that complains.
+    const acceptScan = (text: string): void => {
+      const ok = applyCard(text);
+      pasteI.value = text;
+      stopScan();
+      if (ok) store.showToast('Карточка распознана — проверьте и нажмите «Добавить»');
+      else err.textContent = 'В коде не карточка gipny';
+    };
+    const failScan = (message: string): void => { err.textContent = message; stopScan(); };
     const startScan = (): void => {
       err.textContent = '';
-      scanner = new QrScanner(
-        (text) => {
-          const ok = applyCard(text);
-          pasteI.value = text;
-          stopScan();
-          if (ok) store.showToast('Карточка распознана — проверьте и нажмите «Добавить»');
-          else err.textContent = 'В коде не карточка gipny';
-        },
-        (message) => { err.textContent = message; stopScan(); },
-      );
+      scanner = new QrScanner(acceptScan, failScan);
       scanSlot.replaceChildren(scanner.el);
       scanSlot.classList.remove('hidden');
       scanBtn.textContent = 'Остановить';
@@ -169,6 +170,30 @@ export class AddContactModal {
       class: 'btn btn-ghost',
       onClick: () => (scanner ? stopScan() : startScan()),
     }, 'Сканировать QR');
+
+    // A photo or a screenshot of the code, for when the camera is refused, is
+    // missing, or is simply not being pointed well enough. Usable whether or
+    // not the scanner is running, which is why it is a button of its own rather
+    // than part of the camera view.
+    const fileI = h('input', {
+      type: 'file',
+      accept: 'image/*',
+      class: 'qr-file',
+      onChange: () => {
+        const file = fileI.files?.[0];
+        // Clear it either way: picking the same screenshot twice in a row has to
+        // fire `change` again, and a filled input does not.
+        fileI.value = '';
+        if (!file) return;
+        err.textContent = '';
+        stopScan();
+        scanQrInFile(file, acceptScan, (message) => { err.textContent = message; });
+      },
+    }) as HTMLInputElement;
+    const fileBtn = h('button', {
+      class: 'btn btn-ghost',
+      onClick: () => fileI.click(),
+    }, 'Загрузить фото / файл');
 
     pasteI.addEventListener('input', () => {
       const parsed = decodeCard(pasteI.value);
@@ -191,7 +216,7 @@ export class AddContactModal {
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'field' }, h('label', null, 'Карточка контакта'), pasteI),
-        h('div', { class: 'row', style: { marginBottom: '8px' } }, scanBtn),
+        h('div', { class: 'row', style: { marginBottom: '8px' } }, scanBtn, fileBtn, fileI),
         scanSlot,
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           'имя контакта приходит из его карточки и потом обновляется автоматически из его сообщений. локально не задаётся — каждый сам себя называет.'),

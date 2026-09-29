@@ -1278,6 +1278,20 @@ impl Db {
             "DELETE FROM pinned_messages WHERE message_id NOT IN (SELECT id FROM messages)", [])?))
     }
 
+    /// Drop the whole transcript of this profile, for the person who would
+    /// rather not find it there next time the app opens.
+    ///
+    /// Pinned messages stay behind: pinning is a deliberate "keep this", and
+    /// taking it away here would throw out something the owner saved on
+    /// purpose. `secure_delete` is on for this database, so what goes is
+    /// overwritten rather than left readable in the free pages, and
+    /// `foreign_keys` carries the attachment rows away with the messages.
+    pub fn purge_all_messages(&self) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute(
+            "DELETE FROM messages WHERE id NOT IN (SELECT message_id FROM pinned_messages)", [],
+        )?))
+    }
+
     fn map_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
         Ok(Message {
             id: r.get(0)?,

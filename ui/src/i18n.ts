@@ -109,6 +109,12 @@ export const translations = {
     'chat.forward': 'Переслать',
     'chat.delete_msg': 'Удалить сообщение',
     'chat.empty_state': 'Выберите контакт или группу слева',
+    'chat.ttl_default_notice': 'Сообщения теперь исчезают через сутки. Срок — под текстом поля ввода, там же его можно выключить.',
+    'chat.ttl_off': 'сообщения не исчезают',
+    'chat.peer_keeps': 'Собеседник не удаляет сообщения по таймеру — у него эта переписка остаётся.',
+    'chat.ttl_on': 'исчезнут через {time}',
+    'chat.ttl_save_failed': 'Не удалось сохранить срок жизни сообщений',
+    'chat.ttl_title': 'Срок жизни новых сообщений. Старые не меняются. Удаляется у обоих собеседников.',
 
     // Settings
     'settings.title': 'Настройки',
@@ -236,6 +242,12 @@ export const translations = {
     'chat.forward': 'Forward',
     'chat.delete_msg': 'Delete message',
     'chat.empty_state': 'Select a contact or group on the left',
+    'chat.ttl_default_notice': 'Messages now disappear after a day. The timer sits under the input — you can turn it off there.',
+    'chat.ttl_off': 'messages are kept',
+    'chat.peer_keeps': 'Your contact is not deleting messages on a timer — this conversation stays on their side.',
+    'chat.ttl_on': 'disappear after {time}',
+    'chat.ttl_save_failed': 'Could not save the message lifetime',
+    'chat.ttl_title': 'How long new messages live. Older ones are unaffected. Deleted for both people.',
 
     // Settings
     'settings.title': 'Settings',

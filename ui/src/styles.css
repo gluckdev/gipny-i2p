@@ -834,6 +834,15 @@ a:hover { text-decoration: underline; }
   color: var(--text-faint); font-size: 10px;
   letter-spacing: 0.05em;
 }
+.chat-input-meta .ttl-row {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+}
+/* What the chosen timer means, in words. The chips alone said "1d" and left
+ * the person to work out that this meant their messages go away. */
+.ttl-note {
+  color: var(--text-faint); font-size: 10px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
 .chat-input-meta .ttl-picker {
   display: flex; gap: 4px;
 }
@@ -2201,6 +2210,8 @@ body::before { background: none; }
 .card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
 .card-qr .hint { text-align: center; max-width: 280px; }
 .qr-slot { margin-bottom: 10px; }
+/* The picker is driven by its own button; the input itself is never shown. */
+.qr-file { display: none; }
 .qr-scan { position: relative; border-radius: 14px; overflow: hidden; background: #000; }
 .qr-video { width: 100%; max-height: 320px; object-fit: cover; display: block; }
 .qr-frame {
@@ -2550,5 +2561,8 @@ select.input { width: 100%; text-overflow: ellipsis; }
 /* A phone on its side: height is what is scarce. */
 @media (max-height: 480px) and (orientation: landscape) {
   .chat-header, .sidebar-header { padding-top: calc(var(--safe-top) + 4px); padding-bottom: 4px; }
-  .chat-input-meta { display: none; }
+  /* Only the "end-to-end encryption" label goes. The disappearing-message
+   * timer has to stay reachable here: it is on by default, and a row that
+   * vanishes in landscape would leave no way to turn it off. */
+  .chat-input-meta .chat-e2e { display: none; }
 }

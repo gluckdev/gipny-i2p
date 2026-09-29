@@ -234,7 +234,7 @@ pub fn run() {
             my_card, my_onion, my_b32, my_fingerprint, my_bundle, qr_svg,
             get_display_name, set_display_name,
             get_relay_address, set_relay_address,
-            get_relay_info, get_dht_status, link_stats, set_lane, set_relay_mode, get_ui_data, set_ui_data, list_unreachable_contacts,
+            get_relay_info, get_dht_status, link_stats, set_lane, set_relay_mode, get_ui_data, set_ui_data, clear_message_history, list_unreachable_contacts,
             get_attachment_privacy, set_attachment_privacy,
             update_configured,
             get_router_settings, set_router_settings,
@@ -1993,7 +1993,7 @@ async fn get_auto_update(ctx: State<'_, AppCtx>) -> Result<bool, String> {
     Ok(core_of(&ctx).await?.auto_update_enabled())
 }
 
-/// Interface data kept in the vault: `contact_folders`, `avatars`.
+/// Interface data kept in the vault: `contact_folders`, `avatars`, `chat_prefs`.
 #[tauri::command]
 async fn get_ui_data(key: String, ctx: State<'_, AppCtx>) -> Result<Option<String>, String> {
     core_of(&ctx).await?.ui_data(&key).map_err(err)
@@ -2002,6 +2002,14 @@ async fn get_ui_data(key: String, ctx: State<'_, AppCtx>) -> Result<Option<Strin
 #[tauri::command]
 async fn set_ui_data(key: String, json: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     core_of(&ctx).await?.set_ui_data(&key, &json).map_err(err)
+}
+
+/// Throw away every message on this profile. The user turns this on and it
+/// happens the moment the vault is locked, so the next person to open the
+/// window finds an empty transcript rather than the last conversation.
+#[tauri::command]
+async fn clear_message_history(ctx: State<'_, AppCtx>) -> Result<usize, String> {
+    core_of(&ctx).await?.clear_message_history().map_err(err)
 }
 
 #[tauri::command]
@@ -2075,6 +2083,51 @@ fn clear_debug_log(ctx: State<'_, AppCtx>) -> Result<(), String> {
     Ok(())
 }
 
+/// Empty the transcript on the way out, if that is what the person asked for.
+///
+/// Closing the window does not end the app — it hides it — so quitting happens
+/// here, on the tray's own menu, and never passes through the interface. Asking
+/// the window "did you want the history cleared?" at this point would be asking
+/// something that is about to stop existing, so the answer is read from the
+/// vault instead.
+///
+/// The one risk worth naming: on mobile this is not installed at all, and
+/// Android kills the process instead of quitting, so on a phone the setting
+/// fires on lock and on profile switch, not on the swipe away.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn clear_history_on_exit(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let ctx = app.state::<AppCtx>();
+    // A local DELETE under the profile's own vault: short, and worth waiting
+    // for. Skipping it is what would leave the history on disk.
+    tauri::async_runtime::block_on(async {
+        // Bounded, because this runs on the thread that has to hand control
+        // back for the app to close. An exit that hangs is a far worse outcome
+        // than an exit that leaves the history behind, so if the vault is busy
+        // we give up and let the app go.
+        let cleared = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let Some(core) = ctx.core.lock().await.clone() else {
+                // Already locked. Whatever the vault holds belongs to a database
+                // we have deliberately closed, and it will be cleared on the
+                // next lock that does find it open — if the person locked, that
+                // already ran.
+                return Ok(false);
+            };
+            core.clear_history_if_asked()
+        })
+        .await;
+        match cleared {
+            Ok(Ok(true)) => eprintln!("[clear-on-exit] transcript cleared on quit"),
+            Ok(Ok(false)) => {}
+            // Nobody is left to tell, but stderr is the debug log: a person who
+            // asked for this and finds the history still there should be able
+            // to see that it was tried and failed, not wonder whether it ran.
+            Ok(Err(e)) => eprintln!("[clear-on-exit] could not clear the transcript: {e}"),
+            Err(_) => eprintln!("[clear-on-exit] gave up waiting for the vault; the app is closing"),
+        }
+    });
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -2097,7 +2150,10 @@ fn install_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => raise(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                clear_history_on_exit(app);
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(move |tray, event| {

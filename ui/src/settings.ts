@@ -302,6 +302,32 @@ export class SettingsModal {
                   + 'поля, имена фото с камеры заменяются на нейтральные. Формат, который '
                   + 'нельзя очистить, не отправится — выключите приватность или пришлите '
                   + 'другой файл. Команды агента отправляются как есть.'))),
+            h('div', { class: 'divider', style: { margin: '14px 0' } }),
+            (() => {
+              const wipe = h('input', { type: 'checkbox' }) as HTMLInputElement;
+              const wipeErr = h('div', { class: 'err' });
+              Api.getChatPrefs().then((p) => { wipe.checked = p.clearOnLock; }).catch(() => { wipe.checked = false; });
+              wipe.addEventListener('change', () => {
+                wipeErr.textContent = '';
+                Api.updateChatPrefs({ clearOnLock: wipe.checked }).catch((e) => {
+                  wipeErr.textContent = String(e);
+                  wipe.checked = !wipe.checked;
+                });
+              });
+              return h('div', null,
+                h('label', { class: 'opt', style: { alignItems: 'center' } },
+                  wipe,
+                  h('span', { class: 'opt-text' },
+                    h('span', { class: 'opt-title' }, 'очищать историю при блокировке'),
+                    h('span', { class: 'opt-blurb' },
+                      'все сообщения стираются в момент блокировки — по кнопке, по F5 '
+                      + 'и при смене профиля; на компьютере также при выходе из трея. '
+                      + 'В следующий раз переписка пустая. Закреплённые сообщения '
+                      + 'остаются: их сохранили намеренно. У собеседника ничего '
+                      + 'не меняется.'))),
+                wipeErr,
+              );
+            })(),
             err,
           );
         })(),

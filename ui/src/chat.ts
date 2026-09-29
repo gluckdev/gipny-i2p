@@ -17,6 +17,29 @@ import { t } from './i18n';
 
 interface PendingFile { name: string; path: string; size: number }
 
+/** What the disappearing-message timer starts at, in seconds.
+ *
+ * A day, not an hour: this is the floor under a messenger that has no server
+ * copy of anything, so a wrong guess costs the conversation rather than a
+ * glance. Anyone who wants it shorter has one tap away, and the choice sticks. */
+const DEFAULT_TTL_SECS = 86_400;
+
+/** The picker offers the same steps in both directions; the label next to it is
+ * what a person reads, so the seconds get said in words. */
+const TTL_OPTIONS: Array<[string, number | null]> = [
+  ['off', null], ['5m', 300], ['1h', 3600], ['1d', 86_400], ['7d', 604_800],
+];
+
+function ttlSpoken(secs: number | null): string {
+  if (secs === null) return t('chat.ttl_off');
+  if (secs < 3600) return t('chat.ttl_on', { time: `${Math.round(secs / 60)} мин` });
+  if (secs < 86_400) return t('chat.ttl_on', { time: `${Math.round(secs / 3600)} ч` });
+  return t('chat.ttl_on', { time: `${Math.round(secs / 86_400)} д` });
+}
+
+/** One reminder per launch, not one per chat opened. */
+let ttlNoticeShown = false;
+
 export class ChatView extends View {
   el: HTMLElement;
   private log: HTMLElement;
@@ -25,8 +48,11 @@ export class ChatView extends View {
   private input: HTMLTextAreaElement;
   private pending: PendingFile[] = [];
   private fileChips: HTMLElement;
-  private ttlSecs: number | null = null;
+  private ttlSecs: number | null = DEFAULT_TTL_SECS;
   private ttlPicker: HTMLElement;
+  private ttlNote: HTMLElement;
+  private ttlRow: HTMLElement;
+  private peerNote: HTMLElement;
   private attachmentCache = new Map<number, Array<{ id: number; name: string; size: number }>>();
   private imageDataCache = new Map<number, string>();
   private pinnedBanner: PinnedBanner;
@@ -148,7 +174,15 @@ export class ChatView extends View {
     this.fileChips = h('div', { class: 'msg-attachments', style: { marginTop: '0' } });
     this.replyChip = h('div', { class: 'reply-chip', style: { display: 'none' } });
     this.ttlPicker = h('div', { class: 'ttl-picker' });
-    if (!isGroup) this.renderTtlPicker();
+    // Both exist before the first paint of the picker: it writes the note's text.
+    this.ttlNote = h('span', { class: 'ttl-note' });
+    this.ttlRow = h('div', { class: 'ttl-row' }, this.ttlNote, this.ttlPicker);
+    // A group's messages never carry a timer (see `send`), so there is nothing
+    // there to show or set — the row is not even in the layout for one.
+    if (!isGroup) {
+      this.renderTtlPicker();
+      void this.loadTtl();
+    }
 
     // Icon and label both; the stylesheet shows the label where the chat pane
     // has room for it and the icon alone where it does not.
@@ -202,7 +236,7 @@ export class ChatView extends View {
       this.el?.classList.toggle('console', consoleMode);
       this.promptEl.textContent = consoleMode ? '$' : '>';
       this.input.placeholder = placeholderFor(consoleMode);
-      this.ttlPicker.classList.toggle('hidden', consoleMode);
+      this.ttlRow.classList.toggle('hidden', consoleMode);
       this.replyChip.classList.toggle('hidden', consoleMode);
     };
     renderAgentControls();
@@ -242,6 +276,19 @@ export class ChatView extends View {
       const hit = target.kind === 'contact' && set.has(target.id as number);
       this.unreachableNote.classList.toggle('hidden', !hit);
     }, true);
+
+    // Whether the person on the other end is keeping this conversation.
+    //
+    // A sender with the disappearing timer off attaches no expiry to what it
+    // sends, and the row arrives with none — which is the whole signal there
+    // is, and it is a real one rather than a guess: the expiry is what makes
+    // us delete our own copy, so no expiry means their copy is not on a clock.
+    //
+    // Read off the newest message, never the oldest: the setting belongs to
+    // the person, not to the message, and it can be turned on halfway through.
+    this.peerNote = h('div', { class: 'chat-notice hidden' },
+      icon('lock', 13), h('span', {}, t('chat.peer_keeps')));
+    this.sub(store.messages, () => this.updatePeerNote(), true);
 
     // What the channel is doing, in the user's own terms. Groups have no
     // single channel — each member collects somewhere else — so this is a
@@ -293,6 +340,7 @@ export class ChatView extends View {
       ),
       this.linkStrip,
       this.unreachableNote,
+      this.peerNote,
       this.pinnedBanner.el,
       this.logWrap,
       h('div', { class: 'chat-input' },
@@ -306,7 +354,7 @@ export class ChatView extends View {
         ),
         h('div', { class: 'chat-input-meta' },
           h('span', { class: 'chat-e2e' }, icon('lock', 13), 'Сквозное шифрование'),
-          this.ttlPicker,
+          this.ttlRow,
         ),
       ),
     );
@@ -1040,17 +1088,56 @@ export class ChatView extends View {
     });
   }
 
+  /** Say so when the other end is keeping the conversation — and only then.
+   *
+   * Silence is the reassuring case, so the note appears while their newest
+   * message carries no expiry and goes away again if they turn the timer back
+   * on. A group is never judged: nothing a group sends carries a timer, so the
+   * note there would be a fact about our own protocol dressed up as a fact
+   * about the people in it. */
+  private updatePeerNote(): void {
+    const list = this.store.messages.get().get(targetKey(this.target)) ?? [];
+    const newest = [...list].reverse().find((m) => !m.outgoing && m.console == null);
+    this.peerNote.classList.toggle('hidden', newest == null || newest.expires_at != null);
+  }
+
   private renderTtlPicker(): void {
-    const options: Array<[string, number | null]> = [
-      ['off', null], ['5m', 300], ['1h', 3600], ['1d', 86400], ['7d', 604800],
-    ];
     this.ttlPicker.replaceChildren();
-    for (const [label, secs] of options) {
+    for (const [label, secs] of TTL_OPTIONS) {
       this.ttlPicker.appendChild(h('div', {
         class: 'ttl-chip' + (this.ttlSecs === secs ? ' active' : ''),
-        onClick: () => { this.ttlSecs = secs; this.renderTtlPicker(); },
+        title: t('chat.ttl_title'),
+        onClick: () => this.setTtl(secs),
       }, label));
     }
+    this.ttlNote.textContent = ttlSpoken(this.ttlSecs);
+  }
+
+  /** Change the timer and remember it.
+   *
+   * The pick is per profile rather than per chat: a person who wants their
+   * messages to disappear means it of the people they talk to, and a timer that
+   * reset on every new conversation would be a timer nobody could rely on. It
+   * still only ever applies to what is sent from now on. */
+  private setTtl(secs: number | null): void {
+    this.ttlSecs = secs;
+    this.renderTtlPicker();
+    void Api.updateChatPrefs({ ttlSecs: secs, ttlChosen: true }).catch(() => {
+      // A preference that will not persist is worth saying out loud: the person
+      // would otherwise find the timer back where it started after a restart.
+      this.store.showToast(t('chat.ttl_save_failed'), true);
+    });
+  }
+
+  /** Read the saved timer, and on a profile that never chose one, say what the
+   * new default does rather than quietly starting to delete messages. */
+  private async loadTtl(): Promise<void> {
+    const prefs = await Api.getChatPrefs();
+    if (prefs.ttlSecs !== null) this.ttlSecs = prefs.ttlSecs;
+    this.renderTtlPicker();
+    if (prefs.ttlChosen || ttlNoticeShown) return;
+    ttlNoticeShown = true;
+    this.store.showToast(t('chat.ttl_default_notice'));
   }
 
   private async send(): Promise<void> {

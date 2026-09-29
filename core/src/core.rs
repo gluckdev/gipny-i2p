@@ -61,8 +61,9 @@ const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// matching `attachment_privacy`'s convention.
 const SETTING_AUTO_UPDATE: &str = "auto_update";
 /// What the interface keeps in the vault for itself (JSON it does not
-/// interpret here): contact folders, chosen avatars. Only these keys.
-const UI_DATA_KEYS: &[&str] = &["contact_folders", "avatars"];
+/// interpret here): contact folders, chosen avatars, chat preferences such as
+/// the disappearing-message timer. Only these keys.
+const UI_DATA_KEYS: &[&str] = &["contact_folders", "avatars", "chat_prefs"];
 const MAX_UI_DATA_BYTES: usize = 64 * 1024;
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;
@@ -1706,6 +1707,38 @@ impl Core {
         }
         self.db.set_setting(&format!("ui_{key}"), json.as_bytes())?;
         Ok(())
+    }
+
+    /// Empty the transcript, as the "clear history when I lock" setting asks.
+    ///
+    /// Runs before the vault is closed so it still has the unlocked database
+    /// under it. Pinned messages survive, deliberately: see `purge_all_messages`.
+    pub fn clear_message_history(&self) -> Result<usize> {
+        let dropped = self.db.purge_all_messages()?;
+        // Pinned rows were spared, so this purge orphans nothing. It still runs
+        // because pins whose message went missing earlier — an interrupted run,
+        // a profile copied mid-write — would otherwise sit in the pinned list
+        // pointing at rows nobody can read.
+        self.db.cleanup_orphan_pins()?;
+        Ok(dropped)
+    }
+
+    /// The same, but only if the person asked for it, and saying whether it
+    /// happened.
+    ///
+    /// Quitting from the tray never reaches the interface, so the preference has
+    /// to be read on this side of the wall: by the time a quit arrives the
+    /// window is already gone and there is nobody left to ask. A missing or
+    /// unreadable preference means "off" — this is a setting nobody should ever
+    /// be opted into by accident.
+    pub fn clear_history_if_asked(&self) -> Result<bool> {
+        let Some(json) = self.ui_data("chat_prefs")? else { return Ok(false) };
+        let Ok(prefs) = serde_json::from_str::<serde_json::Value>(&json) else { return Ok(false) };
+        if prefs.get("clearOnLock").and_then(|v| v.as_bool()) != Some(true) {
+            return Ok(false);
+        }
+        self.clear_message_history()?;
+        Ok(true)
     }
 
     /// Kept so an older interface does not fail; updates install either way.

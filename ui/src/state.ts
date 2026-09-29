@@ -652,6 +652,25 @@ export class Store {
     this.displayName.set(name);
   }
 
+  /** Wipe the transcript before the vault closes, if that is what the person
+   * asked for in settings.
+   *
+   * It has to happen here and not on the way out of the app: by the time the
+   * window is closing the vault may already be shut and there is no database
+   * left to write to. Locking is the one point every exit goes through — the
+   * button, the tray, the shortcut — so this is the place that catches them
+   * all. Failing to clear is not worth blocking the lock over: the vault must
+   * close either way, and a stale history is better than a vault left open. */
+  private async clearHistoryIfAsked(): Promise<void> {
+    try {
+      const { clearOnLock } = await Api.getChatPrefs();
+      if (!clearOnLock) return;
+      await Api.clearMessageHistory();
+    } catch {
+      // Nothing to say to anyone here: the lock screen is already on its way.
+    }
+  }
+
   async lock(): Promise<void> {
     const wasProfile = this.currentProfile.get();
     this.stopWatchdog();
@@ -661,6 +680,7 @@ export class Store {
     this.unsubTrayBadge = null;
     Api.updateTrayBadge(0).catch(() => {});
     this.lastTrayBadge = -1;
+    await this.clearHistoryIfAsked();
     await Api.vaultLock();
     this.contacts.set([]);
     this.groups.set([]);

@@ -14,6 +14,21 @@ export interface ContactFolder {
   contacts: number[];
 }
 
+/** What the chat screen remembers between launches.
+ *
+ * `ttlSecs` null means the person turned the disappearing timer off, which is
+ * not the same as never having an opinion: `ttlChosen` separates "I picked
+ * this" from "nobody has picked yet", and only the second is worth a reminder
+ * about the default. */
+export interface ChatPrefs {
+  ttlSecs: number | null;
+  ttlChosen: boolean;
+  /** Empty the transcript the moment the vault is locked. Off unless asked
+   * for: a person who wants the app empty on every close says so, and nobody
+   * else should lose a conversation to a default they never saw. */
+  clearOnLock: boolean;
+}
+
 /** The relay network as this device's node sees it. */
 export interface DhtStatus {
   peers: number;
@@ -594,6 +609,41 @@ export class Api {
   }
   static setAvatarChoices(choices: Record<string, string>): Promise<void> {
     return invoke('set_ui_data', { key: 'avatars', json: JSON.stringify(choices) });
+  }
+  /** Per-profile chat preferences the interface owns. `ttlSecs` is the
+   * disappearing-message timer the person last used, `ttlChosen` that they
+   * picked it themselves — which is what stops us reminding them about the
+   * default on every launch. */
+  static async getChatPrefs(): Promise<ChatPrefs> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'chat_prefs' })) ?? '{}');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ttlSecs: null, ttlChosen: false, clearOnLock: false };
+      const o = parsed as Record<string, unknown>;
+      const ttl = o['ttlSecs'];
+      return {
+        ttlSecs: typeof ttl === 'number' && Number.isFinite(ttl) ? ttl : null,
+        ttlChosen: o['ttlChosen'] === true,
+        clearOnLock: o['clearOnLock'] === true,
+      };
+    } catch {
+      return { ttlSecs: null, ttlChosen: false, clearOnLock: false };
+    }
+  }
+  /** Change one preference without dropping the others.
+   *
+   * The TTL lives in the chat window and this flag in settings, so each writes
+   * on its own; writing a whole object built from a stale copy would let one
+   * quietly undo the other. */
+  static async updateChatPrefs(patch: Partial<ChatPrefs>): Promise<void> {
+    const current = await Api.getChatPrefs();
+    await Api.setChatPrefs({ ...current, ...patch });
+  }
+  static setChatPrefs(prefs: ChatPrefs): Promise<void> {
+    return invoke('set_ui_data', { key: 'chat_prefs', json: JSON.stringify(prefs) });
+  }
+  /** Empty the transcript of this profile. Returns how many messages went. */
+  static clearMessageHistory(): Promise<number> {
+    return invoke('clear_message_history');
   }
   static getDhtStatus(): Promise<DhtStatus> {
     return invoke('get_dht_status');
