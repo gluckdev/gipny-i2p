@@ -8,9 +8,9 @@ name: i2p-embed
 
 on:
   push:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/**', '.github/workflows/i2p-embed.yml' ]
   pull_request:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/**', '.github/workflows/i2p-embed.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -51,9 +51,7 @@ jobs:
       - name: live test over i2p
         env:
           I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
-        run: |
-          set -o pipefail
-          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+        run: bash .github/scripts/live-test-retry.sh "i2p-embed live" cargo test --release -p i2p-embed -- --ignored --nocapture
       - name: summary
         if: always()
         run: |
@@ -103,9 +101,7 @@ jobs:
       - name: live test over i2p
         env:
           I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
-        run: |
-          set -o pipefail
-          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+        run: bash .github/scripts/live-test-retry.sh "i2p-embed live" cargo test --release -p i2p-embed -- --ignored --nocapture
       - name: where it crashed
         if: failure()
         env:
@@ -149,9 +145,7 @@ jobs:
         shell: bash
         env:
           I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
-        run: |
-          set -o pipefail
-          cargo test --release -p i2p-embed -- --ignored --nocapture 2>&1 | tee live.txt
+        run: bash .github/scripts/live-test-retry.sh "i2p-embed live" cargo test --release -p i2p-embed -- --ignored --nocapture
 
   # Android: libi2pd.so as release.yml builds it (libi2pd + shim, ndk-build),
   # then a Rust binary linked against it — the live test built for the phone,
