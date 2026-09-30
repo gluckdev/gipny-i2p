@@ -381,18 +381,24 @@ fn fabricated(n: usize) -> Vec<NodeInfo> {
     (0..n).map(|i| NodeInfo { destination: format!("ghost-{i}"), stores: true, version: PROTOCOL_VERSION }).collect()
 }
 
-/// Issue #99: none of a node's inventions may be handed on to anybody else
-/// before they have answered.
+/// Issue #99: one node's word may not fill other people's tables.
 ///
 /// The per-source allowance the issue also asks for is deliberately not here.
 /// It wants a number, and there is no honest one to pick: the relay network is
 /// tens of nodes by design, so a cap small enough to stop a node naming a
 /// hundred addresses is also small enough to starve a new node of the handful
 /// it needs to join — and the sim runs on a clock that does not advance, which
-/// turns any period into "for the whole run". `a_letter_survives` failed exactly
-/// that way. What stops the flooding is below instead: nothing that has not
-/// answered is ever passed on, so an invented address costs this table one dial
-/// and the rest of the network nothing at all.
+/// turns any period into "for the whole run". A hard filter went the same way:
+/// `mail_outlives_every_node_it_was_first_stored_on` failed with it, because a
+/// node that has just joined has nothing confirmed to offer and would answer
+/// every lookup with an empty list — the state it is in while it joins.
+///
+/// What is here instead is order. Confirmed addresses take the slots first, and
+/// an unheard-of one is handed on only when confirmed runs short, so a node with
+/// a full table vouches for nobody and a fresh one is not silenced. The
+/// protection therefore tracks how well we are connected, which is the part that
+/// is real: the issue's harm is propagation through healthy nodes' tables, and
+/// this stops it exactly there.
 #[tokio::test]
 async fn a_node_cannot_fill_the_table_with_addresses_that_do_not_exist() {
     let net = Net::new();
@@ -417,13 +423,29 @@ async fn a_node_cannot_fill_the_table_with_addresses_that_do_not_exist() {
         "this table still remembers the hundred it was told about, which is the part that is fine here"
     );
 
-    // And a fresh node with nothing confirmed says so rather than passing the
-    // ghosts along: it is in this table, it just has nobody to vouch for.
-    let honest = new_node(&net, Some("honest"), true);
-    honest.add_candidates(&["liar".to_string()], true);
+    // And a node that has asked around: the same hundred land in its table too,
+    // but it has confirmed neighbours of its own, so they do not leave it.
+    let crowd = network(&net, 12).await;
+    let healthy = crowd[0].clone();
+    assert!(
+        healthy.peer_count() >= config().k,
+        "the seed was pinged by all eleven others, has {}",
+        healthy.peer_count()
+    );
+    healthy.add_candidates(&ghosts, false);
+
     let challenge = [3; 32];
-    let r = honest.handle(&challenge, DhtEnvelope { from: None, req: DhtRequest::FindNode { target: [7; 32] } });
+    let r = healthy.handle(&challenge, DhtEnvelope { from: None, req: DhtRequest::FindNode { target: [7; 32] } });
     let DhtResponse::Nodes { me, nodes } = r else { panic!("FindNode answers with nodes") };
     assert!(me.is_some(), "it is a node and says so");
-    assert!(nodes.is_empty(), "nothing has answered it, so it vouches for nobody, got {}", nodes.len());
+    assert_eq!(nodes.len(), config().k, "it has plenty confirmed to offer");
+
+    let confirmed: HashSet<String> = healthy.known_peers().iter().map(|p| p.info.destination.clone()).collect();
+    for n in &nodes {
+        assert!(
+            confirmed.contains(&n.destination),
+            "handed on {}, an address that has never answered",
+            n.destination
+        );
+    }
 }

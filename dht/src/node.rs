@@ -247,49 +247,64 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         }
     }
 
+    /// The k nodes to hand to somebody else: those that answered us first, then
+    /// as many of the rest as we still have room for.
+    ///
+    /// Every address in this table came from somebody, and one that has never
+    /// answered is only ever somebody's claim (issue #99). Preferring confirmed
+    /// ones is what closes the route it describes: a well-connected node vouches
+    /// for nobody, so an invention lands here, costs this one dial, and stops.
+    ///
+    /// It is not a hard cut, because a fresh node knows nothing but seeds and
+    /// would otherwise answer every lookup with an empty list — exactly the
+    /// state it is in while it joins, and exactly why the sim suite failed with
+    /// the cut in place. Filling from unconfirmed only when confirmed runs short
+    /// is what keeps it able to take part, so the protection tracks how well we
+    /// are connected: the harm the issue names is propagation through healthy
+    /// nodes' tables, and healthy nodes do not propagate.
+    fn closest_to_share(&self, target: &DhtKey, n: usize, storing_only: bool) -> Vec<NodeInfo> {
+        let peers = self.peers();
+        let usable = |p: &&Peer| !storing_only || p.info.stores;
+        // Sorted and cut before the fill, or the two kinds would end up
+        // interleaved and truncation would keep an unanswered address over a
+        // node that did answer — the sort would undo the preference itself.
+        let mut confirmed: Vec<NodeInfo> = peers.values()
+            .filter(usable)
+            .filter(|p| p.confirmed && p.failures == 0)
+            .map(|p| p.info.clone())
+            .collect();
+        confirmed.sort_by_key(|i| distance(&i.id(), target));
+        confirmed.truncate(n);
+        if confirmed.len() < n {
+            let mut rest: Vec<NodeInfo> = peers.values()
+                .filter(usable)
+                .filter(|p| !p.confirmed && p.failures == 0)
+                .map(|p| p.info.clone())
+                .collect();
+            rest.sort_by_key(|i| distance(&i.id(), target));
+            confirmed.extend(rest.into_iter().take(n - confirmed.len()));
+        }
+        confirmed
+    }
+
     /// The nodes worth trying for our own lookups, which may include addresses
     /// nobody has confirmed — including a node that failed its last exchange,
     /// or this node would sit out the network until `maintain` (e2e run
     /// 35963073832).
     fn closest(&self, target: &DhtKey, n: usize, storing_only: bool) -> Vec<NodeInfo> {
-        self.closest_matching(target, n, storing_only, false)
-    }
-
-    /// The k nodes to hand to somebody else.
-    ///
-    /// Only nodes that have answered us appear here. Every address in this
-    /// table came from somebody, and a node we have never heard back from is
-    /// only ever somebody's claim — passing those on is how one participant
-    /// fills every table in the network with destinations that do not exist,
-    /// and each of them then costs a real dial (issue #99). A node with nothing
-    /// confirmed answers with an empty list and its own address, which is
-    /// honest: it is here, it just has nobody to vouch for yet.
-    fn closest_to_share(&self, target: &DhtKey, n: usize, storing_only: bool) -> Vec<NodeInfo> {
-        self.closest_matching(target, n, storing_only, true)
-    }
-
-    fn closest_matching(&self, target: &DhtKey, n: usize, storing_only: bool, confirmed_only: bool) -> Vec<NodeInfo> {
         let peers = self.peers();
-        let usable = |p: &&Peer| {
-            if storing_only && !p.info.stores {
-                return false;
-            }
-            !confirmed_only || p.confirmed
-        };
+        let usable = |p: &&Peer| !storing_only || p.info.stores;
         let mut list: Vec<NodeInfo> = peers.values()
             .filter(usable)
             .filter(|p| p.failures == 0)
             .map(|p| p.info.clone())
             .collect();
-        if list.is_empty() && !confirmed_only {
+        if list.is_empty() {
             // Nothing fresh is left, but something is: a node that failed its
             // last exchange is still worth one slow try, since with a single
             // known node (a seed) one failure would otherwise shut this node
             // out of the network until `maintain`.
-            list = peers.values()
-                .filter(|p| !storing_only || p.info.stores)
-                .map(|p| p.info.clone())
-                .collect();
+            list = peers.values().filter(usable).map(|p| p.info.clone()).collect();
         }
         list.sort_by_key(|i| distance(&i.id(), target));
         list.truncate(n);
