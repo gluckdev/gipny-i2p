@@ -67,25 +67,50 @@ jobs:
           mkdir -p relay-state
           # The sealing key is a repository secret and must stay one. A key
           # committed here would be readable by anyone who clones the repo, and
-          # the thing it protects is the relay identity: with it an outsider can
-          # decrypt the cached state and take over the destination that this
-          # network hands every client as its way in. There used to be a
-          # fallback key inline for the case where the secret was missing, which
-          # traded that for state that looked persistent while being readable.
-          # Losing the secret now costs a reseed, which the notice below names;
-          # leaking it costs the network its entry point.
+          # what it protects is the relay identity: with it an outsider can
+          # decrypt the cached state and take over the destination this network
+          # hands every client as its way in. There used to be a fallback key
+          # inline for exactly this case, which bought persistence by publishing
+          # the key that guarded it.
+          #
+          # Without the secret the relay still starts — a downed test relay is
+          # worse than a forgetful one — but it comes up with a fresh
+          # destination and 'seal state' below saves nothing, so that address
+          # stops resolving when the runner is reclaimed. Warn loudly, because
+          # the failure is invisible from the running job: it looks healthy.
           if [ -z "$AGE_KEY" ]; then
-            echo "::error::DHT_SEED_AGE_KEY is not set, so the cached relay state cannot be unsealed. Add it under Settings -> Secrets. The relay will come up with a new destination, and the previous one will stop working once clients move off it."
-            exit 1
+            echo "::warning::DHT_SEED_AGE_KEY is not set. Running unsealed: the relay will get a NEW destination, and nothing will be saved when it stops, so every run reseeds. Add the secret under Settings -> Secrets to keep one address across runs."
+          else
+            umask 077
+            printf '%s\n' "$AGE_KEY" > "$RUNNER_TEMP/age.key"
           fi
-          umask 077
-          printf '%s\n' "$AGE_KEY" > "$RUNNER_TEMP/age.key"
+          # Two ways the cached state can turn out to be unusable, and neither
+          # may take the relay down with it: there may be no key to open it
+          # with, or the key that did open it may have been the one we just
+          # stopped trusting. Both land on the same answer — start over with a
+          # new destination — so they are handled together, and the sealed blob
+          # is dropped so a broken one cannot be restored again next run.
+          unsealed=0
           if [ -s relay-state.tar.gz.age ]; then
-            age -d -i "$RUNNER_TEMP/age.key" relay-state.tar.gz.age | tar -xz -C relay-state
-            rm relay-state.tar.gz.age
-            echo "state restored"
+            if [ -s "$RUNNER_TEMP/age.key" ]; then
+              if age -d -i "$RUNNER_TEMP/age.key" relay-state.tar.gz.age 2>/dev/null | tar -xz -C relay-state; then
+                echo "state restored"
+                unsealed=1
+              else
+                echo "::warning::Cached state would not open with the current DHT_SEED_AGE_KEY (it was sealed with an older key). Discarding it and reseeding; add the secret from the current relay's key if that address still needs to come back."
+              fi
+            else
+              echo "::notice::Cached state present but no DHT_SEED_AGE_KEY to open it; discarding it and reseeding."
+            fi
+            rm -f relay-state.tar.gz.age
           else
             echo "no saved state: first run, a new destination"
+          fi
+          if [ "$unsealed" = 0 ]; then
+            # tar may have written a partial tree before failing; the relay
+            # expects to create its own, and half a database is worse than none.
+            rm -rf relay-state
+            mkdir -p relay-state
           fi
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
