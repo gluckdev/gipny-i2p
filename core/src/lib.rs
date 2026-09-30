@@ -960,10 +960,14 @@ async fn boot(
                     // here told the person the relay network was up on a device
                     // that had answered nobody. It is a step that decided it
                     // could not run, and it says which of the two it was.
-                    let (state, detail) = if reached {
+                    //
+                    // The event is matched by reference, so the fields are
+                    // references too, and both arms have to be the same type:
+                    // one &str and one String does not unify.
+                    let (state, detail) = if *reached {
                         ("done", format!("relay network: {peers} node(s) known"))
                     } else {
-                        ("skipped", "no relay node answered yet — we look again on the next tick")
+                        ("skipped", "no relay node answered yet — we look again on the next tick".to_string())
                     };
                     boot_status(&app2, "dht", state, detail);
                 }
