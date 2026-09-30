@@ -157,19 +157,35 @@ impl I2pNode {
         progress: Option<crate::router::BootProgress>,
     ) -> Result<Self> {
         use crate::router::note;
+        // The order of these is the order of the work, and the screen's steps
+        // are listed in that same order: a router, then an address, then the
+        // tunnels that address needs. It used to report "tunnels" as done the
+        // moment the router was up — before a single tunnel existed — and to
+        // file the real wait, building them, under "session", whose completion
+        // line even said "tunnels built".
         note(&progress, "router", "starting the i2p router inside the app (no local ports)");
-        let router = crate::embedded::router(data_dir, settings)?;
-        note(&progress, "tunnels", "router is up; building tunnels (the longest wait of a first start)");
-        note(&progress, "tunnels-done", "router running");
-        note(&progress, "session", "generating ephemeral destination for this session...");
+        let router = crate::embedded::router(data_dir, settings)
+            .map_err(|e| {
+                note(&progress, "router-failed", format!("the router did not start: {e}"));
+                e
+            })?;
+        note(&progress, "router-ready", "router running");
+        note(&progress, "session", "generating an address for this session...");
         let privkey = i2p_embed::generate_keys();
         let dest = i2p_embed::Destination::new(&router, Some(&privkey), &crate::embedded::destination_options(false, DEFAULT_HOPS))
-            .map_err(|e| NetError::I2p(format!("destination: {e}")))?;
+            .map_err(|e| {
+                note(&progress, "session-failed", format!("the address could not be made: {e}"));
+                NetError::I2p(format!("destination: {e}"))
+            })?;
         let address = dest.address().to_string();
-        note(&progress, "session", format!("destination = {}", short_addr(&address)));
+        note(&progress, "session-done", format!("address {}", short_addr(&address)));
+        note(&progress, "tunnels", "building this address's tunnels — the longest wait of a first start");
         dest.ready(Duration::from_secs(600)).await
-            .map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
-        note(&progress, "session-done", "tunnels built");
+            .map_err(|e| {
+                note(&progress, "tunnels-failed", format!("the tunnels did not come up: {e}"));
+                NetError::I2p(format!("tunnels: {e}"))
+            })?;
+        note(&progress, "tunnels-done", "tunnels built");
         Ok(Self {
             dest: Mutex::new(Arc::new(dest)),
             address,

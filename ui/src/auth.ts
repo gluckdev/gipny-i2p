@@ -299,8 +299,11 @@ export class AuthBooting extends View {
 const BOOT_LABELS: [BootStepId, string, string][] = [
   ['vault', t('boot.step.vault'), t('boot.step.vault_hint')],
   ['router', t('boot.step.router'), t('boot.step.router_hint')],
-  ['tunnels', t('boot.step.tunnels'), t('boot.step.tunnels_hint')],
+  // Address before tunnels: the address is what the tunnels get built for, so
+  // this is the order the work happens in. The rows are built from this list,
+  // and the back-fill in the store counts on the same order.
   ['session', t('boot.step.session'), t('boot.step.session_hint')],
+  ['tunnels', t('boot.step.tunnels'), t('boot.step.tunnels_hint')],
   ['core', t('boot.step.core'), t('boot.step.core_hint')],
   ['relay', t('boot.step.relay'), t('boot.step.relay_hint')],
   ['dht', t('boot.step.dht'), t('boot.step.dht_hint')],

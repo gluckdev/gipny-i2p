@@ -37,8 +37,13 @@ export class Signal<T> {
 export type ViewKind = 'profile-select' | 'auth-create' | 'auth-unlock' | 'auth-booting' | 'main';
 
 /** Steps of opening a profile, in the order they happen. The ids match the
- * backend's `boot_status` stages; `dht` is last and never blocks the way in. */
-export const BOOT_STEPS = ['vault', 'router', 'tunnels', 'session', 'core', 'relay', 'dht'] as const;
+ * backend's `boot_status` stages; `dht` is last and never blocks the way in.
+ *
+ * The order is the order of the work, and it used not to be: a router, then an
+ * address, then the tunnels that address needs — but tunnels was listed before
+ * the address, so the screen showed the long wait under the wrong label and
+ * declared it done the moment the router was up. */
+export const BOOT_STEPS = ['vault', 'router', 'session', 'tunnels', 'core', 'relay', 'dht'] as const;
 export type BootStepId = typeof BOOT_STEPS[number];
 
 export interface BootStep {
@@ -442,7 +447,11 @@ export class Store {
     // Once the core is up, the chats are readable even while the relay builds
     // its tunnels — offer the way in rather than holding the screen hostage.
     if (status.stage === 'core' && status.state === 'done') this.bootCanEnter.set(true);
-    if (status.stage === 'relay' && status.state === 'done') this.enterMain();
+    // Either way round there is no relay work left: in hosted mode it came up,
+    // and with an external relay there never was any of ours to build. Waiting
+    // for 'done' only meant a person running an external relay sat on this
+    // screen until the timeout fired.
+    if (status.stage === 'relay' && (status.state === 'done' || status.state === 'skipped')) this.enterMain();
   }
 
   /** Pin the app to this chat and keep the screen on.

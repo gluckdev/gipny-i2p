@@ -658,12 +658,20 @@ fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
     Arc::new(move |stage: &str, detail: &str| {
         let (stage, state) = match stage {
             "router" => ("router", "active"),
-            "router-reused" => ("router", "done"),
-            "tunnels" => ("tunnels", "active"),
-            "tunnels-done" => ("tunnels", "done"),
+            "router-ready" | "router-reused" => ("router", "done"),
+            "router-failed" => ("router", "failed"),
             "session" => ("session", "active"),
             "session-done" => ("session", "done"),
-            _ => ("router", "active"),
+            "session-failed" => ("session", "failed"),
+            "tunnels" => ("tunnels", "active"),
+            "tunnels-done" => ("tunnels", "done"),
+            "tunnels-failed" => ("tunnels", "failed"),
+            // Anything else is a stage this screen has no row for. It used to
+            // be reported as "router active", which meant a stage nobody had
+            // heard of lit up a step that was doing something else entirely.
+            // The row lookup misses on purpose, so the line still reaches the
+            // technical log without claiming a step ran.
+            _ => ("note", ""),
         };
         boot_status(&app, stage, state, detail);
     })
@@ -844,8 +852,8 @@ async fn take_prewarmed(
     };
     // The screen's own listener may have attached after these stages went by.
     boot_status(app, "router", "done", "router ready (started before unlocking)");
+    boot_status(app, "session", "done", "address ready");
     boot_status(app, "tunnels", "done", "tunnels built before unlocking");
-    boot_status(app, "session", "done", "destination ready");
     Some(ready)
 }
 
@@ -919,13 +927,14 @@ async fn boot(
     // key, not by address — so nothing about the address needs persisting).
     let (node, prebuilt_relay) = match take_prewarmed(ctx, &app, profile, settings).await {
         Some((node, relay)) => (node, Some(relay)),
+        // start_with_progress has already named the step that failed — the
+        // router, the address, or the tunnels — so nothing is reported here.
+        // It used to call every failure of this call "router failed", which put
+        // a ten-minute tunnel failure under a step that was long since done.
         None => (Arc::new(
             I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
                 .await
-                .map_err(|e| {
-                    boot_status(&app, "router", "failed", format!("{e:?}"));
-                    err(e)
-                })?,
+                .map_err(err)?,
         ), None),
     };
     let warning: Option<String> = None;
@@ -945,6 +954,12 @@ async fn boot(
                 crate::core::CoreEvent::RelayInfoChanged { info } => match &info.hosted {
                     crate::core::HostedRelayState::Ready { address } => {
                         boot_status(&app2, "relay", "done", format!("built-in relay ready at {}", &address[..address.len().min(16)]));
+                        // Joining the network is the next thing that happens,
+                        // and it waits on nodes that answer. Without this the
+                        // step jumps from empty to a verdict with nothing in
+                        // between, which is the whole tell of a step that
+                        // skipped.
+                        boot_status(&app2, "dht", "active", "looking for the relay network");
                     }
                     crate::core::HostedRelayState::Failed { reason } => {
                         boot_status(&app2, "relay", "failed", reason.clone());
@@ -952,7 +967,19 @@ async fn boot(
                     crate::core::HostedRelayState::Starting => {
                         boot_status(&app2, "relay", "active", "building the relay's tunnels");
                     }
-                    crate::core::HostedRelayState::Off => {}
+                    // Not a failure and not a success: in external mode there is
+                    // no built-in relay to raise. It said nothing at all, and a
+                    // step left empty is back-filled to a green tick by the next
+                    // stage that speaks, so a person was told a relay had been
+                    // built when we never tried.
+                    crate::core::HostedRelayState::Off => {
+                        boot_status(&app2, "relay", "skipped", "not our relay to raise — an external one is configured");
+                        // Nothing announces this node, so no join follows and
+                        // no verdict ever arrives. Without a line of its own the
+                        // step would stay empty on a screen where every other
+                        // step has a state.
+                        boot_status(&app2, "dht", "skipped", "no relay of ours to announce — the external one handles it");
+                    }
                 },
                 crate::core::CoreEvent::DhtJoined { peers, reached } => {
                     // Zero peers is not a finished step: bootstrap returns
