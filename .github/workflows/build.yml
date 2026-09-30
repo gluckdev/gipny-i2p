@@ -88,7 +88,7 @@ jobs:
       - name: i2pd sources and build deps (every binary compiles its router in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/prepare-i2pd.sh
+          .github/scripts/assert-i2pd-pin.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
@@ -137,7 +137,7 @@ jobs:
       - name: i2pd sources, boost and OpenSSL (the router is compiled in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/prepare-i2pd.sh
+          .github/scripts/assert-i2pd-pin.sh
           brew install boost openssl@3
           b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
           {
@@ -180,7 +180,7 @@ jobs:
       - name: i2pd sources and build deps (libcore and the relay compile the router in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/prepare-i2pd.sh
+          .github/scripts/assert-i2pd-pin.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       # pipefail: GitHub runs `bash -e` without it, so `cargo test | tee` took
@@ -232,23 +232,8 @@ jobs:
   # release.yml, which builds and links a real libi2pd.so.
   # ---------------------------------------------------------------------------
   android:
-    name: android APK (${{ matrix.label }})
+    name: android APK
     runs-on: ubuntu-22.04
-    # One ABI per job. Tauri writes every requested target into the same
-    # "universal" flavor output, so the three ABIs could only ever be built in
-    # sequence in one workspace, each wiping the last one's outputs/. Three jobs
-    # build them at once instead. This trades runner minutes for wall clock —
-    # the same three APKs, the same checks, a third of the waiting.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { target: aarch64, rust: aarch64-linux-android,     abi: lib/arm64-v8a,   label: arm64,  artifact: gipny-android-debug-apk-no-router }
-          - { target: x86_64,  rust: x86_64-linux-android,      abi: lib/x86_64,      label: x86_64, artifact: gipny-android-debug-apk-x86_64-no-router }
-          # 32-bit ARM ships in release.yml; compiling it here is what catches
-          # code that only breaks where usize is 32 bits, on a push rather than
-          # a tag. Nobody installs it, so it is not published.
-          - { target: armv7,   rust: armv7-linux-androideabi,   abi: lib/armeabi-v7a, label: armv7,  artifact: '' }
     env:
       # No libi2pd.so here (an hour of boost per ABI): the shim's interface
       # over nothing (i2p-embed/shim/stub.c), so the app links and starts and
@@ -262,7 +247,7 @@ jobs:
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust }}
+          targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi
       - uses: actions/setup-java@v6
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
@@ -295,9 +280,7 @@ jobs:
       # every push — the slowest job in CI by a wide margin.
       - uses: Swatinem/rust-cache@v2
         with:
-          # Per target: these run at the same time, and one shared key would
-          # have all three writing the same cache entry.
-          key: android-${{ matrix.target }}
+          key: android
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cache gradle
@@ -313,29 +296,61 @@ jobs:
         run: cargo binstall -y --locked tauri-cli@^2 || cargo install tauri-cli --version '^2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
-      - name: build Android APK (${{ matrix.target }})
+      # tauri builds every requested target into the "universal" flavor output
+      # (outputs/apk/universal/debug/app-universal-debug.apk), so a second
+      # `--target` build overwrites the first APK. Build one ABI at a time,
+      # verify + stash the APK, and wipe outputs/ before the next build.
+      - name: build Android APK (aarch64)
         env:
           # Not `-- -PskipRouter`: the tauri CLI does not forward trailing args
           # to Gradle. ORG_GRADLE_PROJECT_* is read by project.hasProperty().
           ORG_GRADLE_PROJECT_skipRouter: 'true'
-        run: cd core && cargo tauri android build --debug --apk --target ${{ matrix.target }}
-      - name: verify APK (${{ matrix.label }})
+        run: cd core && cargo tauri android build --debug --apk --target aarch64
+      - name: verify + stash APK (aarch64)
         run: |
           apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
           test -n "$apk"
-          # The stub's whole point: the app links and starts, and the ABI in the
-          # APK is the one this job was asked to build.
-          unzip -l "$apk" | grep -F '${{ matrix.abi }}/libgipny_lib.so'
-          if [ -n '${{ matrix.artifact }}' ]; then
-            mkdir -p dist
-            cp "$apk" dist/
-            ls -la dist
-          fi
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libgipny_lib.so'
+          mkdir -p dist/arm64
+          find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/arm64/ \;
+          ls -la dist/arm64
+          test -n "$(find dist/arm64 -type f -name '*.apk' -print -quit)"
+          rm -rf core/gen/android/app/build/outputs
+      - name: build Android APK (x86_64)
+        env:
+          ORG_GRADLE_PROJECT_skipRouter: 'true'
+        run: cd core && cargo tauri android build --debug --apk --target x86_64
+      - name: verify + stash APK (x86_64)
+        run: |
+          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          unzip -l "$apk" | grep -F 'lib/x86_64/libgipny_lib.so'
+          mkdir -p dist/x86_64
+          find core/gen/android/app/build/outputs -type f -name '*.apk' -exec cp {} dist/x86_64/ \;
+          ls -la dist/x86_64
+          test -n "$(find dist/x86_64 -type f -name '*.apk' -print -quit)"
+          rm -rf core/gen/android/app/build/outputs
+      # 32-bit ARM ships in release.yml; compiling it here is what catches code
+      # that only breaks where usize is 32 bits, on a push rather than a tag.
+      - name: build Android APK (armv7)
+        env:
+          ORG_GRADLE_PROJECT_skipRouter: 'true'
+        run: cd core && cargo tauri android build --debug --apk --target armv7
+      - name: verify APK (armv7)
+        run: |
+          apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
+          test -n "$apk"
+          unzip -l "$apk" | grep -F 'lib/armeabi-v7a/libgipny_lib.so'
       - uses: actions/upload-artifact@v7
-        if: ${{ matrix.artifact != '' }}
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/*.apk
+          name: gipny-android-debug-apk-no-router
+          path: dist/arm64/*.apk
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-android-debug-apk-x86_64-no-router
+          path: dist/x86_64/*.apk
           retention-days: 3
           if-no-files-found: error
 
