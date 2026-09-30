@@ -309,6 +309,61 @@ mod tests {
         assert!(open_address_record(&bob_pair, &alice.sign_pk(), &[new.value], NOW + 1000 + ADDRESS_TTL_MS).is_none());
     }
 
+    /// Several relays, not one: a letter is copied to each, so a sender needs
+    /// all of them, and the newest-first order is what decides who is tried
+    /// first. No network here on purpose — this is a function over a list of
+    /// values, and the DHT's own reachability is `tests/sim.rs`'s business.
+    #[test]
+    fn every_relay_a_contact_publishes_comes_back() {
+        let (alice, bob) = (Who::new(), Who::new());
+        let pair = alice.pair_with(&bob);
+        let published = ["relay-a", "relay-b", "relay-c", "relay-d"];
+        let values: Vec<Vec<u8>> = published.iter().enumerate()
+            .map(|(i, relay)| address_record(&alice.signing, &pair, NOW + i as u64 * 1000, relay).unwrap().value)
+            .collect();
+        let bob_pair = bob.pair_with(&alice);
+        let all = open_address_records(&bob_pair, &alice.sign_pk(), &values, NOW + 2000);
+        assert_eq!(
+            all.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+            ["relay-d", "relay-c", "relay-b"],
+            "newest first, and no more than the cap: four is four tunnels per letter, forever",
+        );
+        // The one-address reader is the head of this list, not a second
+        // opinion: a sender that does not copy must not disagree with one that
+        // does about which relay is first.
+        assert_eq!(open_address_record(&bob_pair, &alice.sign_pk(), &values, NOW + 2000), all.first().cloned());
+    }
+
+    /// The same address under two sequences is one relay, not two copies to
+    /// send to — and a cap that counted it twice would push a real relay out.
+    #[test]
+    fn a_repeated_address_is_one_relay() {
+        let (alice, bob) = (Who::new(), Who::new());
+        let pair = alice.pair_with(&bob);
+        let values: Vec<Vec<u8>> = ["relay-only", "relay-only", "relay-other"].iter().enumerate()
+            .map(|(i, relay)| address_record(&alice.signing, &pair, NOW + i as u64 * 1000, relay).unwrap().value)
+            .collect();
+        let bob_pair = bob.pair_with(&alice);
+        let all = open_address_records(&bob_pair, &alice.sign_pk(), &values, NOW + 2000);
+        assert_eq!(all.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(), ["relay-other", "relay-only"]);
+    }
+
+    /// Another person's record under *Alice's* key is not one of Alice's
+    /// relays, however many of them there are — this is what stops them being
+    /// where her mail is sent. Signed under her key deliberately: sealed to it,
+    /// so it opens, and only the owner check can turn it away.
+    #[test]
+    fn another_persons_relays_are_not_ours_to_send_to() {
+        let (alice, mallory, bob) = (Who::new(), Who::new(), Who::new());
+        let pair = alice.pair_with(&bob);
+        let key = crypto::addr_key(&pair, &alice.sign_pk());
+        let values: Vec<Vec<u8>> = ["mallory-a", "mallory-b"].iter().enumerate()
+            .map(|(i, relay)| build_record(&mallory.signing, &pair, b"addr", key, KIND_ADDRESS, NOW + i as u64 * 1000, ADDRESS_TTL_MS, relay.as_bytes().to_vec()).unwrap().value)
+            .collect();
+        let bob_pair = bob.pair_with(&alice);
+        assert!(open_address_records(&bob_pair, &alice.sign_pk(), &values, NOW + 2000).is_empty());
+    }
+
     #[test]
     fn a_bundle_record_is_found_from_the_card_alone() {
         let alice = Who::new();
