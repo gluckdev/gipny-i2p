@@ -432,6 +432,7 @@ async fn a_node_cannot_fill_the_table_with_addresses_that_do_not_exist() {
         "the seed was pinged by all eleven others, has {}",
         healthy.peer_count()
     );
+    let ghosts: Vec<String> = fabricated(100).into_iter().map(|g| g.destination).collect();
     healthy.add_candidates(&ghosts, false);
 
     let challenge = [3; 32];
