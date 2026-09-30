@@ -323,3 +323,100 @@ async fn nodes_refuse_what_they_should() {
     let leaf = new_node(&net, None, false);
     assert!(matches!(leaf.handle(&challenge, DhtEnvelope { from: None, req: DhtRequest::Ping }), DhtResponse::Error(_)));
 }
+
+/// A peer that names a hundred addresses nobody has ever heard of, however many
+/// the table already holds.
+///
+/// The honest `handle` path cannot do this any more — a node only hands out
+/// what has answered it — so a node that means to fill our table has to lie
+/// past us, and this is what that looks like on the wire.
+struct FillerTransport {
+    liar: String,
+    fabrications: Vec<NodeInfo>,
+}
+
+struct FillerConn {
+    liar: String,
+    fabrications: Vec<NodeInfo>,
+    challenge: [u8; 32],
+}
+
+impl Connection for FillerConn {
+    fn challenge(&self) -> [u8; 32] {
+        self.challenge
+    }
+
+    fn call(&mut self, env: DhtEnvelope) -> BoxFuture<'_, Result<DhtResponse, NetError>> {
+        let (liar, fabrications) = (self.liar.clone(), self.fabrications.clone());
+        Box::pin(async move {
+            match env.req {
+                DhtRequest::FindNode { .. } => Ok(DhtResponse::Nodes {
+                    me: Some(NodeInfo { destination: liar, stores: true, version: PROTOCOL_VERSION }),
+                    nodes: fabrications,
+                }),
+                _ => Err(NetError("nothing else".into())),
+            }
+        })
+    }
+}
+
+impl Transport for FillerTransport {
+    type Conn = FillerConn;
+
+    fn open(&self, destination: &str) -> BoxFuture<'_, Result<FillerConn, NetError>> {
+        let (liar, fabrications) = (self.liar.clone(), self.fabrications.clone());
+        let wanted = liar.clone();
+        Box::pin(async move {
+            // Only the liar is there. The addresses it named are not, which is
+            // the whole point of naming them.
+            if destination != wanted {
+                return Err(NetError("no such destination".into()));
+            }
+            Ok(FillerConn { liar, fabrications, challenge: crypto::random_32() })
+        })
+    }
+}
+
+fn fabricated(n: usize) -> Vec<NodeInfo> {
+    (0..n).map(|i| NodeInfo { destination: format!("ghost-{i}"), stores: true, version: PROTOCOL_VERSION }).collect()
+}
+
+/// Issue #99: one node may not talk a hundred invented destinations into this
+/// table, and none of them may be handed on to anybody else before they have
+/// answered.
+#[tokio::test]
+async fn a_node_cannot_fill_the_table_with_addresses_that_do_not_exist() {
+    let net = Net::new();
+    let ghosts = fabricated(100);
+    let victim = Arc::new(DhtNode::new(
+        Arc::new(FillerTransport { liar: "liar".into(), fabrications: ghosts.clone() }),
+        Arc::new(MemStorage::new(StoreLimits::default())),
+        config(),
+        { let clock = net.clock.clone(); Arc::new(move || clock.load(Ordering::Relaxed)) },
+    ));
+    victim.add_candidates(&["liar".to_string()], true);
+
+    let _ = victim.lookup(&[7; 32]).await;
+
+    // The liar itself is worth having — it answered, even if it lied.
+    assert_eq!(victim.peer_count(), 1, "the liar answered, so it is one known node");
+    // Its hundred inventions are not the whole table: it spent an allowance
+    // and the rest were dropped unread.
+    assert!(
+        victim.table_len() <= config().max_introduced as usize + 1,
+        "a node introduced {} addresses at once, allowance is {}",
+        victim.table_len().saturating_sub(1),
+        config().max_introduced,
+    );
+    assert!(victim.table_len() < 50, "table grew to {} on one liar's word", victim.table_len());
+
+    // And a fresh node with nothing confirmed says so rather than passing the
+    // ghosts along: it is in this table, it just has nobody to vouch for.
+    let honest = new_node(&net, Some("honest"), true);
+    honest.add_candidates(&["liar".to_string()], true);
+    let challenge = [3; 32];
+    let r = honest.handle(&challenge, DhtEnvelope { from: None, req: DhtRequest::FindNode { target: [7; 32] } });
+    let DhtResponse::Nodes { me, nodes } = r else { panic!("FindNode answers with nodes") };
+    assert!(me.is_some(), "it is a node and says so");
+    assert!(nodes.is_empty(), "nothing has answered it, so it vouches for nobody, got {}", nodes.len());
+}
