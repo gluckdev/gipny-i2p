@@ -61,3 +61,6 @@ Thumbs.db
 e2e-logs/
 e2e-state/
 __pycache__/
+
+# Локальный age-ключ релея (DHT_SEED_AGE_KEY) — никогда не коммитить
+.relay-age-key
