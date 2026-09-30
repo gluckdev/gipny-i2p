@@ -15,6 +15,13 @@ async fn a_stream_between_two_destinations_in_one_router() {
     });
     std::fs::create_dir_all(&dir).unwrap();
     let t0 = Instant::now();
+    // Answer the network question before the router exists, which is what a
+    // host does when its connectivity callback fires on a cold start. The shim
+    // holds the answer and applies it in gipny_router_start, and that call
+    // happens for the first time here: nothing else in this test path ever set
+    // it, so a start that cannot take the answer would abort libi2pd here
+    // rather than on a phone that had just woken up somewhere else.
+    i2p_embed::set_online(true);
     let router = Router::start(&[format!("--datadir={dir}"), "--notransit".into(), "--reseed.verify=true".into()], None).expect("router");
     assert!(
         std::path::Path::new(&dir).join("certificates/reseed").read_dir().is_ok_and(|mut d| d.next().is_some()),
