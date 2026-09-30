@@ -881,7 +881,18 @@ async fn boot(
             return Err("wiped".into());
         }
     };
-    let db = Arc::new(gipny_libcore::db::Db::open(&dir.join(db_name), &mk).map_err(err)?);
+    // A failure here used to leave the vault step spinning forever: the key was
+    // right — that part said so — and the only thing after it was a `?`, so
+    // nothing ever said otherwise. The person saw argon2id apparently still
+    // running, minutes after it had finished, with no error anywhere.
+    let db = match gipny_libcore::db::Db::open(&dir.join(db_name), &mk) {
+        Ok(db) => Arc::new(db),
+        Err(e) => {
+            let msg = err(e);
+            boot_status(&app, "vault", "failed", format!("profile opened the key but not the database: {msg}"));
+            return Err(msg);
+        }
+    };
     boot_status(&app, "vault", "done", format!("profile opened ({db_name})"));
     resolve_bundled_router(&app);
     // Router knobs are per profile and read once, here: i2pd takes them on its
@@ -943,8 +954,18 @@ async fn boot(
                     }
                     crate::core::HostedRelayState::Off => {}
                 },
-                crate::core::CoreEvent::DhtJoined { peers } => {
-                    boot_status(&app2, "dht", "done", format!("relay network: {peers} node(s) known"));
+                crate::core::CoreEvent::DhtJoined { peers, reached } => {
+                    // Zero peers is not a finished step: bootstrap returns
+                    // promptly on an empty candidate list, so reporting "done"
+                    // here told the person the relay network was up on a device
+                    // that had answered nobody. It is a step that decided it
+                    // could not run, and it says which of the two it was.
+                    let (state, detail) = if reached {
+                        ("done", format!("relay network: {peers} node(s) known"))
+                    } else {
+                        ("skipped", "no relay node answered yet — we look again on the next tick")
+                    };
+                    boot_status(&app2, "dht", state, detail);
                 }
                 _ => {}
             }

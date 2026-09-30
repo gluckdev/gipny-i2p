@@ -311,7 +311,19 @@ class MainView extends View {
       banner.classList.toggle('hidden', connected && !unreachable);
       banner.classList.toggle('warn', unconfigured || (connected && unreachable));
       if (connected) {
-        if (unreachable) {
+        // Our relay is up, but the relay network is what makes us findable and
+        // able to look people up. If we reached nobody, the banner says so:
+        // "connected" here means our own relay answered, not that we are in
+        // the network, and the difference is what someone is actually stuck on.
+        const dht = store.dhtReached.get();
+        if (dht === false) {
+          const peers = store.dhtPeers.get();
+          banner.replaceChildren(
+            peers > 0
+              ? 'релей поднят, но в сети i2p нас пока не видно нигде — ждём, пока ответят узлы'
+              : 'релей поднят, но в сеть i2p мы ещё не вошли: ни один узел не ответил. Сообщения уйдут, как только найдём сеть'
+          );
+        } else if (unreachable) {
           const why = info?.dial?.unreachable_error ? ` (${info.dial.unreachable_error.slice(0, 120)})` : '';
           banner.replaceChildren(
             `до вас сейчас не достучаться: встроенный релей не виден из сети i2p, проверка ${info?.dial?.unreachable_checks} раза подряд${why}. ` +
@@ -348,6 +360,8 @@ class MainView extends View {
     this.subs.push(store.relayConnected.subscribe(paintBanner, true));
     this.subs.push(store.relayUnconfigured.subscribe(paintBanner, true));
     this.subs.push(store.relayInfo.subscribe(paintBanner, false));
+    this.subs.push(store.dhtReached.subscribe(paintBanner, false));
+    this.subs.push(store.dhtPeers.subscribe(paintBanner, false));
     main.insertBefore(banner, main.firstChild);
 
     // Agent mode is intentionally visible in the same always-on strip as relay

@@ -75,6 +75,7 @@ export const translations = {
     'boot.sub': 'Первый запуск занимает минуты: роутер ищет узлы i2p и строит туннели. Дальше быстрее.',
     'boot.elapsed': 'прошло {time} с',
     'boot.enter_now': 'Открыть чаты сейчас',
+    'boot.back': 'Вернуться к профилям',
     'boot.details': 'Технические подробности',
     'boot.step.vault': 'Расшифровываю профиль',
     'boot.step.vault_hint': 'argon2id, это нагружает процессор',
@@ -89,7 +90,10 @@ export const translations = {
     'boot.step.relay': 'Поднимаю свой релей',
     'boot.step.relay_hint': 'через него вам пишут',
     'boot.step.dht': 'Вхожу в сеть релеев',
-    'boot.step.dht_hint': 'нужна для доставки в офлайне',
+    // Not a promise: on a fresh profile there is nobody to bootstrap from until
+    // a contact answers, and the step then reports itself skipped rather than
+    // done. The hint has to allow for that without reading like a warning.
+    'boot.step.dht_hint': 'нужна для доставки в офлайне; если сеть ещё пуста — шаг будет пропущен',
 
     // Chat
     'chat.attach_file': 'Прикрепить файл',
@@ -212,6 +216,7 @@ export const translations = {
     'boot.sub': 'First launch takes a few minutes: the router finds i2p peers and builds tunnels. Subsequent launches are faster.',
     'boot.elapsed': 'elapsed {time} s',
     'boot.enter_now': 'Open chats now',
+    'boot.back': 'Back to profiles',
     'boot.details': 'Technical details',
     'boot.step.vault': 'Decrypting profile',
     'boot.step.vault_hint': 'argon2id key derivation',

@@ -43,7 +43,7 @@ export type BootStepId = typeof BOOT_STEPS[number];
 
 export interface BootStep {
   id: BootStepId;
-  state: 'idle' | 'active' | 'done' | 'failed';
+  state: 'idle' | 'active' | 'done' | 'failed' | 'skipped';
   /** When this step became active, so the screen can keep counting between
    * messages from the backend — a three-minute step must not look stuck. */
   startedAt: number;
@@ -181,6 +181,13 @@ export class Store {
   relayUnconfigured = new Signal<boolean>(false);
   /** Mode and built-in relay state; null until the core has been asked. */
   relayInfo = new Signal<RelayInfo | null>(null);
+  /** How the relay network went after the core joined it. Null until it says.
+   *
+   * This used to be visible only on the settings screen, opened by hand, which
+   * meant the one thing that says whether the device reached anyone was on a
+   * page nobody opens when something looks wrong. */
+  dhtReached = new Signal<boolean | null>(null);
+  dhtPeers = new Signal<number>(0);
   /** Contacts whose relay has been silent for a while with mail waiting. */
   unreachable = new Signal<Set<number>>(new Set());
 
@@ -406,6 +413,10 @@ export class Store {
   endBoot(): void {
     this.unsubBoot?.();
     this.unsubBoot = null;
+    if (this.bootTimer != null) {
+      window.clearTimeout(this.bootTimer);
+      this.bootTimer = null;
+    }
   }
 
   private onBootStatus(status: BootStatus): void {
@@ -416,6 +427,10 @@ export class Store {
     this.bootSteps.update((steps) => steps.map((step, i) => {
       if (i < idx && (step.state === 'idle' || step.state === 'active')) {
         // A step we never saw finish is over by the time a later one speaks.
+        // Only 'idle' and 'active' are back-filled: a step that already
+        // reported 'skipped' is terminal and says something different from a
+        // step that did the work, so it has to survive the later steps that
+        // come after it.
         return { ...step, state: 'done' as const, ms: step.ms || (step.startedAt ? now - step.startedAt : 0) };
       }
       if (i !== idx) return step;
@@ -499,6 +514,12 @@ export class Store {
   /** Leave the loading screen for the chats. */
   enterMain(): void {
     this.bootStage.set('done');
+    // Leaving the screen ends the offer it was making; otherwise the timer
+    // stays armed until it fires and finds nothing to do.
+    if (this.bootTimer != null) {
+      window.clearTimeout(this.bootTimer);
+      this.bootTimer = null;
+    }
     if (this.view.get() === 'auth-booting') this.view.set('main');
   }
 
@@ -571,7 +592,15 @@ export class Store {
   private armBootTimeout(): void {
     if (this.bootTimer != null) window.clearTimeout(this.bootTimer);
     this.bootTimer = window.setTimeout(() => {
-      if (this.view.get() === 'auth-booting') this.enterMain();
+      if (this.view.get() !== 'auth-booting') return;
+      // Letting the person in is right when there is a profile to show them.
+      // It was unconditional, so a boot that had failed — or one still waiting
+      // on the password — dropped them into an empty chat list with no sign of
+      // why, minutes after the screen told them a passphrase was being
+      // checked. Reading needs an open profile; until then, wait and say so.
+      if (this.bootSteps.get().some((s) => s.state === 'failed')) return;
+      if (!this.bootCanEnter.get()) return;
+      this.enterMain();
     }, Store.BOOT_RELAY_TIMEOUT_MS);
   }
 
@@ -1252,6 +1281,11 @@ export class Store {
       const info = e.RelayInfoChanged.info;
       this.relayInfo.set(info);
       this.relayUnconfigured.set(info.mode !== 'builtin' && info.external.trim() === '');
+    } else if ('DhtJoined' in e) {
+      // Zero peers is a fact worth keeping, not a failure to raise: a device on
+      // a fresh profile has nobody to bootstrap from until its contacts answer.
+      this.dhtPeers.set(e.DhtJoined.peers);
+      this.dhtReached.set(e.DhtJoined.reached);
     } else if ('ContactReachability' in e) {
       const { contact_id, unreachable } = e.ContactReachability;
       this.unreachable.update((s) => {

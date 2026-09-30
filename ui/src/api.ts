@@ -199,7 +199,7 @@ export interface Bundle {
  * the technical line, shown under «технические подробности». */
 export interface BootStatus {
   stage: 'vault' | 'router' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht';
-  state: 'active' | 'done' | 'failed';
+  state: 'active' | 'done' | 'failed' | 'skipped';
   detail: string;
 }
 
@@ -273,6 +273,9 @@ export type CoreEvent =
   | { AgentModeChanged: { master: AgentMaster | null } }
   | { ConsoleActivity: { contact_id: number } }
   | { RelayInfoChanged: { info: RelayInfo } }
+  // `reached` is the honest half: `peers` is 0 on a fresh profile that has
+  // nobody to bootstrap from, and the UI must not read that as "joined".
+  | { DhtJoined: { peers: number; reached: boolean } }
   | { ContactReachability: { contact_id: number; unreachable: boolean } }
   | { LinkRtt: { contact_id: number; ms: number } }
   | { LaneChanged: { lane: Lane } };

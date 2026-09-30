@@ -189,6 +189,7 @@ export class AuthBooting extends View {
   private elapsedEl: HTMLElement;
   private logEl: HTMLElement;
   private enterBtn: HTMLButtonElement;
+  private backBtn: HTMLButtonElement;
   private startedAt = Date.now();
   private timer: number | null = null;
 
@@ -208,6 +209,17 @@ export class AuthBooting extends View {
       class: 'btn btn-ghost boot-enter hidden',
       onClick: () => store.enterMain(),
     }, t('boot.enter_now')) as HTMLButtonElement;
+    // A failed step used to be the end of the road: the screen showed ✕ and a
+    // log, with nothing to press, so the only way out was to quit the app. The
+    // password was not the problem, the profile was, and going back to pick
+    // another one is the obvious next move.
+    this.backBtn = h('button', {
+      class: 'btn btn-ghost boot-enter hidden',
+      onClick: () => {
+        store.endBoot();
+        void store.cancelToProfileSelect();
+      },
+    }, t('boot.back')) as HTMLButtonElement;
 
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card boot-card' },
@@ -215,7 +227,7 @@ export class AuthBooting extends View {
         h('div', { class: 'auth-title' }, t('boot.title')),
         h('div', { class: 'auth-sub' }, t('boot.sub')),
         list,
-        h('div', { class: 'row-between boot-foot' }, this.elapsedEl, this.enterBtn),
+        h('div', { class: 'row-between boot-foot' }, this.elapsedEl, this.backBtn, this.enterBtn),
         h('details', { class: 'boot-details' },
           h('summary', null, t('boot.details')),
           this.logEl,
@@ -251,12 +263,18 @@ export class AuthBooting extends View {
       const ms = row.querySelector('.boot-step-ms') as HTMLElement;
       const hint = row.querySelector('.boot-step-hint') as HTMLElement;
       row.className = `boot-step boot-${step.state}`;
-      mark.textContent = step.state === 'done' ? '✓' : step.state === 'failed' ? '✕' : step.state === 'active' ? '◐' : '○';
+      // '⊘' is its own mark on purpose: a step that decided not to run has not
+      // succeeded, and drawing it as ✓ is how a person ends up believing a
+      // step ran when nothing did.
+      mark.textContent = step.state === 'done' ? '✓' : step.state === 'failed' ? '✕' : step.state === 'skipped' ? '⊘' : step.state === 'active' ? '◐' : '○';
       ms.textContent = step.state === 'active' && step.startedAt
         ? fmtSecs(Date.now() - step.startedAt)
         : step.ms > 0 ? fmtSecs(step.ms) : '';
       if (step.state === 'failed' && step.detail) hint.textContent = step.detail;
     }
+    // A failure is the one state with no way forward on its own, so the way
+    // back is on screen from the moment it happens.
+    this.backBtn.classList.toggle('hidden', !steps.some((s) => s.state === 'failed'));
   }
 
   private tick(): void {

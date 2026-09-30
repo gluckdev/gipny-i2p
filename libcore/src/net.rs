@@ -159,6 +159,7 @@ impl I2pNode {
         use crate::router::note;
         note(&progress, "router", "starting the i2p router inside the app (no local ports)");
         let router = crate::embedded::router(data_dir, settings)?;
+        note(&progress, "tunnels", "router is up; building tunnels (the longest wait of a first start)");
         note(&progress, "tunnels-done", "router running");
         note(&progress, "session", "generating ephemeral destination for this session...");
         let privkey = i2p_embed::generate_keys();

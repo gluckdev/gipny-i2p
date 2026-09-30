@@ -2238,9 +2238,14 @@ body::before { background: none; }
 }
 .boot-step.boot-active { background: var(--accent-soft); color: var(--text); }
 .boot-step.boot-done { color: var(--text-dim); }
+.boot-step.boot-skipped { color: var(--text-faint); }
 .boot-step.boot-failed { background: var(--danger-soft); color: var(--danger); }
 .boot-mark { width: 18px; text-align: center; font-size: 15px; flex-shrink: 0; }
 .boot-step.boot-done .boot-mark { color: var(--success); }
+/* A skipped step is dimmer than a done one and is not green: it is neither a
+ * success nor a failure, and colouring it like either would say something the
+ * backend did not say. */
+.boot-step.boot-skipped .boot-mark { color: var(--text-faint); }
 .boot-step.boot-active .boot-mark { color: var(--accent); animation: boot-pulse 1.1s ease-in-out infinite; }
 @keyframes boot-pulse { 50% { opacity: 0.35; } }
 .boot-step-main { flex: 1; min-width: 0; }

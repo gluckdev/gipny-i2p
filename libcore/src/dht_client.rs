@@ -73,25 +73,58 @@ pub fn handler(node: &Arc<Node>) -> DhtHandler {
     })
 }
 
+/// What came of an attempt to join: whether we reached anyone at all.
+///
+/// Without this the caller had only the return of `bootstrap()`, which is
+/// `()` — a lookup happens either way, so "no candidates" and "nobody answered"
+/// were indistinguishable, and the boot screen reported the relay network as up
+/// on a device that had spoken to no one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Joined {
+    /// Peers we are actually in touch with once bootstrap returned.
+    pub peers: usize,
+    /// True when at least one answered, i.e. we are a node in the network and
+    /// not merely a node that has announced itself to nobody.
+    pub reached: bool,
+}
+
 /// Our relay is up at `address`: become a node there, find the network and
 /// tell our contacts where we are.
-pub async fn join(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, address: &str) {
+pub async fn join(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, address: &str) -> Joined {
     node.set_me(Some(NodeInfo { destination: address.to_string(), stores: stores_here(), version: PROTOCOL_VERSION }));
-    add_candidates(node, db);
+    let had_candidates = add_candidates(node, db);
     node.bootstrap().await;
-    eprintln!("[dht] joined: {} nodes known", node.peer_count());
+    let peers = node.peer_count();
+    // With nothing to try, bootstrap is a lookup into an empty routing table:
+    // it returns promptly and leaves us alone in the network. Say which of the
+    // two happened, because "joined" used to be printed for both.
+    eprintln!(
+        "[dht] joined: {peers} nodes known ({}){}",
+        if had_candidates { "candidates offered" } else { "nothing to try" },
+        if peers == 0 { " — reached nobody" } else { "" }
+    );
     publish_addresses(node, db, identity, address).await;
     // A new address means a new place in the network: what we hold now
     // belongs with the nodes closest to it.
     node.republish().await;
     save_peers(node, db);
+    Joined { peers, reached: peers > 0 }
 }
 
 /// Periodic upkeep; `address` is where we collect now, if our relay is up.
 pub async fn maintain(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, address: Option<&str>) {
     if node.peer_count() == 0 {
-        add_candidates(node, db);
+        // The retry tick, and the one place where "we have not joined the
+        // network" is the normal state rather than a first-start accident. Log
+        // it, because otherwise an app that never joins is indistinguishable in
+        // the log from one that is simply idle between ticks.
+        let had_candidates = add_candidates(node, db);
         node.bootstrap().await;
+        let peers = node.peer_count();
+        eprintln!(
+            "[dht] retry: {peers} nodes known ({})",
+            if had_candidates { "candidates offered" } else { "nothing to try" }
+        );
     }
     node.maintain().await;
     if let Some(address) = address {
@@ -103,15 +136,24 @@ pub async fn maintain(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, 
 
 /// Where to look for the network: seeds, nodes that answered before, and
 /// the relays our contacts collect at.
-fn add_candidates(node: &Arc<Node>, db: &Arc<Db>) {
-    node.add_candidates(&builtin_seeds(), true);
-    if let Ok(saved) = db.dht_peers_load() {
-        node.add_candidates(&saved, false);
-    }
-    if let Ok(contacts) = db.list_contacts() {
-        let relays: Vec<String> = contacts.into_iter().filter_map(|c| c.relay_address).collect();
-        node.add_candidates(&relays, false);
-    }
+///
+/// Whether there was anything at all to try, for the log line. A bootstrap with
+/// nothing to try is the case worth being able to tell apart later: the lookup
+/// that follows returns just as promptly as one that reached half the network.
+fn add_candidates(node: &Arc<Node>, db: &Arc<Db>) -> bool {
+    let seeds = builtin_seeds();
+    let saved = db.dht_peers_load().unwrap_or_default();
+    let relays: Vec<String> = db
+        .list_contacts()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|c| c.relay_address)
+        .collect();
+    let offered = !seeds.is_empty() || !saved.is_empty() || !relays.is_empty();
+    node.add_candidates(&seeds, true);
+    node.add_candidates(&saved, false);
+    node.add_candidates(&relays, false);
+    offered
 }
 
 /// Replaces the saved table with the nodes that answered. Not when none did:

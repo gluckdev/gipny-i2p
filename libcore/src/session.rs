@@ -958,7 +958,11 @@ impl SessionManager {
 
     /// Announce an embedded relay as this node's reachable DHT endpoint.
     pub async fn join_dht(self: &Arc<Self>, address: &str) {
-        dht_client::join(&self.dht, &self.db, &self.identity, address).await;
+        // The outcome is deliberately not used here: the caller is the
+        // background path that re-announces, and the boot screen's copy of this
+        // same call is where the reached/peers count is reported. Both are the
+        // same join — this one just has nothing to tell a person about.
+        let _ = dht_client::join(&self.dht, &self.db, &self.identity, address).await;
         self.publish_bundle_to_dht().await;
         self.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
     }

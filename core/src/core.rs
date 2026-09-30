@@ -230,9 +230,11 @@ pub enum CoreEvent {
     ContactWiped { contact_id: i64, name: String },
     /// Someone we do not know introduced themselves.
     ContactRequest { contact_id: i64 },
-    /// Joined the relay network (or tried to): how many nodes answered. The
-    /// unlock screen shows this as its last step.
-    DhtJoined { peers: usize },
+    /// Joined the relay network, or tried to: `reached` says whether anyone
+    /// answered at all and `peers` how many we are in touch with. Both travel
+    /// together because `peers: 0` is the only honest failure here and, sent
+    /// alone, it read as a finished step on the unlock screen.
+    DhtJoined { peers: usize, reached: bool },
     GroupUpdated { group_id: String },
     /// A newer version exists and auto-update is off — the UI's manual
     /// install prompt is the only path from here.
@@ -869,8 +871,8 @@ impl Core {
                     let (dht, db, identity) = (self.dht.clone(), self.db.clone(), self.identity.clone());
                     let this = self.clone();
                     let join = tokio::spawn(async move {
-                        dht_client::join(&dht, &db, &identity, &address).await;
-                        let _ = this.events.try_send(CoreEvent::DhtJoined { peers: this.dht.peer_count() });
+                        let joined = dht_client::join(&dht, &db, &identity, &address).await;
+                        let _ = this.events.try_send(CoreEvent::DhtJoined { peers: joined.peers, reached: joined.reached });
                         this.publish_bundle_to_dht().await;
                         // Anything left for us while we were away.
                         this.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
