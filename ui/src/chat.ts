@@ -1149,7 +1149,12 @@ export class ChatView extends View {
    * new default does rather than quietly starting to delete messages. */
   private async loadTtl(): Promise<void> {
     const prefs = await Api.getChatPrefs();
-    if (prefs.ttlSecs !== null) this.ttlSecs = prefs.ttlSecs;
+    // null is a choice, not an absence: picking "off" stores null, and testing
+    // ttlSecs on its own cannot tell that from a profile that never chose.
+    // It would leave the default sitting in this.ttlSecs and put the timer back
+    // on a day later, with the picker showing "off" — the one state the person
+    // had explicitly ruled out. ttlChosen is what separates the two.
+    if (prefs.ttlChosen || prefs.ttlSecs !== null) this.ttlSecs = prefs.ttlSecs;
     this.renderTtlPicker();
     if (prefs.ttlChosen || ttlNoticeShown) return;
     ttlNoticeShown = true;
