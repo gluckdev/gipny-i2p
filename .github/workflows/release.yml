@@ -98,7 +98,7 @@ jobs:
       - name: i2pd sources and build deps
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
@@ -149,7 +149,7 @@ jobs:
         shell: bash
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         shell: bash
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
@@ -287,7 +287,7 @@ jobs:
       - name: i2pd sources and build deps (the relay compiles its router in)
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
@@ -334,7 +334,7 @@ jobs:
       - name: check out i2pd and install what it builds against
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
@@ -483,7 +483,7 @@ jobs:
         id: pins
         run: |
           git submodule update --init --recursive
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
           echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "i2pd_android=$(git -C third_party/i2pd-android rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 

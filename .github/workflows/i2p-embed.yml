@@ -33,7 +33,7 @@ jobs:
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: install boost, OpenSSL, zlib
@@ -81,7 +81,7 @@ jobs:
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: boost and OpenSSL from Homebrew
@@ -128,7 +128,7 @@ jobs:
         shell: bash
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         shell: bash
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
@@ -242,7 +242,7 @@ jobs:
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         shell: bash
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
@@ -293,7 +293,7 @@ jobs:
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         shell: bash
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
@@ -361,7 +361,7 @@ jobs:
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
+          .github/scripts/prepare-i2pd.sh
       - name: current reseed certificates (upstream i2pd now, not the pin)
         shell: bash
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
