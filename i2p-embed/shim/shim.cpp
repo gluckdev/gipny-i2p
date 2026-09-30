@@ -16,6 +16,7 @@
 #include "Destination.h"
 #include "FS.h"
 #include "Identity.h"
+#include "NetDb.hpp"
 #include "Streaming.h"
 #include "Transports.h"
 #include "api.h"
@@ -149,6 +150,16 @@ void gipny_router_set_online(int online) {
 	// call below waits for start. That is what the pending value is for.
 	if (!running.load()) return;
 	i2p::transport::transports.SetOnline(online != 0);
+}
+
+int gipny_router_netdb_routers(void) {
+	// Before StartI2P the netDb is not ours to read: it is empty, and "0
+	// routers" is a real answer to a different question. Negative says
+	// "not up yet", so a caller waiting for the network can tell the two
+	// apart and does not mistake a router that has not started for a
+	// network that does not work.
+	if (!running.load()) return -1;
+	return i2p::data::netdb.GetNumRouters();
 }
 
 char *gipny_keys_generate(void) {

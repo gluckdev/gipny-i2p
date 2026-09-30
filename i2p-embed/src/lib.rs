@@ -37,6 +37,7 @@ mod ffi {
         pub fn gipny_router_start(log_path: *const c_char);
         pub fn gipny_router_stop();
         pub fn gipny_router_set_online(online: c_int);
+        pub fn gipny_router_netdb_routers() -> c_int;
         pub fn gipny_keys_generate() -> *mut c_char;
         pub fn gipny_keys_public(private_b64: *const c_char) -> *mut c_char;
         pub fn gipny_dest_create(
@@ -164,6 +165,17 @@ impl Router {
 
     pub fn set_online(&self, online: bool) {
         set_online(online);
+    }
+
+    /// How many router infos the netDb holds, or `None` if the router is not up.
+    ///
+    /// Empty is the answer to "is plain IP getting us anywhere": an empty netDb
+    /// means no reseed came through, so the network was never reached. Which is
+    /// what a Yggdrasil fallback is decided on — not on a guess, and not by
+    /// reading the log.
+    pub fn netdb_routers(&self) -> Option<usize> {
+        let n = unsafe { ffi::gipny_router_netdb_routers() };
+        (n >= 0).then_some(n as usize)
     }
 }
 

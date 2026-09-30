@@ -39,6 +39,11 @@ GIPNY_API void gipny_router_start(const char *log_path);
 GIPNY_API void gipny_router_stop(void);
 /* Tell the router the machine's network changed (Transports::SetOnline). */
 GIPNY_API void gipny_router_set_online(int online);
+/* How many router infos the netDb holds: 0 means we have never reached the
+ * network (a reseed that did not come through). The one signal that says
+ * whether plain IP is getting us anywhere, which is what the Yggdrasil
+ * fallback is decided on. Negative if the router is not up. */
+GIPNY_API int gipny_router_netdb_routers(void);
 
 /* Fresh keys: base64 private keys (what DestinationKind::Persistent held). */
 GIPNY_API char *gipny_keys_generate(void);

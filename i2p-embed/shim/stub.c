@@ -14,6 +14,7 @@ int gipny_router_init(int argc, const char *const *argv) { (void)argc; (void)arg
 void gipny_router_start(const char *log_path) { (void)log_path; }
 void gipny_router_stop(void) {}
 void gipny_router_set_online(int online) { (void)online; }
+int gipny_router_netdb_routers(void) { return -1; }
 char *gipny_keys_generate(void) { return NULL; }
 char *gipny_keys_public(const char *private_b64) { (void)private_b64; return NULL; }
 gipny_dest *gipny_dest_create(const char *private_b64, int publish, const char *const *option_keys,
