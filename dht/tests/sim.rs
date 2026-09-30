@@ -365,11 +365,11 @@ impl Transport for FillerTransport {
 
     fn open(&self, destination: &str) -> BoxFuture<'_, Result<FillerConn, NetError>> {
         let (liar, fabrications) = (self.liar.clone(), self.fabrications.clone());
-        let wanted = liar.clone();
+        let asked = destination.to_string();
         Box::pin(async move {
             // Only the liar is there. The addresses it named are not, which is
             // the whole point of naming them.
-            if destination != wanted {
+            if asked != liar {
                 return Err(NetError("no such destination".into()));
             }
             Ok(FillerConn { liar, fabrications, challenge: crypto::random_32() })
