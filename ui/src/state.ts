@@ -178,6 +178,9 @@ export class Store {
   private unsubEvents: (() => void) | null = null;
   private unsubTrayBadge: (() => void) | null = null;
   private notifyGranted: boolean = false;
+  /** Last known console grant per contact, so only the handing-over and the
+   * taking-back move a pane. See reconcileConsolePanes. */
+  private grantedSeen = new Map<string, boolean>();
   private readonly linuxDesktop: boolean = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
   private scrollNonce: number = 0;
   private watchdogTimer: number | null = null;
@@ -734,6 +737,7 @@ export class Store {
     this.relayConnected.set(false);
     this.agentMode.set(null);
     this.consoleMode.set(new Set());
+    this.grantedSeen = new Map();
     this.relayInfo.set(null);
     this.unreachable.set(new Set());
     this.linkRtt.set(new Map());
@@ -766,6 +770,7 @@ export class Store {
       Api.getAgentMode().catch(() => null),
     ]);
     this.contacts.set(contacts);
+    this.reconcileConsolePanes(contacts);
     this.groups.set(groups);
     this.muted.set(new Set(mutedList));
     this.agentMode.set(agentMode);
@@ -1028,6 +1033,43 @@ export class Store {
 
   isConsoleMode(target: ChatTarget): boolean {
     return this.consoleMode.get().has(targetKey(target));
+  }
+
+  /**
+   * Open the console pane of whoever has just been granted a console, and close
+   * it again when the grant goes away.
+   *
+   * A console line is only a command while the pane is open. The ordinary
+   * composer sends an ordinary message, which the agent files as a message and
+   * never runs — so an operator who typed a command into the wrong composer
+   * got silence, and nothing on the screen said why: the grant had hidden the
+   * console traffic from the ordinary log, so both the command and the answer
+   * to it were invisible at once. Opening the pane when the console is handed
+   * over is what puts the answer in front of whoever wrote the command.
+   *
+   * Only the edges move it. A pane closed on purpose stays closed, and this
+   * never reopens behind the operator's back on an ordinary contact refresh.
+   */
+  private reconcileConsolePanes(contacts: Contact[]): void {
+    const seen = new Map<string, boolean>();
+    const add: string[] = [];
+    const drop: string[] = [];
+    for (const c of contacts) {
+      const key = targetKey({ kind: 'contact', id: c.id });
+      seen.set(key, !!c.agent_granted);
+      const was = this.grantedSeen.get(key);
+      if (c.agent_granted && was === false) add.push(key);
+      if (!c.agent_granted && was === true) drop.push(key);
+    }
+    for (const key of this.grantedSeen.keys()) if (!seen.has(key)) drop.push(key);
+    this.grantedSeen = seen;
+    if (add.length === 0 && drop.length === 0) return;
+    this.consoleMode.update((s) => {
+      const n = new Set(s);
+      for (const k of add) n.add(k);
+      for (const k of drop) n.delete(k);
+      return n;
+    });
   }
 
   toggleConsoleMode(target: ChatTarget): void {
@@ -1311,6 +1353,7 @@ export class Store {
         // Closing agent mode also closes any local console pane. The message
         // history remains available in chat mode.
         this.consoleMode.set(new Set());
+        this.grantedSeen = new Map();
       }
     } else if ('ConsoleActivity' in e) {
       const target: ChatTarget = { kind: 'contact', id: e.ConsoleActivity.contact_id };
