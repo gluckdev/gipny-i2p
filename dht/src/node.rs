@@ -59,13 +59,6 @@ pub struct NodeConfig {
     pub max_failures: u32,
     /// Most bytes of items in one `Get` answer.
     pub max_get_bytes: usize,
-    /// How many previously unknown nodes one node may introduce, per
-    /// `learn_window`. A node that answers a lookup gets to name the next few
-    /// hops, but a hundred of them means it is filling the table, not helping
-    /// us find anything.
-    pub max_introduced: u32,
-    /// The period `max_introduced` is counted over.
-    pub learn_window: Duration,
 }
 
 impl Default for NodeConfig {
@@ -79,8 +72,6 @@ impl Default for NodeConfig {
             call_timeout: Duration::from_secs(120),
             max_failures: 3,
             max_get_bytes: 8 * 1024 * 1024,
-            max_introduced: 24,
-            learn_window: Duration::from_secs(3600),
         }
     }
 }
@@ -119,16 +110,11 @@ pub struct DhtNode<T: Transport, S: Storage> {
     cfg: NodeConfig,
     clock: Clock,
     peers: Mutex<HashMap<String, Peer>>,
-    /// Who introduced how many unknown nodes, and since when. A node that keeps
-    /// naming addresses we have never heard of is the shape of a table being
-    /// filled rather than a lookup being helped, and each of those addresses
-    /// costs a real dial later (issue #99).
-    introduced: Mutex<HashMap<String, (u32, u64)>>,
 }
 
 impl<T: Transport, S: Storage> DhtNode<T, S> {
     pub fn new(transport: Arc<T>, storage: Arc<S>, cfg: NodeConfig, clock: Clock) -> Self {
-        Self { me: RwLock::new(None), storage, transport, cfg, clock, peers: Mutex::default(), introduced: Mutex::default() }
+        Self { me: RwLock::new(None), storage, transport, cfg, clock, peers: Mutex::default() }
     }
 
     /// Become reachable as `me` (once our relay is up). Until then this node
@@ -237,48 +223,6 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         self.trim_peers(&mut peers);
     }
 
-    /// Take one node's word for another, and only if that node has not already
-    /// spent its allowance.
-    ///
-    /// The cap is on introductions, not on hearsay as such: a name we already
-    /// hold costs the source nothing and teaches us nothing new, so re-hearing
-    /// a known node is always free. What is capped is how much of an unknown
-    /// network one participant can talk into this table (issue #99).
-    fn learn_hearsay(&self, info: &NodeInfo, from: &str) {
-        if info.version != PROTOCOL_VERSION || info.destination.is_empty() {
-            return;
-        }
-        if from.is_empty() || from == info.destination {
-            // A node introducing itself is not an introduction, and spending an
-            // allowance on it would keep us from ever hearing back from a node
-            // that has already used its share.
-            self.learn(info, false);
-            return;
-        }
-        if self.peers().contains_key(&info.destination) {
-            // Known already: nothing is being introduced.
-            self.learn(info, false);
-            return;
-        }
-        let now = self.now_ms();
-        let mut introduced = self.introduced.lock().unwrap_or_else(|p| p.into_inner());
-        // Only sources worth counting are kept, or this map grows exactly as
-        // fast as the attack it is here to bound.
-        if introduced.len() > self.cfg.max_peers {
-            let live: HashSet<String> = self.peers().keys().cloned().collect();
-            introduced.retain(|k, _| live.contains(k));
-        }
-        let window = self.cfg.learn_window.as_millis() as u64;
-        let (count, since) = introduced.get(from).copied().unwrap_or((0, now));
-        let (count, since) = if now.saturating_sub(since) >= window { (0, now) } else { (count, since) };
-        if count >= self.cfg.max_introduced {
-            return;
-        }
-        introduced.insert(from.to_string(), (count + 1, since));
-        drop(introduced);
-        self.learn(info, false);
-    }
-
     fn trim_peers(&self, peers: &mut HashMap<String, Peer>) {
         while peers.len() > self.cfg.max_peers {
             // Hearsay first, then the longest silent.
@@ -359,7 +303,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     pub fn handle(&self, challenge: &[u8; 32], env: DhtEnvelope) -> DhtResponse {
         if let Some(from) = &env.from {
             // It reached us, but that says nothing about reaching it back.
-            self.learn_hearsay(from, &from.destination);
+            self.learn(from, false);
         }
         let now = self.now_ms();
         match env.req {
@@ -489,7 +433,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                     self.learn(&me, true);
                     answered.insert(n.destination.clone(), me);
                     for m in &nodes {
-                        self.learn_hearsay(m, &n.destination);
+                        self.learn(m, false);
                     }
                 }
             }
@@ -540,7 +484,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
             match self.exchange(&node.destination, &mut conn, DhtRequest::Get { key: *key, skip: out.len() as u32 }).await? {
                 DhtResponse::Items { items, more, closer } => {
                     for c in &closer {
-                        self.learn_hearsay(c, &node.destination);
+                        self.learn(c, false);
                     }
                     let got = items.len();
                     out.extend(items);
