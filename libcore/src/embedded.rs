@@ -74,6 +74,20 @@ pub fn running() -> Option<Arc<i2p_embed::Router>> {
     ROUTER.get().cloned()
 }
 
+/// Tell the router the machine's network changed: it should test how the new
+/// one sees it, or its tunnels stay pinned to an address that no longer routes.
+///
+/// Android already did this through its own connectivity callback; nothing did
+/// it on the desktop, where there is no such callback to wait for. A laptop that
+/// sleeps and wakes on a different network kept believing its old one was fine
+/// until a peer test timed out — which is the step that fails slowly and looks
+/// like a network problem that is not there.
+pub fn network_changed() {
+    if let Some(router) = running() {
+        router.network_changed();
+    }
+}
+
 /// Options for a destination with `hops`-long tunnels both ways.
 pub fn destination_options(publish: bool, hops: u8) -> i2p_embed::DestinationOptions {
     let hops = hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS);

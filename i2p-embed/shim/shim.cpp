@@ -64,6 +64,20 @@ bool parse_remote(const char *remote, i2p::data::IdentHash &out) {
 
 std::atomic<bool> running{false};
 
+// What the host last said about the machine's network, kept so that an answer
+// given before the router existed is not thrown away. Android's connectivity
+// callback fires when the network changes, and on a cold start that is before
+// the app has started its router: the old `if (!running.load()) return;`
+// dropped it, the router then came up believing the network it had never been
+// told about, and the first thing to learn otherwise was a peer test failing
+// several minutes later. The answer does not expire just because nobody was
+// listening yet.
+//
+// -1 means nobody has said anything, and is deliberately not "online": a start
+// with no word from the host stays exactly as it was, rather than gaining a
+// SetOnline call it never used to make.
+std::atomic<int> online_wanted{-1};
+
 // Stop once, whoever asks first: gipny_router_stop, or the process exiting.
 void stop_router() {
 	if (!running.exchange(false)) return;
@@ -111,6 +125,16 @@ void gipny_router_start(const char *log_path) {
 	// std::terminate ("terminate called without an active exception", e2e run
 	// 36027659010). Handlers registered now run before those destructors.
 	if (!running.exchange(true)) std::atexit(stop_router);
+	// A callback that arrived before this point has not been acted on, and what
+	// it said is still true: applying it now is what makes a cold start on a
+	// network that changed while the app was closed test the network it is
+	// actually on. Nothing is applied when the host never said — no initialiser
+	// in an if-condition, because the C++ standard in effect here is whatever
+	// the compiler defaults to.
+	{
+		const int wanted = online_wanted.load();
+		if (wanted >= 0) i2p::transport::transports.SetOnline(wanted != 0);
+	}
 }
 
 void gipny_router_stop(void) {
@@ -118,9 +142,11 @@ void gipny_router_stop(void) {
 }
 
 void gipny_router_set_online(int online) {
-	// Before start (or after stop) there is nothing to tell, and a PeerTest
-	// on transports that are not running is not ours to risk: Android's
-	// network callback can fire before the app has started the router.
+	// Remembered either way: whether or not the router is up, this is the
+	// machine's current network and start applies it.
+	online_wanted.store(online != 0 ? 1 : 0);
+	// A PeerTest on transports that are not running is not ours to risk, so the
+	// call below waits for start. That is what the pending value is for.
 	if (!running.load()) return;
 	i2p::transport::transports.SetOnline(online != 0);
 }

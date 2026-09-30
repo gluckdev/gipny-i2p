@@ -103,6 +103,18 @@ fn take_string(p: *mut c_char) -> Option<String> {
 
 static STARTED: OnceLock<()> = OnceLock::new();
 
+/// The machine's network changed, told to the router whether or not one is
+/// running yet.
+///
+/// The method on [`Router`] cannot serve a change that arrives first: a host
+/// learns of a new network by being told, and on a cold start that can happen
+/// before the router exists. The answer is held and applied at start, so a
+/// callback that nobody was listening for is still the one the router boots
+/// with.
+pub fn set_online(online: bool) {
+    unsafe { ffi::gipny_router_set_online(online as c_int) };
+}
+
 /// The router. Only one per process; stopping it ends every destination.
 pub struct Router {
     _private: (),
@@ -151,7 +163,7 @@ impl Router {
     }
 
     pub fn set_online(&self, online: bool) {
-        unsafe { ffi::gipny_router_set_online(online as c_int) };
+        set_online(online);
     }
 }
 

@@ -284,11 +284,18 @@ pub fn run() {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // The window coming back is the desktop's only cheap signal that the
+            // machine may have changed network while we were in the tray — a
+            // laptop closed and reopened elsewhere. Without telling the router,
+            // it keeps testing reachability against an address that no longer
+            // routes and reports itself unreachable for as long as it is asleep.
+            tauri::WindowEvent::Focused(true) => gipny_libcore::embedded::network_changed(),
+            _ => {}
         });
 
     builder
