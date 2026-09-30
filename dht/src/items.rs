@@ -1,5 +1,7 @@
 //! What gipny puts into the network, built and opened on the owners' devices.
 
+use std::collections::HashSet;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_big_array::BigArray;
@@ -12,6 +14,16 @@ pub const MAIL_TTL_MS: u64 = 7 * DAY_MS;
 /// quickly on its own.
 pub const ADDRESS_TTL_MS: u64 = 2 * 3600 * 1000;
 pub const BUNDLE_TTL_MS: u64 = 7 * DAY_MS;
+
+/// How many of a person's relay addresses one contact may keep.
+///
+/// Mail is copied to every one of them, so this is the number of copies the
+/// sender pays for — a tunnel each, on a network where tunnel time is the
+/// scarce thing. Three survives two going down, which is where "the relay this
+/// one person's mail lived on" stops being the usual reason a letter does not
+/// arrive. It is a constant and not a setting on purpose: whoever picks this
+/// number should know what a copy costs, and a person using the app does not.
+pub const MAX_PUBLISHED_RELAYS: usize = 3;
 
 /// An item ready to store: where, what, and (for mail) the hash of the token
 /// that allows deleting it.
@@ -139,14 +151,19 @@ fn build_record(
     Some(PreparedItem { key, value: crypto::seal(secret, label, &key, &plain)?, delete_hash: None, expires_at_ms })
 }
 
-/// Of all values found under a record's key, the newest one that opens, is
-/// signed by `owner`, is of the right kind, and has not expired.
-fn best_record(
+/// Every record under a key that opens, is signed by `owner`, is of the right
+/// kind, and has not expired — newest first.
+///
+/// The checks are the same for every record type, and they are all of them: a
+/// record that fails any one of them is not this owner's statement about this
+/// key, however well formed it is. Split out of [`valid_records`] so that
+/// reading every record and reading only the newest cannot drift apart.
+fn valid_records(
     secret: &[u8; 32], label: &[u8], key: &DhtKey, kind: u8, owner: &[u8; 32],
     values: &[Vec<u8>], now_ms: u64,
-) -> Option<(u64, Vec<u8>)> {
-    let vk = VerifyingKey::from_bytes(owner).ok()?;
-    values.iter()
+) -> Vec<(u64, Vec<u8>)> {
+    let Ok(vk) = VerifyingKey::from_bytes(owner) else { return Vec::new() };
+    let mut found: Vec<(u64, Vec<u8>)> = values.iter()
         .filter_map(|v| crypto::open(secret, label, key, v))
         .filter_map(|plain| bincode::deserialize::<SignedRecord>(&plain).ok())
         .filter(|r| r.kind == kind && &r.owner == owner && r.expires_at_ms > now_ms)
@@ -154,8 +171,19 @@ fn best_record(
             let digest = record_digest(r.kind, &r.owner, r.seq, r.expires_at_ms, &r.body, key);
             vk.verify(&digest, &Signature::from_bytes(&r.sig)).is_ok()
         })
-        .max_by_key(|r| r.seq)
         .map(|r| (r.seq, r.body))
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found
+}
+
+/// Of all values found under a record's key, the newest one that opens, is
+/// signed by `owner`, is of the right kind, and has not expired.
+fn best_record(
+    secret: &[u8; 32], label: &[u8], key: &DhtKey, kind: u8, owner: &[u8; 32],
+    values: &[Vec<u8>], now_ms: u64,
+) -> Option<(u64, Vec<u8>)> {
+    valid_records(secret, label, key, kind, owner, values, now_ms).into_iter().next()
 }
 
 /// Where we collect now, for one contact to read.
@@ -165,11 +193,32 @@ pub fn address_record(signing: &SigningKey, pair: &[u8; 32], now_ms: u64, relay:
     build_record(signing, pair, b"addr", key, KIND_ADDRESS, now_ms, ADDRESS_TTL_MS, relay.as_bytes().to_vec())
 }
 
-/// The contact's newest address and when they published it.
-pub fn open_address_record(pair: &[u8; 32], owner_sign_pk: &[u8; 32], values: &[Vec<u8>], now_ms: u64) -> Option<(String, u64)> {
+/// Every relay address this contact currently publishes, newest first.
+///
+/// More than one because a letter is copied to each of them, and a letter that
+/// existed on exactly one of them stopped arriving the moment that one did.
+/// Duplicates are dropped: the same address can come back under two sequences,
+/// and it is one address. Capped at [`MAX_PUBLISHED_RELAYS`], so a contact who
+/// once had many relays does not make every send of every letter to them pay
+/// for all of them forever.
+pub fn open_address_records(
+    pair: &[u8; 32], owner_sign_pk: &[u8; 32], values: &[Vec<u8>], now_ms: u64,
+) -> Vec<(String, u64)> {
     let key = crypto::addr_key(pair, owner_sign_pk);
-    let (seq, body) = best_record(pair, b"addr", &key, KIND_ADDRESS, owner_sign_pk, values, now_ms)?;
-    Some((String::from_utf8(body).ok()?, seq))
+    let mut seen: HashSet<String> = HashSet::new();
+    valid_records(pair, b"addr", &key, KIND_ADDRESS, owner_sign_pk, values, now_ms)
+        .into_iter()
+        .filter_map(|(seq, body)| Some((String::from_utf8(body).ok()?, seq)))
+        .filter(|(addr, _)| !addr.trim().is_empty() && seen.insert(addr.clone()))
+        .take(MAX_PUBLISHED_RELAYS)
+        .collect()
+}
+
+/// The contact's newest address and when they published it. The first of
+/// [`open_address_records`], which is what a sender that does not copy should
+/// use.
+pub fn open_address_record(pair: &[u8; 32], owner_sign_pk: &[u8; 32], values: &[Vec<u8>], now_ms: u64) -> Option<(String, u64)> {
+    open_address_records(pair, owner_sign_pk, values, now_ms).into_iter().next()
 }
 
 pub fn address_key(pair: &[u8; 32], owner_sign_pk: &[u8; 32]) -> DhtKey {

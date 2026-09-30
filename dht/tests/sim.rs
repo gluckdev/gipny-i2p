@@ -292,6 +292,106 @@ async fn a_contact_finds_the_address_published_after_a_restart() {
     assert_eq!(relay, "relay-after-restart");
 }
 
+/// Several relays, not one: a letter is copied to each, so a contact must be
+/// able to name all of them, and a single dead relay must not be the end of
+/// delivery.
+#[tokio::test]
+async fn a_contact_is_where_all_their_relays_are() {
+    let net = Net::new();
+    let nodes = network(&net, 12).await;
+    let (alice, bob) = (Person::new(), Person::new());
+    let now = net.now();
+
+    let alice_pair = alice.pair_with(&bob);
+    // Oldest first, so the newest is not also the last written.
+    let published = ["relay-a", "relay-b", "relay-c", "relay-d"];
+    for (i, relay) in published.iter().enumerate() {
+        let t = now + i as u64 * 60_000;
+        let rec = stored(items::address_record(&alice.signing, &alice_pair, t, relay).unwrap());
+        assert!(nodes[5].put(rec).await >= 6);
+    }
+
+    let bob_node = new_node(&net, None, false);
+    bob_node.add_candidates(&["node-9".to_string()], true);
+    bob_node.bootstrap().await;
+    let bob_pair = bob.pair_with(&alice);
+    let values: Vec<Vec<u8>> = bob_node.get(&items::address_key(&bob_pair, &alice.sign_pk())).await
+        .into_iter().map(|i| i.value).collect();
+
+    let all = items::open_address_records(&bob_pair, &alice.sign_pk(), &values, now + 300_000);
+    // Capped, so this is the newest three and not all four: four would mean
+    // four tunnels per letter to one person, forever.
+    assert_eq!(
+        all.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+        ["relay-d", "relay-c", "relay-b"],
+        "newest first, and no more than the cap",
+    );
+    assert_eq!(items::MAX_PUBLISHED_RELAYS, 3);
+}
+
+/// The same address published twice is one address, not two copies to send to.
+#[tokio::test]
+async fn a_repeated_address_is_one_relay() {
+    let net = Net::new();
+    let nodes = network(&net, 12).await;
+    let (alice, bob) = (Person::new(), Person::new());
+    let now = net.now();
+
+    let alice_pair = alice.pair_with(&bob);
+    for (i, relay) in ["relay-only", "relay-only", "relay-other"].iter().enumerate() {
+        let t = now + i as u64 * 60_000;
+        let rec = stored(items::address_record(&alice.signing, &alice_pair, t, relay).unwrap());
+        assert!(nodes[5].put(rec).await >= 6);
+    }
+
+    let bob_node = new_node(&net, None, false);
+    bob_node.add_candidates(&["node-9".to_string()], true);
+    bob_node.bootstrap().await;
+    let bob_pair = bob.pair_with(&alice);
+    let values: Vec<Vec<u8>> = bob_node.get(&items::address_key(&bob_pair, &alice.sign_pk())).await
+        .into_iter().map(|i| i.value).collect();
+
+    let all = items::open_address_records(&bob_pair, &alice.sign_pk(), &values, now + 300_000);
+    assert_eq!(
+        all.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+        ["relay-other", "relay-only"],
+        "the duplicate is dropped, so the letter is not sent to the same place twice",
+    );
+}
+
+/// Another person's record for this pair is not this person's address, however
+/// many of them there are.
+#[tokio::test]
+async fn another_persons_address_is_not_ours() {
+    let net = Net::new();
+    let nodes = network(&net, 12).await;
+    let (alice, mallory, bob) = (Person::new(), Person::new(), Person::new());
+    let now = net.now();
+
+    // Mallory signs records under the same key Alice uses. `pair` is derived
+    // from the two cards, so she has to be publishing against the same pair
+    // secret — which is why the owner check below is what stops her, and not
+    // the secrecy of the key.
+    let alice_pair = alice.pair_with(&bob);
+    for (i, relay) in ["mallory-relay-a", "mallory-relay-b"].iter().enumerate() {
+        let t = now + i as u64 * 60_000;
+        let rec = stored(items::address_record(&mallory.signing, &alice_pair, t, relay).unwrap());
+        assert!(nodes[5].put(rec).await >= 6);
+    }
+
+    let bob_node = new_node(&net, None, false);
+    bob_node.add_candidates(&["node-9".to_string()], true);
+    bob_node.bootstrap().await;
+    let bob_pair = bob.pair_with(&alice);
+    let values: Vec<Vec<u8>> = bob_node.get(&items::address_key(&bob_pair, &alice.sign_pk())).await
+        .into_iter().map(|i| i.value).collect();
+
+    assert!(
+        items::open_address_records(&bob_pair, &alice.sign_pk(), &values, now + 300_000).is_empty(),
+        "signed by someone else, so not Alice's address to send her mail to",
+    );
+}
+
 #[tokio::test]
 async fn nodes_refuse_what_they_should() {
     let net = Net::new();
