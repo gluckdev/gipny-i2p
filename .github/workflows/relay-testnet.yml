@@ -24,6 +24,8 @@ name: relay-testnet
 
 on:
   workflow_dispatch:
+  push:
+    paths: ['.github/workflows/relay-testnet.yml']
   schedule:
     # Run every 5 hours: runners live ~5.5h with a ~355m timeout.
     # Running every 5 hours ensures the next runner queues or picks up
