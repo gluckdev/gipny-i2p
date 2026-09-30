@@ -25,6 +25,7 @@ on:
       - 'core/**'
       - 'i2p-embed/**'
       - 'libcore/**'
+      - 'dht/**'
       - 'scripts/**'
       - 'third_party/**'
       - 'ui/**'
@@ -39,6 +40,7 @@ on:
       - 'core/**'
       - 'i2p-embed/**'
       - 'libcore/**'
+      - 'dht/**'
       - 'scripts/**'
       - 'third_party/**'
       - 'ui/**'
@@ -196,6 +198,11 @@ jobs:
       # bincode 2 side, and its storage. Nothing ran them before.
       - name: run relay tests
         run: cargo test --release --manifest-path core/relay/Cargo.toml
+      # The relay network's own tests: many nodes in memory, churn, and the
+      # table-filling of issue #99. Nothing ran them before, so a change to the
+      # node table could sit here green and wrong for as long as it compiled.
+      - name: run dht tests
+        run: cargo test --release -p gipny-dht
       - name: timing summary
         if: always()
         run: |
