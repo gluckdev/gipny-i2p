@@ -18,6 +18,8 @@ use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, P
 use gipny_libcore::net::{NetError, TorNode};
 use gipny_libcore::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY};
 use gipny_libcore::update::{Component as UpdateComponent, InstallOutcome, UpdateError, UpdateInfo, Updater};
+#[cfg(target_os = "android")]
+use super::android::install_apk;
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
@@ -1784,13 +1786,11 @@ impl Core {
             }
         }
         *self.pending_update.lock().await = Some(info.clone());
-        // Two places where installing needs a person: Android (putting an APK
-        // in place is the system installer's job, and a file in our private
-        // directory is not something anyone can tap) and a .deb install, where
-        // the package manager asks for the administrator password. A password
-        // dialog appearing by itself, with no context, is not an update — it is
-        // something people rightly refuse. Both get a notice and a button.
-        let needs_a_person = cfg!(target_os = "android") || gipny_libcore::update::is_deb_install();
+        // .deb installs need a person because the package manager asks for the
+        // administrator password. A password dialog appearing by itself, with no
+        // context, is not an update — it is something people rightly refuse.
+        // Android now auto-installs via system installer intent.
+        let needs_a_person = gipny_libcore::update::is_deb_install();
         if self.auto_update_enabled() && !needs_a_person {
             let this = self.clone();
             tokio::spawn(async move {
@@ -1828,27 +1828,47 @@ impl Core {
             }
         };
 
-        let outcome = match self.updater.install(&path, &self.data_dir, None) {
-            Ok(o) => o,
-            Err(e) => {
-                let _ = ev.send(CoreEvent::UpdateFailed { reason: e.to_string() }).await;
-                return Err(e.into());
+        #[cfg(target_os = "android")]
+        {
+            let cache_dir = self.data_dir.join("cache");
+            std::fs::create_dir_all(&cache_dir).ok();
+            let apk_name = format!("gipny-{}-android.apk", info.version);
+            let apk_path = cache_dir.join(&apk_name);
+            let _ = std::fs::copy(&path, &apk_path);
+            let _ = std::fs::remove_dir_all(&dl_dir);
+
+            match install_apk(apk_path.to_str().unwrap_or("")) {
+                Ok(_) => {
+                    self.dismiss_update(info.version.clone()).await?;
+                    let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("[update] Android APK install failed: {e}");
+                    let _ = ev.send(CoreEvent::UpdateFailed { reason: format!("APK install failed: {e}") }).await;
+                    return Err(CoreError::Update(gipny_libcore::update::UpdateError::Unsupported(e)));
+                }
             }
-        };
-        match outcome {
-            InstallOutcome::InstalledNow | InstallOutcome::StagedForNextLaunch => {
-                let _ = std::fs::remove_dir_all(&dl_dir);
-                self.dismiss_update(info.version.clone()).await?;
-                let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
-            }
-            InstallOutcome::Unsupported(msg) => {
-                // Downloaded, but nothing installed it — on Android the file
-                // sits in our own private directory, where the system
-                // installer cannot reach it. Marking the version dismissed
-                // here is how the phone stopped being offered anything ever
-                // again: the next check saw a version it had "already dealt
-                // with". It has not been dealt with, so it is not dismissed.
-                let _ = ev.send(CoreEvent::UpdateReady { path: msg }).await;
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let outcome = match self.updater.install(&path, &self.data_dir, None) {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = ev.send(CoreEvent::UpdateFailed { reason: e.to_string() }).await;
+                    return Err(e.into());
+                }
+            };
+            match outcome {
+                InstallOutcome::InstalledNow | InstallOutcome::StagedForNextLaunch => {
+                    let _ = std::fs::remove_dir_all(&dl_dir);
+                    self.dismiss_update(info.version.clone()).await?;
+                    let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
+                }
+                InstallOutcome::Unsupported(msg) => {
+                    let _ = ev.send(CoreEvent::UpdateReady { path: msg }).await;
+                }
             }
         }
         Ok(())

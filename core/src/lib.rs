@@ -2,6 +2,8 @@ mod core;
 mod notify;
 mod sanitizer;
 mod tray;
+#[cfg(target_os = "android")]
+mod android;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1988,9 +1990,9 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, Strin
     })
 }
 
-/// Whether this build can put an update in place itself. False on Android
-/// (the system installer owns that) and on packages we do not manage (.deb,
-/// macOS) — the interface then offers the file instead of a button that lies.
+/// Whether this build can put an update in place itself. False on packages we do
+/// not manage (.deb, macOS) — the interface then offers the file instead of a
+/// button that lies. Android now auto-installs via system installer intent.
 /// A contact card as a QR picture, so two people can exchange cards by
 /// pointing one phone at another instead of copying 500 characters. Rendered
 /// here (pure Rust) rather than in the interface: one small dependency instead
@@ -2025,6 +2027,7 @@ fn restart_app(app: AppHandle) {
 fn update_installs_itself() -> bool {
     cfg!(target_os = "windows")
         || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
+        || cfg!(target_os = "android")
         || gipny_libcore::update::is_deb_install()
 }
 

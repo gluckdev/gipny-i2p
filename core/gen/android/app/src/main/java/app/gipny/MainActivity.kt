@@ -50,27 +50,38 @@ class MainActivity : TauriActivity() {
     moveTaskToBack(true)
   }
 
+  /**
+   * Ask the user to exempt gipny from battery optimizations (Doze).
+   *
+   * Without this exemption Android pauses network access roughly one minute
+   * after the screen goes off, killing all i2p tunnels.  The previous version
+   * set a "never ask again" flag on the first attempt regardless of the
+   * user's answer; if they tapped "Deny" once, the app would never recover.
+   *
+   * Now we re-check on every launch: if already whitelisted we do nothing;
+   * otherwise we ask at most once per 24 hours (Google Play policy for
+   * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).
+   */
   private fun maybeRequestBatteryWhitelist() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-    val prefs = getSharedPreferences("gipny", Context.MODE_PRIVATE)
-    if (prefs.getBoolean("battery_optimization_asked", false)) return
     val pm = getSystemService(POWER_SERVICE) as PowerManager
-    if (pm.isIgnoringBatteryOptimizations(packageName)) {
-      prefs.edit().putBoolean("battery_optimization_asked", true).apply()
-      return
-    }
+    if (pm.isIgnoringBatteryOptimizations(packageName)) return
+
+    val prefs = getSharedPreferences("gipny", Context.MODE_PRIVATE)
+    val lastAsked = prefs.getLong("battery_whitelist_last_asked", 0)
+    if (System.currentTimeMillis() - lastAsked < 24 * 60 * 60 * 1000) return
+
     try {
-      val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+      startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
         data = Uri.parse("package:$packageName")
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      }
-      startActivity(intent)
+      })
     } catch (_: Exception) {
       try {
-        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-      } catch (_: Exception) {
-      }
+        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      } catch (_: Exception) {}
     }
-    prefs.edit().putBoolean("battery_optimization_asked", true).apply()
+    prefs.edit().putLong("battery_whitelist_last_asked", System.currentTimeMillis()).apply()
   }
 }

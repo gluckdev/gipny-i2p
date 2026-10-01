@@ -129,38 +129,6 @@ export class SettingsModal {
             } catch (e) { updErr.textContent = String(e); }
           }));
           updateSection.append(
-            h('div', { class: 'row', style: { marginTop: '8px' } },
-              (() => {
-                const b = h('button', {
-                  class: 'btn btn-ghost',
-                  onClick: () => busy(b, async () => {
-                    updErr.textContent = '';
-                    try {
-                      const res = await Api.checkUpdate();
-                      if (res.status === 'update') {
-                        store.showToast(`Найдена версия ${res.version}`);
-                        showPending({ version: res.version, size: res.size });
-                      } else {
-                        showPending(null);
-                        store.showToast(
-                          res.status === 'current'
-                            ? `Установлена последняя версия (${res.latest})`
-                            : res.status === 'dismissed'
-                            ? `Версия ${res.version} уже предлагалась и отложена — она ждёт в разделе выше`
-                            : res.status === 'unavailable'
-                              ? 'Спросить не у кого: в этом запуске нет выхода в сеть для проверки'
-                              : res.status === 'unsupported'
-                                ? `Есть версия ${res.latest}, но эту установку приложение обновить не может — скачайте вручную`
-                                : `Есть версия ${res.latest}, но в релизе нет файла для этой системы (${res.wanted})`,
-                          res.status !== 'current',
-                        );
-                      }
-                    } catch (e) { updErr.textContent = String(e); }
-                  }),
-                }, 'Проверить обновления') as HTMLButtonElement;
-                return b;
-              })(),
-            ),
             pending,
             installRow,
             updErr,
