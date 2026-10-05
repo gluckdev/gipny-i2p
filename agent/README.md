@@ -38,3 +38,31 @@ env -u CC -u CXX cargo check -p gipny-agent
 ```
 
 По живой i2p агента проверяет джоба `e2e (agent binary)` в `e2e-i2pd.yml` (`E2E_AGENT_BIN`). Запуск из архива — smoke-тест в джобе `agent (linux …)` в `release.yml`.
+
+## Установка одной командой
+
+В GIPNY откройте **Настройки → Режим агента → Подключить удалённый сервер / агента**.
+Окно подставляет текущую карточку мастера вместе с ключами и адресом его релея.
+Выберите Linux/macOS с root, Linux без root или Windows и скопируйте команду.
+На Windows откройте PowerShell от имени администратора.
+
+Установщики: `scripts/install-agent.sh` и `scripts/install-agent.ps1`. Первый
+поддерживает `--help`, `--status`, `--uninstall`, выбор версии и каталога данных.
+Второй загружает функцию `Install-GipnyAgent`; удаление —
+`Install-GipnyAgent -Uninstall`. Удаление также стирает данные и идентичность
+агента; нестандартный каталог запоминается установщиком.
+
+Для systemd без root автозапуск после выхода из системы требует linger:
+установщик выводит команду `sudo loginctl enable-linger <user>`. При отсутствии
+systemd/OpenRC установщик запускает агент через `nohup` и добавляет cron
+`@reboot`, если доступен `crontab`; иначе выводит путь скрипта для ручного
+добавления в автозапуск. На macOS используется launchd; на Windows — задача
+планировщика под SYSTEM с запуском при старте и повтором при сбое.
+
+Архив релиза должен содержать `gipny-agent` (`gipny-agent.exe` на Windows) и
+`i2pd-netdb-seed.tar.gz`, а имя — соответствовать
+`gipny-agent_<version>_<linux|darwin|windows>-<amd64|arm64>.tar.gz`.
+Workflow релизов собирает Linux amd64/arm64, macOS amd64/arm64 и Windows
+amd64. macOS и Windows используют уже подготовленные зависимости desktop-
+сборок. Windows ARM64 пока не собирается. Установщик выдаёт понятную ошибку,
+если для выбранной платформы в выбранном релизе нет артефакта.

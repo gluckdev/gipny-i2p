@@ -232,6 +232,45 @@ jobs:
         with:
           projectPath: core
           args: --bundles ${{ matrix.bundles }}
+      # Reuse desktop's static router dependencies for the headless agent.
+      - name: build and package agent (macOS / Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          cargo build --release -p gipny-agent
+          VERSION="$(node -p "require('./core/tauri.conf.json').version")"
+          case "${{ matrix.os }}" in
+            windows-*) platform=windows; arch=amd64; executable=gipny-agent.exe ;;
+            macos-15-intel) platform=darwin; arch=amd64; executable=gipny-agent ;;
+            macos-*) platform=darwin; arch=arm64; executable=gipny-agent ;;
+          esac
+          name="gipny-agent_${VERSION}_${platform}-${arch}"
+          mkdir -p "agent-dist/$name"
+          cp "target/release/$executable" "agent-dist/$name/"
+          cp core/resources/i2pd-netdb-seed.tar.gz "agent-dist/$name/"
+          cp scripts/install-agent.sh scripts/install-agent.ps1 "agent-dist/$name/"
+          printf '%s\n' \
+            'GIPNY headless agent: Settings > Agent mode > Connect remote agent.' \
+            'Copy the install command for your platform into the target terminal.' \
+            'Manual start: gipny-agent --data <directory> --master <gipny:v2:card>' \
+            > "agent-dist/$name/README.txt"
+          if [ "$platform" = darwin ]; then
+            chmod 755 "agent-dist/$name/$executable"
+            foreign="$(otool -L "agent-dist/$name/$executable" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/Library/)' || true)"
+            [ -z "$foreign" ] || { echo "agent links libraries absent on a user's Mac: $foreign"; exit 1; }
+          fi
+          # The existing agent prints usage with exit status 1.
+          "target/release/$executable" --help 2> "$RUNNER_TEMP/agent-help.txt" || test "$?" -eq 1
+          grep -F 'Usage: gipny-agent' "$RUNNER_TEMP/agent-help.txt"
+          tar -C agent-dist -czf "agent-dist/$name.tar.gz" "$name"
+      - name: upload agent (macOS / Windows)
+        if: runner.os != 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: gipny-agent-${{ matrix.os }}
+          retention-days: 5
+          path: agent-dist/*.tar.gz
+          if-no-files-found: error
       - name: the app links nothing a Mac lacks
         if: runner.os == 'macOS'
         run: |
@@ -369,6 +408,7 @@ jobs:
           install -m 0755 target/release/gipny-agent "dist/$name/"
           install -m 0644 seed/i2pd-netdb-seed.tar.gz "dist/$name/"
           install -m 0644 agent/gipny-agent.service "dist/$name/"
+          install -m 0755 scripts/install-agent.sh "dist/$name/"
           cat > "dist/$name/README.txt" << 'EOF'
           gipny-agent — headless console agent for gipny-i2p
 

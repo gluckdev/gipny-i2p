@@ -36,6 +36,9 @@ ROWS=(
   "Релей · Linux ARM64|сервер, tar.gz|gipny-relay_${VERSION}_linux-arm64.tar.gz"
   "Агент · Linux x86_64|консольный демон, tar.gz|gipny-agent_${VERSION}_linux-amd64.tar.gz"
   "Агент · Linux ARM64|консольный демон, tar.gz|gipny-agent_${VERSION}_linux-arm64.tar.gz"
+  "Агент · macOS 15+ Intel|консольный демон, tar.gz|gipny-agent_${VERSION}_darwin-amd64.tar.gz"
+  "Агент · macOS 15+ Apple Silicon|консольный демон, tar.gz|gipny-agent_${VERSION}_darwin-arm64.tar.gz"
+  "Агент · Windows x64|консольный демон, tar.gz|gipny-agent_${VERSION}_windows-amd64.tar.gz"
 )
 
 human() { awk -v b="$1" 'BEGIN { split("Б КБ МБ ГБ", u, " "); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } if (i == 1) printf "%d %s", b, u[i]; else printf "%.1f %s", b, u[i] }'; }
@@ -110,7 +113,7 @@ highlights="docs/releases/$VERSION.md"
   echo "- **Linux** — AppImage: \`chmod +x gipny-i2p_*.AppImage\` и запустить. deb: \`sudo apt install ./gipny-i2p_*.deb\`"
   echo "- **Android** — разрешите установку из этого источника, когда телефон спросит. Релизы подписаны одним постоянным ключом, поэтому следующие версии ставятся поверх установленной."
   echo "- **Релей** — архив для своего сервера: \`gipny-relay\` (роутер внутри) и systemd-юнит. Отдельного \`i2pd\` в архиве нет. Как развернуть — [в README](https://github.com/$REPO#2-запуск-собственного-выделенного-релея)."
-  echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P. В архиве \`gipny-agent\` (роутер внутри), снимок сети \`i2pd-netdb-seed.tar.gz\` и systemd-юнит; как поставить — в \`README.txt\` внутри и [в README](https://github.com/$REPO#%EF%B8%8F-remote-agent--удалённая-консоль)."
+  echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P. В архиве \`gipny-agent\` (роутер внутри), снимок сети \`i2pd-netdb-seed.tar.gz\` и установщик для соответствующей платформы; Linux также содержит systemd-юнит. Команду установки можно скопировать в настройках GIPNY; как поставить вручную — в \`README.txt\` внутри и [в README](https://github.com/$REPO#%EF%B8%8F-remote-agent--удалённая-консоль)."
   echo
   echo "## Проверка файлов"
   echo

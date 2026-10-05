@@ -1,5 +1,5 @@
 import { save } from '@tauri-apps/plugin-dialog';
-import { Api } from './api';
+import { Api, encodeCard } from './api';
 import type { RelayInfo, RelayMode, RouterSettings, TransitProfile, YggdrasilMode } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
@@ -361,6 +361,14 @@ export class SettingsModal {
           );
         })(),
 
+        h('div', { class: 'card-block', style: { marginTop: '14px' } },
+          h('div', { class: 'card-label' }, 'Удалённый агент на сервере (Linux / macOS / Windows)'),
+          h('button', {
+            class: 'btn btn-block', style: { marginTop: '10px' },
+            onClick: () => app.openModal((dismiss) => remoteAgentModal(store, dismiss)),
+          }, 'Подключить удалённый сервер / агента'),
+        ),
+
         h('div', { class: 'divider-text' }, t('settings.language')),
         (() => {
           const choices: { id: Lang; title: string }[] = [
@@ -688,4 +696,98 @@ export class SettingsModal {
       ),
     );
   }
+}
+
+/** Build the command from the current identity and its receiving relay. */
+function remoteAgentModal(store: Store, close: () => void): HTMLElement {
+  const base = 'https://raw.githubusercontent.com/gluckdev/gipny-i2p/main/scripts/';
+  const platforms = [
+    { title: 'Linux / macOS · root', script: 'root' },
+    { title: 'Linux · без root', script: 'user' },
+    { title: 'Windows · PowerShell', script: 'windows' },
+  ];
+  let selected = 'root';
+  let relay = '';
+  let command = '';
+  let relayLoaded = false;
+  let disposed = false;
+  const output = h('textarea', {
+    class: 'input', readonly: true, rows: '7', 'aria-label': 'Команда установки агента',
+    style: { fontFamily: 'monospace', resize: 'vertical', marginTop: '12px' },
+  }) as HTMLTextAreaElement;
+  const note = h('div', { class: 'hint', style: { marginTop: '10px' } });
+  const error = h('div', { class: 'err' });
+  const copy = h('button', {
+    class: 'btn btn-amber btn-block',
+    onClick: async () => {
+      if (!command) return;
+      try {
+        await navigator.clipboard.writeText(command);
+        store.showToast('Команда скопирована');
+      } catch (e) { store.showToast(`Не удалось скопировать: ${String(e)}`, true); }
+    },
+  }, 'Скопировать команду') as HTMLButtonElement;
+  const tabs = platforms.map((platform) => h('button', {
+    class: 'btn btn-ghost', role: 'tab',
+    onClick: () => { selected = platform.script; render(); },
+  }, platform.title) as HTMLButtonElement);
+  const render = (): void => {
+    if (disposed) return;
+    const id = store.identity.get();
+    const info = store.relayInfo.get();
+    const currentRelay = info?.mode === 'builtin'
+      ? (info.hosted.state === 'ready' ? info.hosted.address.trim() : '')
+      : (relayLoaded ? relay : '');
+    command = '';
+    if (id && currentRelay) {
+      const card = encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk,
+        store.displayName.get() || undefined, currentRelay);
+      if (selected === 'windows') {
+        // Escape PowerShell interpolation in a double-quoted string.
+        const quoted = card.replace(/[`$"\r\n]/g, (char) => '`' + char);
+        command = `irm ${base}install-agent.ps1 | iex; Install-GipnyAgent -Master "${quoted}"`;
+      } else {
+        const quoted = card.replace(/[\\$`"\r\n]/g, (char) => '\\' + char);
+        command = `curl -fsSL ${base}install-agent.sh | ${selected === 'root' ? 'sudo ' : ''}bash -s -- --master "${quoted}"`;
+      }
+    }
+    output.value = command || 'Ожидаем карточку и готовность релея мастера…';
+    copy.disabled = !command;
+    tabs.forEach((tab, index) => {
+      const active = platforms[index]!.script === selected;
+      tab.className = active ? 'btn btn-amber' : 'btn btn-ghost';
+      tab.setAttribute('aria-selected', String(active));
+    });
+    note.textContent = selected === 'windows'
+      ? 'Откройте PowerShell от имени администратора. Агент запускается через планировщик Windows.'
+      : selected === 'user'
+        ? 'При systemd --user для работы без входа в систему установщик покажет команду enable-linger.'
+        : 'На Linux агент запускается как системная служба; на macOS — через launchd.';
+  };
+  const unsub = store.relayInfo.subscribe(() => render(), false);
+  const cleanup = (): void => { disposed = true; unsub(); observer.disconnect(); };
+  const dismiss = (): void => { cleanup(); close(); };
+  const el = h('div', { class: 'modal' },
+    h('div', { class: 'modal-header' },
+      h('div', { class: 'modal-title' }, 'Подключить удалённого агента'),
+      h('button', { class: 'icon-btn', title: 'Закрыть', onClick: dismiss }, icon('close')),
+    ),
+    h('div', { class: 'modal-body' },
+      h('div', { class: 'row', role: 'tablist', 'aria-label': 'Операционная система', style: { flexWrap: 'wrap' } }, ...tabs),
+      output, note, error,
+      h('div', { class: 'hint', style: { marginTop: '14px' } },
+        'Вставьте команду в терминале целевого сервера. Агент скачается, запустится в фоне '
+        + 'как системный сервис и появится в вашем списке контактов.'),
+    ),
+    h('div', { class: 'modal-footer' }, copy),
+  );
+  // Backdrop closure also needs to release the relay subscription.
+  const observer = new MutationObserver(() => { if (!el.isConnected) cleanup(); });
+  observer.observe(document.body, { childList: true });
+  Api.getRelayAddress().then((address) => {
+    relay = address.trim(); relayLoaded = true; render();
+  }).catch((e) => { if (!disposed) error.textContent = `Не удалось получить релей: ${String(e)}`; });
+  Api.getRelayInfo().then((info) => { if (!disposed) store.relayInfo.set(info); }).catch(() => {});
+  render();
+  return el;
 }
