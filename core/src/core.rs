@@ -3625,7 +3625,18 @@ impl Core {
     }
 
     /// Relay-network upkeep; joining happens when the built-in relay is up.
+    ///
+    /// Not started under the measuring profile (`GIPNY_FAST`). This loop is a
+    /// request to a handful of stranger relays every ten minutes and a search
+    /// of what they hold, twice over: traffic the two nodes being measured never
+    /// asked for, on the same link whose speed is the number being taken. It is
+    /// also the one part of this process a router cannot switch off from the
+    /// command line, so it has to be gated here.
     fn spawn_dht_loop(self: Arc<Self>) {
+        if gipny_libcore::fast_on() {
+            eprintln!("[dht] relay-network upkeep off (fast profile)");
+            return;
+        }
         let this = self.clone();
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(dht_client::MAINTAIN_EVERY);

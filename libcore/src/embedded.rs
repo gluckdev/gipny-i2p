@@ -62,6 +62,10 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
         options.push(format!("--loglevel={level}"));
     }
     let log = router_dir.join("i2pd.log");
+    // The measuring profile (`GIPNY_FAST`) takes the options it covers out of
+    // the list rather than adding to it, so the router is never handed the same
+    // flag twice — see `i2p_embed::fast::merge` for why that is fatal.
+    let options = i2p_embed::fast::merge(options);
     let started = i2p_embed::Router::start(&options, log.to_str())
         .map_err(|e| NetError::I2p(format!("in-process router: {e}")))?;
     let started = Arc::new(started);
@@ -72,6 +76,15 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
 /// The router, if this process started one.
 pub fn running() -> Option<Arc<i2p_embed::Router>> {
     ROUTER.get().cloned()
+}
+
+/// Whether the measuring profile (`GIPNY_FAST`) is on.
+///
+/// Read from one place so the answer cannot differ between the parts that build
+/// tunnels and the parts that decide to keep up the relay network: this crate
+/// talks to a caller that has no dependency of its own on `i2p_embed`.
+pub fn fast_on() -> bool {
+    i2p_embed::fast::enabled()
 }
 
 /// Tell the router the machine's network changed: it should test how the new
@@ -89,7 +102,12 @@ pub fn network_changed() {
 }
 
 /// Options for a destination with `hops`-long tunnels both ways.
+///
+/// Clamped to what the measuring profile allows, which is the only thing that
+/// can make it zero: at zero i2pd builds no tunnel at all and the two routers
+/// connect to each other directly, so this is where that anonymity cost is
+/// actually paid.
 pub fn destination_options(publish: bool, hops: u8) -> i2p_embed::DestinationOptions {
-    let hops = hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS);
+    let hops = hops.clamp(crate::net::min_hops(), crate::net::DEFAULT_HOPS);
     i2p_embed::DestinationOptions { publish, inbound_length: hops, outbound_length: hops, extra: Vec::new() }
 }

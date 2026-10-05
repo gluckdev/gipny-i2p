@@ -45,14 +45,55 @@ const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
 /// Hops in each tunnel, as i2p builds them by default and as this app has
 /// always asked for them.
 pub const DEFAULT_HOPS: u8 = 3;
-/// The shortest tunnel we will build.
-///
-/// Two, not one: a single hop is both our first and our last, so it learns our
-/// address and where the letter went in the same breath, and one stranger's
-/// notes are enough to undo us. Two keeps somebody in the middle who knows only
-/// half. The floor lives here rather than at the call site so no future caller
-/// can talk the transport below it by passing a smaller number.
+/// The shortest tunnel we will build for client devices (desktop and mobile).
+/// Two keeps somebody in the middle who knows only half.
 pub const MIN_HOPS: u8 = 2;
+
+/// The minimum hops in effect. Mobile and desktop clients always use MIN_HOPS (2).
+/// Only the dedicated GCP server daemon can enable 1-hop tunnels via GIPNY_SERVER_HOPS=1.
+///
+/// The measuring profile (`GIPNY_FAST`) takes the floor to zero, which is the
+/// one length i2p will build that is not a tunnel at all: the two routers talk
+/// straight to each other, so each learns the other's address and nobody in
+/// between knows anything. It buys a link measurement and costs every
+/// guarantee this crate is built around, which is why nothing but that profile
+/// can ask for it.
+pub fn min_hops() -> u8 {
+    resolve_hops(
+        std::env::var("GIPNY_SERVER_HOPS").ok(),
+        i2p_embed::fast::hops(),
+        i2p_embed::fast::enabled(),
+    )
+}
+
+/// Which hop count wins, with the two things that can set one as arguments
+/// rather than as the environment.
+///
+/// With the profile on, `profile` is the answer: it is the more specific
+/// instruction, and the server daemon sets `GIPNY_SERVER_HOPS=1` for itself
+/// before the router starts (`web_server.rs`, `boot_core_web`), which would
+/// otherwise pin every fast run to one hop and leave `GIPNY_FAST_HOPS=0` looking
+/// like it had been answered. With it off, only `server` speaks — one number
+/// set by accident should not turn the whole profile on.
+fn resolve_hops(server: Option<String>, profile: Option<u8>, on: bool) -> u8 {
+    let floor = if on { 0 } else { 1 };
+    let asked = if on { profile } else { None }
+        // u16 and then clamped, not u8 and then rejected: a slip in arithmetic
+        // should arrive as the longest tunnel i2pd builds, and not as the default
+        // nobody asked for.
+        .or_else(|| server.as_deref()?.trim().parse::<u16>().ok().map(|n| n.min(u16::from(DEFAULT_HOPS)) as u8));
+    asked.map_or(MIN_HOPS, |n| n.clamp(floor, DEFAULT_HOPS))
+}
+
+/// The hop count a destination is built with before anybody presses anything.
+///
+/// [`DEFAULT_HOPS`] unless the measuring profile asked for another: the floor
+/// in [`min_hops`] says what a press may reach, not what a start chooses, and
+/// conflating them would leave every fast run on three hops until the first
+/// keystroke.
+pub fn start_hops() -> u8 {
+    i2p_embed::fast::effective_hops().clamp(min_hops(), DEFAULT_HOPS)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
@@ -172,7 +213,7 @@ impl I2pNode {
         note(&progress, "router-ready", "router running");
         note(&progress, "session", "generating an address for this session...");
         let privkey = i2p_embed::generate_keys();
-        let dest = i2p_embed::Destination::new(&router, Some(&privkey), &crate::embedded::destination_options(false, DEFAULT_HOPS))
+        let dest = i2p_embed::Destination::new(&router, Some(&privkey), &crate::embedded::destination_options(false, start_hops()))
             .map_err(|e| {
                 note(&progress, "session-failed", format!("the address could not be made: {e}"));
                 NetError::I2p(format!("destination: {e}"))
@@ -191,7 +232,7 @@ impl I2pNode {
             address,
             privkey: zeroize::Zeroizing::new(privkey),
             created_at: Instant::now(),
-            hops: AtomicU8::new(DEFAULT_HOPS),
+            hops: AtomicU8::new(start_hops()),
             relay_fail_count: AtomicU32::new(0),
             last_recreate_at: Mutex::new(None),
             recreate_lock: Mutex::new(()),
@@ -322,7 +363,7 @@ impl I2pNode {
     /// it is faster, and one that asked to go back to three must not be left
     /// thinking it is safe when it is not.
     pub async fn set_hops(&self, hops: u8) -> Result<()> {
-        let hops = hops.clamp(MIN_HOPS, DEFAULT_HOPS);
+        let hops = hops.clamp(min_hops(), DEFAULT_HOPS);
         let previous = self.hops.swap(hops, Ordering::Relaxed);
         if previous == hops {
             return Ok(());
@@ -411,3 +452,41 @@ fn base32_encode_nopad(input: &[u8]) -> String {
 /// Backwards-compatible alias: the transport is now i2p, but the rest of the
 /// codebase still refers to the node type by its historical name.
 pub type TorNode = I2pNode;
+
+#[cfg(test)]
+mod hop_tests {
+    use super::*;
+
+    /// The server daemon's own default, which is what used to hide the profile.
+    const SERVER: &str = "1";
+
+    #[test]
+    fn the_profile_outranks_the_servers_own_default() {
+        // GIPNY_FAST_HOPS=0 is the whole point of the run, and boot_core_web sets
+        // GIPNY_SERVER_HOPS=1 a moment before the router starts. If the server's
+        // number were read first, zero would silently arrive as one.
+        assert_eq!(resolve_hops(Some(SERVER.into()), Some(0), true), 0);
+        assert_eq!(resolve_hops(Some(SERVER.into()), Some(1), true), 1);
+        assert_eq!(resolve_hops(Some(SERVER.into()), Some(3), true), 3);
+    }
+
+    #[test]
+    fn outside_the_profile_the_server_number_is_the_only_one_that_speaks() {
+        assert_eq!(resolve_hops(Some(SERVER.into()), Some(0), false), 1, "the floor holds");
+        assert_eq!(resolve_hops(Some(SERVER.into()), Some(3), false), 1, "the server still wins");
+        assert_eq!(resolve_hops(Some("2".into()), None, false), 2);
+        assert_eq!(resolve_hops(None, None, false), MIN_HOPS);
+        assert_eq!(resolve_hops(Some("nonsense".into()), None, false), MIN_HOPS);
+        assert_eq!(resolve_hops(Some(" 3 ".into()), None, false), 3);
+    }
+
+    #[test]
+    fn without_the_profile_the_floor_is_one_hop() {
+        // Zero hops hands both routers' addresses to each other; nothing but the
+        // profile may ask for it.
+        assert_eq!(resolve_hops(Some("0".into()), None, false), 1);
+        assert_eq!(resolve_hops(None, Some(0), false), MIN_HOPS);
+        // And nothing exceeds what i2pd builds.
+        assert_eq!(resolve_hops(Some("300".into()), None, true), 3);
+    }
+}

@@ -262,7 +262,7 @@ jobs:
   # ---------------------------------------------------------------------------
   relay:
     name: relay (linux ${{ matrix.arch }})
-    needs: version
+    needs: [version, netdb-seed]
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -292,6 +292,11 @@ jobs:
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: fetch the network database snapshot
+        uses: actions/download-artifact@v8
+        with:
+          name: netdb-seed
+          path: seed
       - name: build and package
         run: |
           export I2P_EMBED_STATIC_LIBS=boost_program_options
@@ -302,6 +307,7 @@ jobs:
           mkdir -p "dist/$name"
           install -m 0755 core/relay/target/release/gipny-relay "dist/$name/"
           install -m 0644 core/relay/gipny-relay.service "dist/$name/"
+          install -m 0644 seed/i2pd-netdb-seed.tar.gz "dist/$name/"
           # Must run on the architecture this tarball is named for.
           file "dist/$name/gipny-relay"
           tar -C dist -czf "dist/$name.tar.gz" "$name"

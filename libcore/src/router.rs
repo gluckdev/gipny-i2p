@@ -21,6 +21,8 @@ use std::sync::Arc;
 /// share, 25000 transit tunnels — sit at the server end of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TransitProfile {
+    /// Zero transit: do not route other people's tunnels (for cloud/GCP servers).
+    Zero,
     /// Minimal but never zero: metered connections and battery. Still blends.
     Frugal,
     /// The default. A desktop on mains power, or a phone charging on wi-fi.
@@ -34,6 +36,7 @@ impl TransitProfile {
     /// i2pd's `bandwidth`: a letter (L=32, O=256, P=2048 KB/s) or a number.
     pub fn bandwidth(self) -> &'static str {
         match self {
+            Self::Zero => "L",
             Self::Frugal => "L",
             Self::Balanced => "O",
             Self::Generous => "P",
@@ -43,6 +46,7 @@ impl TransitProfile {
     /// Percentage of that line offered to transit.
     pub fn share_percent(self) -> u8 {
         match self {
+            Self::Zero => 0,
             Self::Frugal => 15,
             Self::Balanced => 50,
             Self::Generous => 80,
@@ -53,6 +57,7 @@ impl TransitProfile {
     /// i2pd's 25000, which assumes a server.
     pub fn transit_tunnels(self) -> u32 {
         match self {
+            Self::Zero => 0,
             Self::Frugal => 32,
             Self::Balanced => 256,
             Self::Generous => 2048,
@@ -62,6 +67,7 @@ impl TransitProfile {
     /// Stable name for storage and for the UI.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Zero => "zero",
             Self::Frugal => "frugal",
             Self::Balanced => "balanced",
             Self::Generous => "generous",
@@ -72,6 +78,7 @@ impl TransitProfile {
     /// stored value from a newer build must not stop the router from starting.
     pub fn parse(raw: &str) -> Self {
         match raw.trim() {
+            "zero" => Self::Zero,
             "frugal" => Self::Frugal,
             "generous" => Self::Generous,
             _ => Self::Balanced,

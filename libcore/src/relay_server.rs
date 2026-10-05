@@ -759,7 +759,7 @@ impl EphemeralRelay {
         let router = crate::embedded::running().ok_or(NetError::Closed)?;
         // Kept in memory only, for rebuilding on the same address.
         let private_key = zeroize::Zeroizing::new(i2p_embed::generate_keys());
-        let hops = Arc::new(AtomicU8::new(crate::net::DEFAULT_HOPS));
+        let hops = Arc::new(AtomicU8::new(crate::net::start_hops()));
         let rebuild = Arc::new(tokio::sync::Notify::new());
         let open = |hops: u8| {
             i2p_embed::Destination::new(&router, Some(private_key.as_str()), &crate::embedded::destination_options(true, hops))
@@ -873,7 +873,7 @@ impl EphemeralRelay {
     /// unreachable for a minute or two afterwards — letters sent meanwhile wait
     /// at their senders and arrive when it is back.
     pub fn set_hops(&self, hops: u8) {
-        let hops = hops.clamp(crate::net::MIN_HOPS, crate::net::DEFAULT_HOPS);
+        let hops = hops.clamp(crate::net::min_hops(), crate::net::DEFAULT_HOPS);
         if self.hops.swap(hops, Ordering::Relaxed) == hops {
             return;
         }

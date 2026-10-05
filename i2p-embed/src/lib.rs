@@ -17,6 +17,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 
+pub mod fast;
+
 mod ffi {
     use super::*;
 

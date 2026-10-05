@@ -327,6 +327,77 @@ pub fn backup_open(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
     open_seal(key.as_slice().try_into().unwrap(), &nonce, ct)
 }
 
+pub const BACKUP_VERSION_3FACTOR: u8 = 3;
+
+/// 3-Factor key derivation:
+/// Factor 1: User passphrase (Argon2id with salt) -> K_pass
+/// Factor 2: Server instance key (HKDF salt)
+/// Factor 3: Client device secret (HKDF IKM input along with K_pass)
+/// PRK = HKDF-Extract(salt = server_key, ikm = K_pass || client_secret)
+/// K_final = HKDF-Expand(prk = PRK, info = b"gipny/backup/3factor/v1", length = 32)
+fn derive_3factor_key(
+    passphrase: &str,
+    server_key: &[u8; 32],
+    client_secret: &[u8; 32],
+    salt: &[u8; 32],
+    m: u32,
+) -> Result<Zeroizing<[u8; 32]>> {
+    let kparams = Params::new(m, 3, 1, Some(32)).map_err(|_| SecurityError::Crypto)?;
+    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, kparams);
+    let mut k_pass = Zeroizing::new([0u8; 32]);
+    argon.hash_password_into(passphrase.as_bytes(), salt, k_pass.as_mut_slice())
+        .map_err(|_| SecurityError::Crypto)?;
+
+    let mut ikm = Zeroizing::new(Vec::with_capacity(64));
+    ikm.extend_from_slice(k_pass.as_slice());
+    ikm.extend_from_slice(client_secret);
+
+    let hkdf = Hkdf::<Sha256>::new(Some(server_key), &ikm);
+    let mut final_key = Zeroizing::new([0u8; 32]);
+    hkdf.expand(b"gipny/backup/3factor/v1", final_key.as_mut_slice())
+        .map_err(|_| SecurityError::Crypto)?;
+
+    Ok(final_key)
+}
+
+pub fn backup_seal_3factor(
+    passphrase: &str,
+    server_key: &[u8; 32],
+    client_secret: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    let salt = random32();
+    let nonce = random24();
+    let m = 65536u32;
+    let key = derive_3factor_key(passphrase, server_key, client_secret, &salt, m)?;
+    let ct = seal(key.as_slice().try_into().unwrap(), &nonce, plaintext)?;
+    let mut out = Vec::with_capacity(8 + 1 + 4 + 32 + 24 + ct.len());
+    out.extend_from_slice(BACKUP_MAGIC);
+    out.push(BACKUP_VERSION_3FACTOR);
+    out.extend_from_slice(&m.to_be_bytes());
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+pub fn backup_open_3factor(
+    passphrase: &str,
+    server_key: &[u8; 32],
+    client_secret: &[u8; 32],
+    blob: &[u8],
+) -> Result<Vec<u8>> {
+    if blob.len() < 8 + 1 + 4 + 32 + 24 + 16 { return Err(SecurityError::Crypto); }
+    if &blob[..8] != BACKUP_MAGIC { return Err(SecurityError::Crypto); }
+    if blob[8] != BACKUP_VERSION_3FACTOR { return Err(SecurityError::Crypto); }
+    let m = u32::from_be_bytes(blob[9..13].try_into().unwrap());
+    let salt: [u8; 32] = blob[13..45].try_into().unwrap();
+    let nonce: [u8; 24] = blob[45..69].try_into().unwrap();
+    let ct = &blob[69..];
+    let key = derive_3factor_key(passphrase, server_key, client_secret, &salt, m)?;
+    open_seal(key.as_slice().try_into().unwrap(), &nonce, ct)
+}
+
 fn open_seal(key: &[u8; 32], nonce: &[u8; 24], ct: &[u8]) -> Result<Vec<u8>> {
     XChaCha20Poly1305::new(key.into())
         .decrypt(&XNonce::from(*nonce), ct)
@@ -437,6 +508,85 @@ impl DeviceBind {
             let _ = fs::remove_file(&path);
         }
         Ok(())
+    }
+}
+
+pub struct ServerBind;
+
+const SERVER_KEY_FILE: &str = "server.key";
+
+impl ServerBind {
+    pub fn ensure(dir: &Path) -> Result<[u8; 32]> {
+        let path = dir.join(SERVER_KEY_FILE);
+        if path.exists() {
+            let mut f = File::open(&path)?;
+            let mut s = String::new();
+            f.read_to_string(&mut s)?;
+            let bytes = hex_decode(s.trim()).ok_or(SecurityError::Keystore)?;
+            <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| SecurityError::Keystore)
+        } else {
+            fs::create_dir_all(dir)?;
+            let s = random32();
+            let tmp = path.with_extension("tmp");
+            let mut f = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
+            f.write_all(hex_encode(&s).as_bytes())?;
+            f.sync_all()?;
+            drop(f);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+            }
+            fs::rename(tmp, &path)?;
+            Ok(s)
+        }
+    }
+}
+
+#[cfg(test)]
+mod factor3_tests {
+    use super::*;
+
+    #[test]
+    fn test_3factor_backup_roundtrip_and_component_isolation() {
+        let pass = "user_master_password_secure";
+        let server_key = [0x55u8; 32];
+        let client_secret = [0xAAu8; 32];
+        let data = b"confidential session payload for gipny web messenger";
+
+        let sealed = backup_seal_3factor(pass, &server_key, &client_secret, data).unwrap();
+
+        // 1. Success with all three correct components
+        let opened = backup_open_3factor(pass, &server_key, &client_secret, &sealed).unwrap();
+        assert_eq!(opened, data);
+
+        // 2. Fails if passphrase is wrong
+        assert!(backup_open_3factor("wrong_passphrase", &server_key, &client_secret, &sealed).is_err());
+
+        // 3. Fails if server_key is wrong
+        let mut wrong_server = server_key;
+        wrong_server[0] ^= 0xFF;
+        assert!(backup_open_3factor(pass, &wrong_server, &client_secret, &sealed).is_err());
+
+        // 4. Fails if client_secret is wrong
+        let mut wrong_client = client_secret;
+        wrong_client[0] ^= 0xFF;
+        assert!(backup_open_3factor(pass, &server_key, &wrong_client, &sealed).is_err());
+
+        // 5. Fails if corrupted
+        let mut corrupt = sealed.clone();
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 0xFF;
+        assert!(backup_open_3factor(pass, &server_key, &client_secret, &corrupt).is_err());
+    }
+
+    #[test]
+    fn test_server_bind_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let key1 = ServerBind::ensure(dir.path()).unwrap();
+        let key2 = ServerBind::ensure(dir.path()).unwrap();
+        assert_eq!(key1, key2);
+        assert_ne!(key1, [0u8; 32]);
     }
 }
 

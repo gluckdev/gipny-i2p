@@ -2,6 +2,7 @@ mod dht;
 mod dht_store;
 mod proto;
 mod storage;
+mod router_seed;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ use tokio::sync::{mpsc, RwLock};
 use crate::dht::DhtHandler;
 use crate::proto::*;
 use crate::storage::Storage;
+use crate::router_seed::{bundled_seed, seed_netdb_from};
 
 type Connections = Arc<RwLock<HashMap<[u8; 32], Lanes>>>;
 
@@ -129,12 +131,25 @@ async fn main() -> anyhow::Result<()> {
     // to install beside it, no local port. Its state lives in the data dir.
     let router_dir = data_dir.join("router");
     std::fs::create_dir_all(&router_dir)?;
+    
+    // Prewarm: lay out the bundled netDb snapshot before starting the router,
+    // so a cold start doesn't have to reseed over HTTPS.
+    if let Some(seed_path) = std::env::var_os("GIPNY_I2P_SEED").map(std::path::PathBuf::from) {
+        if seed_path.is_file() {
+            eprintln!("[relay] seeding netDb from {}", seed_path.display());
+            let _ = seed_netdb_from(&seed_path, &router_dir);
+        }
+    } else if let Some(seed_path) = bundled_seed() {
+        eprintln!("[relay] seeding netDb from bundled snapshot");
+        let _ = seed_netdb_from(&seed_path, &router_dir);
+    }
+
     eprintln!("[relay] starting the i2p router in-process ({})...", router_dir.display());
     // GIPNY_I2P_LOGLEVEL: diagnostics only (CI's e2e), i2pd's own log level.
     let loglevel = std::env::var("GIPNY_I2P_LOGLEVEL").ok()
         .filter(|l| matches!(l.as_str(), "critical" | "error" | "warn" | "info" | "debug"))
         .map(|l| format!("--loglevel={l}"));
-    let router = Arc::new(i2p_embed::Router::start(&[
+    let options = vec![
         format!("--datadir={}", router_dir.display()),
         loglevel.unwrap_or_else(|| "--loglevel=warn".into()),
         "--sam.enabled=false".into(),
@@ -142,9 +157,20 @@ async fn main() -> anyhow::Result<()> {
         "--httpproxy.enabled=false".into(),
         "--socksproxy.enabled=false".into(),
         "--upnp.enabled=false".into(),
+        // Relay doesn't need to be a transit node: no transit traffic.
+        "--bandwidth=L".into(),
+        "--share=0".into(),
+        "--limits.transittunnels=0".into(),
         // Against the reseed certificates i2p-embed compiles in.
         "--reseed.verify=true".into(),
-    ], router_dir.join("i2pd.log").to_str()).map_err(|e| anyhow::anyhow!("i2p router: {e}"))?);
+    ];
+    // The measuring profile (GIPNY_FAST), which also silences the router's
+    // background work. Applied to the whole list, not added to it: i2pd's
+    // command-line parser dies on a repeated option, and this list already
+    // carries `--share` and `--limits.transittunnels`.
+    let options = i2p_embed::fast::merge(options);
+    let router = Arc::new(i2p_embed::Router::start(&options, router_dir.join("i2pd.log").to_str())
+        .map_err(|e| anyhow::anyhow!("i2p router: {e}"))?);
 
     let (dest_pub, privkey) = load_or_create_identity(&data_dir)?;
 
@@ -154,7 +180,17 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
     eprintln!("{dest_pub}");
     eprintln!("========================================================");
-    let dest = i2p_embed::Destination::new(&router, Some(&privkey), &i2p_embed::DestinationOptions { publish: true, ..Default::default() })
+    // Relay doesn't need long exploratory tunnels: use 2 hops instead of 3.
+    // Under the measuring profile (GIPNY_FAST / GIPNY_FAST_HOPS) it follows
+    // that instead, down to zero — see i2p_embed::fast for what zero costs.
+    let hops = i2p_embed::fast::hops().unwrap_or(2);
+    let dest_opts = i2p_embed::DestinationOptions {
+        publish: true,
+        inbound_length: hops,
+        outbound_length: hops,
+        extra: Vec::new(),
+    };
+    let dest = i2p_embed::Destination::new(&router, Some(&privkey), &dest_opts)
         .map_err(|e| anyhow::anyhow!("relay destination: {e}"))?;
     dest.ready(Duration::from_secs(1800)).await.map_err(|e| anyhow::anyhow!("relay tunnels: {e}"))?;
     eprintln!("[relay] tunnels up; accepting");

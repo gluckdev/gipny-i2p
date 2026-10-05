@@ -1,5 +1,114 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { invoke as tauriInvoke } from '@tauri-apps/api/core';
+import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
+
+export const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+
+class WebTransportClient {
+  private ws: WebSocket | null = null;
+  private reqId = 0;
+  private pending = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
+  private listeners = new Map<string, Set<(event: { payload: any }) => void>>();
+  private connectPromise: Promise<void> | null = null;
+
+  connect(): Promise<void> {
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      return this.connectPromise || Promise.resolve();
+    }
+    this.connectPromise = new Promise((resolve) => {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${location.host}/ws`;
+      try {
+        this.ws = new WebSocket(url);
+      } catch (e) {
+        console.error('[WebTransport] WebSocket creation error:', e);
+        resolve();
+        return;
+      }
+
+      this.ws.onopen = () => {
+        resolve();
+      };
+
+      this.ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.id !== undefined && this.pending.has(msg.id)) {
+            const { resolve, reject } = this.pending.get(msg.id)!;
+            this.pending.delete(msg.id);
+            if (msg.error) {
+              reject(msg.error);
+            } else {
+              resolve(msg.result);
+            }
+          } else if (msg.event) {
+            const handlers = this.listeners.get(msg.event);
+            if (handlers) {
+              const eventObj = { payload: msg.payload };
+              handlers.forEach((h) => h(eventObj));
+            }
+          }
+        } catch (e) {
+          console.error('[WebTransport] parse error', e);
+        }
+      };
+
+      this.ws.onclose = () => {
+        this.ws = null;
+        this.connectPromise = null;
+        setTimeout(() => this.connect(), 2000);
+      };
+
+      this.ws.onerror = () => {
+        resolve();
+      };
+    });
+    return this.connectPromise;
+  }
+
+  async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    await this.connect();
+    return new Promise((resolve, reject) => {
+      const id = ++this.reqId;
+      this.pending.set(id, { resolve, reject });
+      const payload = JSON.stringify({ id, method: cmd, params: args ?? {} });
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(payload);
+      } else {
+        this.pending.delete(id);
+        reject('WebSocket disconnected');
+      }
+    });
+  }
+
+  async listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    const set = this.listeners.get(event)!;
+    set.add(handler as any);
+    this.connect();
+    return () => {
+      set.delete(handler as any);
+    };
+  }
+}
+
+const webClient = new WebTransportClient();
+
+export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (isTauri) {
+    return tauriInvoke(cmd, args);
+  }
+  return webClient.invoke<T>(cmd, args);
+}
+
+export function listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
+  if (isTauri) {
+    return tauriListen(event, handler);
+  }
+  return webClient.listen<T>(event, handler);
+}
+export type { UnlistenFn };
 
 export interface VaultStatus { exists: boolean; unlocked: boolean; }
 
@@ -491,16 +600,78 @@ export class Api {
   static importIdentityToProfile(profile: string, vaultPass: string, backupPath: string, backupPass: string): Promise<void> {
     return invoke('import_identity_to_profile', { profile, vaultPass, backupPath, backupPass });
   }
+
+  /** Ensure client device secret (3rd factor) exists in localStorage, or generate a fresh 256-bit hex token */
+  static getOrCreateClientSecret(): string {
+    const KEY = 'gipny_client_secret_hex';
+    let sec = localStorage.getItem(KEY);
+    if (!sec || sec.length !== 64) {
+      const arr = new Uint8Array(32);
+      crypto.getRandomValues(arr);
+      sec = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(KEY, sec);
+    }
+    return sec;
+  }
+
+  /** Export 3-factor sealed backup (User Pass + Server Key + Client Secret) as base64 */
+  static exportBackup3Factor(passphrase: string, clientSecret?: string): Promise<string> {
+    const sec = clientSecret || Api.getOrCreateClientSecret();
+    return invoke('export_backup_3factor', { passphrase, clientSecret: sec });
+  }
+
+  /** Restore 3-factor sealed backup blob into profile */
+  static importBackup3Factor(profile: string, passphrase: string, blobBase64: string, clientSecret?: string): Promise<void> {
+    const sec = clientSecret || Api.getOrCreateClientSecret();
+    return invoke('import_backup_3factor', { profile, passphrase, blob: blobBase64, clientSecret: sec });
+  }
+
+  /** Trigger browser download for base64 backup */
+  static downloadBackupFile(blobBase64: string, filename = 'gipny-session.backup') {
+    const binary = atob(blobBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   static sendTyping(contactId: number | null, groupId: string | null, typing: boolean): Promise<void> {
     return invoke('send_typing', { contactId, groupId, typing });
   }
   static playNotifySound(name?: string | null): Promise<void> {
+    if (!isTauri) {
+      try {
+        const audio = new Audio(`/sounds/${name || 'msg-in'}.wav`);
+        audio.play().catch(() => {});
+      } catch (_) {}
+      return Promise.resolve();
+    }
     return invoke('play_notify_sound', { name: name ?? null });
   }
   static notifyOs(title: string, body: string): Promise<void> {
+    if (!isTauri) {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(title, { body });
+      } else if (typeof Notification !== 'undefined' && Notification.permission !== 'denied') {
+        Notification.requestPermission().then((perm) => {
+          if (perm === 'granted') new Notification(title, { body });
+        });
+      }
+      return Promise.resolve();
+    }
     return invoke('notify_os', { title, body });
   }
   static notifyProbe(): Promise<string> {
+    if (!isTauri) return Promise.resolve('web-browser-notifications');
     return invoke('notify_probe');
   }
   static pinChat(contactId: number | null, groupId: string | null): Promise<void> {
@@ -510,6 +681,14 @@ export class Api {
     return invoke('unpin_chat', { contactId, groupId });
   }
   static updateTrayBadge(count: number): Promise<void> {
+    if (!isTauri) {
+      if (count > 0) {
+        document.title = `(${count}) gipny`;
+      } else {
+        document.title = `gipny`;
+      }
+      return Promise.resolve();
+    }
     return invoke('update_tray_badge', { count });
   }
   static forwardMessage(sourceMessageId: number, contactId: number | null, groupId: string | null): Promise<number> {

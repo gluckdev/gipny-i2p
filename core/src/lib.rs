@@ -1,4 +1,5 @@
-mod core;
+pub mod core;
+pub mod web_server;
 mod notify;
 mod sanitizer;
 mod tray;
@@ -20,23 +21,35 @@ use gipny_libcore::db::{Contact, Group, GroupMember, Message, RequestState, Trus
 use gipny_libcore::net::I2pNode;
 use gipny_libcore::security::{DuressMode, UnlockOutcome, Vault};
 
-struct AppCtx {
-    base_dir: PathBuf,
-    profile: Mutex<Option<String>>,
-    vault: Mutex<Option<Arc<Vault>>>,
-    core: Mutex<Option<Arc<Core>>>,
+pub struct AppCtx {
+    pub base_dir: PathBuf,
+    pub profile: Mutex<Option<String>>,
+    pub vault: Mutex<Option<Arc<Vault>>>,
+    pub core: Mutex<Option<Arc<Core>>>,
     /// The i2p node built ahead of the password, or being built right now.
     ///
     /// Nothing in the transport needs the vault: the destination is ephemeral
     /// and the identity the relay routes by lives elsewhere. So the minutes
     /// i2p takes are spent while the unlock screen is on, not after it.
-    prewarm: Mutex<Option<Prewarm>>,
+    pub prewarm: Mutex<Option<Prewarm>>,
+}
+
+impl AppCtx {
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self {
+            base_dir,
+            profile: Mutex::new(None),
+            vault: Mutex::new(None),
+            core: Mutex::new(None),
+            prewarm: Mutex::new(None),
+        }
+    }
 }
 
 /// A node started before any profile was opened, held for the profile it was
 /// started for. Exactly one of these exists at a time: its destination and
 /// its relay's are dropped when another profile is picked.
-enum Prewarm {
+pub enum Prewarm {
     Building {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
@@ -343,7 +356,7 @@ fn resolve_base_dir() -> PathBuf {
     PathBuf::from(".").join("gipny-i2p")
 }
 
-fn profile_dir(ctx: &AppCtx, profile: &str) -> Result<PathBuf, String> {
+pub(crate) fn profile_dir(ctx: &AppCtx, profile: &str) -> Result<PathBuf, String> {
     if profile.is_empty() || profile.len() > 32 {
         return Err("profile name 1..32 chars".into());
     }
@@ -354,21 +367,21 @@ fn profile_dir(ctx: &AppCtx, profile: &str) -> Result<PathBuf, String> {
 }
 
 #[derive(Serialize)]
-struct VaultStatus { exists: bool, unlocked: bool }
+pub(crate) struct VaultStatus { pub(crate) exists: bool, pub(crate) unlocked: bool }
 
 #[derive(Serialize)]
-struct ContactDto {
-    id: i64, sign_pk: String, dh_pk: String, onion: String, name: String,
-    trust: u8, created_at: i64, last_seen: Option<i64>, is_bot: bool,
-    pinned_at: Option<i64>, last_message_at: Option<i64>,
+pub(crate) struct ContactDto {
+    pub(crate) id: i64, pub(crate) sign_pk: String, pub(crate) dh_pk: String, pub(crate) onion: String, pub(crate) name: String,
+    pub(crate) trust: u8, pub(crate) created_at: i64, pub(crate) last_seen: Option<i64>, pub(crate) is_bot: bool,
+    pub(crate) pinned_at: Option<i64>, pub(crate) last_message_at: Option<i64>,
     /// Relay this contact receives through, from their card. `None` means this
     /// client's own relay setting is used, as it was before cards carried one.
-    relay: Option<String>,
+    pub(crate) relay: Option<String>,
     /// This contact is in agent mode with us as master: its console is open.
-    agent_granted: bool,
+    pub(crate) agent_granted: bool,
     /// "none", "incoming" (they asked, we have not answered) or "outgoing"
     /// (we added their card and have not heard back).
-    request: &'static str,
+    pub(crate) request: &'static str,
 }
 
 impl From<Contact> for ContactDto {
@@ -393,37 +406,37 @@ impl From<Contact> for ContactDto {
 }
 
 #[derive(Serialize, Clone)]
-struct ButtonDto { text: String, callback_data: String }
+pub(crate) struct ButtonDto { pub(crate) text: String, pub(crate) callback_data: String }
 
 #[derive(Serialize)]
-struct MessageDto {
-    id: i64,
-    contact_id: Option<i64>,
-    group_id: Option<String>,
-    sender_sign_pk: Option<String>,
-    outgoing: bool,
-    body: String,
-    sent_at: i64,
-    sent: bool,
-    delivered: bool,
-    read: bool,
-    expires_at: Option<i64>,
-    buttons: Option<Vec<Vec<ButtonDto>>>,
-    reply_to: Option<i64>,
+pub(crate) struct MessageDto {
+    pub(crate) id: i64,
+    pub(crate) contact_id: Option<i64>,
+    pub(crate) group_id: Option<String>,
+    pub(crate) sender_sign_pk: Option<String>,
+    pub(crate) outgoing: bool,
+    pub(crate) body: String,
+    pub(crate) sent_at: i64,
+    pub(crate) sent: bool,
+    pub(crate) delivered: bool,
+    pub(crate) read: bool,
+    pub(crate) expires_at: Option<i64>,
+    pub(crate) buttons: Option<Vec<Vec<ButtonDto>>>,
+    pub(crate) reply_to: Option<i64>,
     /// Console framing: a command, its output, or an agent-mode marker.
-    console: Option<ConsoleDto>,
+    pub(crate) console: Option<ConsoleDto>,
 }
 
 #[derive(Serialize)]
-struct ConsoleDto {
-    kind: u8,
-    exit_code: Option<i32>,
-    duration_ms: Option<u64>,
-    truncated: bool,
+pub(crate) struct ConsoleDto {
+    pub(crate) kind: u8,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) truncated: bool,
 }
 
 /// Per-message extras kept beside the row: inline buttons and console frames.
-fn attach_extras(db: &gipny_libcore::db::Db, dtos: &mut [MessageDto]) -> Result<(), String> {
+pub(crate) fn attach_extras(db: &gipny_libcore::db::Db, dtos: &mut [MessageDto]) -> Result<(), String> {
     let ids: Vec<i64> = dtos.iter().map(|d| d.id).collect();
     let map = db.load_buttons_batch(&ids).map_err(err)?;
     let consoles = db.load_settings_batch("console_", &ids).map_err(err)?;
@@ -464,9 +477,9 @@ impl From<Message> for MessageDto {
 }
 
 #[derive(Serialize)]
-struct GroupDto {
-    id: String, name: String, created_at: i64,
-    pinned_at: Option<i64>, last_message_at: Option<i64>,
+pub(crate) struct GroupDto {
+    pub(crate) id: String, pub(crate) name: String, pub(crate) created_at: i64,
+    pub(crate) pinned_at: Option<i64>, pub(crate) last_message_at: Option<i64>,
 }
 
 impl From<Group> for GroupDto {
@@ -479,8 +492,8 @@ impl From<Group> for GroupDto {
 }
 
 #[derive(Serialize)]
-struct GroupMemberDto {
-    sign_pk: String, dh_pk: String, onion: String, name: String, is_self: bool,
+pub(crate) struct GroupMemberDto {
+    pub(crate) sign_pk: String, pub(crate) dh_pk: String, pub(crate) onion: String, pub(crate) name: String, pub(crate) is_self: bool,
 }
 
 impl From<GroupMember> for GroupMemberDto {
@@ -499,7 +512,7 @@ struct BundleDto {
 }
 
 #[derive(Serialize)]
-struct AttachmentDto { id: i64, message_id: i64, name: String, size: i64 }
+pub(crate) struct AttachmentDto { pub(crate) id: i64, pub(crate) message_id: i64, pub(crate) name: String, pub(crate) size: i64 }
 
 #[derive(Serialize)]
 struct MediaItemDto {
@@ -511,19 +524,19 @@ struct MediaItemDto {
 }
 
 #[derive(Serialize)]
-struct SearchHitDto {
-    message: MessageDto,
-    contact_id: Option<i64>,
-    group_id: Option<String>,
-    contact_name: Option<String>,
-    group_name: Option<String>,
+pub(crate) struct SearchHitDto {
+    pub(crate) message: MessageDto,
+    pub(crate) contact_id: Option<i64>,
+    pub(crate) group_id: Option<String>,
+    pub(crate) contact_name: Option<String>,
+    pub(crate) group_name: Option<String>,
 }
 
 async fn core_of<'a>(ctx: &'a State<'_, AppCtx>) -> Result<Arc<Core>, String> {
     ctx.core.lock().await.clone().ok_or_else(|| "locked".to_string())
 }
 
-fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
+pub(crate) fn err<E: std::fmt::Display>(e: E) -> String { e.to_string() }
 
 const SETTING_MUTES: &str = "muted_targets";
 /// How much transit traffic the bundled router carries. See
@@ -532,7 +545,7 @@ const SETTING_ROUTER_TRANSIT: &str = "router_transit";
 /// Whether the router also speaks over a Yggdrasil mesh, when one is running.
 const SETTING_ROUTER_YGGDRASIL: &str = "router_yggdrasil";
 
-fn parse_group_id(s: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn parse_group_id(s: &str) -> Result<Vec<u8>, String> {
     hex_decode(s).ok_or_else(|| "bad group id".to_string())
 }
 
@@ -642,10 +655,10 @@ async fn vault_unlock(
 /// turns into its own wording; `detail` is the technical line (the same one
 /// that goes to stderr), shown under «технические подробности».
 #[derive(Clone, serde::Serialize)]
-struct BootStatus {
-    stage: &'static str,
-    state: &'static str,
-    detail: String,
+pub(crate) struct BootStatus {
+    pub(crate) stage: &'static str,
+    pub(crate) state: &'static str,
+    pub(crate) detail: String,
 }
 
 fn boot_status(app: &AppHandle, stage: &'static str, state: &'static str, detail: impl Into<String>) {
@@ -2331,7 +2344,7 @@ struct BackupAttachmentV3 {
 }
 
 /// A backup of either version, as version 3 (`version` is its first field).
-fn decode_backup(plain: &[u8]) -> Result<BackupV2<BackupAttachmentV3>, String> {
+pub(crate) fn decode_backup(plain: &[u8]) -> Result<BackupV2<BackupAttachmentV3>, String> {
     let version = plain.get(..4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]])).unwrap_or(0);
     let unknown = || "backup format unknown / corrupted".to_string();
     match version {
@@ -2363,11 +2376,7 @@ struct BackupPreKey {
     created_at: i64,
 }
 
-#[tauri::command]
-async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    if passphrase.len() < 8 { return Err("passphrase too short (min 8)".into()); }
-    let core = core_of(&ctx).await?;
-    let db = core.db();
+pub(crate) fn export_raw_backup_data(db: &gipny_libcore::db::Db) -> Result<Vec<u8>, String> {
     let settings = db.list_all_settings().map_err(err)?;
     let contacts: Vec<BackupContact> = db.list_contacts().map_err(err)?.into_iter().map(|c| BackupContact {
         sign_pk: c.identity_sign, dh_pk: c.identity_dh, onion: c.onion_address, name: c.display_name,
@@ -2408,29 +2417,23 @@ async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, A
         version: 3, settings, contacts, groups, messages, attachments, pinned, prekeys,
         exported_at: now_ms_helper(),
     };
-    let bytes = bincode::serialize(&backup).map_err(err)?;
-    let sealed = gipny_libcore::security::backup_seal(&passphrase, &bytes).map_err(err)?;
-    std::fs::write(&dest_path, &sealed).map_err(err)?;
-    Ok(())
+    bincode::serialize(&backup).map_err(err)
 }
 
-#[tauri::command]
-async fn import_identity_to_profile(
-    profile: String, vault_pass: String, backup_path: String, backup_pass: String,
-    ctx: State<'_, AppCtx>,
+pub(crate) async fn restore_raw_backup_data(
+    ctx: &AppCtx,
+    profile: String,
+    vault_pass: String,
+    plain: &[u8],
 ) -> Result<(), String> {
     if profile.is_empty() || profile.contains('/') || profile.contains('\\') {
         return Err("bad profile name".into());
     }
     if vault_pass.len() < 8 { return Err("vault passphrase too short".into()); }
-    let blob = std::fs::read(&backup_path).map_err(err)?;
-    let plain = gipny_libcore::security::backup_open(&backup_pass, &blob).map_err(|_| "wrong backup passphrase or corrupt file".to_string())?;
-    let backup = decode_backup(&plain)?;
+    let backup = decode_backup(plain)?;
     let dir = ctx.base_dir.join("profiles").join(&profile);
     if dir.exists() {
         if Vault::exists(&dir) { return Err("profile already exists".into()); }
-        // Remnants of an interrupted restore (dir created, vault never
-        // written) — clear them and retry instead of dead-ending.
         std::fs::remove_dir_all(&dir).map_err(err)?;
     }
     std::fs::create_dir_all(&dir).map_err(err)?;
@@ -2505,6 +2508,26 @@ async fn import_identity_to_profile(
 }
 
 #[tauri::command]
+async fn export_identity(passphrase: String, dest_path: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    if passphrase.len() < 8 { return Err("passphrase too short (min 8)".into()); }
+    let core = core_of(&ctx).await?;
+    let bytes = export_raw_backup_data(core.db())?;
+    let sealed = gipny_libcore::security::backup_seal(&passphrase, &bytes).map_err(err)?;
+    std::fs::write(&dest_path, &sealed).map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_identity_to_profile(
+    profile: String, vault_pass: String, backup_path: String, backup_pass: String,
+    ctx: State<'_, AppCtx>,
+) -> Result<(), String> {
+    let blob = std::fs::read(&backup_path).map_err(err)?;
+    let plain = gipny_libcore::security::backup_open(&backup_pass, &blob).map_err(|_| "wrong backup passphrase or corrupt file".to_string())?;
+    restore_raw_backup_data(ctx.inner(), profile, vault_pass, &plain).await
+}
+
+#[tauri::command]
 async fn send_typing(
     contact_id: Option<i64>, group_id: Option<String>, typing: bool,
     ctx: State<'_, AppCtx>,
@@ -2519,17 +2542,17 @@ async fn send_typing(
     Ok(())
 }
 
-fn now_ms_helper() -> i64 {
+pub(crate) fn now_ms_helper() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
 
-fn parse_hex32(s: &str) -> Result<[u8; 32], String> {
+pub(crate) fn parse_hex32(s: &str) -> Result<[u8; 32], String> {
     let v = hex_decode(s).ok_or_else(|| "bad hex".to_string())?;
     if v.len() != 32 { return Err("bad length".into()); }
     let mut out = [0u8; 32];
@@ -2537,7 +2560,7 @@ fn parse_hex32(s: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 { return None; }
     let b = s.as_bytes();
     let h = |c: u8| -> Option<u8> {
@@ -2553,7 +2576,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
     let mut i = 0;
@@ -2581,7 +2604,7 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64_decode(s: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
     let mut buf = 0u32;
     let mut bits = 0u32;

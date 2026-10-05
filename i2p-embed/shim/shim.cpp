@@ -17,6 +17,7 @@
 #include "FS.h"
 #include "Identity.h"
 #include "NetDb.hpp"
+#include "RouterContext.h"
 #include "Streaming.h"
 #include "Transports.h"
 #include "api.h"
@@ -108,6 +109,16 @@ int gipny_router_init(int argc, const char *const *argv) {
 		std::string certsdir;
 		i2p::config::GetOption("certsdir", certsdir);
 		i2p::fs::SetCertsDir(certsdir);
+		// trust.hidden is the daemon's to apply — Daemon.cpp is where i2pd reads
+		// it and calls SetHidden, and api::InitI2P never does — so through this
+		// shim it used to be a flag that read as if it worked. A host that asks
+		// not to be published now is not published: RouterContext::HandlePublishTimer
+		// checks IsHidden and skips the 39-minute republication. Set here rather
+		// than in gipny_router_start because that is the last point before
+		// InitI2P, where the first publish is already scheduled.
+		bool hidden;
+		i2p::config::GetOption("trust.hidden", hidden);
+		i2p::context.SetHidden(hidden);
 		return 1;
 	} catch (...) {
 		return 0;

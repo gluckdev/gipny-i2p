@@ -17,6 +17,7 @@ pub mod update;
 pub use crypto::{Identity, IdentityCard, PreKeyBundle, PreKeyPair, RatchetState, X3dhInitial, CryptoError};
 pub use db::{Db, DbError, Contact, Message, NewAttachment, Direction, TrustLevel, PreKeyKind};
 pub use net::{I2pNode, TorNode, NetError};
+pub use embedded::fast_on;
 pub use relay::{RelayClient, RelayError, ClientToRelay, RelayToClient, EnvelopeBlob, DEFAULT_RELAY};
 pub use relay_server::{DhtHandler, EphemeralRelay, MemStoreLimits};
 pub use security::{MasterKey, Vault, DuressMode, UnlockOutcome};

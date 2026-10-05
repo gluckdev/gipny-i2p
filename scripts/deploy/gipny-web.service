@@ -1,0 +1,38 @@
+[Unit]
+Description=Gipny Web Messenger Backend Gateway (1-Hop I2P)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gipny
+Group=gipny
+WorkingDirectory=/var/lib/gipny
+
+# Server-only 1-hop rule & zero transit enforcement
+Environment=GIPNY_SERVER_HOPS=1
+Environment=GIPNY_WEB_LISTEN=127.0.0.1:8080
+Environment=GIPNY_WEB_STATIC=/var/www/gipny-web
+Environment=GIPNY_DATA_DIR=/var/lib/gipny
+
+ExecStart=/usr/local/bin/gipny-web \
+    --listen 127.0.0.1:8080 \
+    --static /var/www/gipny-web \
+    --data-dir /var/lib/gipny \
+    --hops 1
+
+Restart=always
+RestartSec=5
+
+# Open file limits for high-performance I2P tunnels & connections
+LimitNOFILE=65535
+LimitNPROC=32768
+
+# Basic sandboxing
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
