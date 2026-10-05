@@ -482,12 +482,34 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     /// be "in the network" while held by its sender alone, and lost when the
     /// sender closed (e2e run 35963073832: three answers stored in the same
     /// millisecond, all on the writer).
+    /// Storing seed nodes we know about. Used to prevent eclipse/Sybil attacks
+    /// (issue #100): writing to and reading from seeds ensures an attacker
+    /// cannot hide items by clustering fake nodes around a target key.
+    pub fn seed_storing_nodes(&self) -> Vec<NodeInfo> {
+        let peers = self.peers();
+        let my_dest = self.me().map(|m| m.destination);
+        peers.values()
+            .filter(|p| p.seed && p.info.stores && p.failures == 0)
+            .filter(|p| Some(&p.info.destination) != my_dest.as_ref())
+            .map(|p| p.info.clone())
+            .collect()
+    }
+
+    /// Store item across closest storing nodes and confirmed seeds.
+    ///
+    /// Issue #100: seeds are always included regardless of XOR distance,
+    /// preventing an attacker from surrounding the key with Sybil nodes.
     pub async fn put(&self, item: StoredItem) -> usize {
         let now = self.now_ms();
         if self.stores() {
             let _ = self.storage.put(item.clone(), now);
         }
-        let targets: Vec<NodeInfo> = self.lookup(&item.key).await.into_iter().filter(|n| n.stores).collect();
+        let mut targets: Vec<NodeInfo> = self.lookup(&item.key).await.into_iter().filter(|n| n.stores).collect();
+        for seed in self.seed_storing_nodes() {
+            if !targets.iter().any(|t| t.destination == seed.destination) {
+                targets.push(seed);
+            }
+        }
         let results = join_all(targets.iter().map(|n| self.store_at(n, &item))).await;
         results.into_iter().filter(|ok| *ok).count()
     }
@@ -512,7 +534,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         }
     }
 
-    /// Every distinct item under `key` the closest storing nodes hold.
+    /// Every distinct item under `key` the closest storing nodes (and seeds) hold.
     pub async fn get(&self, key: &DhtKey) -> Vec<StoredItem> {
         let now = self.now_ms();
         let mut seen: HashSet<[u8; 32]> = HashSet::new();
@@ -527,17 +549,27 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         if self.stores() {
             take(self.storage.get(key, now), &mut out);
         }
-        let targets: Vec<NodeInfo> = self.lookup(key).await.into_iter().filter(|n| n.stores).collect();
+        let mut targets: Vec<NodeInfo> = self.lookup(key).await.into_iter().filter(|n| n.stores).collect();
+        for seed in self.seed_storing_nodes() {
+            if !targets.iter().any(|t| t.destination == seed.destination) {
+                targets.push(seed);
+            }
+        }
         for items in join_all(targets.iter().map(|n| self.items_at(n, key))).await.into_iter().flatten() {
             take(items, &mut out);
         }
         out
     }
 
-    /// Delete mail we opened, wherever the closest nodes hold it.
+    /// Delete mail we opened, wherever the closest nodes (and seeds) hold it.
     pub async fn delete(&self, key: &DhtKey, token: &[u8; 32]) -> u32 {
         let mut n = self.storage.delete(key, token);
-        let targets: Vec<NodeInfo> = self.lookup(key).await.into_iter().filter(|n| n.stores).collect();
+        let mut targets: Vec<NodeInfo> = self.lookup(key).await.into_iter().filter(|n| n.stores).collect();
+        for seed in self.seed_storing_nodes() {
+            if !targets.iter().any(|t| t.destination == seed.destination) {
+                targets.push(seed);
+            }
+        }
         for r in join_all(targets.iter().map(|t| self.ask(&t.destination, DhtRequest::Delete { key: *key, token: *token }))).await {
             if let Some(DhtResponse::Deleted(d)) = r {
                 n += d;
@@ -555,7 +587,13 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         let mut handed = 0;
         for item in self.storage.all(now) {
             let hash = sha256(&[&item.value]);
-            for node in self.lookup(&item.key).await.into_iter().filter(|n| n.stores) {
+            let mut targets: Vec<NodeInfo> = self.lookup(&item.key).await.into_iter().filter(|n| n.stores).collect();
+            for seed in self.seed_storing_nodes() {
+                if !targets.iter().any(|t| t.destination == seed.destination) {
+                    targets.push(seed);
+                }
+            }
+            for node in targets {
                 let has = self.items_at(&node, &item.key).await
                     .is_some_and(|items| items.iter().any(|i| sha256(&[&i.value]) == hash));
                 if !has && self.store_at(&node, &item).await {

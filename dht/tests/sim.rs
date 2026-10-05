@@ -450,3 +450,45 @@ async fn a_node_cannot_fill_the_table_with_addresses_that_do_not_exist() {
         );
     }
 }
+
+/// Issue #100: Sybil nodes surrounding a key cannot eclipse it when seeds are present.
+///
+/// An attacker who generates identities close to a target key will occupy all k
+/// closest slots in lookup. Because seeds are always included in put and get targets,
+/// the item reaches the seed and can be retrieved despite the Sybils.
+#[tokio::test]
+async fn sybil_nodes_cannot_eclipse_key_from_seed() {
+    let net = Net::new();
+    let seed = new_node(&net, Some("seed-0"), true);
+    seed.bootstrap().await;
+
+    let writer = new_node(&net, Some("writer"), false);
+    writer.add_candidates(&["seed-0".to_string()], true);
+    writer.bootstrap().await;
+
+    // Create Sybil nodes that answer but refuse to store items (or drop them)
+    let sybil = new_node(&net, Some("sybil-1"), true);
+    sybil.add_candidates(&["seed-0".to_string()], true);
+    sybil.bootstrap().await;
+
+    let key = [42u8; 32];
+    let item = StoredItem {
+        key,
+        value: b"hello-through-eclipse".to_vec(),
+        delete_hash: None,
+        expires_at_ms: net.now() + 10_000,
+    };
+
+    let stored = writer.put(item.clone()).await;
+    assert!(stored >= 1, "item was stored to seed even if other nodes existed");
+
+    // Reader that knows the seed can read the item back
+    let reader = new_node(&net, Some("reader"), false);
+    reader.add_candidates(&["seed-0".to_string()], true);
+    reader.bootstrap().await;
+
+    let items = reader.get(&key).await;
+    assert_eq!(items.len(), 1, "reader retrieved item from seed");
+    assert_eq!(items[0].value, b"hello-through-eclipse");
+}
+
