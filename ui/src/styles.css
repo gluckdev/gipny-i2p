@@ -1397,7 +1397,15 @@ a:hover { text-decoration: underline; }
    conversation pane is replaced by a command log, so it drops bubbles, avatars
    and the message chrome and reads as a terminal over either theme.
    --------------------------------------------------------------------------- */
-.chat.console { background: #000; }
+.chat.console,
+.chat.console .chat-log,
+.console-msg,
+.console-body,
+.chat.console .chat-input textarea,
+.chat.console .prompt {
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+.chat.console { background: #000; color: #d8d8d8; }
 .chat.console .chat-log { background: #000; }
 .chat.console .msg,
 .chat.console .msg-body { max-width: none; }
@@ -1420,8 +1428,10 @@ a:hover { text-decoration: underline; }
 }
 .console-msg.out .console-body {
   color: #d8d8d8;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  overflow-x: auto;
+  min-width: 0;
+  tab-size: 8;
   flex: 1;
   margin: 0;
 }
@@ -2142,6 +2152,73 @@ body::before { background: none; }
 .chat-send { border-radius: 999px; padding: 8px 16px; }
 .chat-input-meta { color: var(--text-faint); font-size: 12px; letter-spacing: 0; text-transform: none; }
 .chat.console .chat-input .prompt { display: block; }
+.console-send-label { display: none; }
+.chat.console .chat-input { background: #000; border-color: #333; }
+.chat.console .chat-input-row { align-items: flex-start; }
+.chat.console .chat-input .prompt { color: #33ff66; padding-top: 9px; }
+.chat.console .chat-input textarea,
+.chat.console .chat-input textarea:focus {
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  background: #000;
+  color: #d8d8d8;
+  caret-color: #33ff66;
+  padding: 9px 6px;
+}
+.chat.console .chat-input-meta,
+.chat.console .chat-attach,
+.chat.console .chat-send > .ico,
+.chat.console .chat-send-label { display: none; }
+.chat.console .console-send-label { display: inline; }
+.chat.console .chat-send {
+  border-radius: 0;
+  background: #0d1117;
+  color: #33ff66;
+  padding: 8px 12px;
+}
+.console-running { display: flex; gap: 8px; color: #8b949e; font-size: 12px; padding: 4px 0; }
+.console-cursor { color: #33ff66; animation: console-blink 1s steps(2, start) infinite; }
+@keyframes console-blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .console-cursor { animation: none; } }
+.ansi-black { color: #484f58; }
+.ansi-bg-black { background-color: #484f58; }
+.ansi-red { color: #f85149; }
+.ansi-bg-red { background-color: #f85149; }
+.ansi-green { color: #3fb950; }
+.ansi-bg-green { background-color: #3fb950; }
+.ansi-yellow { color: #d29922; }
+.ansi-bg-yellow { background-color: #d29922; }
+.ansi-blue { color: #58a6ff; }
+.ansi-bg-blue { background-color: #58a6ff; }
+.ansi-magenta { color: #bc8cff; }
+.ansi-bg-magenta { background-color: #bc8cff; }
+.ansi-cyan { color: #39c5cf; }
+.ansi-bg-cyan { background-color: #39c5cf; }
+.ansi-white { color: #c9d1d9; }
+.ansi-bg-white { background-color: #c9d1d9; }
+.ansi-bright-black { color: #6e7681; }
+.ansi-bg-bright-black { background-color: #6e7681; }
+.ansi-bright-red { color: #ff7b72; }
+.ansi-bg-bright-red { background-color: #ff7b72; }
+.ansi-bright-green { color: #56d364; }
+.ansi-bg-bright-green { background-color: #56d364; }
+.ansi-bright-yellow { color: #e3b341; }
+.ansi-bg-bright-yellow { background-color: #e3b341; }
+.ansi-bright-blue { color: #79c0ff; }
+.ansi-bg-bright-blue { background-color: #79c0ff; }
+.ansi-bright-magenta { color: #d2a8ff; }
+.ansi-bg-bright-magenta { background-color: #d2a8ff; }
+.ansi-bright-cyan { color: #56d4dd; }
+.ansi-bg-bright-cyan { background-color: #56d4dd; }
+.ansi-bright-white { color: #ffffff; }
+.ansi-bg-bright-white { background-color: #ffffff; }
+.ansi-bold { font-weight: 700; }
+.ansi-dim { opacity: 0.65; }
+.ansi-italic { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+.ansi-strike { text-decoration: line-through; }
+.ansi-underline.ansi-strike { text-decoration: underline line-through; }
 .ttl-chip { border-radius: 999px; text-transform: none; letter-spacing: 0; }
 .ttl-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .jump-btn { border-radius: 50%; box-shadow: var(--shadow-card); }

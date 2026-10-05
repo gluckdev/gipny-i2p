@@ -14,6 +14,7 @@ import { SearchModal } from './search';
 import { MediaModal } from './media';
 import { ForwardModal } from './forward';
 import { t, onLangChange } from './i18n';
+import { renderAnsi } from './ansi';
 
 interface PendingFile { name: string; path: string; size: number }
 
@@ -83,6 +84,13 @@ export class ChatView extends View {
   private turboTitle: HTMLElement;
   private turboHint: HTMLElement;
   private fastBtn: HTMLButtonElement;
+  private consoleHistory: string[] = [];
+  private historyIndex = -1;
+  private consoleDraft = '';
+  private consoleClearedThrough = -1;
+  private consoleSending = 0;
+  private consoleSendingSince = 0;
+  private consoleRunningTimer: number | null = null;
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
@@ -151,6 +159,41 @@ export class ChatView extends View {
     }) as HTMLTextAreaElement;
     this.input.addEventListener('keydown', (e) => {
       const ke = e as KeyboardEvent;
+      if (ke.isComposing) return;
+      if (store.isConsoleMode(target)) {
+        if (ke.key === 'Tab') { e.preventDefault(); return; }
+        if (ke.ctrlKey && !ke.altKey && (ke.key.toLowerCase() === 'c' || ke.key.toLowerCase() === 'l')) {
+          e.preventDefault();
+          if (ke.key.toLowerCase() === 'c') {
+            this.input.value = '';
+            this.historyIndex = -1;
+            this.consoleDraft = '';
+            this.input.dispatchEvent(new Event('input'));
+          } else {
+            const messages = store.messages.get().get(targetKey(target)) ?? [];
+            this.consoleClearedThrough = messages.reduce((id, m) => Math.max(id, m.id), this.consoleClearedThrough);
+            this.renderLog();
+          }
+          return;
+        }
+        if ((ke.key === 'ArrowUp' || ke.key === 'ArrowDown') && !ke.shiftKey && !ke.ctrlKey && !ke.altKey && !ke.metaKey
+          && !this.input.value.includes('\n')) {
+          e.preventDefault();
+          if (ke.key === 'ArrowUp' && this.consoleHistory.length > 0) {
+            if (this.historyIndex === -1) {
+              this.consoleDraft = this.input.value;
+              this.historyIndex = this.consoleHistory.length - 1;
+            } else this.historyIndex = Math.max(0, this.historyIndex - 1);
+          } else if (ke.key === 'ArrowDown' && this.historyIndex !== -1) {
+            this.historyIndex++;
+            if (this.historyIndex >= this.consoleHistory.length) this.historyIndex = -1;
+          } else return;
+          this.input.value = this.historyIndex === -1 ? this.consoleDraft : this.consoleHistory[this.historyIndex]!;
+          this.input.setSelectionRange(this.input.value.length, this.input.value.length);
+          resizeInput();
+          return;
+        }
+      }
       if (isTouch) return;
       if (ke.key === 'Enter' && !ke.shiftKey) { e.preventDefault(); this.send(); }
     });
@@ -170,7 +213,9 @@ export class ChatView extends View {
     };
     this.input.addEventListener('input', () => {
       resizeInput();
-      this.bumpTyping();
+      this.historyIndex = -1;
+      this.consoleDraft = this.input.value;
+      if (!store.isConsoleMode(target)) this.bumpTyping();
     });
     this.pasteHandler = (e: ClipboardEvent) => this.handlePaste(e);
     document.addEventListener('paste', this.pasteHandler);
@@ -361,8 +406,8 @@ export class ChatView extends View {
         h('div', { class: 'chat-input-row' },
           this.promptEl = h('div', { class: 'prompt' }, '>'),
           this.input,
-          h('button', { class: 'icon-btn', title: t('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
-          h('button', { class: 'btn chat-send', title: t('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, t('chat.send'))),
+          h('button', { class: 'icon-btn chat-attach', title: t('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
+          h('button', { class: 'btn chat-send', title: t('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, t('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
         ),
         h('div', { class: 'chat-input-meta' },
           h('span', { class: 'chat-e2e' }, icon('lock', 13), 'Сквозное шифрование'),
@@ -425,8 +470,8 @@ export class ChatView extends View {
    */
   private showsInLog(m: Message): boolean {
     const kind = m.console?.kind;
+    if (this.store.isConsoleMode(this.target)) return kind != null && m.id > this.consoleClearedThrough;
     if (kind == null) return true;
-    if (this.store.isConsoleMode(this.target)) return true;
     if (kind === CONSOLE_COMMAND || kind === CONSOLE_OUTPUT) {
       return !this.holdsPeerConsole();
     }
@@ -439,6 +484,7 @@ export class ChatView extends View {
   }
 
   destroy(): void {
+    if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
     document.removeEventListener('paste', this.pasteHandler);
     if (this.typingStopTimer != null) window.clearTimeout(this.typingStopTimer);
     if (this.typingActive) {
@@ -586,9 +632,11 @@ export class ChatView extends View {
   }
 
   private renderLog(): void {
-    const key = targetKey(this.target);
-    const list = (this.store.messages.get().get(key) ?? []).filter((m) => this.showsInLog(m));
-    const wasAtBottom = this.isAtBottom();
+    const consoleMode = this.store.isConsoleMode(this.target);
+    const key = targetKey(this.target) + (consoleMode ? ':console' : ':chat');
+    const all = this.store.messages.get().get(targetKey(this.target)) ?? [];
+    const list = all.filter((m) => this.showsInLog(m));
+    this.log.querySelector('.console-running')?.remove();
     const newIds = list.map((m) => m.id);
 
     const targetChanged = this.renderedKey !== key;
@@ -625,7 +673,7 @@ export class ChatView extends View {
         const m = list[i];
         if (!m) continue;
         const d = fmtDate(m.sent_at);
-        if (d !== lastDate) {
+        if (!consoleMode && d !== lastDate) {
           this.log.appendChild(h('div', { class: 'divider-text' }, d));
           lastDate = d;
         }
@@ -641,7 +689,7 @@ export class ChatView extends View {
       let lastDate = '';
       for (const m of list) {
         const d = fmtDate(m.sent_at);
-        if (d !== lastDate) {
+        if (!consoleMode && d !== lastDate) {
           this.log.appendChild(h('div', { class: 'divider-text' }, d));
           lastDate = d;
         }
@@ -662,7 +710,30 @@ export class ChatView extends View {
 
     this.renderedKey = key;
     this.renderedIds = newIds;
+    this.renderConsoleRunning(all, consoleMode);
     this.updateJumpBtn();
+  }
+
+  private renderConsoleRunning(messages: Message[], consoleMode: boolean): void {
+    const latest = [...messages].reverse().find((m) =>
+      (m.outgoing && m.console?.kind === CONSOLE_COMMAND)
+      || (!m.outgoing && m.console?.kind === CONSOLE_OUTPUT)
+      || m.console?.kind === CONSOLE_OFF || m.console?.kind === CONSOLE_REVOKE);
+    const pendingCommand = latest?.outgoing && latest.console?.kind === CONSOLE_COMMAND;
+    if (consoleMode && (this.consoleSending > 0 || pendingCommand)) {
+      const since = pendingCommand ? latest.sent_at : this.consoleSendingSince;
+      const label = h('span');
+      const update = (): void => { label.textContent = `Выполняется… ${Math.max(0, Math.floor((Date.now() - since) / 1000))} с`; };
+      update();
+      this.log.appendChild(h('div', { class: 'console-running', role: 'status' },
+        h('span', { class: 'console-cursor', 'aria-hidden': 'true' }, '_'), label));
+      if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
+      this.consoleRunningTimer = window.setInterval(update, 1000);
+      if (this.stickyBottom) this.scrollBottom();
+    } else if (this.consoleRunningTimer != null) {
+      window.clearInterval(this.consoleRunningTimer);
+      this.consoleRunningTimer = null;
+    }
   }
 
   private maybeLoadMore(): void {
@@ -833,7 +904,7 @@ export class ChatView extends View {
       wrap.appendChild(h('div', { class: 'console-body' }, m.body));
     } else {
       wrap.classList.add('out');
-      wrap.appendChild(h('div', { class: 'console-body' }, m.body || '(no output)'));
+      wrap.appendChild(h('div', { class: 'console-body' }, renderAnsi(m.body || '(no output)')));
       const bits: string[] = [];
       if (m.outgoing) bits.push(frame.exit_code == null ? 'no exit code' : `exit ${frame.exit_code}`);
       if (frame.duration_ms != null) bits.push(`${(frame.duration_ms / 1000).toFixed(2)}s`);
@@ -1167,6 +1238,12 @@ export class ChatView extends View {
     const paths = this.pending.map((f) => f.path);
     const consoleMode = this.target.kind === 'contact' && this.store.isConsoleMode(this.target);
     if (consoleMode) {
+      if (body) this.consoleHistory.push(body);
+      this.historyIndex = -1;
+      this.consoleDraft = '';
+      if (this.consoleSending === 0) this.consoleSendingSince = Date.now();
+      this.consoleSending++;
+      this.renderLog();
       // A console line is a command, not a message: attachments go up first
       // (the agent saves them), then the body runs.
       this.input.value = '';
@@ -1177,6 +1254,9 @@ export class ChatView extends View {
         await this.store.sendConsoleCommand(this.target, body, paths);
       } catch (e) {
         this.store.showToast('command failed: ' + String(e), true);
+      } finally {
+        this.consoleSending--;
+        this.renderLog();
       }
       return;
     }
