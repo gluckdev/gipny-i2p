@@ -2305,45 +2305,115 @@ body::before { background: none; }
 }
 
 /* --- Opening a profile ------------------------------------------------------ */
-.boot-card { max-width: 460px; width: 100%; }
-.boot-steps { display: grid; gap: 2px; margin: 18px 0 10px; }
-.boot-step {
-  display: flex; align-items: center; gap: 12px;
-  padding: 9px 10px; border-radius: 12px;
-  color: var(--text-faint);
-  transition: background 0.15s, color 0.15s;
+.boot-cyber {
+  min-height: 0; overflow: auto; align-items: safe center;
+  padding: 28px 16px;
+  background: radial-gradient(ellipse at 50% 35%, #0a1910, #05080a 65%);
 }
-.boot-step.boot-active { background: var(--accent-soft); color: var(--text); }
-.boot-step.boot-done { color: var(--text-dim); }
-.boot-step.boot-skipped { color: var(--text-faint); }
-.boot-step.boot-failed { background: var(--danger-soft); color: var(--danger); }
-.boot-mark { width: 18px; text-align: center; font-size: 15px; flex-shrink: 0; }
-.boot-step.boot-done .boot-mark { color: var(--success); }
-/* A skipped step is dimmer than a done one and is not green: it is neither a
- * success nor a failure, and colouring it like either would say something the
- * backend did not say. */
-.boot-step.boot-skipped .boot-mark { color: var(--text-faint); }
-.boot-step.boot-active .boot-mark { color: var(--accent); animation: boot-pulse 1.1s ease-in-out infinite; }
-@keyframes boot-pulse { 50% { opacity: 0.35; } }
-.boot-step-main { flex: 1; min-width: 0; }
-.boot-step-label { font-size: 14px; font-weight: 600; }
-.boot-step-hint { font-size: 12px; color: var(--text-faint); }
-.boot-step.boot-active .boot-step-hint { color: var(--text-dim); }
-.boot-step-ms { font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; flex-shrink: 0; }
-.boot-foot { align-items: center; gap: 8px; }
-.boot-elapsed { font-size: 13px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.boot-enter { padding: 6px 12px; font-size: 13px; }
-.boot-details { margin-top: 12px; }
-.boot-details summary { cursor: pointer; font-size: 13px; color: var(--text-dim); }
-.boot-details summary:hover { color: var(--text); }
+.boot-card {
+  max-width: 640px; width: 100%; min-width: 0; flex-shrink: 0; padding: 28px;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.6; color: #a5b8ac;
+  background: #05080a; border: 1px solid #163820; border-radius: 6px;
+  box-shadow: 0 0 28px rgba(51, 255, 102, 0.07), inset 0 1px rgba(51, 255, 102, 0.08);
+}
+.boot-header { padding-bottom: 16px; border-bottom: 1px solid #163820; }
+.boot-title {
+  margin: 0 0 12px; color: #33ff66; font-size: 14px; font-weight: 600;
+  letter-spacing: .08em; line-height: 1.5;
+  text-shadow: 0 0 16px rgba(51, 255, 102, 0.25);
+}
+.boot-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; }
+.boot-node { color: #b6cdbd; overflow-wrap: anywhere; min-width: 0; }
+.boot-elapsed { color: #6b8975; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.boot-progress { display: flex; align-items: center; gap: 14px; margin: 20px 0 10px; }
+.boot-progress-bar {
+  flex: 1; height: 10px; overflow: hidden; background: #0d1a12;
+  border: 1px solid #21402a;
+}
+.boot-progress-fill {
+  width: 0; height: 100%; background: linear-gradient(90deg, #1c993c, #33ff66);
+  box-shadow: 0 0 10px rgba(51, 255, 102, 0.4);
+  transition: width .25s ease;
+  /* Dark cuts keep the neon strip looking like terminal segments. */
+  mask-image: repeating-linear-gradient(90deg, #000 0 8px, transparent 8px 11px);
+}
+.boot-progress-text { width: 4ch; text-align: right; color: #33ff66; font-variant-numeric: tabular-nums; }
+.boot-sub { margin: 0; color: #789382; font-size: 11px; line-height: 1.6; }
+.boot-steps { display: grid; gap: 3px; margin: 20px 0; }
+.boot-step {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 7px 10px; border-left: 2px solid transparent; color: #555;
+  transition: background .15s, color .15s;
+}
+.boot-step.boot-active { background: rgba(51, 255, 102, .055); border-left-color: #33ff66; color: #7dff9e; }
+.boot-step.boot-done { color: #33ff66; }
+.boot-step.boot-skipped { color: #777; }
+.boot-step.boot-failed { background: rgba(255, 51, 102, .07); border-left-color: #ff3366; color: #ff3366; }
+.boot-mark { white-space: pre; flex-shrink: 0; }
+.boot-skipped .boot-mark { color: #8b949e; }
+.boot-step-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.boot-step-label { font-size: 12px; }
+.boot-step-hint { display: none; margin-top: 3px; font-size: 11px; color: #789382; }
+.boot-active .boot-step-hint, .boot-failed .boot-step-hint { display: block; }
+.boot-failed .boot-step-hint { color: #ff809f; white-space: pre-wrap; user-select: text; }
+.boot-step-ms { font-size: 11px; opacity: .75; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.boot-cursor { display: none; margin-left: 6px; }
+.boot-active .boot-cursor { display: inline; animation: boot-blink 1s steps(1, end) infinite; }
+@keyframes boot-blink { 50% { opacity: 0; } }
+.boot-live-log { border: 1px solid #163820; background: #000; border-radius: 3px; overflow: hidden; }
+.boot-log-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px 12px; border-bottom: 1px solid #14291b;
+  background: #08110b; color: #789382; font-size: 10px; letter-spacing: .1em;
+}
+.boot-live-dot {
+  display: inline-block; width: 5px; height: 5px; margin-right: 8px;
+  background: #33ff66; box-shadow: 0 0 6px rgba(51, 255, 102, .4);
+}
+.boot-log-toggle {
+  padding: 4px 8px; border: 1px solid transparent; background: transparent;
+  color: #7dff9e; font: inherit; cursor: pointer; white-space: nowrap;
+}
+.boot-log-toggle:hover { background: #102318; border-color: #21402a; }
 .boot-log {
-  margin-top: 8px; padding: 10px 12px;
-  max-height: 160px; overflow: auto;
-  background: var(--surface-3); border-radius: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
-  white-space: pre-wrap; word-break: break-word;
-  user-select: text;
+  height: 128px; overflow: auto; padding: 10px 12px;
+  color: #829b8a; font-size: 11px; line-height: 1.6; user-select: text;
+  scrollbar-width: thin; scrollbar-color: #285738 #000;
+}
+.boot-live-log.is-expanded .boot-log { height: 280px; }
+.boot-log-line { display: flex; align-items: baseline; gap: 8px; }
+.boot-log-line > span:last-child { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.boot-log-prompt { flex-shrink: 0; color: #33ff66; }
+.boot-log::-webkit-scrollbar { width: 5px; }
+.boot-log::-webkit-scrollbar-thumb { background: #285738; border-radius: 0; }
+.boot-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.boot-foot:has(.boot-button:not(.hidden)) { margin-top: 20px; }
+.boot-button {
+  padding: 10px 14px; border: 1px solid #33ff66; border-radius: 3px;
+  background: rgba(51, 255, 102, .06); color: #33ff66;
+  font: inherit; font-weight: 600; cursor: pointer;
+  transition: background .15s, box-shadow .15s;
+}
+.boot-button:hover { background: rgba(51, 255, 102, .14); box-shadow: 0 0 16px rgba(51, 255, 102, .15); }
+.boot-back { color: #ff809f; border-color: #773047; background: rgba(255, 51, 102, .04); }
+.boot-back:hover { background: rgba(255, 51, 102, .1); box-shadow: 0 0 16px rgba(255, 51, 102, .12); }
+.boot-button:focus-visible, .boot-log-toggle:focus-visible, .boot-log:focus-visible {
+  outline: 2px solid #7dff9e; outline-offset: 3px;
+}
+@media (max-width: 480px) {
+  .boot-cyber { padding: 16px 10px; }
+  .boot-card { padding: 18px 12px; }
+  .boot-title { font-size: 12px; letter-spacing: .04em; }
+  .boot-step { flex-wrap: wrap; gap: 4px 8px; padding: 7px 4px; }
+  .boot-step-main { flex-basis: calc(100% - 10ch); }
+  .boot-step-ms { margin-left: calc(8ch + 8px); }
+  .boot-live-log.is-expanded .boot-log { height: 220px; }
+  .boot-button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-active .boot-cursor { animation: none; }
+  .boot-progress-fill, .boot-step, .boot-button { transition: none; }
 }
 
 /* --- About ----------------------------------------------------------------- */

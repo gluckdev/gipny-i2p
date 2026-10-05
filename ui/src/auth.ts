@@ -187,7 +187,14 @@ export class AuthBooting extends View {
   el: HTMLElement;
   private rows = new Map<BootStepId, HTMLElement>();
   private elapsedEl: HTMLElement;
+  private progressEl: HTMLElement;
+  private progressFill: HTMLElement;
+  private progressText: HTMLElement;
   private logEl: HTMLElement;
+  private logPanel: HTMLElement;
+  private logToggle: HTMLButtonElement;
+  private logExpanded = false;
+  private logFrame: number | null = null;
   private enterBtn: HTMLButtonElement;
   private backBtn: HTMLButtonElement;
   private startedAt = Date.now();
@@ -203,59 +210,89 @@ export class AuthBooting extends View {
       list.appendChild(row);
     }
 
-    this.elapsedEl = h('div', { class: 'boot-elapsed' }, t('boot.elapsed', { time: '0.0' }));
-    this.logEl = h('pre', { class: 'boot-log' }, '');
+    this.elapsedEl = h('span', { class: 'boot-elapsed' }, 'UPTIME: 0.0s');
+    this.progressFill = h('div', { class: 'boot-progress-fill' });
+    this.progressEl = h('div', {
+      class: 'boot-progress-bar', role: 'progressbar',
+      'aria-label': t('boot.title'), 'aria-valuemin': '0', 'aria-valuemax': '100',
+      'aria-valuenow': '0',
+    }, this.progressFill);
+    this.progressText = h('span', { class: 'boot-progress-text' }, '0%');
+    this.logEl = h('div', {
+      id: 'boot-live-output', class: 'boot-log', role: 'log',
+      'aria-label': 'LIVE SYSTEM LOG', 'aria-live': 'off', tabindex: '0',
+    });
+    this.logToggle = h('button', {
+      class: 'boot-log-toggle', type: 'button',
+      'aria-expanded': 'false', 'aria-controls': 'boot-live-output',
+      'aria-label': t('boot.details'), title: t('boot.details'),
+      onClick: () => {
+        this.logExpanded = !this.logExpanded;
+        this.logPanel.classList.toggle('is-expanded', this.logExpanded);
+        this.logToggle.setAttribute('aria-expanded', String(this.logExpanded));
+        this.logToggle.textContent = this.logExpanded ? '[ − ]' : '[ + ]';
+        this.renderLog(this.store.bootLog.get());
+      },
+    }, '[ + ]');
+    this.logPanel = h('section', { class: 'boot-live-log' },
+      h('div', { class: 'boot-log-head' },
+        h('span', null, h('span', { class: 'boot-live-dot', 'aria-hidden': 'true' }), 'LIVE SYSTEM LOG'),
+        this.logToggle,
+      ),
+      this.logEl,
+    );
     this.enterBtn = h('button', {
-      class: 'btn btn-ghost boot-enter hidden',
+      class: 'boot-button boot-enter hidden', type: 'button',
       onClick: () => store.enterMain(),
-    }, t('boot.enter_now')) as HTMLButtonElement;
-    // A failed step used to be the end of the road: the screen showed ✕ and a
-    // log, with nothing to press, so the only way out was to quit the app. The
-    // password was not the problem, the profile was, and going back to pick
-    // another one is the obvious next move.
+    }, '[ ВХОД В СИСТЕМУ ↵ ]');
     this.backBtn = h('button', {
-      class: 'btn btn-ghost boot-enter hidden',
+      class: 'boot-button boot-back hidden', type: 'button',
       onClick: () => {
         store.endBoot();
         void store.cancelToProfileSelect();
       },
-    }, t('boot.back')) as HTMLButtonElement;
+    }, '[ ✕ НАЗАД ]');
 
-    this.el = h('div', { class: 'auth' },
+    this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
-        logo(),
-        h('div', { class: 'auth-title' }, t('boot.title')),
-        h('div', { class: 'auth-sub' }, t('boot.sub')),
-        list,
-        h('div', { class: 'row-between boot-foot' }, this.elapsedEl, this.backBtn, this.enterBtn),
-        h('details', { class: 'boot-details' },
-          h('summary', null, t('boot.details')),
-          this.logEl,
+        h('header', { class: 'boot-header' },
+          h('h1', { class: 'boot-title' }, 'GIPNY // SYSTEM INITIALIZATION'),
+          h('div', { class: 'boot-meta' },
+            h('span', { class: 'boot-node' }, `NODE: ${store.currentProfile.get() ?? 'unknown'}`),
+            this.elapsedEl,
+          ),
         ),
+        h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
+        h('p', { class: 'boot-sub' }, t('boot.sub')),
+        list,
+        this.logPanel,
+        h('div', { class: 'boot-foot' }, this.backBtn, this.enterBtn),
       ),
     );
 
     this.sub(store.bootSteps, (steps) => this.paint(steps));
-    this.sub(store.bootLog, (lines) => {
-      this.logEl.textContent = lines.join('\n');
-      this.logEl.scrollTop = this.logEl.scrollHeight;
-    });
+    this.sub(store.bootLog, (lines) => this.renderLog(lines));
     this.sub(store.bootCanEnter, (can) => this.enterBtn.classList.toggle('hidden', !can));
     this.timer = window.setInterval(() => this.tick(), 500);
   }
 
   private makeRow(label: string, hint: string): HTMLElement {
-    return h('div', { class: 'boot-step' },
-      h('span', { class: 'boot-mark' }, '○'),
+    return h('div', { class: 'boot-step boot-idle', title: hint },
+      h('span', { class: 'boot-mark' }, '[  --  ]'),
       h('div', { class: 'boot-step-main' },
-        h('div', { class: 'boot-step-label' }, label),
+        h('div', { class: 'boot-step-label' }, label,
+          h('span', { class: 'boot-cursor', 'aria-hidden': 'true' }, '_')),
         h('div', { class: 'boot-step-hint' }, hint),
       ),
-      h('div', { class: 'boot-step-ms' }, ''),
+      h('span', { class: 'boot-step-ms' }),
     );
   }
 
   private paint(steps: BootStep[]): void {
+    const marks: Record<BootStep['state'], string> = {
+      done: '[  OK  ]', active: '[ RUN  ]', idle: '[  --  ]',
+      failed: '[ FAIL ]', skipped: '[ SKIP ]',
+    };
     for (const step of steps) {
       const row = this.rows.get(step.id);
       if (!row) continue;
@@ -263,36 +300,56 @@ export class AuthBooting extends View {
       const ms = row.querySelector('.boot-step-ms') as HTMLElement;
       const hint = row.querySelector('.boot-step-hint') as HTMLElement;
       row.className = `boot-step boot-${step.state}`;
-      // '⊘' is its own mark on purpose: a step that decided not to run has not
-      // succeeded, and drawing it as ✓ is how a person ends up believing a
-      // step ran when nothing did.
-      mark.textContent = step.state === 'done' ? '✓' : step.state === 'failed' ? '✕' : step.state === 'skipped' ? '⊘' : step.state === 'active' ? '◐' : '○';
+      mark.textContent = marks[step.state];
       ms.textContent = step.state === 'active' && step.startedAt
-        ? fmtSecs(Date.now() - step.startedAt)
-        : step.ms > 0 ? fmtSecs(step.ms) : '';
-      if (step.state === 'failed' && step.detail) hint.textContent = step.detail;
+        ? fmtBootMs(Date.now() - step.startedAt)
+        : step.state === 'done' ? `· ${fmtBootMs(step.ms)}` : '';
+      hint.textContent = step.state === 'failed'
+        ? `— ${step.detail || t('boot.back')}`
+        : BOOT_LABELS.find(([id]) => id === step.id)?.[2] ?? '';
     }
-    // A failure is the one state with no way forward on its own, so the way
-    // back is on screen from the moment it happens.
-    this.backBtn.classList.toggle('hidden', !steps.some((s) => s.state === 'failed'));
+    const done = steps.filter((step) => step.state === 'done').length;
+    const percent = steps.length ? Math.round(done / steps.length * 100) : 0;
+    this.progressFill.style.width = `${percent}%`;
+    this.progressText.textContent = `${percent}%`;
+    this.progressEl.setAttribute('aria-valuenow', String(percent));
+    this.backBtn.classList.toggle('hidden', !steps.some((step) => step.state === 'failed'));
+  }
+
+  private renderLog(lines: string[]): void {
+    const visible = this.logExpanded ? lines : lines.slice(-6);
+    this.logEl.replaceChildren(...(visible.length ? visible : ['…']).map((line) =>
+      h('div', { class: 'boot-log-line' },
+        h('span', { class: 'boot-log-prompt', 'aria-hidden': 'true' }, '>'),
+        h('span', null, line),
+      ),
+    ));
+    // Wait for layout so the first render and expansion scroll correctly too.
+    if (this.logFrame != null) cancelAnimationFrame(this.logFrame);
+    this.logFrame = requestAnimationFrame(() => {
+      this.logEl.scrollTop = this.logEl.scrollHeight;
+      this.logFrame = null;
+    });
   }
 
   private tick(): void {
-    const s = Math.max(0, Date.now() - this.startedAt) / 1000;
-    const timeStr = s < 10 ? s.toFixed(1) : String(Math.round(s));
-    this.elapsedEl.textContent = t('boot.elapsed', { time: timeStr });
-    // The active step's own clock keeps moving between backend messages, so a
-    // long tunnel build never looks stuck.
-    const active = this.store.bootSteps.get().find((s) => s.state === 'active');
-    if (!active?.startedAt) return;
-    const ms = this.rows.get(active.id)?.querySelector('.boot-step-ms') as HTMLElement | null;
-    if (ms) ms.textContent = fmtSecs(Date.now() - active.startedAt);
+    this.elapsedEl.textContent = `UPTIME: ${fmtSecs(Date.now() - this.startedAt)}`;
+    for (const active of this.store.bootSteps.get().filter((step) => step.state === 'active')) {
+      if (!active.startedAt) continue;
+      const ms = this.rows.get(active.id)?.querySelector('.boot-step-ms') as HTMLElement | null;
+      if (ms) ms.textContent = fmtBootMs(Date.now() - active.startedAt);
+    }
   }
 
   destroy(): void {
     if (this.timer != null) clearInterval(this.timer);
+    if (this.logFrame != null) cancelAnimationFrame(this.logFrame);
     super.destroy();
   }
+}
+
+function fmtBootMs(ms: number): string {
+  return `${Math.max(0, Math.round(ms))} ms`;
 }
 
 /** What each backend stage is called on screen, and what it is doing. */
