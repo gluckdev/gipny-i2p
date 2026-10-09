@@ -25,7 +25,7 @@ image = { version = "0.25", features = ["png", "ico"], default-features = false 
 [dependencies]
 gipny-libcore = { path = "../libcore" }
 axum = { version = "0.8", default-features = false, features = ["ws", "tokio", "http1", "http2", "json"] }
-tower-http = { version = "0.6", features = ["fs", "cors"] }
+tower-http = { version = "0.7", features = ["fs", "cors"] }
 futures-util = "0.3"
 
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
@@ -75,6 +75,6 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
-jni = { version = "0.21", default-features = false }
+jni = { version = "0.22", default-features = false }
 ndk-context = "0.1"
 
