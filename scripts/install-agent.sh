@@ -2,8 +2,43 @@
 # Install with: curl -fsSL .../install-agent.sh | bash -s -- --master '<card>'
 set -euo pipefail
 umask 077
+
+# Also sourced by regressions; verification finishes before any install writes.
+master_card_shape() {
+  case $1 in
+    gipny:v2:*) return 0 ;;
+    gipny:v3:*) [[ $1 =~ ^gipny:v3:[A-Za-z0-9_-]{135,307}$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+verify_staged_master() {
+  master_card_shape "$2" || return 1
+  case $2 in
+    gipny:v3:*) "$1" --check-master-card "$2" >/dev/null 2>&1 ;;
+  esac
+}
+
+verify_agent_archive() {
+  local archive=$1 manifest=$2 asset_name=$3 expected actual
+  [[ $(wc -c < "$manifest") -le 1048576 ]] || { echo 'Oversized checksum manifest' >&2; return 1; }
+  expected=$(awk -v wanted="$asset_name" '
+    { sub(/\r$/, ""); if ($0 ~ /^[[:space:]]*$/) next;
+      digest=substr($0,1,64); separator=substr($0,65,2); name=substr($0,67);
+      if (length(digest)!=64 || digest ~ /[^0-9a-fA-F]/ || (separator!="  " && separator!=" *") || name=="") { bad=1; next }
+      sub(/^\.\//,"",name); if (name==wanted) { count++; expected=tolower(digest) }
+    }
+    END { if (bad || count!=1) exit 1; print expected }
+  ' "$manifest") || { echo 'Missing, duplicate or malformed agent checksum' >&2; return 1; }
+  if command -v sha256sum >/dev/null; then actual=$(sha256sum "$archive");
+  elif command -v shasum >/dev/null; then actual=$(shasum -a 256 "$archive");
+  else echo 'sha256sum or shasum is required' >&2; return 1; fi
+  actual=${actual%% *}
+  [[ $actual == "$expected" ]] || { echo 'Agent archive checksum mismatch' >&2; return 1; }
+}
+if [[ -n ${BASH_SOURCE[0]:-} && ${BASH_SOURCE[0]} != "$0" ]]; then return; fi
+
 REPO=gluckdev/gipny-i2p
-MASTER='' NAME=$(hostname) DATA='' CWD='' RELAY='' TIMEOUT=120 VERSION=latest ACTION=install
+MASTER='' NAME='' DATA='' CWD='' RELAY='' TIMEOUT=120 VERSION=latest ACTION=install
 fail() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 help() {
   cat <<'HELP'
@@ -12,7 +47,7 @@ GIPNY · установка удалённого агента
   bash install-agent.sh --master <карточка> [параметры]
 
   --master <card>   Карточка мастера (без параметра — запрос через /dev/tty)
-  --name <name>     Имя агента (по умолчанию hostname)
+  --name <name>     Имя агента (по умолчанию постоянное кошачье имя)
   --data <dir>      Данные: /var/lib/gipny-agent или ~/.local/share/gipny-agent
   --cwd <dir>       Рабочий каталог команд (по умолчанию домашний)
   --relay <relay>   Внешний релей (по умолчанию встроенный)
@@ -45,6 +80,7 @@ while (($#)); do
 done
 [[ $TIMEOUT =~ ^[1-9][0-9]*$ ]] || fail '--timeout должен быть положительным целым числом'
 case $(uname -s) in Linux) OS=linux ;; Darwin) OS=darwin ;; *) fail 'поддерживаются Linux и macOS' ;; esac
+[[ ! -f /etc/openwrt_release ]] || fail 'для OpenWrt используйте install-agent-openwrt.sh и статическую musl-сборку'
 case $(uname -m) in x86_64|amd64) ARCH=amd64 ;; arm64|aarch64) ARCH=arm64 ;; *) fail 'поддерживаются amd64 и arm64' ;; esac
 if [[ $(id -u) == 0 ]]; then
   BIN=/usr/local/bin CONFIG=/etc/gipny-agent ENV=/etc/gipny-agent.env DEFAULT_DATA=/var/lib/gipny-agent
@@ -118,11 +154,16 @@ if [[ $ACTION == uninstall ]]; then
   printf 'GIPNY · агент удалён\n'; exit 0
 fi
 if [[ -z $MASTER ]]; then
-  printf 'Карточка мастера: ' > /dev/tty || fail 'передайте --master <card>'
+  printf 'Ваша карточка GIPNY (агент первым свяжется с вами): ' > /dev/tty || fail 'передайте --master <card>'
   IFS= read -r MASTER < /dev/tty || fail 'передайте --master <card>'
 fi
 [[ $MASTER != *$'\n'* && $MASTER != *$'\r'* ]] || fail 'переводы строк в карточке не поддерживаются'
-[[ $MASTER == gipny:v2:* ]] || fail 'нужна карточка gipny:v2 с релеем из настроек мастера'
+master_card_shape "$MASTER" || fail 'нужна карточка gipny:v3 (или v2) с релеем из настроек мастера'
+if [[ -z $NAME && -f $CONFIG/agent-name ]]; then IFS= read -r NAME < "$CONFIG/agent-name"; fi
+if [[ -z $NAME ]]; then
+  cat_names=(Murka Barsik Matroskin Felix Luna Nala Simba Tigra Tom Bagheera)
+  NAME=${cat_names[RANDOM % ${#cat_names[@]}]}
+fi
 [[ -z $CWD || -d $CWD ]] || fail '--cwd должен указывать на существующий каталог'
 [[ -z $CWD ]] || CWD=$(cd -- "$CWD" && pwd -P)
 fetch() {
@@ -135,9 +176,22 @@ if [[ $VERSION == latest ]]; then API="https://api.github.com/repos/$REPO/releas
 else [[ $VERSION =~ ^[a-zA-Z0-9._-]+$ ]] || fail 'некорректный тег версии'; API="https://api.github.com/repos/$REPO/releases/tags/$VERSION"; fi
 printf 'GIPNY · загрузка агента (%s/%s, %s)…\n' "$OS" "$ARCH" "$VERSION"
 fetch "$API" "$TMP/release.json"
-URL=$(sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/release.json" | grep -E "/gipny-agent_[^/]+_${OS}-${ARCH}\.tar\.gz$" | head -n 1) || true
-[[ -n $URL ]] || fail "в релизе нет gipny-agent_*_${OS}-${ARCH}.tar.gz"
+release_version=$(sed -n 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$TMP/release.json")
+[[ $release_version =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][a-zA-Z0-9.+-]+)?$ ]] || fail 'некорректная версия релиза'
+asset_name="gipny-agent_${release_version}_${OS}-${ARCH}.tar.gz"
+release_urls=$(sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/release.json")
+URL=''; checksum_url=''; asset_count=0; manifest_count=0
+while IFS= read -r candidate; do
+  case $candidate in
+    "https://github.com/$REPO/releases/download/"*)
+      if [[ ${candidate##*/} == "$asset_name" ]]; then URL=$candidate; asset_count=$((asset_count+1)); fi
+      if [[ ${candidate##*/} == SHA256SUMS.txt ]]; then checksum_url=$candidate; manifest_count=$((manifest_count+1)); fi ;;
+  esac
+done <<< "$release_urls"
+[[ $asset_count == 1 && $manifest_count == 1 ]] || fail "в релизе нет единственного $asset_name и SHA256SUMS.txt"
 fetch "$URL" "$TMP/agent.tar.gz"
+fetch "$checksum_url" "$TMP/SHA256SUMS.txt"
+verify_agent_archive "$TMP/agent.tar.gz" "$TMP/SHA256SUMS.txt" "$asset_name" || fail 'проверка архива не пройдена; установка не начата'
 tar -tzf "$TMP/agent.tar.gz" > "$TMP/members"
 # Release archives contain a single directory; reject paths escaping extraction.
 if grep -E '(^/|(^|/)\.\.(/|$))' "$TMP/members" >/dev/null; then fail 'небезопасные пути в архиве'; fi
@@ -145,11 +199,14 @@ mkdir "$TMP/unpack"; tar -xzf "$TMP/agent.tar.gz" -C "$TMP/unpack"
 EXE=$(find "$TMP/unpack" -type f -name gipny-agent | head -n 1)
 SEED=$(find "$TMP/unpack" -type f -name i2pd-netdb-seed.tar.gz | head -n 1)
 [[ -n $EXE && -n $SEED ]] || fail 'в архиве отсутствует агент или снимок сети'
+chmod 0755 "$EXE"
+verify_staged_master "$EXE" "$MASTER" || fail 'карточка повреждена или эта версия агента не поддерживает v3; нужны 0.4.19 или новее'
 [[ ! -f $CONFIG/backend ]] || stop
 mkdir -p "$BIN" "$CONFIG" "$DATA"; chmod 700 "$CONFIG" "$DATA"
 install -m 0755 "$EXE" "$BIN/gipny-agent"; install -m 0644 "$SEED" "$BIN/i2pd-netdb-seed.tar.gz"
 touch "$DATA/.gipny-agent-install"
 printf '%s\n' "$DATA" > "$CONFIG/data-dir"; printf '%s\n' "$MODE" > "$CONFIG/backend"
+printf '%s\n' "$NAME" > "$CONFIG/agent-name"
 ARGS=(--data "$DATA" --master "$MASTER" --name "$NAME" --timeout "$TIMEOUT")
 [[ -z $CWD ]] || ARGS+=(--cwd "$CWD")
 [[ -z $RELAY ]] || ARGS+=(--relay "$RELAY")

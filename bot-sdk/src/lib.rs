@@ -171,7 +171,7 @@ fn to_wire_buttons(buttons: Vec<Vec<(String, String)>>) -> Vec<Vec<WireButton>> 
 fn open_bot_db(data_dir: &std::path::Path, db_path: &std::path::Path, passphrase: Option<&str>) -> anyhow::Result<Db> {
     let pass = match passphrase {
         Some(p) if !p.is_empty() => p,
-        _ => return Ok(Db::open_plain(db_path)?),
+        _ => return Ok(gipny_libcore::security::open_device_bound_database(data_dir, db_path)?),
     };
     let vault = if Vault::exists(data_dir) {
         Vault::open(data_dir)?
@@ -180,7 +180,7 @@ fn open_bot_db(data_dir: &std::path::Path, db_path: &std::path::Path, passphrase
             anyhow::bail!(
                 "BOT_VAULT_PASS set but {} already exists in plaintext form; \
                  either move the existing data dir aside (cold start with new identity) \
-                 or remove BOT_VAULT_PASS to keep using plaintext",
+                 plaintext fallback is unsupported; use an explicitly reviewed encrypted migration",
                 db_path.display()
             );
         }
@@ -223,6 +223,7 @@ impl Bot {
     }
 
     pub async fn start(self) -> anyhow::Result<RunningBot> {
+        gipny_libcore::security::harden_process()?;
         std::fs::create_dir_all(&self.data_dir)?;
         let db_path = self.data_dir.join("bot.db");
         let db = Arc::new(open_bot_db(&self.data_dir, &db_path, self.vault_passphrase.as_deref())?);
@@ -273,25 +274,27 @@ impl Bot {
             let mut held: HashMap<i64, (i64, gipny_libcore::WirePayload)> = HashMap::new();
             while let Some(ev) = events.recv().await {
                 match &ev {
-                    SessionEvent::Connected => eprintln!("[bot] relay connected"),
-                    SessionEvent::Disconnected => eprintln!("[bot] relay disconnected"),
-                    SessionEvent::ContactAdded { contact_id } => eprintln!("[bot] contact added id={}", contact_id),
-                    SessionEvent::ContactUpdated { contact_id } => eprintln!("[bot] contact updated id={}", contact_id),
-                    SessionEvent::ContactWiped { contact_id } => eprintln!("[bot] contact {} deleted us; chat removed", contact_id),
-                    SessionEvent::MessageDelivered { message_id } => eprintln!("[bot] delivered mid={}", message_id),
+                    SessionEvent::Connected => gipny_libcore::debug_trace!("[bot] relay connected"),
+                    SessionEvent::Disconnected => gipny_libcore::debug_trace!("[bot] relay disconnected"),
+                    SessionEvent::ContactAdded { contact_id } => gipny_libcore::debug_trace!("[bot] contact added id={}", contact_id),
+                    SessionEvent::ContactUpdated { contact_id } => gipny_libcore::debug_trace!("[bot] contact updated id={}", contact_id),
+                    SessionEvent::ContactWiped { contact_id } => gipny_libcore::debug_trace!("[bot] contact {} deleted us; chat removed", contact_id),
+                    SessionEvent::MessageDelivered { message_id } => gipny_libcore::debug_trace!("[bot] delivered mid={}", message_id),
                     SessionEvent::MessageFailed { message_id, reason } => eprintln!("[bot] not sent mid={}: {}", message_id, reason),
                     SessionEvent::FileProgress { .. } => {}
-                    SessionEvent::FileReceived { message_id, attachment_id } => eprintln!("[bot] file whole mid={} att={}", message_id, attachment_id),
+                    SessionEvent::FileReceived { message_id, attachment_id } => gipny_libcore::debug_trace!("[bot] file whole mid={} att={}", message_id, attachment_id),
                     SessionEvent::FileFailed { message_id, reason, .. } => eprintln!("[bot] file mid={}: {}", message_id, reason),
-                    SessionEvent::MessageEdited { message_id, .. } => eprintln!("[bot] edited mid={}", message_id),
-                    SessionEvent::MessagePinned { message_id, .. } => eprintln!("[bot] pinned mid={}", message_id),
-                    SessionEvent::MessageUnpinned { message_id, .. } => eprintln!("[bot] unpinned mid={}", message_id),
+                    SessionEvent::MessageEdited { message_id, .. } => gipny_libcore::debug_trace!("[bot] edited mid={}", message_id),
+                    SessionEvent::MessageDeleted { message_id, .. } => {
+                        held.remove(message_id);
+                    }
+                    SessionEvent::MessagePinned { message_id, .. } => gipny_libcore::debug_trace!("[bot] pinned mid={}", message_id),
+                    SessionEvent::MessageUnpinned { message_id, .. } => gipny_libcore::debug_trace!("[bot] unpinned mid={}", message_id),
                     SessionEvent::RelayError { reason } => eprintln!("[bot] relay error: {}", reason),
                     SessionEvent::IncomingPayload { contact_id, payload, message_id } =>
-                        eprintln!("[bot] incoming contact={} mid={} group={} body={:?} cb={:?} atts={} buttons={}",
+                        gipny_libcore::debug_trace!("[bot] incoming contact={} mid={} group={} atts={} buttons={}",
                             contact_id, message_id,
                             payload.group.as_ref().map(|g| hex(&g.id)).unwrap_or_else(|| "-".into()),
-                            payload.body, payload.callback_data,
                             payload.attachments.len(), payload.buttons.as_ref().map(|b| b.len()).unwrap_or(0)),
                 }
                 let coming = |mid: i64| !session.db.files_in_for_message(mid).unwrap_or_default().is_empty();
@@ -331,7 +334,7 @@ impl Bot {
 
                 let sender_sign_pk = match session.db.get_contact(contact_id) {
                     Ok(Some(c)) => c.identity_sign,
-                    _ => { eprintln!("[bot] no contact record for id={}", contact_id); continue; }
+                    _ => { gipny_libcore::debug_trace!("[bot] no contact record for id={}", contact_id); continue; }
                 };
 
                 let dispatch = if let Some(data) = payload.callback_data {
@@ -426,7 +429,7 @@ async fn run_with_retry(
     if let Dispatch::Callback { sender_sign_pk, sent_at, data, .. } = &item {
         match session.db.callback_seen(sender_sign_pk, *sent_at, data) {
             Ok(true) => {
-                eprintln!("[bot] callback dup, skip: data={} sent_at={}", data, sent_at);
+                gipny_libcore::debug_trace!("[bot] duplicate callback skipped");
                 return;
             }
             Ok(false) => { let _ = session.db.record_callback_seen(sender_sign_pk, *sent_at, data); }
@@ -442,7 +445,10 @@ async fn run_with_retry(
             Ok(()) => return,
             Err(e) => {
                 attempt += 1;
-                eprintln!("[bot] handler err ({}): attempt {} of {}: {:?}", kind, attempt, HANDLER_MAX_ATTEMPTS, e);
+                // Handler errors are arbitrary user code and can contain the
+                // received message or callback data. Keep details encrypted in
+                // the dead-letter record; never copy them to diagnostics.
+                eprintln!("[bot] handler failed ({}): attempt {} of {}", kind, attempt, HANDLER_MAX_ATTEMPTS);
                 if attempt >= HANDLER_MAX_ATTEMPTS {
                     save_dead_letter(session, key, &item, &format!("{:?}", e));
                     return;
@@ -462,19 +468,19 @@ async fn run_once(handlers: &Handlers, item: Dispatch) -> anyhow::Result<()> {
                     return (h)(ctx, args).await;
                 }
             }
-            eprintln!("[bot] no handler for /{}", name);
+            gipny_libcore::debug_trace!("[bot] no command handler");
             Ok(())
         }
         Dispatch::Callback { ctx, data, .. } => {
             match &handlers.on_callback {
                 Some(h) => (h)(ctx, data).await,
-                None => { eprintln!("[bot] no callback handler"); Ok(()) }
+                None => { gipny_libcore::debug_trace!("[bot] no callback handler"); Ok(()) }
             }
         }
         Dispatch::Message { ctx, msg } => {
             match &handlers.on_message {
                 Some(h) => (h)(ctx, msg).await,
-                None => { eprintln!("[bot] no on_message handler"); Ok(()) }
+                None => { gipny_libcore::debug_trace!("[bot] no on_message handler"); Ok(()) }
             }
         }
     }
@@ -516,7 +522,7 @@ fn save_dead_letter(session: &Arc<SessionManager>, key: &ChatKey, item: &Dispatc
         Dispatch::Message { msg, .. } => ("message", msg.body.clone().into_bytes()),
     };
     let _ = session.db.add_dead_letter(contact_id, group_id_owned.as_deref(), kind, &payload, err);
-    eprintln!("[bot] dead-letter recorded ({}): {}", kind, err);
+    eprintln!("[bot] dead-letter recorded ({})", kind);
 }
 
 fn backoff_ms(attempt: u32) -> u64 {

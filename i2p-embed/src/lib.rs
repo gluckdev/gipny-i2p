@@ -16,8 +16,11 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
+use zeroize::Zeroizing;
 
 pub mod fast;
+pub mod diagnostics;
+pub mod process_security;
 
 mod ffi {
     use super::*;
@@ -125,7 +128,8 @@ pub struct Router {
 
 impl Router {
     /// Start the router with i2pd's own options, e.g. `--datadir=…`,
-    /// `--bandwidth=L`. `log_path` `None` logs into the data dir.
+    /// `--bandwidth=L`. `log_path` `None` uses stderr. Release builds ignore
+    /// requested file logging and verbose levels, retaining warnings/errors.
     pub fn start(options: &[String], log_path: Option<&str>) -> Result<Self, Error> {
         if STARTED.get().is_some() {
             return Err(Error::AlreadyStarted);
@@ -142,8 +146,10 @@ impl Router {
         if STARTED.set(()).is_err() {
             return Err(Error::AlreadyStarted);
         }
+        let environment = std::env::var("GIPNY_I2P_LOGLEVEL").ok();
+        let options = diagnostics::router_options(options, environment.as_deref());
         let mut args = vec![CString::new("gipny").unwrap()];
-        for o in options {
+        for o in &options {
             args.push(CString::new(o.as_str()).map_err(|_| Error::InitFailed)?);
         }
         let ptrs: Vec<*const c_char> = args.iter().map(|a| a.as_ptr()).collect();
@@ -151,7 +157,7 @@ impl Router {
         if unsafe { ffi::gipny_router_init(ptrs.len() as c_int, ptrs.as_ptr()) } == 0 {
             return Err(Error::InitFailed);
         }
-        let log = log_path.map(|p| CString::new(p).unwrap_or_default());
+        let log = diagnostics::router_log_path(log_path).map(|p| CString::new(p).unwrap_or_default());
         unsafe { ffi::gipny_router_start(log.as_ref().map_or(std::ptr::null(), |l| l.as_ptr())) };
         Ok(Self { _private: () })
     }
@@ -226,8 +232,19 @@ pub fn generate_keys() -> String {
 
 /// The public destination of base64 private keys.
 pub fn public_of(private_b64: &str) -> Result<String, Error> {
-    let c = CString::new(private_b64).map_err(|_| Error::BadKeys)?;
-    take_string(unsafe { ffi::gipny_keys_public(c.as_ptr()) }).ok_or(Error::BadKeys)
+    let c = secret_c_string(private_b64)?;
+    take_string(unsafe { ffi::gipny_keys_public(c.as_ptr().cast()) }).ok_or(Error::BadKeys)
+}
+
+/// Fixed-capacity allocation before copying a secret; no CString conversion
+/// or Vec growth leaves an abandoned plaintext allocation. The owned buffer
+/// (including capacity) is wiped on every return/error path.
+fn secret_c_string(value: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
+    if value.as_bytes().contains(&0) { return Err(Error::BadKeys); }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(value.len() + 1));
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+    Ok(bytes)
 }
 
 /// Tunnel parameters for a destination.
@@ -264,7 +281,7 @@ unsafe impl Sync for Destination {}
 impl Destination {
     /// `keys` `None` makes a transient destination.
     pub fn new(_router: &Router, keys: Option<&str>, opts: &DestinationOptions) -> Result<Self, Error> {
-        let keys_c = keys.map(CString::new).transpose().map_err(|_| Error::BadKeys)?;
+        let keys_c = keys.map(secret_c_string).transpose()?;
         let mut pairs: Vec<(CString, CString)> = vec![
             (CString::new("inbound.length").unwrap(), CString::new(opts.inbound_length.to_string()).unwrap()),
             (CString::new("outbound.length").unwrap(), CString::new(opts.outbound_length.to_string()).unwrap()),
@@ -276,7 +293,7 @@ impl Destination {
         let vs: Vec<*const c_char> = pairs.iter().map(|(_, v)| v.as_ptr()).collect();
         let raw = unsafe {
             ffi::gipny_dest_create(
-                keys_c.as_ref().map_or(std::ptr::null(), |k| k.as_ptr()),
+                keys_c.as_ref().map_or(std::ptr::null(), |k| k.as_ptr().cast()),
                 opts.publish as c_int,
                 ks.as_ptr(),
                 vs.as_ptr(),

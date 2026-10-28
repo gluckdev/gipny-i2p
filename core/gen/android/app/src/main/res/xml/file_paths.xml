@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-  <external-path name="my_images" path="." />
-  <cache-path name="my_cache_images" path="." />
+  <!-- Only verified APK copies staged in Context.getCacheDir()/updates. -->
+  <cache-path name="verified_updates" path="updates/" />
+  <!-- Wry camera capture grants a URI for its private external Pictures dir. -->
+  <external-files-path name="camera_pictures" path="Pictures/" />
 </paths>

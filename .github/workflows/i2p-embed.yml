@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -89,7 +89,7 @@ jobs:
           echo "I2P_EMBED_INCLUDE_DIRS=$b/include:$o/include" >> "$GITHUB_ENV"
           echo "I2P_EMBED_LIB_DIRS=$b/lib:$o/lib" >> "$GITHUB_ENV"
           echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto" >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - name: build
         run: cargo build --release -p i2p-embed --tests
       - name: links nothing outside the OS
@@ -120,6 +120,9 @@ jobs:
       VCPKG_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v7
+      - name: Native Windows source-build tools
+        shell: pwsh
+        run: .github/scripts/windows-source-tools.ps1
       - name: check out i2pd
         shell: bash
         run: |
@@ -137,10 +140,13 @@ jobs:
       - name: boost and OpenSSL from vcpkg
         shell: bash
         run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - name: build
         shell: bash
         run: cargo build --release -p i2p-embed --tests
+      - name: device storage regressions with native Windows DPAPI
+        shell: bash
+        run: cargo test --locked --release -p gipny-libcore --lib device_binding::tests
       - name: live test over i2p
         shell: bash
         env:
@@ -183,6 +189,7 @@ jobs:
         run: |
           git -C i2pd fetch --quiet origin "$I2PD_REV" || git -C i2pd fetch --quiet --tags origin
           git -C i2pd checkout --quiet "$I2PD_REV"
+          bash "$GITHUB_WORKSPACE/scripts/apply-i2pd-memory-patches.sh" "$PWD/i2pd"
           git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
           git -C boost checkout FETCH_HEAD
           sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh
@@ -214,7 +221,7 @@ jobs:
             "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym" || { echo "libi2pd.so does not export $sym"; exit 1; }
           done
           mkdir -p prebuilt && cp "$LIB" prebuilt/ && ls -lh prebuilt/libi2pd.so
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
         with: { targets: aarch64-linux-android }
       - name: link a Rust binary against it
         run: |
@@ -244,7 +251,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - name: build
         env:
           I2P_EMBED_STATIC_LIBS: boost_program_options
@@ -295,7 +302,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -363,7 +370,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}

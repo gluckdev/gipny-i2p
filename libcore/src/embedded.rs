@@ -32,7 +32,7 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
     if let Some(seeded) = seeded {
         match seeded {
             Ok(0) => {}
-            Ok(n) => eprintln!("[i2p] laid out {n} known routers from the bundled snapshot"),
+            Ok(n) => crate::debug_trace!("[i2p] laid out {n} known routers from the bundled snapshot"),
             Err(e) => eprintln!("[i2p] bundled network snapshot not used: {e}"),
         }
     }
@@ -55,12 +55,9 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
     if matches!(settings.yggdrasil, Yggdrasil::On) {
         options.push("--meshnets.yggdrasil".into());
     }
-    // Diagnostics only (CI's e2e): i2pd's own log level, into i2pd.log here.
-    if let Some(level) = std::env::var("GIPNY_I2P_LOGLEVEL").ok().filter(|l| {
-        matches!(l.as_str(), "critical" | "error" | "warn" | "info" | "debug")
-    }) {
-        options.push(format!("--loglevel={level}"));
-    }
+    // The i2p-embed boundary applies the compile-time diagnostics policy:
+    // debug/test honors GIPNY_I2P_LOGLEVEL and this path; release forces
+    // warnings/errors to stderr and never opens a router log file.
     let log = router_dir.join("i2pd.log");
     // The measuring profile (`GIPNY_FAST`) takes the options it covers out of
     // the list rather than adding to it, so the router is never handed the same
@@ -110,4 +107,16 @@ pub fn network_changed() {
 pub fn destination_options(publish: bool, hops: u8) -> i2p_embed::DestinationOptions {
     let hops = hops.clamp(crate::net::min_hops(), crate::net::DEFAULT_HOPS);
     i2p_embed::DestinationOptions { publish, inbound_length: hops, outbound_length: hops, extra: Vec::new() }
+}
+/// Only expose private destination bytes during the synchronous FFI call.
+/// No key guard survives destination tunnel setup or any network await.
+pub(crate) fn destination_from_sealed(
+    router: &i2p_embed::Router,
+    keys: &crate::memory::SealedBlob,
+    options: &i2p_embed::DestinationOptions,
+) -> Result<i2p_embed::Destination, crate::net::NetError> {
+    let guard = keys.expose().map_err(|error| crate::net::NetError::I2p(format!("protected destination key: {error}")))?;
+    let private = std::str::from_utf8(&guard).map_err(|_| crate::net::NetError::I2p("invalid private destination encoding".into()))?;
+    i2p_embed::Destination::new(router, Some(private), options)
+        .map_err(|error| crate::net::NetError::I2p(format!("destination: {error}")))
 }

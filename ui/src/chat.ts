@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { Api, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 import type { Message, LinkStats } from './api';
@@ -7,13 +9,12 @@ import { icon } from './icons';
 import { onAvatarsChanged } from './avatars';
 import { View, h, avatar, fmtTime, fmtDate, fmtAgo, fmtMs, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
-import { PinnedBanner, EditInline, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
+import { PinnedBanner, EditInline, ContextMenu, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
 import { ContactModal } from './contact';
 import { GroupModal } from './group';
 import { SearchModal } from './search';
 import { MediaModal } from './media';
 import { ForwardModal } from './forward';
-import { t, onLangChange } from './i18n';
 import { renderAnsi } from './ansi';
 
 interface PendingFile { name: string; path: string; size: number }
@@ -36,10 +37,10 @@ const TTL_OPTIONS: Array<[string, number | null]> = [
  * because a half-translated sentence ("disappear after 5 мин") reads as a bug,
  * and a wholly untranslated one is at least honest about being untranslated. */
 function ttlSpoken(secs: number | null): string {
-  if (secs === null) return t('chat.ttl_off');
-  if (secs < 3600) return t('chat.ttl_on', { time: t('chat.ttl_minutes', { n: Math.round(secs / 60) }) });
-  if (secs < 86_400) return t('chat.ttl_on', { time: t('chat.ttl_hours', { n: Math.round(secs / 3600) }) });
-  return t('chat.ttl_on', { time: t('chat.ttl_days', { n: Math.round(secs / 86_400) }) });
+  if (secs === null) return tr('chat.ttl_off');
+  if (secs < 3600) return tr('chat.ttl_on', { time: tr('chat.ttl_minutes', { n: Math.round(secs / 60) }) });
+  if (secs < 86_400) return tr('chat.ttl_on', { time: tr('chat.ttl_hours', { n: Math.round(secs / 3600) }) });
+  return tr('chat.ttl_on', { time: tr('chat.ttl_days', { n: Math.round(secs / 86_400) }) });
 }
 
 /** One reminder per launch, not one per chat opened. */
@@ -60,6 +61,13 @@ export class ChatView extends View {
   private peerNote: HTMLElement;
   private attachmentCache = new Map<number, Array<{ id: number; name: string; size: number }>>();
   private imageDataCache = new Map<number, string>();
+  private imageMessages = new Map<number, number>();
+  private imageClosers = new Map<number, () => void>();
+  private ownedBlobUrls = new Set<string>();
+  private disposed = false;
+  private draftEpoch = 0;
+  private filePickers = new Set<HTMLInputElement>();
+  private deletedSeen = new Set<number>();
   private pinnedBanner: PinnedBanner;
   private editingId: number | null = null;
   private replyTo: Message | null = null;
@@ -97,13 +105,13 @@ export class ChatView extends View {
     const isGroup = target.kind === 'group';
     const title = isGroup
       ? (store.groups.get().find((g) => g.id === target.id)?.name ?? 'group')
-      : (store.contacts.get().find((c) => c.id === target.id)?.name ?? 'unknown');
+      : (store.contacts.get().find((c) => c.id === target.id)?.name ?? tr('auth.unknown'));
 
     const subEl = h('div', { class: 'chat-sub' });
     this.typingHeader = h('div', { class: 'chat-typing', style: { display: 'none' } });
     const statusEl = h('div', { class: 'chat-status' });
     const computeSub = (): string => isGroup
-      ? `${(store.groupMembers.get().get(target.id)?.length ?? 0)} участн.`
+      ? tr('chat.members', { p0: ((store.groupMembers.get().get(target.id)?.length ?? 0)) })
       : '';
     subEl.textContent = computeSub();
     const renderStatus = (): void => {
@@ -111,7 +119,7 @@ export class ChatView extends View {
       const cid = target.id as number;
       const online = store.peerOnline.get().has(cid);
       if (online) {
-        statusEl.textContent = 'в сети';
+        statusEl.textContent = tr('chat.online');
         statusEl.className = 'chat-status online';
         return;
       }
@@ -120,15 +128,15 @@ export class ChatView extends View {
       const contact = store.contacts.get().find((c) => c.id === cid);
       const lost = contact ? store.lostForDays(contact) : null;
       statusEl.textContent = lost != null
-        ? `нет связи ${lost} дн.: письма ждут в очереди. Если собеседник переустанавливал приложение — попросите свежую карточку, или удалите контакт`
-        : ls != null ? `был(а) в сети ${fmtAgo(ls)}` : 'не в сети';
+        ? tr('chat.no_contact_for_days_messages_are_queued_if', { p0: (lost) })
+        : ls != null ? tr('chat.last_seen', { p0: (fmtAgo(ls)) }) : tr('chat.offline');
     };
     renderStatus();
 
     this.log = h('div', { class: 'chat-log' });
     this.jumpBtn = h('button', {
       class: 'jump-btn',
-      title: 'jump to latest',
+      title: tr('chat.jump_to_latest'),
       style: { display: 'none' },
       onClick: () => this.scrollBottom(),
     }, '↓');
@@ -148,10 +156,10 @@ export class ChatView extends View {
     // On a touch keyboard Enter is a newline and there is no Shift+Enter to
     // explain; the long hint also wraps to a second line at phone width.
     const placeholderFor = (consoleMode: boolean): string => {
-      if (isTouch) return consoleMode ? 'Команда…' : 'Сообщение…';
+      if (isTouch) return consoleMode ? tr('chat.command') : tr('chat.message');
       return consoleMode
-        ? 'Команда… (Enter — выполнить, Shift+Enter — новая строка)'
-        : 'Сообщение… (Enter — отправить, Shift+Enter — новая строка)';
+        ? tr('chat.command_enter_to_run_shift_enter_for_a')
+        : tr('chat.input_placeholder');
     };
     this.input = h('textarea', {
       placeholder: placeholderFor(false),
@@ -237,21 +245,21 @@ export class ChatView extends View {
     // has room for it and the icon alone where it does not.
     const detailsBtn = h('button', {
       class: 'btn btn-ghost chat-details',
-      title: isGroup ? 'Участники' : 'Профиль контакта',
+      title: isGroup ? tr('chat.members_2') : tr('chat.contact_profile'),
       onClick: () => (isGroup ? this.openGroupDetails() : this.openContactDetails()),
     },
       h('span', { class: 'chat-details-icon', 'aria-hidden': 'true' }, icon('info', 18)),
-      h('span', { class: 'chat-details-label' }, isGroup ? 'Участники' : 'Профиль'),
+      h('span', { class: 'chat-details-label' }, isGroup ? tr('chat.members_2') : tr('chat.profile')),
     );
-    const searchBtn = h('button', { class: 'icon-btn', title: 'Поиск в чате', onClick: () => this.openSearch() }, icon('search'));
+    const searchBtn = h('button', { class: 'icon-btn', title: tr('chat.search_this_chat'), onClick: () => this.openSearch() }, icon('search'));
     // «Кофеин»: экран не гаснет, чат не сменить, выход — по паролю профиля.
     // Ускорение живёт внутри него, отдельной кнопкой.
     const caffeineBtn = h('button', {
       class: 'icon-btn',
-      title: 'Кофеин: не гасить экран и остаться в этом чате',
+      title: tr('chat.caffeine_keep_the_screen_awake_and_stay_in'),
       onClick: () => void store.startCaffeine(target),
     }, icon('coffee'));
-    const mediaBtn = h('button', { class: 'icon-btn', title: 'Медиа и файлы', onClick: () => this.openMedia() }, icon('image'));
+    const mediaBtn = h('button', { class: 'icon-btn', title: tr('chat.media_and_files'), onClick: () => this.openMedia() }, icon('image'));
 
     const agentControls = h('div', { class: 'agent-controls' });
     this.modeBtn = h('button', {
@@ -266,7 +274,7 @@ export class ChatView extends View {
     this.agentOffBtn = h('button', {
       class: 'btn btn-danger btn-sm',
       onClick: () => void this.disableRemoteAgent(),
-    }, 'disable') as HTMLButtonElement;
+    }, tr('app.disable')) as HTMLButtonElement;
     const renderAgentControls = (): void => {
       if (isGroup) { agentControls.replaceChildren(); return; }
       const c = store.contacts.get().find((x) => x.id === (target.id as number));
@@ -276,8 +284,8 @@ export class ChatView extends View {
         return;
       }
       const consoleMode = store.isConsoleMode(target);
-      this.modeBtn.textContent = consoleMode ? 'chat' : 'console';
-      this.modeBtn.title = consoleMode ? 'show ordinary chat' : 'open remote console';
+      this.modeBtn.textContent = consoleMode ? tr('chat.mode_chat') : tr('chat.mode_console');
+      this.modeBtn.title = consoleMode ? tr('chat.show_ordinary_chat') : tr('chat.open_remote_console');
       agentControls.replaceChildren(this.modeBtn, this.agentOffBtn);
     };
     const renderInputMode = (): void => {
@@ -304,6 +312,11 @@ export class ChatView extends View {
             searchBtn,
             mediaBtn,
             detailsBtn,
+            h('button', { class: 'icon-btn chat-more', title: tr('chat.more_actions'), onClick: (event: Event) => {
+              const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+              ContextMenu.open(rect.left, rect.bottom, [{ label: tr('chat.clear_for_both'), danger: true,
+                onClick: () => { void this.clearDialog(); } }]);
+            } }, icon('more')),
           );
         })();
 
@@ -319,8 +332,7 @@ export class ChatView extends View {
     // has been silent for a while with mail queued, say so and say what helps —
     // the alternative is messages that wait forever with no explanation.
     this.unreachableNote = h('div', { class: 'chat-notice hidden' },
-      'Контакт давно не на связи. Сообщения сохранены и будут отправляться повторно, пока он не появится '
-      + 'в сети (до 7 дней); когда он запустит приложение, его новый адрес придёт сам.');
+      tr('chat.this_contact_has_been_unreachable_for_a_while'));
     this.sub(store.unreachable, (set) => {
       const hit = target.kind === 'contact' && set.has(target.id as number);
       this.unreachableNote.classList.toggle('hidden', !hit);
@@ -336,16 +348,8 @@ export class ChatView extends View {
     // Read off the newest message, never the oldest: the setting belongs to
     // the person, not to the message, and it can be turned on halfway through.
     this.peerNote = h('div', { class: 'chat-notice hidden' },
-      icon('lock', 13), h('span', {}, t('chat.peer_keeps')));
+      icon('lock', 13), h('span', {}, tr('chat.peer_keeps')));
     this.sub(store.messages, () => this.updatePeerNote(), true);
-
-    // Changing the language reopens the settings window and nothing else, so a
-    // chat left open behind it would keep speaking the old one. These two lines
-    // are written once, at construction, so they have to be rewritten by hand.
-    this.subs.push(onLangChange(() => {
-      this.peerNote.replaceChildren(icon('lock', 13), h('span', {}, t('chat.peer_keeps')));
-      if (this.target.kind !== 'group') this.renderTtlPicker();
-    }));
 
     // What the channel is doing, in the user's own terms. Groups have no
     // single channel — each member collects somewhere else — so this is a
@@ -357,18 +361,18 @@ export class ChatView extends View {
       this.sub(store.unreachable, () => void this.paintLinkStrip());
     }
 
-    this.turboTitle = h('div', { class: 'caffeine-title' }, 'ТУРБО');
+    this.turboTitle = h('div', { class: 'caffeine-title' }, tr('chat.turbo'));
     this.turboHint = h('div', { class: 'caffeine-hint' });
     this.fastBtn = h('button', {
       class: 'btn btn-sm btn-fast',
-      title: 'КОКАИН: на один узел короче путь и без выравнивания размера сообщений',
+      title: tr('chat.cocaine_one_fewer_hop_and_no_message_size'),
       onClick: () => void this.enterFast(),
-    }, 'КОКАИН') as HTMLButtonElement;
+    }, tr('chat.cocaine')) as HTMLButtonElement;
     this.caffeineBar = h('div', { class: 'caffeine-bar hidden' },
       icon('coffee', 18),
       h('div', { class: 'caffeine-text' }, this.turboTitle, this.turboHint),
       this.fastBtn,
-      h('button', { class: 'btn btn-sm', onClick: () => void this.leaveCaffeine() }, 'Выйти'),
+      h('button', { class: 'btn btn-sm', onClick: () => void this.leaveCaffeine() }, tr('chat.exit')),
     );
     this.sub(store.caffeine, (on) => {
       const mine = !!on && sameTarget(on, target);
@@ -383,7 +387,7 @@ export class ChatView extends View {
       h('div', { class: 'chat-header' },
         h('button', {
           class: 'chat-back icon-btn',
-          title: 'back',
+          title: tr('common.back'),
           onClick: () => store.selectedChat.set(null),
         }, icon('back')),
         headerAvatar,
@@ -406,17 +410,39 @@ export class ChatView extends View {
         h('div', { class: 'chat-input-row' },
           this.promptEl = h('div', { class: 'prompt' }, '>'),
           this.input,
-          h('button', { class: 'icon-btn chat-attach', title: t('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
-          h('button', { class: 'btn chat-send', title: t('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, t('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
+          h('button', { class: 'icon-btn chat-attach', title: tr('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
+          h('button', { class: 'btn chat-send', title: tr('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, tr('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
         ),
         h('div', { class: 'chat-input-meta' },
-          h('span', { class: 'chat-e2e' }, icon('lock', 13), 'Сквозное шифрование'),
+          h('span', { class: 'chat-e2e' }, icon('lock', 13), tr('about.end_to_end_encryption')),
           this.ttlRow,
         ),
       ),
     );
 
-    this.sub(store.messages, () => this.renderLog());
+    this.sub(store.messages, () => {
+      const messages = store.messages.get().get(targetKey(this.target)) ?? [];
+      for (const message of messages) if (message.deleted_at != null) {
+        if (!this.deletedSeen.has(message.id)) {
+          this.deletedSeen.add(message.id);
+          this.draftEpoch++;
+          this.app.closeModals();
+          this.input.value = '';
+          this.pending = [];
+          this.consoleHistory.fill('');
+          this.consoleHistory = [];
+          this.consoleDraft = '';
+          for (const picker of this.filePickers) { picker.value = ''; picker.remove(); }
+          this.filePickers.clear();
+          this.renderFileChips();
+        }
+        for (const [attachmentId, messageId] of this.imageMessages) if (messageId === message.id) this.releaseImage(attachmentId);
+        this.attachmentCache.delete(message.id);
+        if (this.editingId === message.id) this.editingId = null;
+        if (this.replyTo?.id === message.id) this.cancelReply();
+      }
+      this.renderLog();
+    });
     // A file in parts moved on: repaint its bar where it is on screen.
     this.sub(store.fileProgress, (m) => {
       for (const [mid, p] of m) {
@@ -428,7 +454,7 @@ export class ChatView extends View {
         const el = this.el.querySelector(`[data-files-mid="${mid}"] .file-progress-bar`) as HTMLElement | null;
         if (el) el.style.width = `${p.total ? Math.floor((100 * p.done) / p.total) : 0}%`;
         const label = this.el.querySelector(`[data-files-mid="${mid}"] .file-progress-label`);
-        if (label) label.textContent = `${p.done} из ${p.total} частей`;
+        if (label) label.textContent = tr('chat.of_parts', { p0: (p.done), p1: (p.total) });
       }
     }, false);
     // One became whole: show it as an attachment.
@@ -453,6 +479,7 @@ export class ChatView extends View {
 
     if (isGroup && !store.groupMembers.get().has(target.id)) {
       Api.listGroupMembers(target.id as string).then((members) => {
+        if (this.disposed) return;
         store.groupMembers.update((m) => { const n = new Map(m); n.set(target.id as string, members); return n; });
       }).catch(() => {});
     }
@@ -483,7 +510,45 @@ export class ChatView extends View {
     return !!this.store.contacts.get().find((c) => c.id === (this.target.id as number))?.agent_granted;
   }
 
+  /** Locale changes rebuild labels without losing an unsent draft or reply. */
+  captureDraft() {
+    return {
+      body: this.input.value, pending: [...this.pending], replyTo: this.replyTo,
+      ttlSecs: this.ttlSecs, history: [...this.consoleHistory], historyIndex: this.historyIndex,
+      consoleDraft: this.consoleDraft, consoleClearedThrough: this.consoleClearedThrough,
+      editingId: this.editingId,
+      editBody: this.el.querySelector<HTMLTextAreaElement>('.edit-inline-textarea')?.value,
+      scrollTop: this.log.scrollTop, stickyBottom: this.stickyBottom,
+    };
+  }
+
+  restoreDraft(draft: ReturnType<ChatView['captureDraft']>): void {
+    this.input.value = draft.body;
+    this.input.dispatchEvent(new Event('input'));
+    this.pending = draft.pending;
+    this.replyTo = draft.replyTo;
+    this.ttlSecs = draft.ttlSecs;
+    this.consoleHistory = draft.history;
+    this.historyIndex = draft.historyIndex;
+    this.consoleDraft = draft.consoleDraft;
+    this.consoleClearedThrough = draft.consoleClearedThrough;
+    this.editingId = draft.editingId;
+    this.renderedKey = '';
+    this.renderLog();
+    const editor = this.el.querySelector<HTMLTextAreaElement>('.edit-inline-textarea');
+    if (editor && draft.editBody !== undefined) editor.value = draft.editBody;
+    this.renderFileChips();
+    this.renderReplyChip();
+    if (this.target.kind !== 'group') this.renderTtlPicker();
+    this.stickyBottom = draft.stickyBottom;
+    requestAnimationFrame(() => { this.log.scrollTop = draft.stickyBottom ? this.log.scrollHeight : draft.scrollTop; });
+  }
+
   destroy(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.draftEpoch++;
+    ContextMenu.close();
     if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
     document.removeEventListener('paste', this.pasteHandler);
     if (this.typingStopTimer != null) window.clearTimeout(this.typingStopTimer);
@@ -494,7 +559,47 @@ export class ChatView extends View {
       this.typingActive = false;
     }
     this.pinnedBanner.destroy();
+    for (const id of [...this.imageMessages.keys()]) this.releaseImage(id);
+    for (const url of this.ownedBlobUrls) URL.revokeObjectURL(url);
+    this.ownedBlobUrls.clear();
+    this.imageDataCache.clear();
+    this.imageMessages.clear();
+    this.imageClosers.clear();
+    this.deletedSeen.clear();
+    this.attachmentCache.clear();
+    this.renderedSignatures.clear();
+    this.renderedIds = [];
+    this.renderedKey = '';
+    this.replyTo = null;
+    this.editingId = null;
+    this.input.value = '';
+    this.consoleHistory.fill('');
+    this.consoleHistory = [];
+    this.consoleDraft = '';
+    this.consoleSending = 0;
+    this.prependCompensation = null;
+    this.pending = [];
+    for (const picker of this.filePickers) { picker.value = ''; picker.remove(); }
+    this.filePickers.clear();
+    this.el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea').forEach((input) => { input.value = ''; });
+    this.el.querySelectorAll<HTMLMediaElement>('audio, video').forEach((media) => { media.pause(); media.removeAttribute('src'); media.load(); });
+    this.el.querySelectorAll('img').forEach((image) => image.removeAttribute('src'));
+    this.el.replaceChildren();
     super.destroy();
+  }
+
+  private isMessageLive(messageId: number): boolean {
+    return !this.disposed && sameTarget(this.store.selectedChat.get(), this.target)
+      && (this.store.messages.get().get(targetKey(this.target)) ?? []).some((message) => message.id === messageId && message.deleted_at == null);
+  }
+
+  private releaseImage(attachmentId: number): void {
+    this.imageClosers.get(attachmentId)?.();
+    this.imageClosers.delete(attachmentId);
+    const url = this.imageDataCache.get(attachmentId);
+    if (url && this.ownedBlobUrls.delete(url)) URL.revokeObjectURL(url);
+    this.imageDataCache.delete(attachmentId);
+    this.imageMessages.delete(attachmentId);
   }
 
   private bumpTyping(): void {
@@ -527,9 +632,9 @@ export class ChatView extends View {
       const members = this.store.groupMembers.get().get(this.target.id as string) ?? [];
       who = members.find((m) => m.sign_pk === info.sender_sign_pk)?.name
         ?? this.store.contacts.get().find((c) => c.sign_pk === info.sender_sign_pk)?.name
-        ?? 'someone';
+        ?? tr('chat.someone');
     }
-    this.typingHeader.textContent = `${who} is typing…`;
+    this.typingHeader.textContent = tr('chat.is_typing', { p0: (who) });
     this.typingHeader.style.display = '';
   }
 
@@ -540,17 +645,23 @@ export class ChatView extends View {
    * into the app's cache, as a drop or a paste already is.
    */
   private pickFilesAndroid(): void {
+    if (this.disposed) return;
+    const epoch = this.draftEpoch;
     const input = h('input', { type: 'file', multiple: true, style: 'display:none' }) as HTMLInputElement;
+    this.filePickers.add(input);
     input.addEventListener('change', async () => {
       try {
         for (const f of Array.from(input.files ?? [])) {
           const path = await pasteFileToTempPath(f);
+          if (this.disposed || epoch !== this.draftEpoch) return;
           this.pending.push({ name: f.name, path, size: f.size });
         }
         this.renderFileChips();
       } catch (e) {
-        this.store.showToast(t('chat.attach_failed', { error: String(e) }), true);
+        this.store.showToast(tr('chat.attach_failed', { error: errorText(e) }), true);
       } finally {
+        input.value = '';
+        this.filePickers.delete(input);
         input.remove();
       }
     });
@@ -559,12 +670,15 @@ export class ChatView extends View {
   }
 
   private async pickFiles(): Promise<void> {
+    if (this.disposed) return;
+    const epoch = this.draftEpoch;
     if (/Android/.test(navigator.userAgent)) {
       this.pickFilesAndroid();
       return;
     }
     try {
       const sel = await open({ multiple: true });
+      if (this.disposed || epoch !== this.draftEpoch) return;
       if (!sel) return;
       const arr = Array.isArray(sel) ? sel : [sel];
       for (const p of arr) {
@@ -575,11 +689,13 @@ export class ChatView extends View {
       }
       this.renderFileChips();
     } catch (e) {
-      this.store.showToast('pick failed: ' + String(e), true);
+      this.store.showToast(tr('chat.pick_failed_2') + errorText(e), true);
     }
   }
 
   private async handlePaste(e: ClipboardEvent): Promise<void> {
+    if (this.disposed) return;
+    const epoch = this.draftEpoch;
     if (this.app.isModalActive()) return;
     const items = e.clipboardData?.items;
     const itemsArr = items ? Array.from(items) : [];
@@ -601,6 +717,7 @@ export class ChatView extends View {
     if (collected.length === 0) {
       let path: string | null = null;
       try { path = await Api.pasteClipboardImage(); } catch { path = null; }
+      if (this.disposed || epoch !== this.draftEpoch) return;
       if (!path) return;
       e.preventDefault();
       const name = path.replace(/\\/g, '/').split('/').pop() ?? 'clipboard.png';
@@ -612,9 +729,10 @@ export class ChatView extends View {
     for (const f of collected) {
       try {
         const path = await pasteFileToTempPath(f);
+        if (this.disposed || epoch !== this.draftEpoch) return;
         this.pending.push({ name: f.name, path, size: f.size });
       } catch (err) {
-        this.store.showToast('paste failed: ' + String(err), true);
+        this.store.showToast(tr('chat.paste_failed') + String(err), true);
       }
     }
     this.renderFileChips();
@@ -628,10 +746,11 @@ export class ChatView extends View {
     const pinned = this.isPinned(m) ? '1' : '0';
     const btns = m.buttons ? JSON.stringify(m.buttons) : '';
     const consoleFrame = m.console ? JSON.stringify(m.console) : '';
-    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${this.editingId === m.id ? 'e' : ''}`;
+    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${m.delete_pending}|${this.editingId === m.id ? 'e' : ''}`;
   }
 
   private renderLog(): void {
+    if (this.disposed) return;
     const consoleMode = this.store.isConsoleMode(this.target);
     const key = targetKey(this.target) + (consoleMode ? ':console' : ':chat');
     const all = this.store.messages.get().get(targetKey(this.target)) ?? [];
@@ -723,7 +842,7 @@ export class ChatView extends View {
     if (consoleMode && (this.consoleSending > 0 || pendingCommand)) {
       const since = pendingCommand ? latest.sent_at : this.consoleSendingSince;
       const label = h('span');
-      const update = (): void => { label.textContent = `Выполняется… ${Math.max(0, Math.floor((Date.now() - since) / 1000))} с`; };
+      const update = (): void => { label.textContent = tr('chat.running_s', { p0: (Math.max(0, Math.floor((Date.now() - since) / 1000))) }); };
       update();
       this.log.appendChild(h('div', { class: 'console-running', role: 'status' },
         h('span', { class: 'console-cursor', 'aria-hidden': 'true' }, '_'), label));
@@ -743,6 +862,7 @@ export class ChatView extends View {
     this.loadingMore = true;
     this.prependCompensation = { prevHeight: this.log.scrollHeight, prevTop: this.log.scrollTop };
     this.store.loadMoreMessages(this.target).then((more) => {
+      if (this.disposed) return;
       if (!more) {
         this.noMoreOlder = true;
         this.prependCompensation = null;
@@ -755,22 +875,25 @@ export class ChatView extends View {
   }
 
   private async scrollToMessage(messageId: number): Promise<void> {
+    if (this.disposed) return;
     const present = this.renderedIds.includes(messageId);
     if (!present) {
       try {
         const ok = await this.store.loadUntilMessage(this.target, messageId);
+        if (this.disposed) return;
         if (!ok) {
-          this.store.showToast('message not found in this chat', true);
+          this.store.showToast(tr('chat.message_not_found_in_this_chat'), true);
           return;
         }
       } catch {
-        this.store.showToast('load failed', true);
+        this.store.showToast(tr('chat.load_failed'), true);
         return;
       }
     }
     this.stickyBottom = false;
     let frames = 0;
     const tryScroll = (): void => {
+      if (this.disposed) return;
       const el = this.log.querySelector(`[data-mid="${messageId}"]`);
       if (el) {
         scrollLogToMessage(this.log, messageId);
@@ -793,12 +916,12 @@ export class ChatView extends View {
   private senderNameFor(m: Message): string {
     if (m.outgoing) return '';
     if (this.target.kind !== 'group') return '';
-    if (!m.sender_sign_pk) return 'unknown';
+    if (!m.sender_sign_pk) return tr('auth.unknown');
     const members = this.store.groupMembers.get().get(this.target.id as string) ?? [];
     const member = members.find((mm) => mm.sign_pk === m.sender_sign_pk);
     if (member) return member.name;
     const contact = this.store.contacts.get().find((c) => c.sign_pk === m.sender_sign_pk);
-    return contact?.name ?? 'unknown';
+    return contact?.name ?? tr('auth.unknown');
   }
 
   private isPinned(m: Message): boolean {
@@ -818,12 +941,17 @@ export class ChatView extends View {
   }
 
   private renderMessage(m: Message): HTMLElement {
+    if (m.deleted_at != null) {
+      return h('div', { class: 'divider-text msg-deleted', 'data-mid': String(m.id), role: 'note' },
+        tr('chat.deleted_number', { number: m.dm_seq ?? '?' }),
+        ' · ', tr(m.delete_pending ? 'chat.deletion_pending' : 'chat.deletion_confirmed'));
+    }
     if (m.console) return this.renderConsoleMessage(m);
     if (this.editingId === m.id) return this.renderEditing(m);
     const meta = m.outgoing
       ? (m.delivered ? '✓✓' : (m.sent ? '✓' : '🕓'))
       : '';
-    const metaTitle = m.delivered ? 'Доставлено' : m.sent ? 'Отправлено' : 'Ждёт отправки';
+    const metaTitle = m.delivered ? tr('chat.delivered') : m.sent ? tr('chat.sent') : tr('chat.queued');
     const sender = this.senderNameFor(m);
     const pinned = this.isPinned(m);
     const fromBot = !m.outgoing && this.isFromBot(m);
@@ -837,7 +965,8 @@ export class ChatView extends View {
       h('div', { class: 'msg-row' },
         h('div', { class: 'msg-body' }, m.body,
           h('span', { class: 'msg-foot' },
-            pinned && h('span', { class: 'msg-pin-indicator', title: 'Закреплено' }, '📌'),
+            m.dm_seq != null && h('span', { class: 'msg-number', title: tr('chat.local_message_number') }, `#${m.dm_seq} `),
+            pinned && h('span', { class: 'msg-pin-indicator', title: tr('chat.pinned') }, '📌'),
             h('span', { class: 'msg-ts' }, fmtTime(m.sent_at)),
             meta && h('span', { class: 'msg-meta' + (m.delivered ? ' delivered' : ''), title: metaTitle }, meta),
           ),
@@ -849,6 +978,7 @@ export class ChatView extends View {
       () => this.startEdit(m),
       () => this.startReply(m),
       () => this.openForward(m),
+      () => { void this.deleteForBoth(m); },
     ));
     this.loadAttachmentsFor(m.id, wrap);
     if (m.buttons && m.buttons.length > 0 && !m.outgoing) {
@@ -867,7 +997,7 @@ export class ChatView extends View {
                 }
               } catch (e) {
                 console.error('[press_button]', e);
-                this.store.showToast('button failed: ' + String(e), true);
+                this.store.showToast(tr('chat.button_failed') + errorText(e), true);
               }
             },
           }, b.text));
@@ -879,6 +1009,26 @@ export class ChatView extends View {
     return wrap;
   }
 
+  private async deleteForBoth(message: Message): Promise<void> {
+    if (this.target.kind !== 'contact' || message.deleted_at != null) return;
+    if (!await this.app.confirm(tr('chat.delete_for_both'), tr('chat.delete_for_both_confirm'), true)) return;
+    try {
+      await Api.deleteMessage(message.id);
+      await this.store.loadMessages(this.target);
+    } catch (error) {
+      this.store.showToast(errorText(error), true);
+    }
+  }
+
+  private async clearDialog(): Promise<void> {
+    if (this.target.kind !== 'contact') return;
+    if (!await this.app.confirm(tr('chat.clear_for_both'), tr('chat.clear_for_both_confirm'), true)) return;
+    try {
+      await Api.clearDmChat(this.target.id as number);
+      await this.store.loadMessages(this.target);
+    } catch (error) { this.store.showToast(errorText(error), true); }
+  }
+
   /**
    * A console-framed row. Commands read as `$ line`, output as its text with a
    * dim `exit · time · truncated` trailer, and the three mode markers as the
@@ -888,14 +1038,14 @@ export class ChatView extends View {
   private renderConsoleMessage(m: Message): HTMLElement {
     const frame = m.console!;
     if (frame.kind === CONSOLE_GRANT || frame.kind === CONSOLE_REVOKE || frame.kind === CONSOLE_OFF) {
-      const text = frame.kind === CONSOLE_GRANT ? 'Консоль открыта'
-        : frame.kind === CONSOLE_OFF ? 'Мастер выключил режим агента'
-        : 'Консоль закрыта';
+      const text = frame.kind === CONSOLE_GRANT ? tr('chat.console_opened')
+        : frame.kind === CONSOLE_OFF ? tr('chat.the_master_disabled_agent_mode')
+        : tr('chat.console_closed');
       return h('div', { class: 'divider-text console-divider', 'data-mid': String(m.id) }, text);
     }
     const wrap = h('div', { class: 'console-msg', 'data-mid': String(m.id) });
     if (frame.kind !== CONSOLE_COMMAND && frame.kind !== CONSOLE_OUTPUT) {
-      wrap.appendChild(h('div', { class: 'divider-text console-divider' }, `── console #${frame.kind} ──`));
+      wrap.appendChild(h('div', { class: 'divider-text console-divider' }, tr('chat.console', { p0: (frame.kind) })));
       return wrap;
     }
     if (frame.kind === CONSOLE_COMMAND) {
@@ -904,11 +1054,11 @@ export class ChatView extends View {
       wrap.appendChild(h('div', { class: 'console-body' }, m.body));
     } else {
       wrap.classList.add('out');
-      wrap.appendChild(h('div', { class: 'console-body' }, renderAnsi(m.body || '(no output)')));
+      wrap.appendChild(h('div', { class: 'console-body' }, renderAnsi(m.body || tr('chat.no_output'))));
       const bits: string[] = [];
-      if (m.outgoing) bits.push(frame.exit_code == null ? 'no exit code' : `exit ${frame.exit_code}`);
+      if (m.outgoing) bits.push(frame.exit_code == null ? tr('chat.no_exit_code') : tr('chat.exit_2', { p0: (frame.exit_code) }));
       if (frame.duration_ms != null) bits.push(`${(frame.duration_ms / 1000).toFixed(2)}s`);
-      if (frame.truncated) bits.push('truncated');
+      if (frame.truncated) bits.push(tr('chat.truncated'));
       if (bits.length > 0) wrap.appendChild(h('div', { class: 'console-meta' }, bits.join(' · ')));
     }
     this.loadAttachmentsFor(m.id, wrap);
@@ -918,9 +1068,9 @@ export class ChatView extends View {
   private async disableRemoteAgent(): Promise<void> {
     try {
       await this.store.sendAgentOff(this.target);
-      this.store.showToast('agent mode off requested');
+      this.store.showToast(tr('chat.agent_mode_off_requested'));
     } catch (e) {
-      this.store.showToast('agent off failed: ' + String(e), true);
+      this.store.showToast(tr('chat.agent_off_failed') + errorText(e), true);
     }
   }
 
@@ -934,7 +1084,7 @@ export class ChatView extends View {
       (newBody) => {
         this.store.editMessage(this.target, m.id, newBody)
           .then(() => { this.editingId = null; this.renderLog(); })
-          .catch((e) => this.store.showToast('edit failed: ' + e, true));
+          .catch((e) => this.store.showToast(tr('chat.edit_failed') + e, true));
       },
       () => { this.editingId = null; this.renderLog(); },
     );
@@ -943,12 +1093,13 @@ export class ChatView extends View {
   }
 
   private startEdit(m: Message): void {
-    if (!m.outgoing) return;
+    if (!m.outgoing || !this.isMessageLive(m.id)) return;
     this.editingId = m.id;
     this.renderLog();
   }
 
   private startReply(m: Message): void {
+    if (!this.isMessageLive(m.id)) return;
     this.replyTo = m;
     this.renderReplyChip();
     this.input.focus();
@@ -960,6 +1111,7 @@ export class ChatView extends View {
   }
 
   private renderReplyChip(): void {
+    if (this.disposed) return;
     this.replyChip.replaceChildren();
     if (!this.replyTo) {
       this.replyChip.style.display = 'none';
@@ -967,20 +1119,20 @@ export class ChatView extends View {
     }
     const m = this.replyTo;
     const senderLabel = m.outgoing
-      ? 'you'
-      : (this.senderNameFor(m) || 'unknown');
+      ? tr('chat.you')
+      : (this.senderNameFor(m) || tr('auth.unknown'));
     const preview = m.body
       ? (m.body.length > 80 ? m.body.slice(0, 80) + '…' : m.body)
-      : '(attachment)';
+      : tr('chat.attachment');
     this.replyChip.style.display = '';
     this.replyChip.appendChild(h('div', { class: 'reply-chip-bar' }));
     this.replyChip.appendChild(h('div', { class: 'reply-chip-content' },
-      h('div', { class: 'reply-chip-label' }, `↩ replying to ${senderLabel}`),
+      h('div', { class: 'reply-chip-label' }, tr('chat.replying_to', { p0: (senderLabel) })),
       h('div', { class: 'reply-chip-body' }, preview),
     ));
     this.replyChip.appendChild(h('button', {
       class: 'reply-chip-close',
-      title: 'cancel reply',
+      title: tr('chat.cancel_reply'),
       onClick: () => this.cancelReply(),
     }, '×'));
   }
@@ -993,16 +1145,16 @@ export class ChatView extends View {
         h('div', { class: 'msg-reply-bar' }),
         h('div', { class: 'msg-reply-content' },
           h('div', { class: 'msg-reply-label' }, '↩'),
-          h('div', { class: 'msg-reply-body' }, '(message unavailable)'),
+          h('div', { class: 'msg-reply-body' }, tr('chat.message_unavailable')),
         ),
       );
     }
     const senderLabel = orig.outgoing
-      ? 'you'
-      : (this.senderNameFor(orig) || 'unknown');
-    const preview = orig.body
+      ? tr('chat.you')
+      : (this.senderNameFor(orig) || tr('auth.unknown'));
+    const preview = orig.deleted_at != null ? tr('chat.deleted_number', { number: orig.dm_seq ?? '?' }) : orig.body
       ? (orig.body.length > 100 ? orig.body.slice(0, 100) + '…' : orig.body)
-      : '(attachment)';
+      : tr('chat.attachment');
     return h('div', {
       class: 'msg-reply',
       onClick: (e: Event) => {
@@ -1019,9 +1171,11 @@ export class ChatView extends View {
   }
 
   private async loadAttachmentsFor(msgId: number, container: HTMLElement): Promise<void> {
+    if (!this.isMessageLive(msgId)) return;
     let list = this.attachmentCache.get(msgId);
     if (!list) {
       list = await Api.listAttachments(msgId);
+      if (!this.isMessageLive(msgId)) return;
       this.attachmentCache.set(msgId, list);
     }
     // Files still moving in parts: a bar each, and a cancel for ours.
@@ -1029,6 +1183,7 @@ export class ChatView extends View {
     const moving = this.store.fileProgress.get().has(msgId)
       ? await Api.filesProgress(msgId).catch(() => [])
       : [];
+    if (!this.isMessageLive(msgId)) return;
     if (moving.length > 0) {
       const box = h('div', { class: 'msg-files-moving', 'data-files-mid': String(msgId) });
       for (const f of moving) {
@@ -1036,15 +1191,15 @@ export class ChatView extends View {
         const row = h('div', { class: 'file-progress' },
           h('div', { class: 'file-progress-name' }, `${f.incoming ? '⇣' : '⇡'} ${f.name} (${humanSize(f.size)})`),
           h('div', { class: 'file-progress-track' }, h('div', { class: 'file-progress-bar', style: `width:${pct}%` })),
-          h('div', { class: 'file-progress-label' }, `${f.done} из ${f.total} частей`),
+          h('div', { class: 'file-progress-label' }, tr('chat.of_parts', { p0: (f.done), p1: (f.total) })),
         );
         if (!f.incoming) {
           row.appendChild(h('button', {
             class: 'file-progress-cancel',
             onClick: async () => {
-              try { await Api.cancelFiles(msgId); row.remove(); } catch (e) { this.store.showToast('cancel failed: ' + String(e), true); }
+              try { await Api.cancelFiles(msgId); row.remove(); } catch (e) { this.store.showToast(tr('chat.cancel_failed') + errorText(e), true); }
             },
-          }, 'Отменить'));
+          }, tr('chat.cancel')));
         }
         box.appendChild(row);
       }
@@ -1056,8 +1211,8 @@ export class ChatView extends View {
       if (isImageName(a.name)) {
         bar.appendChild(h('div', {
           class: 'attachment image-stub',
-          onClick: () => this.openImageLazy(a.id, a.name),
-        }, `▣ ${a.name} (${humanSize(a.size)}) — [ open ]`));
+          onClick: () => this.openImageLazy(a.id, a.name, msgId),
+        }, tr('chat.open', { p0: (a.name), p1: (humanSize(a.size)) })));
       } else {
         bar.appendChild(h('div', {
           class: 'attachment',
@@ -1068,23 +1223,32 @@ export class ChatView extends View {
     container.appendChild(bar);
   }
 
-  private async openImageLazy(attId: number, name: string): Promise<void> {
+  private async openImageLazy(attId: number, name: string, messageId: number): Promise<void> {
+    if (!this.isMessageLive(messageId)) return;
     let url = this.imageDataCache.get(attId);
     if (!url) {
       try {
         const b64 = await Api.loadAttachment(attId);
-        url = `data:${mimeFromName(name)};base64,${b64}`;
+        if (!this.isMessageLive(messageId)) return;
+        const bytes = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
+        const blob = new Blob([bytes], { type: mimeFromName(name) });
+        bytes.fill(0);
+        url = URL.createObjectURL(blob);
+        this.ownedBlobUrls.add(url);
         this.imageDataCache.set(attId, url);
+        this.imageMessages.set(attId, messageId);
       } catch (e) {
-        this.store.showToast('load failed: ' + String(e), true);
+        if (!this.disposed) this.store.showToast(tr('chat.load_failed_2') + errorText(e), true);
         return;
       }
     }
-    this.openImage(url, name);
+    this.openImage(url, name, attId);
   }
 
-  private openImage(src: string, name: string): void {
-    this.app.openModal((close) => {
+  private openImage(src: string, name: string, attachmentId: number): void {
+    this.imageClosers.get(attachmentId)?.();
+    let cleanup = (): void => {};
+    const dismiss = this.app.openModal((close) => {
       const stage = h('div', { class: 'zoom-stage' });
       const img = h('img', { src, class: 'zoom-img' }) as HTMLImageElement;
       stage.appendChild(img);
@@ -1123,16 +1287,17 @@ export class ChatView extends View {
       });
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
-      const wrappedClose = (): void => {
+      cleanup = (): void => {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
-        close();
+        img.removeAttribute('src');
+        this.imageClosers.delete(attachmentId);
       };
       const resetBtn = h('button', {
         class: 'btn btn-ghost',
         style: { marginLeft: '12px' },
         onClick: () => { scale = 1; tx = 0; ty = 0; apply(); },
-      }, 'Сбросить');
+      }, tr('chat.reset'));
       return h('div', {
         class: 'modal',
         style: { width: 'auto', maxWidth: '95vw', maxHeight: '95vh', padding: '0' },
@@ -1140,28 +1305,30 @@ export class ChatView extends View {
         h('div', { class: 'modal-header' },
           h('div', { class: 'modal-title' }, name),
           h('div', { class: 'hint', style: { marginLeft: '12px', fontSize: '11px' } },
-            'wheel = zoom · drag = pan'),
+            tr('chat.wheel_zoom_drag_pan')),
           resetBtn,
           h('div', { class: 'grow' }),
-          h('button', { class: 'icon-btn', onClick: wrappedClose }, 'x'),
+          h('button', { class: 'icon-btn', onClick: close }, 'x'),
         ),
         stage,
       );
-    });
+    }, () => cleanup());
+    this.imageClosers.set(attachmentId, dismiss);
   }
 
   private async downloadAttachment(id: number, name: string): Promise<void> {
     try {
       const dest = await save({ defaultPath: name });
-      if (!dest) return;
+      if (!dest || this.disposed) return;
       await Api.saveAttachment(id, dest);
-      this.store.showToast(t('chat.saved'));
+      this.store.showToast(tr('chat.saved'));
     } catch (e) {
-      this.store.showToast(t('chat.save_failed', { error: String(e) }), true);
+      this.store.showToast(tr('chat.save_failed', { error: errorText(e) }), true);
     }
   }
 
   private renderFileChips(): void {
+    if (this.disposed) return;
     this.fileChips.replaceChildren();
     this.pending.forEach((f, i) => {
       this.fileChips.appendChild(h('div', {
@@ -1193,7 +1360,7 @@ export class ChatView extends View {
     for (const [label, secs] of TTL_OPTIONS) {
       this.ttlPicker.appendChild(h('div', {
         class: 'ttl-chip' + (this.ttlSecs === secs ? ' active' : ''),
-        title: t('chat.ttl_title'),
+        title: tr('chat.ttl_title'),
         onClick: () => this.setTtl(secs),
       }, label));
     }
@@ -1212,7 +1379,7 @@ export class ChatView extends View {
     void Api.updateChatPrefs({ ttlSecs: secs, ttlChosen: true }).catch(() => {
       // A preference that will not persist is worth saying out loud: the person
       // would otherwise find the timer back where it started after a restart.
-      this.store.showToast(t('chat.ttl_save_failed'), true);
+      this.store.showToast(tr('chat.ttl_save_failed'), true);
     });
   }
 
@@ -1220,6 +1387,7 @@ export class ChatView extends View {
    * new default does rather than quietly starting to delete messages. */
   private async loadTtl(): Promise<void> {
     const prefs = await Api.getChatPrefs();
+    if (this.disposed) return;
     // null is a choice, not an absence: picking "off" stores null, and testing
     // ttlSecs on its own cannot tell that from a profile that never chose.
     // It would leave the default sitting in this.ttlSecs and put the timer back
@@ -1229,7 +1397,7 @@ export class ChatView extends View {
     this.renderTtlPicker();
     if (prefs.ttlChosen || ttlNoticeShown) return;
     ttlNoticeShown = true;
-    this.store.showToast(t('chat.ttl_default_notice'));
+    this.store.showToast(tr('chat.ttl_default_notice'));
   }
 
   private async send(): Promise<void> {
@@ -1253,7 +1421,7 @@ export class ChatView extends View {
       try {
         await this.store.sendConsoleCommand(this.target, body, paths);
       } catch (e) {
-        this.store.showToast('command failed: ' + String(e), true);
+        this.store.showToast(tr('chat.command_failed') + errorText(e), true);
       } finally {
         this.consoleSending--;
         this.renderLog();
@@ -1271,7 +1439,7 @@ export class ChatView extends View {
     try {
       await this.store.sendMessage(this.target, body, paths, ttl, replyToId);
     } catch (e) {
-      this.store.showToast(t('chat.send_failed', { error: String(e) }), true);
+      this.store.showToast(tr('chat.send_failed', { error: errorText(e) }), true);
     }
   }
 
@@ -1301,6 +1469,7 @@ export class ChatView extends View {
     let stats: LinkStats;
     try {
       stats = await Api.linkStats(this.target.id as number);
+      if (this.disposed) return;
     } catch {
       this.linkStrip.classList.add('hidden');
       return;
@@ -1308,33 +1477,33 @@ export class ChatView extends View {
     this.store.lane.set(stats.lane);
     const rtt = stats.rtt_ms ?? this.store.linkRtt.get().get(this.target.id as number) ?? null;
     const route = stats.route === 'relay'
-      ? (rtt === null ? 'релей' : `релей ${fmtMs(rtt)}`)
-      : stats.route === 'archive' ? 'архив' : 'нет пути';
+      ? (rtt === null ? tr('chat.relay') : tr('chat.relay_2', { p0: (fmtMs(rtt)) }))
+      : stats.route === 'archive' ? tr('chat.archive') : tr('chat.no_route');
     const routeTitle = stats.route === 'relay'
-      ? 'Письмо идёт на релей, с которого собеседник его забирает. Время — измеренный оборот до подтверждения.'
+      ? tr('chat.the_message_goes_to_the_relay_where_your')
       : stats.route === 'archive'
-        ? 'Релей собеседника молчит, письмо лежит в сети релеев до 7 дней, пока он не вернётся.'
-        : 'Ни релея собеседника, ни сети релеев сейчас нет — письмо ждёт здесь.';
+        ? tr('chat.your_contact_s_relay_is_unavailable_the_message')
+        : tr('chat.neither_your_contact_s_relay_nor_the_relay');
 
     this.linkStrip.replaceChildren(
       h('div', { class: 'stats link-stats' },
-        h('div', { class: 'stat', title: 'Столько промежуточных узлов у нашего исходящего туннеля и у входящего туннеля релея собеседника. Каждая сторона отвечает за своё плечо.' },
+        h('div', { class: 'stat', title: tr('chat.intermediate_hops_in_our_outbound_tunnel_and_the') },
           h('div', { class: 'stat-value' }, `${stats.our_hops} + ${stats.their_hops}`),
-          h('div', { class: 'stat-label' }, 'хопа чесночной маршрутизации'),
+          h('div', { class: 'stat-label' }, tr('chat.garlic_routing_hops')),
         ),
         h('div', { class: 'stat', title: stats.padded
-          ? 'Сообщение добивается до одного из фиксированных размеров, поэтому наблюдателю не виден его настоящий объём.'
-          : 'Сообщение уходит как есть: быстрее, но наблюдателю виден его точный размер — он отличит голос от текста и увидит длину реплик.' },
-          h('div', { class: 'stat-value' }, stats.padded ? 'средний' : 'выключен'),
-          h('div', { class: 'stat-label' }, 'уровень шума'),
+          ? tr('chat.the_message_is_padded_to_a_fixed_size')
+          : tr('chat.the_message_is_sent_without_padding_faster_but') },
+          h('div', { class: 'stat-value' }, stats.padded ? tr('chat.medium') : tr('chat.off')),
+          h('div', { class: 'stat-label' }, tr('chat.noise_level')),
         ),
         h('div', { class: 'stat', title: routeTitle },
           h('div', { class: 'stat-value' }, route),
-          h('div', { class: 'stat-label' }, 'доставка'),
+          h('div', { class: 'stat-label' }, tr('chat.delivery')),
         ),
       ),
       h('div', { class: 'link-verdict' + (stats.lane === 'normal' ? '' : ' lowered') },
-        stats.lane === 'normal' ? 'Уровень безопасности избыточный' : 'Уровень безопасности понижен: КОКАИН'),
+        stats.lane === 'normal' ? tr('chat.standard_security_settings') : tr('chat.reduced_security_cocaine')),
     );
     this.linkStrip.classList.remove('hidden');
   }
@@ -1345,12 +1514,8 @@ export class ChatView extends View {
    * path at our own expense and stops hiding how much was said. Somebody who
    * taps it should already know both before the tunnels come down. */
   private async enterFast(): Promise<void> {
-    const ok = await this.app.confirm('Включить КОКАИН',
-      'Путь станет на один узел короче, а сообщения перестанут добиваться до одинакового размера — так быстрее, '
-      + 'особенно для голоса и файлов.\n\n'
-      + 'Цена: выбранные узлы узнают наш адрес и куда уходят письма, а наблюдатель начнёт видеть настоящий размер '
-      + 'каждого сообщения — то есть отличать голос от текста и видеть длину реплик.\n\n'
-      + 'Пока строятся новые туннели — несколько десятков секунд — ничего не отправляется.');
+    const ok = await this.app.confirm(tr('chat.enable_cocaine'),
+      tr('chat.the_route_will_be_one_hop_shorter_and'));
     if (!ok) return;
     await this.store.startFast();
   }
@@ -1359,28 +1524,28 @@ export class ChatView extends View {
   private paintTurboBar(): void {
     const lane = this.store.lane.get();
     if (this.store.laneSwitching.get()) {
-      this.turboTitle.textContent = 'Перестраиваю туннели…';
-      this.turboHint.textContent = 'пока они строятся, ничего не отправляется — это десятки секунд';
+      this.turboTitle.textContent = tr('chat.rebuilding_tunnels');
+      this.turboHint.textContent = tr('chat.nothing_is_sent_while_tunnels_are_being_built');
       this.fastBtn.classList.add('hidden');
       return;
     }
     if (lane === 'fast') {
-      this.turboTitle.textContent = 'КОКАИН';
-      this.turboHint.textContent = 'два узла, без выравнивания размера · экран не гаснет, чат не переключается';
+      this.turboTitle.textContent = tr('chat.cocaine');
+      this.turboHint.textContent = tr('chat.two_hops_no_size_padding_screen_stays_awake');
       this.fastBtn.classList.add('hidden');
       return;
     }
-    this.turboTitle.textContent = 'Кофеин включён';
-    this.turboHint.textContent = 'экран не гаснет, чат не переключается';
+    this.turboTitle.textContent = tr('chat.caffeine_enabled');
+    this.turboHint.textContent = tr('chat.screen_stays_awake_chat_stays_selected');
     this.fastBtn.classList.remove('hidden');
   }
 
   private async leaveCaffeine(): Promise<void> {
     const pass = await this.app.prompt(
-      'Выйти из кофеина',
-      'Пароль профиля',
+      tr('chat.exit_caffeine'),
+      tr('chat.profile_passphrase'),
       '',
-      'Выйти',
+      tr('chat.exit'),
       true,
     );
     if (!pass) return;
@@ -1388,11 +1553,11 @@ export class ChatView extends View {
       const result = await Api.verifyPassphrase(pass);
       await this.store.stopCaffeine();
       if (result === 'wiped') {
-        this.store.showToast('Профиль стёрт', true);
+        this.store.showToast(tr('auth.profile_wiped'), true);
         await this.store.lock();
       }
     } catch {
-      this.store.showToast('Неверный пароль', true);
+      this.store.showToast(tr('auth.wrong_pass'), true);
     }
   }
 

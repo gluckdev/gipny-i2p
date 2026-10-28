@@ -15,6 +15,7 @@ futures = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
+base64 = "0.22"
 serde-big-array = { workspace = true }
 bincode = { workspace = true }
 thiserror = { workspace = true }
@@ -48,11 +49,14 @@ bytes = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 flate2 = "1"
 tar = "0.4"
-[dev-dependencies]
+# An owned, same-directory staging file: cleanup on errors/cancellation and
+# atomic replacement only after the updater verifies the complete artifact.
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
 ] }

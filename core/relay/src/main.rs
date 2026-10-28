@@ -103,6 +103,7 @@ const CLIENT_SILENT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    i2p_embed::process_security::harden_process()?;
     // `--dht` makes the relay a node of the relay network (a seed, when its
     // destination is baked into releases as GIPNY_DHT_SEEDS). `--no-store`
     // keeps it a router-only node; `--seeds` or GIPNY_DHT_SEEDS name other
@@ -136,11 +137,11 @@ async fn main() -> anyhow::Result<()> {
     // so a cold start doesn't have to reseed over HTTPS.
     if let Some(seed_path) = std::env::var_os("GIPNY_I2P_SEED").map(std::path::PathBuf::from) {
         if seed_path.is_file() {
-            eprintln!("[relay] seeding netDb from {}", seed_path.display());
+            i2p_embed::debug_trace!("[relay] seeding netDb from {}", seed_path.display());
             let _ = seed_netdb_from(&seed_path, &router_dir);
         }
     } else if let Some(seed_path) = bundled_seed() {
-        eprintln!("[relay] seeding netDb from bundled snapshot");
+        i2p_embed::debug_trace!("[relay] seeding netDb from bundled snapshot");
         let _ = seed_netdb_from(&seed_path, &router_dir);
     }
 
@@ -209,7 +210,7 @@ async fn main() -> anyhow::Result<()> {
             tick.tick().await;
             if let Err(e) = storage_gc.gc() { eprintln!("[relay] gc err: {}", e); }
             if let Ok((b, m)) = storage_gc.stats() {
-                eprintln!("[relay] stats: bundles={} pending_messages={}", b, m);
+                i2p_embed::debug_trace!("[relay] stats: bundles={} pending_messages={}", b, m);
             }
         }
     });
@@ -226,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
                 let dht = dht.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
-                        eprintln!("[relay] client disconnected: {}", e);
+                        i2p_embed::debug_trace!("[relay] client disconnected: {}", e);
                     }
                 });
             }
@@ -313,7 +314,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
         anyhow::bail!("bad signature");
     }
     send_frame(&mut stream, &RelayToClient::AuthOk).await?;
-    eprintln!("[relay] auth ok {} ({})", hex_short(&sign_pk), if owner { "v2" } else { "v1, deposit only" });
+    i2p_embed::debug_trace!("[relay] auth ok {} ({})", hex_short(&sign_pk), if owner { "v2" } else { "v1, deposit only" });
 
     let (push_tx, mut push_rx) = mpsc::channel::<RelayToClient>(512);
     if !owner {
@@ -349,7 +350,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
         match storage_init.pending_for(&sign_pk) {
             Ok(pending) => {
                 if !pending.is_empty() {
-                    eprintln!("[relay] pushing {} pending to {}", pending.len(), hex_short(&sign_pk));
+                    i2p_embed::debug_trace!("[relay] pushing {} pending to {}", pending.len(), hex_short(&sign_pk));
                 }
                 for (id, blob) in pending {
                     if !cursor_init.lock().await.claim(id) {
@@ -417,7 +418,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
             }
         }
     }
-    eprintln!("[relay] client gone {}", hex_short(&sign_pk));
+    i2p_embed::debug_trace!("[relay] client gone {}", hex_short(&sign_pk));
     result
 }
 
@@ -487,7 +488,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     loop {
         tokio::select! {
             () = &mut silent => {
-                eprintln!("[relay] client silent for {CLIENT_SILENT:?}, dropping it");
+                i2p_embed::debug_trace!("[relay] client silent for {CLIENT_SILENT:?}, dropping it");
                 break;
             }
             (rd, frame) = &mut reading => {

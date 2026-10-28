@@ -1,10 +1,10 @@
 //! Cross-version compatibility fixtures (issue #31).
 //!
 //! Moving the crypto/serde stack to new majors may change nothing about what is
-//! on disk or on the wire: a vault created before the migration must open
-//! after it, an X3DH handshake and a ratchet message produced before must
+//! on the wire: an X3DH handshake and a ratchet message produced before must
 //! decrypt after, attachment chunks likewise, and fixed seeds must derive to
-//! the same keys and signatures.
+//! the same keys and signatures. The owner-required device binding v2 rejects
+//! the old portable vault explicitly and preserves its files unchanged.
 //!
 //! The files under `tests/fixtures/compat-0.4.0/` were produced by
 //! `generate_fixtures` (run with `--ignored`) on the pre-migration stack:
@@ -19,11 +19,10 @@ use gipny_libcore::crypto::{
     x3dh_initiate, x3dh_respond, AttachmentCipher, Identity, IdentityCard, PreKeyBundle,
     PreKeyPair, RatchetHeader, X3dhInitial,
 };
-use gipny_libcore::security::ArgonParams;
-use gipny_libcore::{Db, DuressMode, UnlockOutcome, Vault};
+use gipny_libcore::device_binding::BindingError;
+use gipny_libcore::security::SecurityError;
+use gipny_libcore::Vault;
 
-const PASS: &str = "correct horse battery staple";
-const DURESS: &str = "under duress";
 const AD: &[u8] = b"compat-ad";
 const SIGNED: &[u8] = b"compat message";
 const CHUNK_KEY: [u8; 32] = [0x42; 32];
@@ -55,13 +54,14 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// Produces the fixture set. Run once on the old stack:
+/// Produces the wire fixture set. The legacy vault must remain the original
+/// pre-migration fixture; never regenerate it using the new storage format.
+/// Run only in GitHub Actions on the appropriate old stack:
 /// `cargo test -p gipny-libcore --test compat -- --ignored generate_fixtures`
 #[test]
 #[ignore]
 fn generate_fixtures() {
     let dir = fixtures();
-    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
     // Fixed seeds → identity card, a signature, a prekey's public half.
@@ -84,19 +84,6 @@ fn generate_fixtures() {
     let chunk = AttachmentCipher::from_key(CHUNK_KEY).encrypt_chunk(3, CHUNK_AAD, CHUNK_PT).unwrap();
     std::fs::write(dir.join("chunk.bin"), chunk).unwrap();
 
-    // A vault and the two SQLCipher databases it protects. Small Argon2 cost:
-    // this is about the format, not about brute-force resistance.
-    let vdir = dir.join("vault");
-    let vault = Vault::create_with_params(
-        &vdir, PASS, Some(DURESS), DuressMode::Decoy, 5, ArgonParams { m: 8192, t: 1, p: 1 },
-    ).unwrap();
-    let UnlockOutcome::Primary(mk) = vault.unlock(PASS).unwrap() else { panic!("primary") };
-    Db::open(&vdir.join("data.db"), &mk).unwrap().set_setting("fixture", b"compat-0.4.0 primary").unwrap();
-    let UnlockOutcome::Decoy(dk) = vault.unlock(DURESS).unwrap() else { panic!("decoy") };
-    Db::open(&vdir.join("decoy.db"), &dk).unwrap().set_setting("fixture", b"compat-0.4.0 decoy").unwrap();
-    for leftover in ["data.db-wal", "data.db-shm", "decoy.db-wal", "decoy.db-shm"] {
-        assert!(!vdir.join(leftover).exists(), "{leftover} left behind: the fixture must be a checkpointed database");
-    }
 }
 
 #[test]
@@ -127,19 +114,15 @@ fn attachment_chunk_from_0_4_0_still_decrypts_and_re_encrypts_identically() {
 }
 
 #[test]
-fn vault_from_0_4_0_opens_with_both_passphrases() {
+fn portable_vault_from_0_4_0_is_rejected_without_modifying_data() {
     let tmp = tempfile::tempdir().unwrap();
     copy_dir(&fixtures().join("vault"), tmp.path());
-    let vault = Vault::open(tmp.path()).unwrap();
-
-    let UnlockOutcome::Primary(mk) = vault.unlock(PASS).unwrap() else { panic!("primary passphrase") };
-    let db = Db::open(&tmp.path().join("data.db"), &mk).unwrap();
-    assert_eq!(db.get_setting("fixture").unwrap().as_deref(), Some(&b"compat-0.4.0 primary"[..]));
-
-    let UnlockOutcome::Decoy(dk) = vault.unlock(DURESS).unwrap() else { panic!("duress passphrase") };
-    let decoy = Db::open(&tmp.path().join("decoy.db"), &dk).unwrap();
-    assert_eq!(decoy.get_setting("fixture").unwrap().as_deref(), Some(&b"compat-0.4.0 decoy"[..]));
-
-    // Last, because a failed attempt arms the unlock throttle.
-    assert!(vault.unlock("not the passphrase").is_err());
+    let before: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().map(|entry| {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    }).collect();
+    assert!(matches!(Vault::open(tmp.path()), Err(SecurityError::DeviceBinding(BindingError::LegacyUnbound))));
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), before.len());
+    for (path, bytes) in before { assert_eq!(std::fs::read(path).unwrap(), bytes); }
 }

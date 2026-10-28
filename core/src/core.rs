@@ -14,10 +14,12 @@ use tokio::time::MissedTickBehavior;
 use gipny_libcore::crypto::{
     self, AttachmentCipher, Identity, IdentityCard, PreKeyBundle, PreKeyPair, RatchetState,
 };
-use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, PreKeyKind, RequestState, TrustLevel};
+use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, NewOutgoingGroup, PreKeyKind, RequestState, TrustLevel};
 use gipny_libcore::net::{NetError, TorNode};
 use gipny_libcore::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY};
-use gipny_libcore::update::{Component as UpdateComponent, InstallOutcome, UpdateError, UpdateInfo, Updater};
+use gipny_libcore::update::{Component as UpdateComponent, UpdateError, UpdateInfo, Updater};
+#[cfg(not(target_os = "android"))]
+use gipny_libcore::update::InstallOutcome;
 #[cfg(target_os = "android")]
 use super::android::install_apk;
 
@@ -182,6 +184,7 @@ pub enum CoreEvent {
         body: String,
         buttons: Option<Vec<Vec<WireButton>>>,
     },
+    MessageDeleted { contact_id: i64, message_id: i64, deleted_at: i64, pending: bool },
     MessagePinned {
         contact_id: Option<i64>,
         group_id: Option<String>,
@@ -238,13 +241,15 @@ pub enum CoreEvent {
     /// alone, it read as a finished step on the unlock screen.
     DhtJoined { peers: usize, reached: bool },
     GroupUpdated { group_id: String },
-    /// A newer version exists and auto-update is off — the UI's manual
-    /// install prompt is the only path from here.
+    /// A newer version needs a manual start or system consent.
     UpdateAvailable { version: String, notes: String, size: u64 },
     UpdateProgress { downloaded: u64, total: u64, pct: u8 },
     /// Downloaded and installed (or staged for the next launch, on Windows) —
     /// nothing to click, just a notice.
     UpdateStaged { version: String },
+    /// A verified package was handed to the system; installation still needs
+    /// confirmation there and cancellation must remain retryable.
+    UpdateInstallerOpened { version: String, path: String },
     /// Downloaded, but this build cannot install it automatically; `path` is
     /// where it landed.
     UpdateReady { path: String },
@@ -409,6 +414,8 @@ pub struct Core {
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
     pending_update: Arc<Mutex<Option<UpdateInfo>>>,
+    update_install: Arc<Mutex<()>>,
+    prepared_update: Arc<Mutex<Option<String>>>,
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
     /// Ids of console commands to run, in order, by the single agent worker.
     agent_tx: mpsc::UnboundedSender<i64>,
@@ -556,6 +563,8 @@ impl Core {
         // after them.
         std::fs::create_dir_all(data_dir.join(ATTACHMENTS_DIR))?;
         let identity = Arc::new(Self::load_or_create_identity(&db)?);
+        db.configure_dm_identity(&identity.card().sign_pk)?;
+        db.cleanup_deleted_files(&data_dir.join(ATTACHMENTS_DIR))?;
         let (events_tx, events_rx) = mpsc::channel(EVENTS_CAPACITY);
         let updater = Arc::new(Updater::new(node.clone(), UpdateComponent::App));
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
@@ -584,6 +593,8 @@ impl Core {
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             updater,
             pending_update: Arc::new(Mutex::new(None)),
+            update_install: Arc::new(Mutex::new(())),
+            prepared_update: Arc::new(Mutex::new(None)),
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             agent_tx,
             hosted_relay: Arc::new(std::sync::Mutex::new(None)),
@@ -706,7 +717,7 @@ impl Core {
             loop {
                 let still_ours = matches!(
                     &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()),
-                    HostedRelayState::Ready { address: a } if *a == address
+                    HostedRelayState::Ready { address: a } if relay::same_destination(a, &address)
                 );
                 if !still_ours {
                     this.note_relay_reach(None);
@@ -797,7 +808,7 @@ impl Core {
             for contact in &contacts {
                 let _ = self.relay_for(contact).await;
             }
-            eprintln!("[relay-client] dialling the relays of {} recent contact(s) ahead of use", contacts.len());
+            gipny_libcore::debug_trace!("[relay-client] dialling the relays of {} recent contact(s) ahead of use", contacts.len());
         });
     }
 
@@ -822,7 +833,7 @@ impl Core {
         if let Some(task) = prebuilt {
             match task.await {
                 Ok(Ok(relay)) => {
-                    eprintln!("[relay-hosted] using the relay built before unlock");
+                    gipny_libcore::debug_trace!("[relay-hosted] using the relay built before unlock");
                     relay.claim(owner, Some(dht_client::handler(&self.dht)));
                     return Ok(relay);
                 }
@@ -848,7 +859,7 @@ impl Core {
                 return;
             }
             self.set_hosted_state(HostedRelayState::Starting);
-            eprintln!("[relay-hosted] starting the built-in relay (in-process router)...");
+            gipny_libcore::debug_trace!("[relay-hosted] starting the built-in relay (in-process router)...");
             match self.bring_up_hosted_relay().await {
                 Ok(relay) => {
                     // The mode may have changed while the tunnels were building.
@@ -858,7 +869,7 @@ impl Core {
                         return;
                     }
                     let address = relay.address().to_string();
-                    eprintln!("[relay-hosted] built-in relay ready at {}", &address[..address.len().min(16)]);
+                    gipny_libcore::debug_trace!("[relay-hosted] built-in relay ready at {}", &address[..address.len().min(16)]);
                     *self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(relay);
                     // Every contact still holds the previous launch's address.
                     // They are told as soon as their relay can be reached; the
@@ -921,7 +932,7 @@ impl Core {
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
             let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
             if self.send_payload_via_relay(&contact, &mut payload, &out).await.is_ok() {
-                eprintln!("[relay-hosted] told contact {id} where we collect now (waiting to hear back)");
+                gipny_libcore::debug_trace!("[relay-hosted] told contact {id} where we collect now (waiting to hear back)");
                 self.announce_sent_at.lock().await.insert(id, Instant::now());
             }
         }
@@ -942,7 +953,7 @@ impl Core {
         if has_mail && since.elapsed() >= CONTACT_UNREACHABLE_AFTER
             && self.unreachable_reported.lock().await.insert(contact.id)
         {
-            eprintln!("[relay-client] contact {} has been unreachable for {:?}", contact.id, since.elapsed());
+            gipny_libcore::debug_trace!("[relay-client] contact {} has been unreachable for {:?}", contact.id, since.elapsed());
             let _ = self.events.try_send(CoreEvent::ContactReachability { contact_id: contact.id, unreachable: true });
         }
     }
@@ -953,16 +964,19 @@ impl Core {
     }
 
     fn load_or_create_identity(db: &Db) -> Result<Identity> {
-        match (db.get_setting(SETTING_IDENTITY_SIGN)?, db.get_setting(SETTING_IDENTITY_DH)?) {
+        match (db.get_setting(SETTING_IDENTITY_SIGN)?.map(zeroize::Zeroizing::new), db.get_setting(SETTING_IDENTITY_DH)?.map(zeroize::Zeroizing::new)) {
             (Some(s), Some(d)) if s.len() == 32 && d.len() == 32 => {
-                let mut sign = [0u8; 32]; sign.copy_from_slice(&s);
-                let mut dh = [0u8; 32]; dh.copy_from_slice(&d);
-                Ok(Identity::from_bytes(sign, dh))
+                let mut sign=zeroize::Zeroizing::new([0u8;32]); sign.copy_from_slice(&s);
+                let mut dh=zeroize::Zeroizing::new([0u8;32]); dh.copy_from_slice(&d);
+                Ok(Identity::try_from_bytes(*sign,*dh)?)
             }
             _ => {
-                let id = Identity::generate();
-                db.set_setting(SETTING_IDENTITY_SIGN, id.sign_seed())?;
-                db.set_setting(SETTING_IDENTITY_DH, id.dh_secret())?;
+                let id=Identity::try_generate()?;
+                id.with_secret_bytes(|sign,dh| -> gipny_libcore::db::Result<()> {
+                    db.set_setting(SETTING_IDENTITY_SIGN,sign)?;
+                    db.set_setting(SETTING_IDENTITY_DH,dh)?;
+                    Ok(())
+                })??;
                 Ok(id)
             }
         }
@@ -1005,7 +1019,7 @@ impl Core {
         }
         self.db.set_setting(SETTING_AGENT_MASTER, &c.identity_sign)?;
         self.send_console(cid, BODY_GRANT.into(), WireConsole::new(CONSOLE_GRANT), vec![]).await?;
-        eprintln!("[agent] agent mode on, master = contact {cid}");
+        gipny_libcore::debug_trace!("[agent] agent mode on, master = contact {cid}");
         let _ = self.events.try_send(CoreEvent::AgentModeChanged { master: self.agent_master() });
         self.enqueue_pending_commands(cid);
         Ok(())
@@ -1017,7 +1031,7 @@ impl Core {
         if let (true, Some(m)) = (notify_master, &prev) {
             let _ = self.send_console(m.contact_id, BODY_REVOKE.into(), WireConsole::new(CONSOLE_REVOKE), vec![]).await;
         }
-        eprintln!("[agent] agent mode off");
+        gipny_libcore::debug_trace!("[agent] agent mode off");
         let _ = self.events.try_send(CoreEvent::AgentModeChanged { master: None });
         Ok(())
     }
@@ -1097,13 +1111,9 @@ impl Core {
         }
         let _ = self.db.delete_setting(&pending_key);
         let files = self.load_attachment_data(mid).unwrap_or_default();
-        eprintln!(
-            "[agent] exec from {}: {}{}",
-            &master.sign_pk[..16], msg.body,
-            if files.is_empty() { String::new() } else { format!(" (+{} files)", files.len()) },
-        );
+        gipny_libcore::debug_trace!("[agent] executing command with {} file(s)", files.len());
         let reply = agent::handle_console_request(&msg.body, &files, &ExecOptions::default()).await;
-        eprintln!(
+        gipny_libcore::debug_trace!(
             "[agent] exit={:?} dur={:?}ms truncated={}",
             reply.console.exit_code, reply.console.duration_ms, reply.console.truncated,
         );
@@ -1197,7 +1207,7 @@ impl Core {
     /// is gone here too.
     async fn send_wipe(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, since: i64) -> Result<bool> {
         if now_ms() - since > WIPE_TTL_MS {
-            eprintln!("[wipe] contact {}: request not handed over in a week; deleting here", contact.id);
+            gipny_libcore::debug_trace!("[wipe] contact {}: request not handed over in a week; deleting here", contact.id);
             self.delete_contact(contact.id).await?;
             return Ok(true);
         }
@@ -1208,10 +1218,10 @@ impl Core {
         let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
         payload.wipe = Some(true);
         if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &route).await {
-            eprintln!("[wipe] contact {}: {e:?}; trying again", contact.id);
+            gipny_libcore::debug_trace!("[wipe] contact {}: {e:?}; trying again", contact.id);
             return Ok(false);
         }
-        eprintln!("[wipe] contact {}: delete request handed over; deleting here", contact.id);
+        gipny_libcore::debug_trace!("[wipe] contact {}: delete request handed over; deleting here", contact.id);
         self.delete_contact(contact.id).await?;
         Ok(true)
     }
@@ -1249,13 +1259,15 @@ impl Core {
         let id = self.db.get_setting(SETTING_SIGNED_PREKEY_ID)?;
         if id.is_none() {
             let pair = PreKeyPair::generate();
-            let pid = self.db.add_prekey(PreKeyKind::Signed, pair.secret(), pair.public())?;
+            let secret=pair.expose_secret()?;
+            let pid = self.db.add_prekey(PreKeyKind::Signed, &*secret, pair.public())?;
             self.db.set_setting(SETTING_SIGNED_PREKEY_ID, &pid.to_be_bytes())?;
         }
         let count = self.db.count_prekeys(PreKeyKind::OneTime)?;
         for _ in count..(TARGET_OPK as i64) {
             let pair = PreKeyPair::generate();
-            self.db.add_prekey(PreKeyKind::OneTime, pair.secret(), pair.public())?;
+            let secret=pair.expose_secret()?;
+            self.db.add_prekey(PreKeyKind::OneTime, &*secret, pair.public())?;
         }
         Ok(())
     }
@@ -1425,7 +1437,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1466,7 +1478,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1476,6 +1488,7 @@ impl Core {
     pub async fn send_edit(self: &Arc<Self>, contact_id: i64, message_id: i64, new_body: String) -> Result<()> {
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let msg = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
+        if msg.deleted_at.is_some() { return Err(CoreError::State); }
         if !matches!(msg.direction, Direction::Out) || msg.contact_id != Some(contact_id) {
             return Err(CoreError::State);
         }
@@ -1483,9 +1496,9 @@ impl Core {
         let buttons: Option<Vec<Vec<WireButton>>> = self.db.get_setting(&format!("buttons_{}", message_id))
             .ok().flatten()
             .and_then(|b| bincode::deserialize(&b).ok());
-        let _ = self.events.try_send(CoreEvent::MessageEdited {
+        if !self.db.if_message_live(message_id,|| { let _ = self.events.try_send(CoreEvent::MessageEdited {
             message_id, body: new_body.clone(), buttons: buttons.clone(),
-        });
+        }); })? {return Err(CoreError::State);}
         let mut payload = WirePayload {
             origin_msg_id: 0,
             body: new_body,
@@ -1503,7 +1516,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
         self.ensure_session_for(&contact, &out).await?;
@@ -1556,7 +1569,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1603,7 +1616,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
         let out = self.route_for(&contact).await.ok_or(CoreError::State)?;
@@ -1670,7 +1683,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1679,18 +1692,11 @@ impl Core {
 
     /// Whether a found update installs by itself.
     ///
-    /// Always yes, by the owner's decision (2026-09-17): a messenger whose
-    /// security fixes wait for someone to press a button is only as safe as
-    /// the least attentive install, and the old switch made "I turned it off
-    /// once" a permanent state. `GIPNY_NO_AUTO_UPDATE=1` is the developer's
-    /// escape hatch — an environment variable, not a setting, so it cannot be
-    /// left behind in a profile.
+    /// Enabled by default; honor the saved preference and the explicit
+    /// `GIPNY_NO_AUTO_UPDATE=1` developer override on every check.
     pub fn auto_update_enabled(&self) -> bool {
-        if std::env::var_os("GIPNY_NO_AUTO_UPDATE").is_some() {
-            return false;
-        }
-        let _ = SETTING_AUTO_UPDATE; // kept for older profiles; no longer read
-        true
+        let Ok(setting) = self.db.get_setting(SETTING_AUTO_UPDATE) else { return false };
+        gipny_libcore::update::auto_update_allowed(setting.as_deref(), std::env::var("GIPNY_NO_AUTO_UPDATE").ok().as_deref())
     }
 
     /// The interface's own data under `key` (see `UI_DATA_KEYS`), kept in the
@@ -1716,15 +1722,111 @@ impl Core {
     /// Empty the transcript, as the "clear history when I lock" setting asks.
     ///
     /// Runs before the vault is closed so it still has the unlocked database
-    /// under it. Pinned messages survive, deliberately: see `purge_all_messages`.
+    /// under it. DM pins do not override deletion. Group pins retain their
+    /// previous local-only semantics; see `purge_all_messages`.
     pub fn clear_message_history(&self) -> Result<usize> {
-        let dropped = self.db.purge_all_messages()?;
-        // Pinned rows were spared, so this purge orphans nothing. It still runs
-        // because pins whose message went missing earlier — an interrupted run,
-        // a profile copied mid-write — would otherwise sit in the pinned list
-        // pointing at rows nobody can read.
+        let deleted = self.db.clear_dm_history()?;
+        for message in &deleted { self.emit_dm_deleted(message)?; }
+        let dropped = self.db.purge_all_messages()? + deleted.iter().filter(|message| message.changed).count();
+        // Also clean pins left by earlier versions or interrupted imports.
         self.db.cleanup_orphan_pins()?;
         Ok(dropped)
+    }
+
+    pub fn clear_dm_contact(&self, contact_id:i64) -> Result<usize> {
+        let deletions=self.db.clear_dm_contact(contact_id)?;
+        for deletion in &deletions {self.emit_dm_deleted(deletion)?;}
+        Ok(deletions.iter().filter(|deletion|deletion.changed).count())
+    }
+
+    /// Direct messages become durable tombstones; group deletion retains its
+    /// previous local semantics and does not broadcast a new group operation.
+    pub fn delete_message(&self, message_id: i64) -> Result<()> {
+        let message = self.db.get_message(message_id)?.ok_or(CoreError::NotFound)?;
+        if message.contact_id.is_none() || message.group_id.is_some() {
+            return Ok(self.db.delete_message(message_id)?);
+        }
+        let deleted = self.db.delete_dm_message(message_id)?;
+        self.emit_dm_deleted(&deleted)
+    }
+
+    fn emit_dm_deleted(&self, deletion: &gipny_libcore::db::DmDelete) -> Result<()> {
+        if let Some(flow) = self.flows.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&deletion.contact_id) {
+            for file in &deletion.files { flow.forget(*file); }
+        }
+        self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        let message = self.db.get_message(deletion.message_id)?.ok_or(CoreError::NotFound)?;
+        let _ = self.events.try_send(CoreEvent::MessageDeleted {
+            contact_id: deletion.contact_id, message_id: deletion.message_id,
+            deleted_at: message.deleted_at.ok_or(CoreError::State)?,
+            pending: self.db.dm_delete_pending(deletion.message_id)?,
+        });
+        self.send_kick.notify_one();
+        Ok(())
+    }
+
+    async fn handle_dm_control(self: &Arc<Self>, contact_id: i64, payload: &WirePayload) -> Result<bool> {
+        let Some(dm) = &payload.dm else { return Ok(false); };
+        if dm.kind == 0 { return Ok(false); }
+        if !dm.is_control_payload(payload) { return Err(CoreError::State); }
+        match dm.kind {
+            1 => {
+                let deleted = self.db.receive_dm_delete(contact_id, &dm.reference)?;
+                self.emit_dm_deleted(&deleted)?;
+                let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+                let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+                ack.dm = Some(gipny_libcore::session::WireDm { kind: 2, reference: dm.reference.clone() });
+                if let Some(route) = self.route_for(&contact).await {
+                    let _ = self.send_payload_via_relay(&contact, &mut ack, &route).await;
+                }
+            }
+            2 => {
+                if self.db.acknowledge_dm_delete(contact_id, &dm.reference)? {
+                    if let Some(message_id) = self.db.dm_deleted_message_id(contact_id, &dm.reference)? {
+                        self.emit_dm_deleted(&gipny_libcore::db::DmDelete {
+                            contact_id, message_id, changed: false, files: vec![],
+                        })?;
+                    }
+                }
+            }
+            _ => return Err(CoreError::State),
+        }
+        Ok(true)
+    }
+
+    async fn reject_deleted_dm_content(self: &Arc<Self>, contact_id:i64, payload:&WirePayload) -> Result<bool> {
+        if payload.group.is_some() {
+            if payload.dm.is_some() { return Err(CoreError::State); }
+            return Ok(false);
+        }
+        let contact=self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        let ordinary=payload.origin_msg_id>0 && payload.edit_of.is_none()
+            && payload.ack_for.is_none() && payload.callback_data.is_none();
+        let reference=if let Some(dm)=&payload.dm {
+            if dm.kind!=0 || dm.reference.origin==0 || dm.reference.origin>i64::MAX as u64
+                || dm.reference.author.as_slice()!=contact.identity_sign.as_slice()
+                || (ordinary && (dm.reference.origin!=payload.origin_msg_id || dm.reference.sent_at!=payload.sent_at)) {
+                return Err(CoreError::State);
+            }
+            Some(dm.reference.clone())
+        } else if ordinary {
+            Some(gipny_libcore::db::DmReference { author:to_arr32(contact.identity_sign.clone())?,
+                origin:payload.origin_msg_id,sent_at:payload.sent_at })
+        } else {None};
+        let Some(reference)=reference else {return Ok(false)};
+        let mut files:Vec<_>=payload.files.iter().map(|file|file.file_id).collect();
+        if let Some(chunk)=&payload.file_chunk {files.push(chunk.file_id);}
+        if self.db.reject_deleted_dm_files(contact_id,&reference,&files)? {
+            let _=self.send_ack(&contact,payload).await;
+            return Ok(true);
+        }
+        if ordinary && payload.ttl_ms.is_some_and(|ttl|ttl>0 && payload.sent_at.saturating_add(ttl)<=now_ms()) {
+            let deletion=self.db.expire_incoming_dm(contact_id,&reference)?;
+            self.db.reject_deleted_dm_files(contact_id,&reference,&files)?;
+            self.emit_dm_deleted(&deletion)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// The same, but only if the person asked for it, and saying whether it
@@ -1745,17 +1847,16 @@ impl Core {
         Ok(true)
     }
 
-    /// Kept so an older interface does not fail; updates install either way.
+    /// Save the same preference read by automatic installation checks.
     pub fn set_auto_update(&self, enabled: bool) -> Result<()> {
         self.db.set_setting(SETTING_AUTO_UPDATE, if enabled { b"1" } else { b"0" })?;
         Ok(())
     }
 
     /// Checks GitHub for a newer release. With auto-update on (the default)
-    /// and a matching asset for this platform, this also downloads and
-    /// installs it — silently, without waiting for anything to be clicked —
-    /// before returning; the caller only ever needs to act on the result when
-    /// auto-update is off.
+    /// and a matching asset, this prepares supported unattended updates before
+    /// returning. Platforms requiring system consent or a package-manager
+    /// password emit UpdateAvailable for the person to start installation.
     pub async fn check_and_emit_update(self: Arc<Self>) -> Result<Option<UpdateInfo>> {
         Ok(match self.check_update_detailed().await? {
             gipny_libcore::update::CheckOutcome::Update(i) => Some(i),
@@ -1789,15 +1890,12 @@ impl Core {
         // .deb installs need a person because the package manager asks for the
         // administrator password. A password dialog appearing by itself, with no
         // context, is not an update — it is something people rightly refuse.
-        // Android now auto-installs via system installer intent.
-        let needs_a_person = gipny_libcore::update::is_deb_install();
+        // Android and macOS also need explicit system/package handoff.
+        let needs_a_person = gipny_libcore::update::is_deb_install() || cfg!(any(target_os = "macos", target_os = "android"));
         if self.auto_update_enabled() && !needs_a_person {
-            let this = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = this.install_update().await {
-                    eprintln!("[update] auto-install failed: {e:?}");
-                }
-            });
+            // Propagate install failures to the same retry/backoff loop as
+            // transport errors instead of silently waiting another six hours.
+            self.clone().install_update().await?;
         } else {
             let _ = self.events.try_send(CoreEvent::UpdateAvailable {
                 version: info.version.clone(),
@@ -1809,10 +1907,12 @@ impl Core {
     }
 
     /// Downloads and installs the pending update (from `check_and_emit_update`
-    /// or a manual "Update now" click), then marks that version dismissed so
-    /// it is not re-installed on every later check within the same launch.
+    /// or a manual "Update now" click). Completed preparation is remembered
+    /// for this process; a system handoff never dismisses the release.
     pub async fn install_update(self: Arc<Self>) -> Result<()> {
+        let _installation = self.update_install.lock().await;
         let info = self.pending_update.lock().await.clone().ok_or(CoreError::NotFound)?;
+        if self.prepared_update.lock().await.as_deref() == Some(info.version.as_str()) { return Ok(()); }
         let ev = self.events.clone();
         let ev_dl = ev.clone();
         let dl_dir = self.data_dir.join("update_dl");
@@ -1830,20 +1930,33 @@ impl Core {
 
         #[cfg(target_os = "android")]
         {
-            let cache_dir = self.data_dir.join("cache");
-            std::fs::create_dir_all(&cache_dir).ok();
-            let apk_name = format!("gipny-{}-android.apk", info.version);
-            let apk_path = cache_dir.join(&apk_name);
-            let _ = std::fs::copy(&path, &apk_path);
-            let _ = std::fs::remove_dir_all(&dl_dir);
-
-            match install_apk(apk_path.to_str().unwrap_or("")) {
+            let staged = crate::update_staging::stage_for_install(&path, &info.sha256.to_string());
+            let apk_path = match staged {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = ev.send(CoreEvent::UpdateFailed { reason: error.to_string() }).await;
+                    return Err(error.into());
+                }
+            };
+            let install_result = match apk_path.to_str() {
+                Some(path) => install_apk(path).await,
+                None => Err("APK cache path is not valid UTF-8".into()),
+            };
+            match install_result {
                 Ok(_) => {
-                    self.dismiss_update(info.version.clone()).await?;
-                    let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
+                    // Android still needs the cache copy after startActivity.
+                    // Leave the verified download available for another caller
+                    // already staging the same release. The updater replaces it
+                    // atomically on the next download; the URI uses its own copy.
+                    // Starting Android's UI does not prove installation. A
+                    // cancelled permission/install prompt must remain retryable.
+                    let _ = ev.send(CoreEvent::UpdateInstallerOpened {
+                        version: info.version, path: apk_path.display().to_string(),
+                    }).await;
                     return Ok(());
                 }
                 Err(e) => {
+                    let _ = std::fs::remove_file(&apk_path);
                     eprintln!("[update] Android APK install failed: {e}");
                     let _ = ev.send(CoreEvent::UpdateFailed { reason: format!("APK install failed: {e}") }).await;
                     return Err(CoreError::Update(gipny_libcore::update::UpdateError::Unsupported(e)));
@@ -1862,16 +1975,21 @@ impl Core {
             };
             match outcome {
                 InstallOutcome::InstalledNow | InstallOutcome::StagedForNextLaunch => {
-                    let _ = std::fs::remove_dir_all(&dl_dir);
-                    self.dismiss_update(info.version.clone()).await?;
+                    *self.prepared_update.lock().await = Some(info.version.clone());
                     let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
                 }
+                InstallOutcome::InstallerOpened(path) => {
+                    let _ = ev.send(CoreEvent::UpdateInstallerOpened {
+                        version: info.version, path: path.display().to_string(),
+                    }).await;
+                }
                 InstallOutcome::Unsupported(msg) => {
-                    let _ = ev.send(CoreEvent::UpdateReady { path: msg }).await;
+                    let _ = ev.send(CoreEvent::UpdateFailed { reason: msg.clone() }).await;
+                    return Err(UpdateError::Unsupported(msg).into());
                 }
             }
+            Ok(())
         }
-        Ok(())
     }
 
     pub async fn dismiss_update(&self, version: String) -> Result<()> {
@@ -1883,11 +2001,10 @@ impl Core {
     pub async fn list_apk_artifacts(&self) -> Result<(String, Vec<(String, u64)>)> {
         let release = self.updater.latest_release().await?;
         let mut out = Vec::new();
-        for asset in &release.assets {
-            if let Some(rest) = asset.name.strip_prefix("gipny-i2p_") {
-                if let Some(arch) = rest.split("_android-").nth(1).and_then(|s| s.strip_suffix(".apk")) {
-                    out.push((arch.to_string(), asset.size));
-                }
+        for arch in ["arm64", "armv7"] {
+            let name = format!("gipny-i2p_{}_android-{arch}.apk", release.version);
+            if let Some(asset) = gipny_libcore::update::unique_asset(&release.assets, &name)? {
+                out.push((arch.to_string(), asset.size));
             }
         }
         out.sort();
@@ -1895,15 +2012,24 @@ impl Core {
     }
 
     pub async fn download_apk(self: Arc<Self>, arch: String, dest_path: String) -> Result<()> {
+        if !matches!(arch.as_str(), "arm64" | "armv7") { return Err(CoreError::NotFound); }
         let release = self.updater.latest_release().await?;
         let suffix = format!("_android-{arch}.apk");
-        let asset = release.assets.iter().find(|a| a.name.ends_with(&suffix))
+        let wanted = format!("gipny-i2p_{}{suffix}", release.version);
+        let asset = gipny_libcore::update::unique_asset(&release.assets, &wanted)?
             .ok_or(CoreError::NotFound)?
             .clone();
         let ev = self.events.clone();
         let ev_dl = ev.clone();
         let dest = std::path::PathBuf::from(dest_path);
-        match self.updater.download_asset_to(&asset, None, &dest, move |done, t| {
+        let sha256 = match self.updater.asset_sha256(&release, &asset.name).await {
+            Ok(sha256) => sha256,
+            Err(e) => {
+                let _ = ev.send(CoreEvent::UpdateFailed { reason: e.to_string() }).await;
+                return Err(e.into());
+            }
+        };
+        match self.updater.download_asset_to(&asset, &sha256, &dest, move |done, t| {
             let pct = if t > 0 { ((done * 100) / t).min(100) as u8 } else { 0 };
             let _ = ev_dl.try_send(CoreEvent::UpdateProgress { downloaded: done, total: t, pct });
         }).await {
@@ -2000,30 +2126,29 @@ impl Core {
         let sent_at = now_ms();
         let expires_at: Option<i64> = None;
         let ttl: Option<Duration> = None;
-        let (stored, parts) = self.store_outgoing(&attachments)?;
-        let msg_id = self.db.insert_group_message(
-            group_id, Some(&self.identity.card().sign_pk), Direction::Out,
-            &body, sent_at, expires_at, &stored,
-        )?;
-        if let Some(rt) = reply_to {
-            self.db.set_reply_to(msg_id, Some(rt))?;
+        let members = self.db.list_group_members(group_id)?;
+        let mut recipients = Vec::new();
+        for member in members.iter().filter(|member| !member.is_self) {
+            if let Some(contact) = self.db.find_contact_by_identity(&member.dh_pk)? {
+                if contact.trust != TrustLevel::Blocked { recipients.push(contact.id); }
+            }
         }
         let wire_reply = match reply_to {
             Some(rt) => self.build_wire_reply(rt)?,
             None => None,
         };
+        let mut staged = gipny_libcore::files::StagedGroupAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        for attachment in &attachments {
+            match &attachment.from {
+                Some(source) => staged.parts(&attachment.name, std::io::BufReader::new(std::fs::File::open(source)?))?,
+                None if attachment.data.len() > gipny_libcore::files::INLINE_MAX => staged.parts(&attachment.name, &attachment.data[..])?,
+                None => staged.inline(&attachment.name, &attachment.data)?,
+            }
+        }
+        let offers = staged.offers();
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
             .filter(|a| a.from.is_none() && a.data.len() <= gipny_libcore::files::INLINE_MAX)
             .map(|a| WireAttachment { name: a.name, data: a.data }).collect();
-        let members = self.db.list_group_members(group_id)?;
-        let recipients: Vec<i64> = members.iter()
-            .filter(|m| !m.is_self)
-            .filter_map(|m| self.db.find_contact_by_identity(&m.dh_pk).ok().flatten())
-            .filter(|c| c.trust != TrustLevel::Blocked)
-            .map(|c| c.id)
-            .collect();
-        self.register_offers(msg_id, &parts, &recipients)?;
-        let offers = self.offers_for(msg_id)?;
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
             sign_pk: m.sign_pk.clone(),
             dh_pk: m.dh_pk.clone(),
@@ -2032,14 +2157,22 @@ impl Core {
         }).collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef { id: group_id.to_vec(), name: gname, members: gref_members };
-        for m in members {
-            if m.is_self { continue; }
-            let contact = match self.db.find_contact_by_identity(&m.dh_pk)? {
-                Some(c) => c,
-                None => continue,
+        let sender_sign_pk = self.identity.card().sign_pk;
+        let msg_id = staged.publish(&self.db, &NewOutgoingGroup {
+            group_id, sender_sign_pk: &sender_sign_pk, body: &body, sent_at, expires_at, reply_to,
+            buttons: None, notify_sound: None, recipients: &recipients,
+        })?;
+        for recipient in recipients {
+            // A previous attempt may have awaited while this contact was
+            // blocked or deleted; do not send to that contact afterwards.
+            let contact = match self.db.get_contact(recipient) {
+                Ok(Some(contact)) if contact.trust != TrustLevel::Blocked => contact,
+                Err(error) => {
+                    eprintln!("[relay-client] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
+                    continue;
+                }
+                _ => continue,
             };
-            if contact.trust == TrustLevel::Blocked { continue; }
-            self.db.pending_outbound_add(msg_id, contact.id)?;
             let mut payload = WirePayload::simple(
                 msg_id as u64, body.clone(), wire_atts.clone(), sent_at,
                 ttl.map(|d| d.as_millis() as i64),
@@ -2047,9 +2180,10 @@ impl Core {
             payload.group = Some(gref.clone());
             payload.reply_to = wire_reply.clone();
             payload.files = offers.clone();
-            match self.send_to_contact(contact.id, &mut payload).await {
-                Ok(()) => { let _ = self.db.pending_outbound_remove(msg_id, contact.id); }
-                Err(e) => eprintln!("[relay-client] group send to contact {} failed (msg {}): {:?} — kept in pending_outbound", contact.id, msg_id, e),
+            if let Err(e) = Self::attempt_group_delivery(
+                &self.db, msg_id, contact.id, self.send_to_contact(contact.id, &mut payload),
+            ).await {
+                gipny_libcore::debug_trace!("[relay-client] group send to contact {} failed (msg {}): {:?} — kept in pending_outbound", contact.id, msg_id, e);
             }
         }
         Ok(msg_id)
@@ -2106,7 +2240,7 @@ impl Core {
                     let total = gipny_libcore::files::chunk_count(fin.size as u64, fin.chunk_size);
                     let ack = gipny_libcore::files::Received::from_bits(fin.bits.clone(), total).resume_ack(fin.file_id);
                     if this.send_file_message(fin.contact_id, |p| p.file_ack = Some(ack)).await {
-                        eprintln!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
+                        gipny_libcore::debug_trace!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
                     } else {
                         still.push(fin);
                     }
@@ -2127,14 +2261,14 @@ impl Core {
                 let onion = this.relay_onion();
                 let external = !onion.is_empty()
                     && this.relay_out.read().await.is_some()
-                    && !this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| r.address() == onion);
+                    && !this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| relay::same_destination(r.address(), &onion));
                 if !collect_lane_wanted(external, this.part_seen.load(Relaxed), now_ms(), this.collect_lanes.load(Relaxed)) {
                     continue;
                 }
                 let dial = tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, relay::connect(&this.node, &onion, &this.identity)).await;
                 let Ok(Ok(client)) = dial else { continue };
                 let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
-                eprintln!("[files] another connection to our relay for parts ({n} extra)");
+                gipny_libcore::debug_trace!("[files] another connection to our relay for parts ({n} extra)");
                 let lane = this.clone();
                 // Tracked like every task of ours: one left running after
                 // shutdown kept reading mail on the old instance, with its own
@@ -2146,7 +2280,7 @@ impl Core {
                     let quiet = {
                         let lane = lane.clone();
                         let onion = onion.clone();
-                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || lane.relay_onion() != onion
+                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || !relay::same_destination(&lane.relay_onion(), &onion)
                     };
                     lane.clone().run_recv_loop(client, Some(onion.clone()), Some(&quiet)).await;
                     lane.collect_lanes.fetch_sub(1, Relaxed);
@@ -2172,11 +2306,11 @@ impl Core {
                     tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
-                eprintln!("[relay-client] connecting to {}", &onion[..16.min(onion.len())]);
+                gipny_libcore::debug_trace!("[relay-client] connecting to {}", &onion[..16.min(onion.len())]);
                 // Our own built-in relay is in this process: talk to it over a
                 // pipe, not out through i2p and back in.
                 let local = this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
-                    .filter(|r| r.address() == onion)
+                    .filter(|r| relay::same_destination(r.address(), &onion))
                     .map(|r| r.connect_local());
                 // Bounded: nothing below has a timeout of its own, and a dial
                 // i2p leaves hanging would otherwise keep us off our own mail
@@ -2193,7 +2327,7 @@ impl Core {
                 };
                 match connected {
                     Ok(client) => {
-                        eprintln!("[relay-client] connected & authed");
+                        gipny_libcore::debug_trace!("[relay-client] connected & authed");
                         this.note_relay_dial(None);
                         backoff = RECONNECT_INITIAL_MS;
                         *this.relay_out.write().await = Some(client.out_tx.clone());
@@ -2210,7 +2344,7 @@ impl Core {
                         let _ = this.events.try_send(CoreEvent::RelayDisconnected);
                     }
                     Err(e) => {
-                        eprintln!("[relay-client] connect fail: {:?}", e);
+                        gipny_libcore::debug_trace!("[relay-client] connect fail: {:?}", e);
                         this.note_relay_dial(Some(format!("{e:?}")));
                     }
                 }
@@ -2285,7 +2419,7 @@ impl Core {
                     dht_client::put_mail(&self.dht, &self.identity, &their_sign, &their_dh, &blob).await
                 };
                 if ok {
-                    eprintln!("[dht] letter for contact {} left in the network", contact.id);
+                    gipny_libcore::debug_trace!("[dht] letter for contact {} left in the network", contact.id);
                     Ok(())
                 } else {
                     Err(CoreError::State)
@@ -2305,7 +2439,7 @@ impl Core {
         let Some(theirs) = theirs else {
             return self.relay_out.read().await.clone();
         };
-        if theirs == self.relay_onion() {
+        if relay::same_destination(theirs, &self.relay_onion()) {
             return self.relay_out.read().await.clone();
         }
 
@@ -2349,9 +2483,9 @@ impl Core {
                 Ok(Ok(c)) => c,
                 other => {
                     match other {
-                        Err(_) => eprintln!("[relay-client] peer relay {short} did not answer in {:?}",
+                        Err(_) => gipny_libcore::debug_trace!("[relay-client] peer relay {short} did not answer in {:?}",
                             PEER_RELAY_CONNECT_TIMEOUT),
-                        Ok(Err(e)) => eprintln!("[relay-client] peer relay {short} unreachable: {e:?}"),
+                        Ok(Err(e)) => gipny_libcore::debug_trace!("[relay-client] peer relay {short} unreachable: {e:?}"),
                         Ok(Ok(_)) => unreachable!(),
                     }
                     // Back off rather than redialing on every send tick: a relay
@@ -2376,13 +2510,13 @@ impl Core {
                     return;
                 }
             };
-            eprintln!("[relay-client] connected to peer relay {short}");
+            gipny_libcore::debug_trace!("[relay-client] connected to peer relay {short}");
             this.peer_relays.lock().await
                 .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
             // No session with them yet: ask for their bundle now, so a first
             // letter does not wait a round trip for it.
             let no_session = !this.sessions.lock().await.contains_key(&contact_id)
-                && this.db.get_session(contact_id).ok().flatten().is_none();
+                && !this.db.has_session(contact_id).unwrap_or(false);
             if let (true, Some(pk)) = (no_session, contact_pk) {
                 let _ = client.out_tx.send(ClientToRelay::GetBundle { pk }).await;
             }
@@ -2394,7 +2528,7 @@ impl Core {
             // flipping it here would tell the user the wrong thing.
             this.clone().run_recv_loop(client, None, None).await;
             this.peer_relays.lock().await.remove(&key);
-            eprintln!("[relay-client] peer relay {short} disconnected");
+            gipny_libcore::debug_trace!("[relay-client] peer relay {short} disconnected");
         });
         self.tasks.lock().unwrap().push(handle);
         None
@@ -2420,12 +2554,12 @@ impl Core {
                     // half-handled when the connection went could have moved the
                     // ratchet on and not be saved.
                     if done.is_some_and(|d| d()) { break; }
-                    if own.as_ref().is_some_and(|o| *o != self.relay_onion()) {
-                        eprintln!("[relay-client] our relay changed, reconnecting");
+                    if own.as_deref().is_some_and(|o| !relay::same_destination(o, &self.relay_onion())) {
+                        gipny_libcore::debug_trace!("[relay-client] our relay changed, reconnecting");
                         break;
                     }
                     if last_activity.elapsed() > dead_threshold {
-                        eprintln!("[relay-client] no activity for {:?}, forcing reconnect", last_activity.elapsed());
+                        gipny_libcore::debug_trace!("[relay-client] no activity for {:?}, forcing reconnect", last_activity.elapsed());
                         break;
                     }
                     if out_tx.send(ClientToRelay::Ping).await.is_err() { break; }
@@ -2437,11 +2571,11 @@ impl Core {
                     // through: this relay would take our deposits and never
                     // hand us our mail. Reconnect, which tries AuthV2 again.
                     if own.is_some() && matches!(&frame, RelayToClient::Error(e) if e == relay::ERR_NEEDS_AUTH_V2) {
-                        eprintln!("[relay-client] our relay wants AuthV2, reconnecting");
+                        gipny_libcore::debug_trace!("[relay-client] our relay wants AuthV2, reconnecting");
                         break;
                     }
                     if let Err(e) = self.handle_relay_frame(frame, &out_tx).await {
-                        eprintln!("[relay-client] handle err: {:?}", e);
+                        gipny_libcore::debug_trace!("[relay-client] handle err: {:?}", e);
                     }
                 }
             }
@@ -2458,10 +2592,10 @@ impl Core {
                 match self.handle_incoming_envelope(&from, &blob).await {
                     Ok(()) => { let _ = out_tx.send(ClientToRelay::Ack { id }).await; }
                     Err(CoreError::Codec) => {
-                        eprintln!("[relay-client] codec err on msg {}, NOT acking (will retry)", id);
+                        gipny_libcore::debug_trace!("[relay-client] codec err on msg {}, NOT acking (will retry)", id);
                     }
                     Err(CoreError::StaleOpk) => {
-                        eprintln!("[relay-client] stale-OPK X3dhInit on msg {}, ACK and skip (zombie)", id);
+                        gipny_libcore::debug_trace!("[relay-client] stale-OPK X3dhInit on msg {}, ACK and skip (zombie)", id);
                         let _ = out_tx.send(ClientToRelay::Ack { id }).await;
                     }
                     Err(CoreError::SealedDrop) => {
@@ -2474,18 +2608,18 @@ impl Core {
                                 m.get(&c.id).map(|t| now_ms() - *t < FRESH_SESSION_GRACE_MS).unwrap_or(false)
                             };
                             if fresh {
-                                eprintln!("[relay-client] crypto err on msg {} within fresh-session grace, ACK and skip", id);
+                                gipny_libcore::debug_trace!("[relay-client] crypto err on msg {} within fresh-session grace, ACK and skip", id);
                                 let _ = out_tx.send(ClientToRelay::Ack { id }).await;
                             } else {
-                                eprintln!("[relay-client] crypto err on msg {}, requesting resync, NOT acking", id);
+                                gipny_libcore::debug_trace!("[relay-client] crypto err on msg {}, requesting resync, NOT acking", id);
                                 let _ = self.request_resync(&c).await;
                             }
                         } else {
-                            eprintln!("[relay-client] crypto err on msg {}, no contact, NOT acking", id);
+                            gipny_libcore::debug_trace!("[relay-client] crypto err on msg {}, no contact, NOT acking", id);
                         }
                     }
                     Err(e) => {
-                        eprintln!("[relay-client] incoming err: {:?}", e);
+                        gipny_libcore::debug_trace!("[relay-client] incoming err: {:?}", e);
                         let _ = out_tx.send(ClientToRelay::Ack { id }).await;
                     }
                 }
@@ -2508,7 +2642,7 @@ impl Core {
                 // Dropped silently before. The usual cause now: a deposit for a
                 // contact whose card names a relay built into someone else's
                 // app, which holds mail for its owner only.
-                eprintln!("[relay-client] relay error: {reason}");
+                gipny_libcore::debug_trace!("[relay-client] relay error: {reason}");
             }
             _ => {}
         }
@@ -2517,7 +2651,7 @@ impl Core {
 
     async fn handle_incoming_envelope(self: &Arc<Self>, from_pk: &[u8; 32], blob: &[u8]) -> Result<()> {
         let envelope: EnvelopeBlob = bincode::deserialize(blob)?;
-        eprintln!("[recv] {} envelope, {} bytes",
+        gipny_libcore::debug_trace!("[recv] {} envelope, {} bytes",
             match &envelope { EnvelopeBlob::X3dhInit(_) => "x3dh", EnvelopeBlob::Ratchet { .. } => "ratchet" },
             blob.len());
         let sealed = from_pk == &[0u8; 32];
@@ -2533,7 +2667,7 @@ impl Core {
                         self.db.set_contact_request_state(id, RequestState::Incoming)?;
                         let requests = self.db.list_incoming_requests()?;
                         for &old in requests.iter().take(requests.len().saturating_sub(MAX_INCOMING_REQUESTS)) {
-                            eprintln!("[relay-client] too many open requests, dropping contact {old}");
+                            gipny_libcore::debug_trace!("[relay-client] too many open requests, dropping contact {old}");
                             let _ = self.delete_contact(old).await;
                         }
                         let _ = self.events.try_send(CoreEvent::ContactRequest { contact_id: id });
@@ -2557,7 +2691,7 @@ impl Core {
                     // Both opened a session at once. Ours stands; theirs is
                     // read for what it says and set aside, and they take ours
                     // when it reaches them.
-                    eprintln!("[relay-client] X3dhInit from contact {} crossed ours; ours stands", contact.id);
+                    gipny_libcore::debug_trace!("[relay-client] X3dhInit from contact {} crossed ours; ours stands", contact.id);
                     let (theirs, plaintext) = self.accept_x3dh(&init, &ad).await?;
                     self.lost_inits.lock().await.insert(contact.id, theirs);
                     let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
@@ -2571,7 +2705,7 @@ impl Core {
                     // Theirs stands. What we sent on ours they read on it (they
                     // keep it for that); anything that did not make it goes
                     // again on the usual retry, so no resend of everything here.
-                    eprintln!("[relay-client] X3dhInit from contact {} crossed ours; theirs stands", contact.id);
+                    gipny_libcore::debug_trace!("[relay-client] X3dhInit from contact {} crossed ours; theirs stands", contact.id);
                 }
                 self.own_inits.lock().await.remove(&contact.id);
                 self.lost_inits.lock().await.remove(&contact.id);
@@ -2585,9 +2719,10 @@ impl Core {
                     s.get(&contact.id).unwrap().to_bytes()?
                 };
                 self.db.put_session(contact.id, &state_bytes)?;
+                drop(state_bytes);
                 let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
                 self.persist_incoming(contact.id, payload).await?;
-                eprintln!("[relay-client] session established with contact {} via X3dhInit", contact.id);
+                gipny_libcore::debug_trace!("[relay-client] session established with contact {} via X3dhInit", contact.id);
                 if init.one_time_id.is_some() {
                     self.republish_bundle().await;
                 }
@@ -2608,7 +2743,7 @@ impl Core {
                     let mut sess = self.sessions.lock().await;
                     let attempt = match sess.get_mut(&c.id) {
                         Some(state) => state.decrypt(&header, &ciphertext, &ad).map(|pt| (pt, state.to_bytes())),
-                        None => match self.db.get_session(c.id)? {
+                        None => match self.db.get_session(c.id)?.map(zeroize::Zeroizing::new) {
                             Some(blob) => {
                                 let mut state = RatchetState::from_bytes(&blob)?;
                                 let r = state.decrypt(&header, &ciphertext, &ad).map(|pt| (pt, state.to_bytes()));
@@ -2655,17 +2790,17 @@ impl Core {
                             hit
                         };
                         if let Some((cid, pt)) = lost_hit {
-                            eprintln!("[relay-client] letter from contact {cid} on its session that lost to ours; read on it");
+                            gipny_libcore::debug_trace!("[relay-client] letter from contact {cid} on its session that lost to ours; read on it");
                             let payload: WirePayload = decode_with_padding_fallback(&pt)?;
                             self.persist_incoming(cid, payload).await?;
                             return Ok(());
                         }
                         if sealed {
-                            eprintln!("[relay-client] sealed ratchet: no session matched, ACK and drop");
+                            gipny_libcore::debug_trace!("[relay-client] sealed ratchet: no session matched, ACK and drop");
                             return Err(CoreError::SealedDrop);
                         }
                         if let Ok(Some(c)) = self.db.find_contact_by_sign_pk(from_pk) {
-                            eprintln!("[relay-client] no session for contact {}, requesting resync", c.id);
+                            gipny_libcore::debug_trace!("[relay-client] no session for contact {}, requesting resync", c.id);
                             let _ = self.request_resync(&c).await;
                         }
                         return Err(CoreError::Crypto(gipny_libcore::crypto::CryptoError::Mac));
@@ -2743,7 +2878,7 @@ impl Core {
             entry.median_ms()
         };
         if let Some(median) = median {
-            eprintln!("[link] contact {contact_id} round trip {ms} ms (median {median} ms)");
+            gipny_libcore::debug_trace!("[link] contact {contact_id} round trip {ms} ms (median {median} ms)");
             let _ = self.events.try_send(CoreEvent::LinkRtt { contact_id, ms: median });
         }
     }
@@ -2802,7 +2937,7 @@ impl Core {
             }
             *current = lane;
         }
-        eprintln!("[lane] switching to {lane:?} ({} hops, padding {})",
+        gipny_libcore::debug_trace!("[lane] switching to {lane:?} ({} hops, padding {})",
             lane.hops(), if lane.padded() { "on" } else { "off" });
         let outcome = self.node.set_hops(lane.hops()).await;
         if let Some(relay) = self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
@@ -2816,7 +2951,7 @@ impl Core {
     async fn note_heard_from(self: &Arc<Self>, contact_id: i64) {
         if self.announce_pending.lock().await.remove(&contact_id) {
             self.announce_sent_at.lock().await.remove(&contact_id);
-            eprintln!("[relay-hosted] contact {contact_id} answered; they have our address");
+            gipny_libcore::debug_trace!("[relay-hosted] contact {contact_id} answered; they have our address");
         }
     }
 
@@ -2825,8 +2960,8 @@ impl Core {
             let trimmed = relay.trim();
             if !trimmed.is_empty() && gipny_libcore::card::is_valid_i2p_address(trimmed) {
                 if let Ok(current) = self.db.contact_relay(contact_id) {
-                    if current.as_deref() != Some(trimmed) {
-                        eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
+                    if !current.as_deref().is_some_and(|known| relay::same_destination(known, trimmed)) {
+                        gipny_libcore::debug_trace!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
                         let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
                         self.warm_relay_of(contact_id);
                     }
@@ -2891,7 +3026,7 @@ impl Core {
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
         if payload.wipe == Some(true) {
             let name = self.db.get_contact(contact_id)?.map(|c| c.display_name).unwrap_or_default();
-            eprintln!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
+            gipny_libcore::debug_trace!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
             self.delete_contact(contact_id).await?;
             let _ = self.events.try_send(CoreEvent::ContactWiped { contact_id, name });
             return Ok(());
@@ -2902,6 +3037,8 @@ impl Core {
             return Ok(());
         }
         self.note_peer_seen(contact_id, payload.sent_at);
+        if self.handle_dm_control(contact_id, &payload).await? { return Ok(()); }
+        if self.reject_deleted_dm_content(contact_id, &payload).await? { return Ok(()); }
         match self.db.get_contact(contact_id)?.map(|c| c.request_state) {
             Some(RequestState::Incoming) => return self.persist_from_requester(contact_id, payload).await,
             // Anything at all from them means our introduction arrived.
@@ -2917,7 +3054,7 @@ impl Core {
             self.on_file_ack(contact_id, ack).await?;
         }
         if let Some(chunk) = &payload.file_chunk {
-            self.on_file_chunk(contact_id, chunk, payload.sent_at).await?;
+            self.on_file_chunk(contact_id, chunk, payload.sent_at, payload.dm.as_ref().map(|dm| &dm.reference)).await?;
         }
         if let Some(file_id) = &payload.file_cancel {
             self.on_file_cancel(contact_id, file_id).await?;
@@ -2941,26 +3078,16 @@ impl Core {
                 let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
             }
         }
-        if let Some(gref) = &payload.group {
-            ensure_group_from_wire(&self.db, &self.events, &self.identity, gref).await?;
-        }
-
-        if let Some(ack_local) = payload.ack_for {
-            let local_id = ack_local as i64;
-            if let Some(msg) = self.db.get_message(local_id)? {
-                let belongs = match (msg.contact_id, &msg.group_id, &payload.group) {
-                    (Some(cid), _, None) => cid == contact_id,
-                    (_, Some(gid), Some(gref)) => gid == &gref.id,
-                    _ => false,
-                };
-                if belongs && matches!(msg.direction, Direction::Out) {
-                    let _ = self.db.pending_outbound_remove(local_id, contact_id);
-                    self.db.mark_delivered(local_id)?;
-                    self.note_round_trip(contact_id, &msg).await;
-                    let _ = self.events.try_send(CoreEvent::MessageDelivered { message_id: local_id });
-                }
+        if payload.ack_for.is_some() {
+            if let Some(msg) = Self::acknowledge_delivery(&self.db, contact_id, &payload)? {
+                self.note_round_trip(contact_id, &msg).await;
+                let _ = self.events.try_send(CoreEvent::MessageDelivered { message_id: msg.id });
             }
             return Ok(());
+        }
+
+        if let Some(gref) = &payload.group {
+            ensure_group_from_wire(&self.db, &self.events, &self.identity, gref).await?;
         }
 
         if payload.callback_data.is_some()
@@ -2981,6 +3108,7 @@ impl Core {
                 self.db.find_message_by_origin(contact_id, edit_target_origin as i64)?
             };
             if let Some(local_id) = lookup {
+                if self.db.get_message(local_id)?.is_some_and(|message| message.deleted_at.is_some()) { return Ok(()); }
                 self.db.update_message_body(local_id, &payload.body)?;
                 if let Some(btns) = &payload.buttons {
                     if let Ok(b) = bincode::serialize(btns) {
@@ -2989,13 +3117,14 @@ impl Core {
                 } else {
                     let _ = self.db.delete_setting(&format!("buttons_{}", local_id));
                 }
-                let _ = self.events.try_send(CoreEvent::MessageEdited {
+                self.db.if_message_live(local_id, || { let _ = self.events.try_send(CoreEvent::MessageEdited {
                     message_id: local_id,
                     body: payload.body.clone(),
                     buttons: payload.buttons.clone(),
-                });
+                }); })?;
                 return Ok(());
             }
+            if payload.group.is_none() { return Ok(()); }
         }
 
         if let Some(pin) = &payload.pin {
@@ -3026,11 +3155,11 @@ impl Core {
                 None => match &target_gid {
                     Some(gid) => {
                         self.db.add_deferred_pin_group(gid, &pin.sender_sign_pk, origin, pin.unpin)?;
-                        eprintln!("[relay-client] deferred pin for group {} origin={}", to_hex(gid), pin.origin_msg_id);
+                        gipny_libcore::debug_trace!("[relay-client] deferred pin for group {} origin={}", to_hex(gid), pin.origin_msg_id);
                     }
                     None => {
                         self.db.add_deferred_pin_contact(contact_id, &pin.sender_sign_pk, origin, pin.unpin)?;
-                        eprintln!("[relay-client] deferred pin for contact {} origin={}", contact_id, pin.origin_msg_id);
+                        gipny_libcore::debug_trace!("[relay-client] deferred pin for contact {} origin={}", contact_id, pin.origin_msg_id);
                     }
                 },
             }
@@ -3050,7 +3179,7 @@ impl Core {
                 self.db.find_message_by_origin(contact_id, payload.origin_msg_id as i64)?
             };
             if existing.is_some() {
-                eprintln!("[relay-client] duplicate origin={} from contact {}, re-acking", payload.origin_msg_id, contact_id);
+                gipny_libcore::debug_trace!("[relay-client] duplicate origin={} from contact {}, re-acking", payload.origin_msg_id, contact_id);
                 let _ = self.send_ack(&contact, &payload).await;
                 return Ok(());
             }
@@ -3080,6 +3209,10 @@ impl Core {
             )?;
             (mid, None)
         };
+        if self.db.get_message(mid)?.is_some_and(|message| message.deleted_at.is_some()) {
+            for attachment in &atts { let _ = std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&attachment.path)); }
+            return Ok(());
+        }
         if !payload.files.is_empty() {
             self.accept_offers(contact_id, mid, &payload.files).await?;
         }
@@ -3107,7 +3240,7 @@ impl Core {
                     }
                     CONSOLE_OFF => {
                         if from_master {
-                            eprintln!("[agent] master switched agent mode off");
+                            gipny_libcore::debug_trace!("[agent] master switched agent mode off");
                             let _ = self.disable_agent_mode(true).await;
                         }
                     }
@@ -3160,9 +3293,9 @@ impl Core {
                 CoreEvent::MessagePinned { contact_id: tcid, group_id: tgid, message_id: mid }
             });
         }
-        eprintln!("[relay-client] received msg id={} from contact {}", mid, contact_id);
+        gipny_libcore::debug_trace!("[relay-client] received msg id={} from contact {}", mid, contact_id);
         let body_for_event = payload.body.clone();
-        let _ = self.events.try_send(CoreEvent::IncomingMessage {
+        self.db.if_message_live(mid, || { let _ = self.events.try_send(CoreEvent::IncomingMessage {
             contact_id: if group_id_for_event.is_none() { Some(contact_id) } else { None },
             group_id: group_id_for_event.as_deref().map(to_hex),
             sender_sign_pk: Some(to_hex(&contact.identity_sign)),
@@ -3170,7 +3303,7 @@ impl Core {
             body: body_for_event, sent_at: payload.sent_at,
             notify_sound: payload.notify_sound.clone(),
             console_kind: payload.console.as_ref().map(|c| c.kind),
-        });
+        }); })?;
         let _ = self.send_ack(&contact, &payload).await;
         Ok(())
     }
@@ -3183,7 +3316,7 @@ impl Core {
     async fn request_resync(&self, contact: &gipny_libcore::db::Contact) -> Result<()> {
         let throttled = self.db.resync_recent(contact.id, 60_000)?;
         if !throttled {
-            eprintln!("[relay-client] forcing resync for contact {}", contact.id);
+            gipny_libcore::debug_trace!("[relay-client] forcing resync for contact {}", contact.id);
             self.db.record_resync(contact.id)?;
             self.sessions.lock().await.remove(&contact.id);
             self.session_created_at.lock().await.remove(&contact.id);
@@ -3212,7 +3345,7 @@ impl Core {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         let out = match self.route_for(contact).await {
             Some(x) => x,
@@ -3245,6 +3378,9 @@ impl Core {
     }
 
     async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
+        for deleted in self.db.delete_expired_dm(now_ms())? { self.emit_dm_deleted(&deleted)?; }
+        self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        self.db.purge_expired_group_outbound(now_ms())?;
         // Sending needs *their* relay, not ours: a letter is deposited where the
         // recipient collects it. Ours is where replies come back to, and it takes
         // a minute or two of tunnel building — waiting for it held every outgoing
@@ -3275,7 +3411,7 @@ impl Core {
                 contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
             )?;
             let introducing = contact.request_state == RequestState::Outgoing
-                && self.db.get_session(contact.id)?.is_none();
+                && !self.db.has_session(contact.id)?;
             let needs_session = (introducing || self.db.resync_recent(contact.id, 120_000).unwrap_or(false))
                 && !self.sessions.lock().await.contains_key(&contact.id);
             let needs_keepalive = self.incoming_since_send.lock().await.get(&contact.id).copied().unwrap_or(0) >= KEEPALIVE_INCOMING_THRESHOLD
@@ -3283,10 +3419,12 @@ impl Core {
             let group_pending = self.db.pending_outbound_for_recipient(
                 contact.id, now_ms(), RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
             )?;
+            let deletions = self.db.pending_dm_deletes(contact.id, now_ms())?;
             let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
+                && deletions.is_empty()
                 && !needs_session
                 && !needs_keepalive
                 && !file_work
@@ -3295,12 +3433,12 @@ impl Core {
             }
             // Deposit on the relay this contact collects from, not on ours.
             let has_mail = !pending.is_empty() || !unacked.is_empty();
-            eprintln!("[send] contact {} \"{}\": {} new, {} unacked, session={}, relay={}",
+            gipny_libcore::debug_trace!("[send] contact {} \"{}\": {} new, {} unacked, session={}, relay={}",
                 contact.id,
                 contact.display_name,
                 pending.len(),
                 unacked.len(),
-                if self.db.get_session(contact.id).ok().flatten().is_some() { "yes" } else { "no" },
+                if self.db.has_session(contact.id).unwrap_or(false) { "yes" } else { "no" },
                 contact.relay_address.as_deref().map(|r| &r[..16.min(r.len())]).unwrap_or("(none)"));
             let out = match self.relay_for(&contact).await {
                 Some(tx) => {
@@ -3315,10 +3453,10 @@ impl Core {
                 None => {
                     self.note_reachability(&contact, false, has_mail).await;
                     if self.dht.peer_count() == 0 {
-                        eprintln!("[send] contact {}: relay silent and the network is empty — mail stays queued", contact.id);
+                        gipny_libcore::debug_trace!("[send] contact {}: relay silent and the network is empty — mail stays queued", contact.id);
                         continue;
                     }
-                    eprintln!("[send] contact {}: relay silent, going through the network", contact.id);
+                    gipny_libcore::debug_trace!("[send] contact {}: relay silent, going through the network", contact.id);
                     // They may simply have restarted onto a new address; ask
                     // the network in the background, and meanwhile leave the
                     // letter where they will find it either way.
@@ -3327,25 +3465,31 @@ impl Core {
                 }
             };
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
+            for reference in deletions {
+                let mut payload = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+                payload.dm = Some(gipny_libcore::session::WireDm { kind: 1, reference: reference.clone() });
+                self.db.record_dm_delete_attempt(contact.id, &reference, now_ms())?;
+                let _ = self.send_payload_via_relay(&contact, &mut payload, &out).await;
+            }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
                 payload.ack_for = Some(0);
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
-                    eprintln!("[relay-client] keepalive err to contact {}: {:?}", contact.id, e);
+                    gipny_libcore::debug_trace!("[relay-client] keepalive err to contact {}: {:?}", contact.id, e);
                 } else {
-                    eprintln!("[relay-client] keepalive sent to contact {} (DH-roll forced)", contact.id);
+                    gipny_libcore::debug_trace!("[relay-client] keepalive sent to contact {} (DH-roll forced)", contact.id);
                 }
             }
             for msg in pending {
                 let mut payload = self.build_payload_from_db(&msg)?;
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
-                    eprintln!("[relay-client] send err to contact {}: {:?}", contact.id, e);
+                    gipny_libcore::debug_trace!("[relay-client] send err to contact {}: {:?}", contact.id, e);
                     break;
                 }
             }
             for msg in unacked {
                 let mut payload = self.build_payload_from_db(&msg)?;
-                eprintln!("[relay-client] retry unacked msg {} to contact {} (attempt {})",
+                gipny_libcore::debug_trace!("[relay-client] retry unacked msg {} to contact {} (attempt {})",
                     msg.id, contact.id, msg.send_attempts + 1);
                 // Record before sending, like the group path below: without it
                 // last_attempt_at stays NULL, the backoff in
@@ -3353,7 +3497,7 @@ impl Core {
                 // undelivered message goes out on every tick of the relay loop.
                 self.db.record_send_attempt(msg.id)?;
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &out).await {
-                    eprintln!("[relay-client] retry err to contact {}: {:?}", contact.id, e);
+                    gipny_libcore::debug_trace!("[relay-client] retry err to contact {}: {:?}", contact.id, e);
                     break;
                 }
             }
@@ -3361,7 +3505,7 @@ impl Core {
             // per key for a file (dht/src/store.rs); they wait for it.
             if file_work && matches!(out, Route::Relay(_)) {
                 if let Err(e) = self.send_file_parts(&contact, &out).await {
-                    eprintln!("[files] parts to contact {}: {:?}", contact.id, e);
+                    gipny_libcore::debug_trace!("[files] parts to contact {}: {:?}", contact.id, e);
                 }
             }
             for msg_id in group_pending {
@@ -3378,18 +3522,50 @@ impl Core {
                     }).collect()).unwrap_or_default();
                     payload.group = Some(WireGroupRef { id: gid.clone(), name: gname, members: gref_members });
                 }
-                eprintln!("[relay-client] retry group msg {} to contact {}", msg_id, contact.id);
-                self.db.pending_outbound_record_attempt(msg_id, contact.id)?;
-                match self.send_payload_via_relay(&contact, &mut payload, &out).await {
-                    Ok(()) => { let _ = self.db.pending_outbound_remove(msg_id, contact.id); }
-                    Err(e) => {
-                        eprintln!("[relay-client] retry group err to contact {}: {:?}", contact.id, e);
-                        break;
-                    }
+                gipny_libcore::debug_trace!("[relay-client] retry group msg {} to contact {}", msg_id, contact.id);
+                if let Err(e) = Self::attempt_group_delivery(
+                    &self.db, msg_id, contact.id,
+                    self.send_payload_via_relay(&contact, &mut payload, &out),
+                ).await {
+                    gipny_libcore::debug_trace!("[relay-client] retry group err to contact {}: {:?}", contact.id, e);
+                    break;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Both the initial send and retries retain the durable recipient row
+    /// until its end-to-end ACK. Record before polling the send future so
+    /// failures and accepted-but-lost relay enqueues obey the same backoff.
+    async fn attempt_group_delivery<F>(db: &Db, message_id: i64, contact_id: i64, send: F) -> Result<()>
+    where F: std::future::Future<Output = Result<()>>,
+    {
+        db.pending_outbound_record_attempt(message_id, contact_id)?;
+        send.await
+    }
+
+    /// `contact_id` comes from the authenticated, decrypted session. A group
+    /// ACK may consume only that recipient's obligation for this message.
+    fn acknowledge_delivery(db: &Db, contact_id: i64, payload: &WirePayload) -> Result<Option<gipny_libcore::db::Message>> {
+        let Some(ack_id) = payload.ack_for else { return Ok(None) };
+        let Ok(local_id) = i64::try_from(ack_id) else { return Ok(None) };
+        let Some(msg) = db.get_message(local_id)? else { return Ok(None) };
+        let belongs = match (msg.contact_id, &msg.group_id, &payload.group) {
+            (Some(cid), _, None) => cid == contact_id,
+            (_, Some(gid), Some(gref)) => gid == &gref.id,
+            _ => false,
+        };
+        if msg.deleted_at.is_some() || !belongs || !matches!(msg.direction, Direction::Out) { return Ok(None); }
+        if msg.group_id.is_some() {
+            if !matches!(db.acknowledge_group_delivery(local_id, contact_id)?, gipny_libcore::db::GroupDeliveryAck::Complete) {
+                return Ok(None);
+            }
+        } else {
+            let _ = db.pending_outbound_remove(local_id, contact_id);
+            db.mark_delivered(local_id)?;
+        }
+        Ok(Some(msg))
     }
 
     async fn send_to_contact(self: &Arc<Self>, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
@@ -3434,16 +3610,18 @@ impl Core {
         route: &Route,
     ) -> Result<()> {
         if self.sessions.lock().await.contains_key(&contact.id) {
-            eprintln!("[relay-client] ensure_session: contact {} already in cache, no-op", contact.id);
+            gipny_libcore::debug_trace!("[relay-client] ensure_session: contact {} already in cache, no-op", contact.id);
             return Ok(());
         }
-        if let Some(blob) = self.db.get_session(contact.id)? {
-            eprintln!("[relay-client] ensure_session: contact {} found in DB, loading", contact.id);
-            let state = RatchetState::from_bytes(&blob)?;
+        if let Some(state) = self.db.get_session(contact.id)?.map(|blob| {
+            let blob=zeroize::Zeroizing::new(blob);
+            RatchetState::from_bytes(&blob)
+        }).transpose()? {
+            gipny_libcore::debug_trace!("[relay-client] ensure_session: contact {} found in DB, loading", contact.id);
             self.sessions.lock().await.insert(contact.id, state);
             return Ok(());
         }
-        eprintln!("[relay-client] ensure_session: contact {} has NO session, will initiate X3DH", contact.id);
+        gipny_libcore::debug_trace!("[relay-client] ensure_session: contact {} has NO session, will initiate X3DH", contact.id);
 
         // No waiting for the other side to go first (10 s on every new
         // conversation): if both open at once, `ours_stands` picks one.
@@ -3460,16 +3638,16 @@ impl Core {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
                 if out.send(ClientToRelay::GetBundle { pk }).await.is_err() {
-                    eprintln!("[relay-client] get_bundle send failed for contact {} (relay channel closed)", contact.id);
+                    gipny_libcore::debug_trace!("[relay-client] get_bundle send failed for contact {} (relay channel closed)", contact.id);
                     return Err(CoreError::State);
                 }
                 match tokio::time::timeout(Duration::from_millis(PENDING_REQ_TIMEOUT_MS), rx).await {
                     Err(_) => {
-                        eprintln!("[relay-client] get_bundle timeout for contact {} after {}ms — relay not responding", contact.id, PENDING_REQ_TIMEOUT_MS);
+                        gipny_libcore::debug_trace!("[relay-client] get_bundle timeout for contact {} after {}ms — relay not responding", contact.id, PENDING_REQ_TIMEOUT_MS);
                         return Err(CoreError::State);
                     }
                     Ok(Err(_)) => {
-                        eprintln!("[relay-client] get_bundle channel dropped for contact {}", contact.id);
+                        gipny_libcore::debug_trace!("[relay-client] get_bundle channel dropped for contact {}", contact.id);
                         return Err(CoreError::State);
                     }
                     Ok(Ok(v)) => v,
@@ -3485,7 +3663,7 @@ impl Core {
         let bundle_bytes = match bundle_bytes {
             Some(b) => b,
             None => {
-                eprintln!("[relay-client] get_bundle: relay has NO bundle for contact {} — peer never published or relay dropped it", contact.id);
+                gipny_libcore::debug_trace!("[relay-client] get_bundle: relay has NO bundle for contact {} — peer never published or relay dropped it", contact.id);
                 return Err(CoreError::NotFound);
             }
         };
@@ -3494,7 +3672,7 @@ impl Core {
         if bundle.identity.sign_pk != contact.identity_sign.as_slice()
             || bundle.identity.dh_pk != contact.identity_dh.as_slice()
         {
-            eprintln!("[relay-client] bundle identity mismatch for contact {} — bundle from someone else?", contact.id);
+            gipny_libcore::debug_trace!("[relay-client] bundle identity mismatch for contact {} — bundle from someone else?", contact.id);
             return Err(CoreError::State);
         }
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
@@ -3517,7 +3695,7 @@ impl Core {
         let envelope = EnvelopeBlob::X3dhInit(init);
         let blob = bincode::serialize(&envelope)?;
         self.deliver(contact, blob, route, true).await?;
-        eprintln!("[relay-client] x3dh sent to contact {}", contact.id);
+        gipny_libcore::debug_trace!("[relay-client] x3dh sent to contact {}", contact.id);
         Ok(())
     }
 
@@ -3596,6 +3774,9 @@ impl Core {
             .ok().flatten()
             .and_then(|b| bincode::deserialize::<WireConsole>(&b).ok());
         p.files = self.offers_for(msg.id)?;
+        if msg.group_id.is_none() && msg.contact_id.is_some() {
+            p.dm = Some(gipny_libcore::session::WireDm { kind: 0, reference: self.db.dm_reference(msg.id)? });
+        }
         Ok(p)
     }
 
@@ -3634,7 +3815,7 @@ impl Core {
     /// command line, so it has to be gated here.
     fn spawn_dht_loop(self: Arc<Self>) {
         if gipny_libcore::fast_on() {
-            eprintln!("[dht] relay-network upkeep off (fast profile)");
+            gipny_libcore::debug_trace!("[dht] relay-network upkeep off (fast profile)");
             return;
         }
         let this = self.clone();
@@ -3710,7 +3891,7 @@ impl Core {
                     let _ = self.db.dht_seen_forget(&hash);
                 }
                 Err(e) => {
-                    eprintln!("[dht] letter from the network did not open: {e:?}");
+                    gipny_libcore::debug_trace!("[dht] letter from the network did not open: {e:?}");
                     // Not handled: let a later pass try again.
                     let _ = self.db.dht_seen_forget(&hash);
                 }
@@ -3748,10 +3929,10 @@ impl Core {
             let Some((relay, _issued)) = dht_client::find_address(&this.dht, &this.identity, &their_sign, &their_dh).await else {
                 return;
             };
-            if known.as_deref() == Some(relay.as_str()) || relay.trim().is_empty() {
+            if known.as_deref().is_some_and(|known| relay::same_destination(known, &relay)) || relay.trim().is_empty() {
                 return;
             }
-            eprintln!("[dht] contact {id} moved to a new relay; taking the address from the network");
+            gipny_libcore::debug_trace!("[dht] contact {id} moved to a new relay; taking the address from the network");
             if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
                 this.warm_relay_of(id);
                 this.send_kick.notify_one();
@@ -3791,7 +3972,7 @@ impl Core {
         // No local HTTP proxy this run (Android, or attached to a router we
         // don't own) — nothing to dial, so don't even try.
         if !self.updater.is_configured() {
-            eprintln!("[update] no local HTTP proxy this run — auto-update disabled");
+            gipny_libcore::debug_trace!("[update] no local HTTP proxy this run — auto-update disabled");
             return;
         }
         let this = self.clone();
@@ -3907,7 +4088,7 @@ impl Core {
         use gipny_libcore::files;
         for o in offers {
             if o.size > files::MAX_FILE_BYTES || o.chunk_size == 0 || o.chunk_size > files::CHUNK_SIZE {
-                eprintln!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
+                gipny_libcore::debug_trace!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
                 continue;
             }
             if self.db.file_in(&o.file_id, contact_id)?.is_some() {
@@ -3925,11 +4106,12 @@ impl Core {
             if !self.db.file_in_add(&fin)? {
                 continue;
             }
-            eprintln!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
+            self.db.track_dm_file(contact_id, message_id, &o.file_id)?;
+            gipny_libcore::debug_trace!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
             let _ = self.events.try_send(CoreEvent::FileProgress { message_id, contact_id, incoming: true, done: 0, total });
             for (index, data) in self.db.file_early_take(&o.file_id, contact_id)? {
                 let chunk = WireFileChunk { file_id: o.file_id, index, data };
-                self.on_file_chunk(contact_id, &chunk, 0).await?;
+                self.on_file_chunk(contact_id, &chunk, 0, None).await?;
             }
         }
         Ok(())
@@ -3937,50 +4119,31 @@ impl Core {
 
     /// `sent_at` is the part's letter's, echoed in the ack (0 for a part set
     /// aside before its offer: no round trip to measure on it).
-    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64) -> Result<()> {
-        use gipny_libcore::files;
+    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64,
+        reference: Option<&gipny_libcore::db::DmReference>) -> Result<()> {
         let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
-        if !collect_lane_holds(before, now_ms()) {
-            self.collect_kick.notify_one();
-        }
-        let Some(fin) = self.db.file_in(&chunk.file_id, contact_id)? else {
-            if chunk.data.len() <= files::CHUNK_SIZE as usize {
-                self.db.file_early_put(&chunk.file_id, contact_id, chunk.index, &chunk.data)?;
-            }
+        if !collect_lane_holds(before, now_ms()) { self.collect_kick.notify_one(); }
+        let Some(update) = self.db.apply_file_chunk(contact_id, chunk, reference, &self.data_dir.join(ATTACHMENTS_DIR))? else { return Ok(()); };
+        if update.broken {
+            self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(CoreEvent::FileFailed {
+                message_id:update.message_id,contact_id,reason:"came broken".into(),
+            }); })?;
             return Ok(());
-        };
-        let total = files::chunk_count(fin.size, fin.chunk_size);
-        let mut got = files::Received::from_bits(fin.bits.clone(), total);
-        let path = self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path);
-        let cipher = AttachmentCipher::from_key(to_arr32(fin.key.clone())?);
-        let fresh = if got.has(chunk.index) {
-            false
-        } else {
-            files::write_part(&path, &cipher, fin.size, fin.chunk_size, chunk.index, &chunk.data)?;
-            got.mark(chunk.index);
-            self.db.file_in_save(&fin.file_id, contact_id, got.bits(), got.count())?;
-            true
-        };
-        if got.complete() {
-            let sha = files::open_to(&path, &cipher, fin.size, fin.chunk_size, &mut std::io::sink())?;
-            if sha != fin.sha256 {
-                eprintln!("[files] {} from contact {contact_id} came broken (sha256); dropped", fin.name);
-                let _ = std::fs::remove_file(&path);
-                self.db.file_in_delete(&fin.file_id, contact_id)?;
-                let _ = self.events.try_send(CoreEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "came broken".into() });
-            } else {
-                let attachment_id = self.db.file_in_finish(&fin)?;
-                eprintln!("[files] {} from contact {contact_id} is whole ({} bytes)", fin.name, fin.size);
-                let _ = self.events.try_send(CoreEvent::FileReceived { message_id: fin.message_id, attachment_id });
-            }
-        } else if fresh {
-            let _ = self.events.try_send(CoreEvent::FileProgress {
-                message_id: fin.message_id, contact_id, incoming: true, done: got.count(), total,
-            });
         }
-        let hole = !got.missing().is_empty();
-        if !fresh || got.complete() || hole || got.count() % files::ACK_EVERY == 0 {
-            self.send_file_message(contact_id, |p| p.file_ack = Some(WireFileAck { echo_index: chunk.index, echo_sent_at: sent_at, ..got.ack(fin.file_id) })).await;
+        if let Some(attachment_id)=update.attachment_id {
+            self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(CoreEvent::FileReceived {
+                message_id:update.message_id,attachment_id,
+            }); })?;
+        } else if update.fresh {
+            self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(CoreEvent::FileProgress {
+                message_id:update.message_id,contact_id,incoming:true,done:update.received.count(),total:update.total,
+            }); })?;
+        }
+        if !update.fresh || update.received.complete() || !update.received.missing().is_empty()
+            || update.received.count() % gipny_libcore::files::ACK_EVERY == 0 {
+            self.send_file_message(contact_id, |p|p.file_ack=Some(WireFileAck {
+                echo_index:chunk.index,echo_sent_at:sent_at,..update.received.ack(chunk.file_id)
+            })).await;
         }
         Ok(())
     }
@@ -3994,12 +4157,12 @@ impl Core {
         {
             let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
             let flow = flows.entry(contact_id).or_default();
-            eprintln!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
+            gipny_libcore::debug_trace!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
                 ack.received_up_to, ack.missing, ack.seen_to);
             s.on_ack(ack, flow, now_ms());
             if s.done(total) {
                 flow.forget(ack.file_id);
-                eprintln!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
+                gipny_libcore::debug_trace!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
             }
         }
         peer.acked = s.acked;
@@ -4097,7 +4260,7 @@ impl Core {
                 ).await;
                 this.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
                 if let Ok(Ok(client)) = dial {
-                    eprintln!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
+                    gipny_libcore::debug_trace!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
                     this.file_lanes.lock().await.entry(relay.clone()).or_default().push(client.out_tx.clone());
                     this.send_kick.notify_one();
                     this.clone().run_recv_loop(client, None, None).await;
@@ -4153,7 +4316,7 @@ impl Core {
             }
             // One line a part (192 KiB): what went, and why it was its turn.
             let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
-            eprintln!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
+            gipny_libcore::debug_trace!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
                 a.name, contact.id, due, again);
             let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
@@ -4162,10 +4325,13 @@ impl Core {
                 let data = files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
                 payload.file_chunk = Some(WireFileChunk { file_id: file.file_id, index: *index, data });
+                if let Ok(reference)=self.db.dm_reference(file.message_id) {
+                    payload.dm=Some(gipny_libcore::session::WireDm {kind:0,reference});
+                }
                 let via = Route::Relay(lanes[lane % lanes.len()].clone());
                 lane += 1;
                 if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &via).await {
-                    eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
+                    gipny_libcore::debug_trace!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
                     let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
                     let flow = flows.entry(contact.id).or_default();
                     for i in due.iter().copied().filter(|i| i >= index) {
@@ -4225,7 +4391,7 @@ fn make_typing_payload(group: Option<WireGroupRef>, typing: bool) -> WirePayload
         origin_msg_id: 0, body: String::new(), attachments: vec![], sent_at: now_ms(),
         ttl_ms: None, group, buttons: None, callback_data: None,
         edit_of: None, pin: None, ack_for: None, sender_name: None,
-        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+        reply_to: None, typing: Some(typing), notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
     }
 }
 
@@ -4271,5 +4437,117 @@ mod relay_mode_tests {
         assert_eq!(resolve_relay_mode(Some(b"external"), ""), RelayMode::External);
         // Garbage in the setting is no choice at all.
         assert_eq!(resolve_relay_mode(Some(b"???"), ""), RelayMode::Builtin);
+    }
+}
+
+#[cfg(test)]
+mod group_delivery_tests {
+    use super::*;
+
+    fn pending(db: &Db, recipient: i64) -> Vec<i64> {
+        db.pending_outbound_for_recipient(
+            recipient, now_ms() + RETRY_MAX_BACKOFF_MS + 1,
+            RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
+        ).unwrap()
+    }
+
+    #[tokio::test]
+    async fn group_enqueue_and_retry_survive_restart_until_recipient_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("core.db");
+        let db = Db::open_plain(&path).unwrap();
+        let first = db.add_contact(&[1; 32], &[2; 32], "", "first", None).unwrap();
+        let second = db.add_contact(&[3; 32], &[4; 32], "", "second", None).unwrap();
+        let outsider = db.add_contact(&[5; 32], &[6; 32], "", "outsider", None).unwrap();
+        let group = [9; 16];
+        db.create_group(&group, "group").unwrap();
+        let message = db.insert_group_message(&group, Some(&[7; 32]), Direction::Out, "durable", now_ms(), None, &[]).unwrap();
+        db.queue_group_recipients(message, &[first, second]).unwrap();
+
+        // Exercise the same send boundary used by both Core send paths. The
+        // relay accepts the first enqueue but never supplies an end-to-end ACK.
+        let (relay, mut received) = mpsc::channel(4);
+        let before_send = now_ms();
+        Core::attempt_group_delivery(&db, message, first, async {
+            relay.send((message, first)).await.map_err(|_| CoreError::State)?;
+            db.mark_sent(message)?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(received.recv().await, Some((message, first)));
+        assert!(Core::attempt_group_delivery(
+            &db, message, second, std::future::ready(Err(CoreError::State)),
+        ).await.is_err());
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+        assert!(db.pending_outbound_for_recipient(
+            first, before_send, RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
+        ).unwrap().is_empty(), "an initial enqueue must observe the retry backoff");
+        assert!(!db.get_message(message).unwrap().unwrap().delivered);
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+        // Resynchronizing the encryption session must not discard delivery
+        // obligations. A fresh retry can be accepted and lost in the same way.
+        db.record_resync(first).unwrap();
+        db.delete_session(first).unwrap();
+        Core::attempt_group_delivery(&db, message, first, async {
+            relay.send((message, first)).await.map_err(|_| CoreError::State)?;
+            db.mark_sent(message)?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(received.recv().await, Some((message, first)));
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+
+        let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+        ack.ack_for = Some(message as u64);
+        ack.group = Some(WireGroupRef { id: group.to_vec(), name: "group".into(), members: vec![] });
+        assert!(Core::acknowledge_delivery(&db, outsider, &ack).unwrap().is_none());
+        let mut wrong_group = ack.clone();
+        wrong_group.group.as_mut().unwrap().id = vec![8; 16];
+        assert!(Core::acknowledge_delivery(&db, first, &wrong_group).unwrap().is_none());
+        let mut wrong_message = ack.clone();
+        wrong_message.ack_for = Some(message as u64 + 1_000);
+        assert!(Core::acknowledge_delivery(&db, first, &wrong_message).unwrap().is_none());
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+
+        assert!(Core::acknowledge_delivery(&db, first, &ack).unwrap().is_none());
+        assert!(pending(&db, first).is_empty());
+        assert_eq!(pending(&db, second), vec![message]);
+        assert!(!db.get_message(message).unwrap().unwrap().delivered);
+        assert!(Core::acknowledge_delivery(&db, first, &ack).unwrap().is_none(), "duplicate ACK must not acknowledge another recipient");
+        let completed = Core::acknowledge_delivery(&db, second, &ack).unwrap().unwrap();
+        assert_eq!(completed.id, message);
+        assert!(pending(&db, second).is_empty());
+        assert!(db.get_message(message).unwrap().unwrap().delivered);
+        assert!(Core::acknowledge_delivery(&db, second, &ack).unwrap().is_none(), "completion must not emit twice");
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        assert!(pending(&db, first).is_empty());
+        assert!(pending(&db, second).is_empty());
+        assert!(db.get_message(message).unwrap().unwrap().delivered);
+    }
+
+    #[test]
+    fn delivery_ack_keeps_direct_message_contact_and_direction_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("core.db")).unwrap();
+        let recipient = db.add_contact(&[1; 32], &[2; 32], "", "recipient", None).unwrap();
+        let outsider = db.add_contact(&[3; 32], &[4; 32], "", "outsider", None).unwrap();
+        let outgoing = db.insert_message(recipient, Direction::Out, "out", now_ms(), None, &[]).unwrap();
+        let incoming = db.insert_message(recipient, Direction::In, "in", now_ms(), None, &[]).unwrap();
+        let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+        ack.ack_for = Some(outgoing as u64);
+        assert!(Core::acknowledge_delivery(&db, outsider, &ack).unwrap().is_none());
+        assert!(!db.get_message(outgoing).unwrap().unwrap().delivered);
+        assert_eq!(Core::acknowledge_delivery(&db, recipient, &ack).unwrap().unwrap().id, outgoing);
+        assert!(db.get_message(outgoing).unwrap().unwrap().delivered);
+        ack.ack_for = Some(incoming as u64);
+        assert!(Core::acknowledge_delivery(&db, recipient, &ack).unwrap().is_none());
+        assert!(!db.get_message(incoming).unwrap().unwrap().delivered);
     }
 }

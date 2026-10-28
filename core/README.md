@@ -2,11 +2,19 @@
 
 Крейт `gipny`. Rust-часть приложения: `Core` (логика клиента поверх `libcore`), команды для интерфейса из `ui/`, запуск профиля. Рядом лежат `relay/` (выделенный релей, свой README) и `gen/android/` (Android-обёртка, свой README).
 
+`gipny-web` — отдельный серверный gateway; его криптография и данные находятся
+на сервере. Он требует явной feature `web-gateway` и не включается в обычную
+сборку или desktop bundle. Для отдельной сборки в GitHub CI используйте
+`cargo build --locked --release -p gipny --features web-gateway --bin gipny-web`;
+для запуска — `cargo run --locked -p gipny --features web-gateway --bin gipny-web`.
+Это не браузерный клиент с ключами на устройстве пользователя.
+
 ## Что здесь
 
 | Путь | За что отвечает |
 |---|---|
 | `src/main.rs` | Точка входа, вызывает `gipny_lib::run()` |
+| `src/web_main.rs` | Отдельный серверный gateway, только с feature `web-gateway`; не sidecar приложения |
 | `src/lib.rs` | Сборка Tauri (`run`), каталог данных (`resolve_base_dir`, `profile_dir`), `AppCtx`, **все `#[tauri::command]`** и список `invoke_handler!`, DTO для интерфейса (`ContactDto`, `MessageDto`…), запуск профиля `boot` (установка отложенного обновления Windows → разблокировка vault → база → i2p → `Core::start`) |
 | `src/core.rs` | `Core`, клиент целиком (см. разбивку ниже), и `CoreEvent` — события в интерфейс |
 | `src/sanitizer.rs` | Очистка метаданных вложений перед отправкой (EXIF и подобное) |
@@ -33,7 +41,7 @@
 - **Файлы частями** (больше 128 КБ, `gipny_libcore::files`): `store_outgoing` запечатывает их частями и предлагает в письме (`register_offers`, `offers_for`), `send_file_parts` шлёт части из цикла отправки только на релей получателя, по `FILE_LANES` соединениям (`file_lanes`); приём — `accept_offers`, `on_file_chunk`, `on_file_ack`, отмена — `cancel_files`; для UI — `files_progress` и события `FileProgress`/`FileReceived`/`FileFailed`. Команда режима агента ждёт свои файлы, прежде чем выполниться.
 - **Сеть релеев:** `spawn_dht_loop` (обслуживание раз в 45 мин, сбор писем раз в 10 мин), `collect_from_dht` (письма и intro → `handle_incoming_envelope`, отметки в `dht_seen`, удаление из сети), `look_up_address`/`maybe_look_up_address` (новый адрес контакта), `publish_bundle_to_dht`. Всё, что не зависит от `Core`, — в `libcore/src/dht_client.rs`.
 - **Контакты:** `add_contact_via`, `accept_contact_request`, `decline_contact_request`, `delete_contact`, `request_resync`.
-- **Группы:** `create_group`, `send_to_group`, `ensure_group_from_wire`.
+- **Группы:** `create_group`, `send_to_group`, `ensure_group_from_wire`; `attempt_group_delivery` сохраняет очередь до ACK, `acknowledge_delivery` проверяет получателя и полное завершение ([контракт](../docs/group-delivery.md), следующая версия).
 - **Режим агента:** `agent_master`, `set_agent_mode`, `disable_agent_mode`.
 - **Обновления:** `spawn_update_loop`, `check_and_emit_update`, `install_update`, `auto_update_enabled`.
 - **Prekeys:** `republish_bundle`.
@@ -70,8 +78,11 @@
 - **Адрес встроенного релея не пишется в настройки** (`relay_onion` берёт его из памяти). В 0.4.0 записанный мёртвый адрес ломал доставку.
 - **`relay_for` никогда не ждёт дозвона.** Он возвращает `None` и дозванивается в фоне, иначе один недоступный контакт тормозит отправку всем.
 - **Отложенный установщик Windows запускается в `boot` до разблокировки vault**, а не в `Core::start`. Иначе пользователь ждёт роутер, после чего приложение всё равно закрывается.
+- **Сохранение APK проверяет SHA256 наравне с автообновлением** (следующая версия). `download_apk` получает сумму из того же `ReleaseInfo`, а ошибка manifest приводит к `UpdateFailed`. [Контракт обновлятора](../docs/update-verification.md).
 - **Контакту в состоянии `RequestState::Incoming` ничего не отправляется**, даже аки.
+- **Успех отправки группы сохраняет `pending_outbound`.** Полный снимок получателей публикуется через `Db::queue_group_recipients` после подготовки метаданных, до сетевого `await`. ACK удаляет только пару сообщения и аутентифицированного получателя; `MessageDelivered` возникает после последнего ожидания. Семидневная очистка снимает все оставшиеся ожидания просроченного сообщения, сохраняя историю без отметки доставки. Границы проверки и поведение при блокировке/удалении — в [group-delivery.md](../docs/group-delivery.md).
 - **Сборка `gipny` без файла в `resources/` падает** на глобе `resources/i2pd*` (tauri-build не принимает глоб без совпадений). В релизе он находит снимок netDb, в `build.yml` кладётся пустая заглушка.
+- **Релиз не создаёт `debug.log`/`debug.prev.log` и файл журнала роутера** (следующая версия). `GIPNY_DEBUG_LOG`, прежний `log.conf` и UI не включают захват. Настройки показывают недоступность capability; разработка и тесты сохраняют диагностику. Операционные ошибки остаются в stderr. [Политика, профиль и проверки](../docs/release-diagnostics.md).
 
 ## Как проверить
 

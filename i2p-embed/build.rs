@@ -69,6 +69,10 @@ fn main() {
         "i2pd sources not found at {} — git submodule update --init third_party/i2pd",
         i2pd.display()
     );
+    let identity_header = std::fs::read_to_string(lib.join("Identity.h")).expect("read Identity.h");
+    assert!(identity_header.contains("GIPNY_PRIVATE_MATERIAL_CLEANUP_V1"),
+        "i2pd source cleanup patch missing: run bash scripts/apply-i2pd-memory-patches.sh {}", i2pd.display());
+    println!("cargo:rerun-if-changed=patches");
     println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-changed={}", lib.display());
     for var in ["I2P_EMBED_INCLUDE_DIRS", "I2P_EMBED_LIB_DIRS", "I2P_EMBED_STATIC", "I2P_EMBED_I2PD_SRC"] {

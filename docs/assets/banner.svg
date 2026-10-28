@@ -36,7 +36,7 @@
   <text x="500" y="145" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="400" font-size="44" fill="#6ce86c">.i2p</text>
 
   <!-- Subtitle -->
-  <text x="285" y="195" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#9fb79f">Zero-metadata, ephemeral garlic routing, end-to-end encrypted messaging.</text>
+  <text x="285" y="195" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" fill="#9fb79f">On-device keys, I2P garlic routing, end-to-end encrypted messaging.</text>
 
   <!-- Feature badges pill list -->
   <g transform="translate(285, 230)">

@@ -10,7 +10,7 @@ Type=simple
 # able to do what its operator could do. Set User=/Group= to confine it.
 WorkingDirectory=/var/lib/gipny-agent
 # GIPNY_AGENT_ARGS holds the master's card, e.g.
-#   GIPNY_AGENT_ARGS=--master gipny:v2:...
+#   GIPNY_AGENT_ARGS=--master gipny:v3:...
 EnvironmentFile=-/etc/gipny-agent.env
 # The agent runs the i2p router inside its own process (no i2pd, no ports);
 # the network snapshot installed next to it speeds up its first start.

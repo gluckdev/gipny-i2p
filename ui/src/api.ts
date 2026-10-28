@@ -249,6 +249,10 @@ export interface Message {
   delivered: boolean;
   read: boolean;
   expires_at: number | null;
+  /** Immutable local arrival number in this direct conversation. */
+  dm_seq?: number | null;
+  deleted_at?: number | null;
+  delete_pending?: boolean;
   buttons?: Button[][] | null;
   reply_to: number | null;
   /** Set when the row is console-framed (command, output or mode marker). */
@@ -356,6 +360,7 @@ export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 export type CoreEvent =
   | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null; console_kind: number | null } }
   | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
+  | { MessageDeleted: { contact_id: number; message_id: number; deleted_at: number; pending: boolean } }
   | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageSent: { message_id: number } }
@@ -377,6 +382,7 @@ export type CoreEvent =
   | { UpdateAvailable: { version: string; notes: string; size: number } }
   | { UpdateProgress: { downloaded: number; total: number; pct: number } }
   | { UpdateStaged: { version: string } }
+  | { UpdateInstallerOpened: { version: string; path: string } }
   | { UpdateReady: { path: string } }
   | { UpdateFailed: { reason: string } }
   | { AgentModeChanged: { master: AgentMaster | null } }
@@ -547,6 +553,10 @@ export class Api {
   }
   static deleteMessage(id: number): Promise<void> {
     return invoke('delete_message', { id });
+  }
+
+  static clearDmChat(contactId: number): Promise<number> {
+    return invoke('clear_dm_chat', { contactId });
   }
   static sendMessage(contactId: number, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
     return invoke('send_message', { contactId, body, attachments, ttlSecs, replyTo });
@@ -859,7 +869,7 @@ export class Api {
   static readPreviousLog(): Promise<string> {
     return invoke('read_previous_log');
   }
-  static logSettings(): Promise<{ enabled: boolean; path: string }> {
+  static logSettings(): Promise<{ available: boolean; enabled: boolean; path: string }> {
     return invoke('log_settings');
   }
   static setLogEnabled(enabled: boolean): Promise<void> {
@@ -879,80 +889,6 @@ export class Api {
   }
 }
 
-/**
- * A shareable contact card.
- *
- * v2 adds the relay the holder receives through. That is what makes more than
- * one relay possible: before it, every client had a single relay setting for
- * everyone, so somebody had to run infrastructure for the whole network. With
- * the relay in the card, a message goes to where its *recipient* collects it.
- *
- * The address slot is the holder's i2p destination. It is regenerated every
- * launch and nothing dials it, so it is informational only — the relay is what
- * delivery actually uses.
- */
-export function encodeCard(
-  onion: string, signPk: string, dhPk: string, name?: string, relay?: string,
-): string {
-  const r = relay?.trim() ?? '';
-  // v1 stays the format when there is no relay to carry, so cards handed out by
-  // clients that have none keep working with older builds.
-  if (!r) {
-    const base = `gipny:v1:${onion}:${signPk}:${dhPk}`;
-    return name ? `${base}:${encodeURIComponent(name)}` : base;
-  }
-  const base = `gipny:v2:${onion}:${signPk}:${dhPk}:${r}`;
-  return name ? `${base}:${encodeURIComponent(name)}` : base;
-}
-
-/**
- * Whether a string is a usable i2p address.
- *
- * Two shapes are valid: a `.b32.i2p` hostname, which is exactly 52 base32
- * characters plus the suffix, or a full base64 destination, which is at least
- * 516 characters in i2p's base64 alphabet (`-` and `~` replace `+` and `/`).
- *
- * The previous check was `!onion.endsWith('.i2p') && onion.length < 300`, which
- * accepted "x.i2p" and any 300-character string — a typo became a contact that
- * could never receive anything, with no error at the point of entry.
- */
-export function isValidI2pAddress(addr: string): boolean {
-  const a = addr.trim();
-  if (/^[a-z2-7]{52}\.b32\.i2p$/i.test(a)) return true;
-  return /^[A-Za-z0-9~-]{516,}={0,2}$/.test(a);
-}
-
-export interface DecodedCard {
-  onion: string;
-  signPk: string;
-  dhPk: string;
-  name?: string;
-  /** Relay the holder receives through; absent on v1 cards. */
-  relay?: string;
-}
-
-export function decodeCard(input: string): DecodedCard | null {
-  const raw = input.trim();
-
-  const v2 = raw.match(
-    /^gipny:v2:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64}):([^:]+)(?::(.+))?$/,
-  );
-  if (v2) {
-    return {
-      onion: v2[1]!,
-      signPk: v2[2]!.toLowerCase(),
-      dhPk: v2[3]!.toLowerCase(),
-      relay: v2[4]!,
-      name: v2[5] ? decodeURIComponent(v2[5]) : undefined,
-    };
-  }
-
-  const v1 = raw.match(/^gipny:v1:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64})(?::(.+))?$/);
-  if (!v1) return null;
-  return {
-    onion: v1[1]!,
-    signPk: v1[2]!.toLowerCase(),
-    dhPk: v1[3]!.toLowerCase(),
-    name: v1[4] ? decodeURIComponent(v1[4]) : undefined,
-  };
-}
+// Shared compact-card codec; import remains compatible with v1/v2.
+export { encodeCard, decodeCard, isValidI2pAddress } from './contact-card';
+export type { DecodedCard } from './contact-card';

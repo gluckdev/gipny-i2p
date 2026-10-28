@@ -10,6 +10,9 @@ use zeroize::Zeroizing;
 
 use crate::security::MasterKey;
 
+mod dm;
+pub use dm::{DmDelete, DmFileUpdate, DmReference};
+
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// How long an undelivered outgoing message keeps being retried.
@@ -34,9 +37,17 @@ pub enum DbError {
     #[error("io: {0}")] Io(#[from] std::io::Error),
     #[error("sql: {0}")] Sql(#[from] rusqlite::Error),
     #[error("bad key")] BadKey,
+    #[error(transparent)] Memory(#[from] crate::memory::MemoryError),
     #[error("state")] State,
     #[error("payload too large")] TooLarge,
+    #[error("This legacy message has no original sender ID; deletion for both sides cannot be verified")]
+    MissingMessageOrigin,
 }
+
+/// Result of acknowledging one persisted group recipient. Only `Complete`
+/// means the last remaining queued recipient has acknowledged the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupDeliveryAck { NotPending, PendingRecipients, Complete }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustLevel { Unverified, Verified, Blocked }
@@ -114,6 +125,9 @@ pub struct Message {
     pub last_attempt_at: Option<i64>,
     pub send_attempts: i64,
     pub reply_to: Option<i64>,
+    /// Stable local arrival number within this direct conversation.
+    pub dm_seq: Option<i64>,
+    pub deleted_at: Option<i64>,
 }
 
 /// A file we send in parts, with its attachment (sealed in parts on disk).
@@ -194,6 +208,29 @@ pub struct NewAttachment {
     /// Sealed in parts of this many bytes (`crate::files`); `None`: sealed
     /// whole, as one chunk.
     pub chunk_size: Option<i64>,
+}
+
+/// A staged outgoing attachment and, for a chunked file, its stable offer.
+/// The encrypted bytes must be complete before publishing the group message.
+#[derive(Clone, Debug)]
+pub struct NewGroupAttachment {
+    pub attachment: NewAttachment,
+    pub file_offer: Option<([u8; 16], [u8; 32])>,
+}
+
+/// All message-level data needed to publish one outgoing group fan-out.
+/// Settings are already serialized by the caller; no callbacks or awaits run
+/// under the database lock.
+pub struct NewOutgoingGroup<'a> {
+    pub group_id: &'a [u8],
+    pub sender_sign_pk: &'a [u8],
+    pub body: &'a str,
+    pub sent_at: i64,
+    pub expires_at: Option<i64>,
+    pub reply_to: Option<i64>,
+    pub buttons: Option<&'a [u8]>,
+    pub notify_sound: Option<&'a [u8]>,
+    pub recipients: &'a [i64],
 }
 
 #[derive(Clone, Debug)]
@@ -300,19 +337,21 @@ CREATE TABLE settings (
 
 macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0), COALESCE(request_state, 0) FROM contacts" }; }
 macro_rules! select_group { () => { "SELECT id, name, created_at, pinned_at, last_message_at FROM groups" }; }
-macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to" }; }
-macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to" }; }
+macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to, dm_seq, deleted_at" }; }
+macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to, m.dm_seq, m.deleted_at" }; }
 
-pub struct Db { conn: Mutex<Connection> }
+pub struct Db { conn: Mutex<Connection>, file_mutations: Mutex<()> }
 
 impl Db {
     pub fn open(path: &Path, key: &MasterKey) -> Result<Self> {
         if let Some(p) = path.parent() { fs::create_dir_all(p)?; }
         let conn = Connection::open(path)?;
-        let pragma = Zeroizing::new(format!(
+        let pragma = {
+            let exposed = key.expose()?;
+            Zeroizing::new(format!(
             "PRAGMA key = \"x'{}'\";\nPRAGMA cipher_page_size = 4096;\nPRAGMA cipher_memory_security = ON;\nPRAGMA temp_store = MEMORY;",
-            &*Zeroizing::new(hex(key.as_bytes())),
-        ));
+            &*Zeroizing::new(hex(&*exposed)),
+        )) };
         conn.execute_batch(&pragma)?;
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
             .map_err(|_| DbError::BadKey)?;
@@ -320,7 +359,7 @@ impl Db {
             "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA foreign_keys = ON;\nPRAGMA secure_delete = ON;\nPRAGMA auto_vacuum = FULL;",
         )?;
         Self::migrate(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), file_mutations: Mutex::new(()) })
     }
 
     pub fn open_plain(path: &Path) -> Result<Self> {
@@ -330,15 +369,17 @@ impl Db {
             "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA foreign_keys = ON;\nPRAGMA temp_store = MEMORY;",
         )?;
         Self::migrate(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), file_mutations: Mutex::new(()) })
     }
 
     pub fn rekey(&self, key: &MasterKey) -> Result<()> {
         self.with_conn(|conn| {
-            let pragma = Zeroizing::new(format!(
+            let pragma = {
+                let exposed = key.expose()?;
+                Zeroizing::new(format!(
                 "PRAGMA rekey = \"x'{}'\";",
-                &*Zeroizing::new(hex(key.as_bytes())),
-            ));
+                &*Zeroizing::new(hex(&*exposed)),
+            )) };
             conn.execute_batch(&pragma)?;
             Ok(())
         })
@@ -390,7 +431,7 @@ impl Db {
         conn.execute_batch("
             DELETE FROM messages WHERE id IN (
                 SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (PARTITION BY contact_id, origin_msg_id ORDER BY id) AS rn
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY contact_id, direction, origin_msg_id ORDER BY id) AS rn
                     FROM messages
                     WHERE contact_id IS NOT NULL AND origin_msg_id IS NOT NULL
                 ) WHERE rn > 1
@@ -407,7 +448,7 @@ impl Db {
             DROP INDEX IF EXISTS idx_messages_group_origin;
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_origin
-                ON messages(contact_id, origin_msg_id)
+                ON messages(contact_id, direction, origin_msg_id)
                 WHERE contact_id IS NOT NULL AND origin_msg_id IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_group_origin
                 ON messages(group_id, sender_sign_pk, origin_msg_id)
@@ -508,6 +549,7 @@ impl Db {
                 PRIMARY KEY (msg_id, recipient_contact_id)
             );
             CREATE INDEX IF NOT EXISTS idx_pending_outbound_recipient ON pending_outbound(recipient_contact_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_outbound_age ON pending_outbound(created_at);
 
             -- Relay network (gipny-dht): items held for others, opaque
             -- ciphertext under opaque keys, and nodes that answered us.
@@ -687,6 +729,7 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_groups_sort
                 ON groups(pinned_at, last_message_at);
         ")?;
+        Self::migrate_dm(conn)?;
         Ok(())
     }
 
@@ -891,6 +934,11 @@ impl Db {
             .query_row(params![contact_id], |r| r.get::<_, Vec<u8>>(0)).optional().map_err(Into::into))
     }
 
+    pub fn has_session(&self, contact_id:i64) -> Result<bool> {
+        self.with_conn(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE contact_id=?1)",
+            params![contact_id],|row|row.get(0))?))
+    }
+
     pub fn delete_session(&self, contact_id: i64) -> Result<()> {
         self.with_conn(|c| { c.execute("DELETE FROM sessions WHERE contact_id = ?1", params![contact_id])?; Ok(()) })
     }
@@ -957,6 +1005,14 @@ impl Db {
     ) -> Result<i64> {
         check_body(body)?;
         self.with_tx(|tx| {
+            if let Some(origin) = origin_msg_id.filter(|v| *v > 0) {
+                if matches!(direction, Direction::In) {
+                    if let Some(id) = tx.query_row("SELECT id FROM messages WHERE contact_id=?1 AND group_id IS NULL
+                        AND direction=0 AND origin_msg_id=?2 AND deleted_at IS NOT NULL", params![contact_id,origin], |r|r.get(0)).optional()? {
+                        return Ok(id);
+                    }
+                }
+            }
             tx.execute(
                 "INSERT INTO messages (contact_id, direction, body, sent_at, expires_at, origin_msg_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![contact_id, direction.to_i64(), body, sent_at, expires_at, origin_msg_id])?;
@@ -968,7 +1024,7 @@ impl Db {
 
     pub fn find_message_by_origin(&self, contact_id: i64, origin_msg_id: i64) -> Result<Option<i64>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT id FROM messages WHERE contact_id = ?1 AND origin_msg_id = ?2 ORDER BY id DESC LIMIT 1")?
+            "SELECT id FROM messages WHERE contact_id = ?1 AND direction = 0 AND origin_msg_id = ?2 ORDER BY id DESC LIMIT 1")?
             .query_row(params![contact_id, origin_msg_id], |r| r.get::<_, i64>(0)).optional().map_err(Into::into))
     }
 
@@ -1005,7 +1061,7 @@ impl Db {
 
     pub fn update_message_body(&self, id: i64, body: &str) -> Result<()> {
         check_body(body)?;
-        self.with_conn(|c| { c.execute("UPDATE messages SET body = ?1 WHERE id = ?2", params![body, id])?; Ok(()) })
+        self.with_conn(|c| { c.execute("UPDATE messages SET body = ?1 WHERE id = ?2 AND deleted_at IS NULL", params![body, id])?; Ok(()) })
     }
 
     pub fn set_reply_to(&self, id: i64, reply_to: Option<i64>) -> Result<()> {
@@ -1045,6 +1101,73 @@ impl Db {
                 params![group_id, sender_sign_pk, direction.to_i64(), body, sent_at, expires_at, origin_msg_id])?;
             let id = tx.last_insert_rowid();
             insert_attachments(tx, id, attachments)?;
+            Ok(id)
+        })
+    }
+
+    /// Publish a fully prepared group message to the retry loop. Register the
+    /// complete recipient snapshot atomically, after settings/file offers are
+    /// ready and before the first network await. Preparation itself is separate.
+    pub fn queue_group_recipients(&self, msg_id: i64, recipients: &[i64]) -> Result<()> {
+        self.with_tx(|tx| {
+            let created_at: i64 = tx.query_row(
+                "SELECT sent_at FROM messages WHERE id = ?1 AND direction = 1 AND group_id IS NOT NULL",
+                params![msg_id], |row| row.get(0),
+            )?;
+            for recipient in recipients {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_outbound
+                     (msg_id, recipient_contact_id, send_attempts, created_at) VALUES (?1, ?2, 0, ?3)",
+                    params![msg_id, recipient, created_at],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Accept a fully prepared group message and its entire outbox atomically.
+    /// A rollback exposes neither history nor a partial recipient/file queue.
+    pub fn commit_outgoing_group(&self, group: &NewOutgoingGroup<'_>, attachments: &[NewGroupAttachment]) -> Result<i64> {
+        check_body(group.body)?;
+        for staged in attachments {
+            if staged.attachment.chunk_size.is_some() != staged.file_offer.is_some() {
+                return Err(DbError::State);
+            }
+        }
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO messages (group_id, sender_sign_pk, direction, body, sent_at, expires_at, reply_to)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)",
+                params![group.group_id, group.sender_sign_pk, group.body, group.sent_at, group.expires_at, group.reply_to],
+            )?;
+            let id = tx.last_insert_rowid();
+            for (prefix, value) in [("buttons", group.buttons), ("sound", group.notify_sound)] {
+                if let Some(value) = value {
+                    tx.execute("INSERT INTO settings (k, v) VALUES (?1, ?2)", params![format!("{prefix}_{id}"), value])?;
+                }
+            }
+            for staged in attachments {
+                let a = &staged.attachment;
+                insert_attachments(tx, id, std::slice::from_ref(a))?;
+                let attachment_id = tx.last_insert_rowid();
+                if let Some((file_id, sha256)) = &staged.file_offer {
+                    tx.execute(
+                        "INSERT INTO file_out (file_id, attachment_id, message_id, sha256, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![file_id.as_slice(), attachment_id, id, sha256.as_slice(), group.sent_at],
+                    )?;
+                    for recipient in group.recipients {
+                        tx.execute("INSERT OR IGNORE INTO file_out_peer (file_id, contact_id) VALUES (?1, ?2)",
+                            params![file_id.as_slice(), recipient])?;
+                    }
+                }
+            }
+            for recipient in group.recipients {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_outbound (msg_id, recipient_contact_id, send_attempts, created_at)
+                     VALUES (?1, ?2, 0, ?3)", params![id, recipient, group.sent_at],
+                )?;
+            }
             Ok(id)
         })
     }
@@ -1099,7 +1222,7 @@ impl Db {
 
     pub fn list_unsent_outgoing(&self, contact_id: i64, limit: i64) -> Result<Vec<Message>> {
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
-            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 0 ORDER BY id ASC LIMIT ?2"))?
+            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 0 AND deleted_at IS NULL ORDER BY id ASC LIMIT ?2"))?
             .query_map(params![contact_id, limit], Self::map_message)?.collect_rows())
     }
 
@@ -1110,7 +1233,7 @@ impl Db {
         &self, contact_id: i64, now_ms: i64, base_backoff_ms: i64, max_backoff_ms: i64, limit: i64,
     ) -> Result<Vec<Message>> {
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
-            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0
+            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0 AND deleted_at IS NULL
                AND sent_at > ?2 - ?6
                AND (last_attempt_at IS NULL OR (?2 - last_attempt_at) >= MIN(?4, ?3 * (1 << MIN(send_attempts, 16))))
              ORDER BY id ASC LIMIT ?5"))?
@@ -1160,6 +1283,44 @@ impl Db {
         self.with_conn(|c| { c.execute(
             "DELETE FROM pending_outbound WHERE msg_id = ?1 AND recipient_contact_id = ?2",
             params![msg_id, recipient_contact_id])?; Ok(()) })
+    }
+
+    /// Call only after authenticating the peer and validating the message's
+    /// group id. The recipient obligation and final delivered flag commit
+    /// together; unrelated, duplicate and already-purged ACKs are no-ops.
+    pub fn acknowledge_group_delivery(&self, msg_id: i64, recipient_contact_id: i64) -> Result<GroupDeliveryAck> {
+        self.with_tx(|tx| {
+            let removed = tx.execute(
+                "DELETE FROM pending_outbound WHERE msg_id = ?1 AND recipient_contact_id = ?2
+                 AND EXISTS (SELECT 1 FROM messages WHERE id = ?1 AND direction = 1 AND group_id IS NOT NULL)",
+                params![msg_id, recipient_contact_id],
+            )?;
+            if removed == 0 { return Ok(GroupDeliveryAck::NotPending); }
+            let remaining: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM pending_outbound WHERE msg_id = ?1)",
+                params![msg_id], |row| row.get(0),
+            )?;
+            if remaining { return Ok(GroupDeliveryAck::PendingRecipients); }
+            let completed = tx.execute(
+                "UPDATE messages SET sent = 1, delivered = 1 WHERE id = ?1 AND delivered = 0",
+                params![msg_id],
+            )?;
+            Ok(if completed > 0 { GroupDeliveryAck::Complete } else { GroupDeliveryAck::NotPending })
+        })
+    }
+
+    /// Bound undeliverable group queue state to the same seven days as retry.
+    /// Expire the whole message if any recipient is stale, including legacy
+    /// rows queued at different times. Otherwise a late ACK could turn partial
+    /// expiry into apparent complete delivery. Never erase history or mark it delivered.
+    pub fn purge_expired_group_outbound(&self, now_ms: i64) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute(
+            "DELETE FROM pending_outbound WHERE msg_id IN (
+                 SELECT p.msg_id FROM pending_outbound p JOIN messages m ON m.id = p.msg_id
+                 WHERE p.created_at <= ?1 AND m.group_id IS NOT NULL AND m.direction = 1
+             )",
+            params![now_ms.saturating_sub(RETRY_TTL_MS)],
+        )?))
     }
 
     pub fn pending_outbound_for_recipient(
@@ -1268,7 +1429,7 @@ impl Db {
             "DELETE FROM messages WHERE id IN (
                 SELECT m.id FROM messages m
                 LEFT JOIN pinned_messages p ON p.message_id = m.id
-                WHERE m.expires_at IS NOT NULL AND m.expires_at > m.sent_at
+                WHERE m.group_id IS NOT NULL AND m.expires_at IS NOT NULL AND m.expires_at > m.sent_at
                   AND m.expires_at <= ?1 AND p.message_id IS NULL
             )", params![now])?))
     }
@@ -1278,17 +1439,12 @@ impl Db {
             "DELETE FROM pinned_messages WHERE message_id NOT IN (SELECT id FROM messages)", [])?))
     }
 
-    /// Drop the whole transcript of this profile, for the person who would
-    /// rather not find it there next time the app opens.
-    ///
-    /// Pinned messages stay behind: pinning is a deliberate "keep this", and
-    /// taking it away here would throw out something the owner saved on
-    /// purpose. `secure_delete` is on for this database, so what goes is
-    /// overwritten rather than left readable in the free pages, and
-    /// `foreign_keys` carries the attachment rows away with the messages.
+    /// Preserve the existing local group-history cleanup, including pins.
+    /// DM cleanup uses `clear_dm_history` so durable references and deletion
+    /// obligations survive instead of physically dropping those messages.
     pub fn purge_all_messages(&self) -> Result<usize> {
         self.with_conn(|c| Ok(c.execute(
-            "DELETE FROM messages WHERE id NOT IN (SELECT message_id FROM pinned_messages)", [],
+            "DELETE FROM messages WHERE group_id IS NOT NULL AND id NOT IN (SELECT message_id FROM pinned_messages)", [],
         )?))
     }
 
@@ -1308,6 +1464,8 @@ impl Db {
             last_attempt_at: r.get(11)?,
             send_attempts: r.get(12)?,
             reply_to: r.get(13)?,
+            dm_seq: r.get(14)?,
+            deleted_at: r.get(15)?,
         })
     }
 
@@ -1465,10 +1623,16 @@ impl Db {
     pub fn file_out_add(&self, file_id: &[u8; 16], attachment_id: i64, message_id: i64, sha256: &[u8; 32], recipients: &[i64]) -> Result<()> {
         self.with_tx(|tx| {
             tx.execute(
-                "INSERT OR IGNORE INTO file_out (file_id, attachment_id, message_id, sha256, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR IGNORE INTO file_out (file_id, attachment_id, message_id, sha256, created_at)
+                 SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL)
+                    AND EXISTS(SELECT 1 FROM attachments WHERE id=?2 AND message_id=?3)",
                 params![file_id.as_slice(), attachment_id, message_id, sha256.as_slice(), now_ms()])?;
             for c in recipients {
-                tx.execute("INSERT OR IGNORE INTO file_out_peer (file_id, contact_id) VALUES (?1, ?2)", params![file_id.as_slice(), c])?;
+                tx.execute("INSERT OR IGNORE INTO file_out_peer (file_id, contact_id)
+                    SELECT ?1,?2 WHERE EXISTS(SELECT 1 FROM file_out WHERE file_id=?1)", params![file_id.as_slice(), c])?;
+                tx.execute("INSERT OR IGNORE INTO dm_message_files(message_id,contact_id,file_id)
+                    SELECT id,?2,?3 FROM messages WHERE id=?1 AND contact_id=?2 AND group_id IS NULL AND deleted_at IS NULL",
+                    params![message_id,c,file_id.as_slice()])?;
             }
             Ok(())
         })
@@ -1552,7 +1716,9 @@ impl Db {
     pub fn file_in_add(&self, f: &FileIn) -> Result<bool> {
         self.with_conn(|c| Ok(c.execute(
             "INSERT OR IGNORE INTO file_in (file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+             WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL)
+                AND NOT EXISTS(SELECT 1 FROM dm_deleted_files WHERE contact_id=?2 AND file_id=?1)",
             params![f.file_id.as_slice(), f.contact_id, f.message_id, f.name, f.size as i64, f.sha256.as_slice(),
                     f.chunk_size, f.path, f.key, f.bits, f.received, f.created_at])? > 0))
     }
@@ -1589,7 +1755,12 @@ impl Db {
     /// The file is whole: it becomes an attachment of its message, and the
     /// transfer is forgotten. Returns the attachment's id.
     pub fn file_in_finish(&self, f: &FileIn) -> Result<i64> {
+        let _files=self.file_mutations.lock().map_err(|_|DbError::State)?;
         self.with_tx(|tx| {
+            let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM file_in WHERE file_id=?1 AND contact_id=?2
+                AND EXISTS(SELECT 1 FROM messages WHERE id=file_in.message_id AND deleted_at IS NULL))",
+                params![f.file_id.as_slice(),f.contact_id],|r|r.get(0))?;
+            if !live {return Err(DbError::State);}
             tx.execute(
                 "INSERT INTO attachments (message_id, name, size, key, path, chunk_size) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![f.message_id, f.name, f.size as i64, f.key, f.path, f.chunk_size])?;
@@ -1694,7 +1865,14 @@ impl Db {
     }
 
     pub fn set_setting(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.with_conn(|c| { c.execute(
+        self.with_conn(|c| {
+            let message_id = ["buttons_", "sound_", "console_pending_", "console_"].iter()
+                .find_map(|prefix|key.strip_prefix(prefix).and_then(|id|id.parse::<i64>().ok()));
+            if let Some(id)=message_id {
+                let deleted:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND deleted_at IS NOT NULL)",params![id],|r|r.get(0))?;
+                if deleted {return Ok(());}
+            }
+            c.execute(
             "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
             params![key, value])?; Ok(()) })
     }
@@ -1835,7 +2013,8 @@ impl Db {
 
     pub fn pin_contact_message(&self, contact_id: i64, message_id: i64) -> Result<bool> {
         self.with_conn(|c| Ok(c.execute(
-            "INSERT OR IGNORE INTO pinned_messages (contact_id, message_id, pinned_at) VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO pinned_messages (contact_id, message_id, pinned_at)
+             SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM messages WHERE id=?2 AND contact_id=?1 AND deleted_at IS NULL)",
             params![contact_id, message_id, now_ms()])? > 0))
     }
 
@@ -2060,6 +2239,121 @@ impl Db {
     }
 }
 
+#[cfg(test)]
+mod atomic_group_outbox_tests {
+    use super::*;
+
+    fn prepared_attachments() -> Vec<NewGroupAttachment> {
+        vec![
+            NewGroupAttachment {
+                attachment: NewAttachment { name: "inline.txt".into(), size: 3, key: vec![1; 32], path: "inline-cipher".into(), chunk_size: None },
+                file_offer: None,
+            },
+            NewGroupAttachment {
+                attachment: NewAttachment { name: "parts.bin".into(), size: 1234, key: vec![2; 32], path: "parts-cipher".into(), chunk_size: Some(300) },
+                file_offer: Some(([3; 16], [4; 32])),
+            },
+        ]
+    }
+
+    fn setup(path: &Path) -> (Db, Vec<i64>, i64) {
+        let db = Db::open_plain(path).unwrap();
+        db.create_group(b"atomic", "group").unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let reply = db.insert_group_message(b"atomic", Some(&[5; 32]), Direction::In, "reply target", now_ms(), None, &[]).unwrap();
+        (db, vec![a, b], reply)
+    }
+
+    fn draft<'a>(recipients: &'a [i64], reply: i64, sent_at: i64) -> NewOutgoingGroup<'a> {
+        NewOutgoingGroup {
+            group_id: b"atomic", sender_sign_pk: &[9; 32], body: "complete outgoing message", sent_at,
+            expires_at: Some(sent_at + 60_000), reply_to: Some(reply), buttons: Some(b"encoded buttons"),
+            notify_sound: Some(b"ping"), recipients,
+        }
+    }
+
+    fn counts(db: &Db) -> Vec<i64> {
+        db.with_conn(|conn| {
+            ["messages", "attachments", "settings", "file_out", "file_out_peer", "pending_outbound"].iter()
+                .map(|table| Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))?))
+                .collect()
+        }).unwrap()
+    }
+
+    #[test]
+    fn every_preparation_insert_rolls_back_the_entire_group_after_reopen() {
+        // Each trigger aborts after earlier message/metadata/attachment rows
+        // have been written. The last cases also abort a partial fan-out.
+        for (table, condition) in [
+            ("settings", "NEW.k LIKE 'sound_%'"),
+            ("attachments", "NEW.name = 'parts.bin'"),
+            ("file_out", "1"),
+            ("file_out_peer", "NEW.contact_id = 2"),
+            ("pending_outbound", "NEW.recipient_contact_id = 2"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rollback.db");
+            let (db, recipients, reply) = setup(&path);
+            let before = counts(&db);
+            db.with_conn(|conn| {
+                conn.execute_batch(&format!("CREATE TRIGGER fail_group BEFORE INSERT ON {table} WHEN {condition}
+                    BEGIN SELECT RAISE(ABORT, 'injected group publication failure'); END;"))?;
+                Ok(())
+            }).unwrap();
+            assert!(db.commit_outgoing_group(&draft(&recipients, reply, now_ms()), &prepared_attachments()).is_err(), "{table}");
+            drop(db);
+            let reopened = Db::open_plain(&path).unwrap();
+            assert_eq!(counts(&reopened), before, "partial state escaped rollback at {table}");
+            assert_eq!(reopened.list_group_messages(b"atomic", 10, None).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn accepted_group_restores_reply_settings_offers_and_every_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accepted.db");
+        let (db, recipients, reply) = setup(&path);
+        let sent_at = now_ms();
+        let id = db.commit_outgoing_group(&draft(&recipients, reply, sent_at), &prepared_attachments()).unwrap();
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        let message = db.get_message(id).unwrap().unwrap();
+        assert_eq!(message.body, "complete outgoing message");
+        assert_eq!(message.reply_to, Some(reply));
+        assert_eq!(message.sent_at, sent_at);
+        assert_eq!(message.expires_at, Some(sent_at + 60_000));
+        assert!(!message.sent && !message.delivered);
+        assert_eq!(db.get_setting(&format!("buttons_{id}")).unwrap(), Some(b"encoded buttons".to_vec()));
+        assert_eq!(db.get_setting(&format!("sound_{id}")).unwrap(), Some(b"ping".to_vec()));
+        let attachments = db.list_attachments(id).unwrap();
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(attachments[0].path, "inline-cipher");
+        assert_eq!(attachments[1].path, "parts-cipher");
+        let offers = db.files_out_for_message(id).unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].attachment.id, attachments[1].id);
+        assert_eq!(offers[0].file_id, [3; 16]);
+        assert_eq!(offers[0].sha256, [4; 32]);
+        assert_eq!(db.file_peers_of(&[3; 16]).unwrap().len(), 2);
+        for recipient in recipients {
+            assert!(db.file_peer(&[3; 16], recipient).unwrap().is_some());
+            assert_eq!(db.pending_outbound_for_recipient(recipient, sent_at, 0, 0, 50).unwrap(), vec![id]);
+        }
+    }
+
+    #[test]
+    fn incomplete_file_offer_metadata_is_rejected_before_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, recipients, reply) = setup(&dir.path().join("invalid.db"));
+        let before = counts(&db);
+        let mut attachments = prepared_attachments();
+        attachments[1].file_offer = None;
+        assert!(matches!(db.commit_outgoing_group(&draft(&recipients, reply, now_ms()), &attachments), Err(DbError::State)));
+        assert_eq!(counts(&db), before);
+    }
+}
+
 type DhtStoredItem = gipny_dht::proto::StoredItem;
 type DhtStoreLimits = gipny_dht::store::StoreLimits;
 type DhtKnownPeer = gipny_dht::node::KnownPeer;
@@ -2266,5 +2560,169 @@ mod file_tests {
         // Deleting the message forgets the transfer.
         db.delete_message(msg).unwrap();
         assert!(db.file_out(&fid).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod group_delivery_tests {
+    use super::*;
+
+    fn due(db: &Db, recipient: i64) -> Vec<i64> {
+        db.pending_outbound_for_recipient(recipient, now_ms(), 0, 0, 100).unwrap()
+    }
+
+    #[test]
+    fn prepared_group_and_complete_recipient_snapshot_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group.db");
+        let db = Db::open_plain(&path).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32];
+        db.create_group(&group, "Team").unwrap();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "durable", now_ms(), None, &[]).unwrap();
+        assert!(due(&db, a).is_empty());
+        assert!(due(&db, b).is_empty());
+        db.set_setting(&format!("sound_{id}"), b"prepared").unwrap();
+        db.queue_group_recipients(id, &[a, b, a]).unwrap();
+        drop(db); // No enqueue or network call has happened yet.
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(db.get_message(id).unwrap().unwrap().body, "durable");
+        assert_eq!(due(&db, a), vec![id]);
+        assert_eq!(due(&db, b), vec![id]);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+    }
+
+    #[test]
+    fn failed_recipient_registration_rolls_back_every_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("group.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32];
+        db.create_group(&group, "Team").unwrap();
+        db.with_conn(|c| { c.execute_batch(&format!(
+            "CREATE TEMP TRIGGER fail_second_recipient BEFORE INSERT ON pending_outbound
+             WHEN NEW.recipient_contact_id = {b} BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END;"
+        ))?; Ok(()) }).unwrap();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "rollback", now_ms(), None, &[]).unwrap();
+        assert!(db.queue_group_recipients(id, &[a, b]).is_err());
+        assert_eq!(db.list_group_messages(&group, 100, None).unwrap().len(), 1);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+        assert!(due(&db, a).is_empty());
+        assert!(due(&db, b).is_empty());
+    }
+
+    #[test]
+    fn group_ack_is_recipient_scoped_idempotent_and_delivered_only_when_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group.db");
+        let db = Db::open_plain(&path).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let other = db.add_contact(&[7; 32], &[8; 32], "", "other", None).unwrap();
+        let group = [5; 32]; db.create_group(&group, "Team").unwrap();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "receipt", now_ms(), None, &[]).unwrap();
+        db.queue_group_recipients(id, &[a, b]).unwrap();
+        assert_eq!(db.acknowledge_group_delivery(id, other).unwrap(), GroupDeliveryAck::NotPending);
+        assert_eq!(db.acknowledge_group_delivery(id, a).unwrap(), GroupDeliveryAck::PendingRecipients);
+        assert_eq!(db.acknowledge_group_delivery(id, a).unwrap(), GroupDeliveryAck::NotPending);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        assert!(due(&db, a).is_empty()); assert_eq!(due(&db, b), vec![id]);
+        assert_eq!(db.acknowledge_group_delivery(id, b).unwrap(), GroupDeliveryAck::Complete);
+        assert!(db.get_message(id).unwrap().unwrap().delivered);
+        assert!(db.get_message(id).unwrap().unwrap().sent);
+        assert_eq!(db.acknowledge_group_delivery(id, b).unwrap(), GroupDeliveryAck::NotPending);
+    }
+
+    #[test]
+    fn concurrent_recipient_acks_complete_once_and_survive_reopen() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("concurrent-group.db");
+        let db = Arc::new(Db::open_plain(&path).unwrap());
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32];
+        db.create_group(&group, "Team").unwrap();
+        let id = db.insert_group_message(
+            &group, Some(&[6; 32]), Direction::Out, "concurrent receipts", now_ms(), None, &[],
+        ).unwrap();
+        db.queue_group_recipients(id, &[a, b]).unwrap();
+
+        // Both authenticated receive workers reach the ACK boundary together.
+        let ready = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = [a, b].into_iter().map(|recipient| {
+            let db = Arc::clone(&db);
+            let ready = Arc::clone(&ready);
+            std::thread::spawn(move || {
+                ready.wait();
+                db.acknowledge_group_delivery(id, recipient).unwrap()
+            })
+        }).collect();
+        ready.wait();
+        let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(outcomes.iter().filter(|&&outcome| outcome == GroupDeliveryAck::Complete).count(), 1);
+        assert_eq!(outcomes.iter().filter(|&&outcome| outcome == GroupDeliveryAck::PendingRecipients).count(), 1);
+        for recipient in [a, b] {
+            assert_eq!(db.acknowledge_group_delivery(id, recipient).unwrap(), GroupDeliveryAck::NotPending);
+        }
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        let message = db.get_message(id).unwrap().unwrap();
+        assert!(message.sent);
+        assert!(message.delivered);
+        for recipient in [a, b] {
+            assert!(due(&db, recipient).is_empty());
+            assert_eq!(db.acknowledge_group_delivery(id, recipient).unwrap(), GroupDeliveryAck::NotPending);
+        }
+    }
+
+    #[test]
+    fn expiration_clears_group_queue_without_erasing_history_or_touching_dm() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("group.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let group = [5; 32]; db.create_group(&group, "Team").unwrap();
+        let now = now_ms();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "expired", now, None, &[]).unwrap();
+        db.queue_group_recipients(id, &[a]).unwrap();
+        let fresh = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "fresh", now + 1, None, &[]).unwrap();
+        db.queue_group_recipients(fresh, &[a]).unwrap();
+        let dm = db.insert_message(a, Direction::Out, "DM", now, None, &[]).unwrap();
+        db.pending_outbound_add(dm, a).unwrap();
+        assert_eq!(db.purge_expired_group_outbound(now + RETRY_TTL_MS).unwrap(), 1);
+        assert_eq!(db.acknowledge_group_delivery(id, a).unwrap(), GroupDeliveryAck::NotPending);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+        assert_eq!(due(&db, a), vec![fresh, dm]);
+        assert_eq!(db.list_group_messages(&group, 10, None).unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod group_expiry_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_recipient_timestamps_cannot_turn_partial_expiry_into_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("legacy.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32]; db.create_group(&group, "Team").unwrap();
+        let now = now_ms();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "legacy", now, None, &[]).unwrap();
+        db.queue_group_recipients(id, &[a, b]).unwrap();
+        db.with_conn(|c| { c.execute(
+            "UPDATE pending_outbound SET created_at = ?1 WHERE msg_id = ?2 AND recipient_contact_id = ?3",
+            params![now + 60_000, id, b],
+        )?; Ok(()) }).unwrap();
+        assert_eq!(db.purge_expired_group_outbound(now + RETRY_TTL_MS).unwrap(), 2);
+        assert_eq!(db.acknowledge_group_delivery(id, b).unwrap(), GroupDeliveryAck::NotPending);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
     }
 }

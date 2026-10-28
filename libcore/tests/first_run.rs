@@ -12,6 +12,8 @@ use std::time::Instant;
 use gipny_libcore::db::Db;
 use gipny_libcore::security::{ArgonParams, DuressMode, UnlockOutcome, Vault};
 
+mod common;
+
 fn mk_of(outcome: UnlockOutcome) -> gipny_libcore::security::MasterKey {
     match outcome {
         UnlockOutcome::Primary(k) => k,
@@ -21,6 +23,7 @@ fn mk_of(outcome: UnlockOutcome) -> gipny_libcore::security::MasterKey {
 
 #[test]
 fn vault_roundtrip_and_wrong_pass() {
+    common::protected_credentials();
     let dir = tempfile::tempdir().unwrap();
     let params = ArgonParams { m: 8192, t: 1, p: 1 }; // cheap: logic-only test
     Vault::create_with_params(dir.path(), "correct horse", None, DuressMode::Wipe, 0, params)
@@ -35,6 +38,7 @@ fn vault_roundtrip_and_wrong_pass() {
 
 #[test]
 fn duress_decoy_unlocks_separately() {
+    common::protected_credentials();
     let dir = tempfile::tempdir().unwrap();
     let params = ArgonParams { m: 8192, t: 1, p: 1 };
     Vault::create_with_params(dir.path(), "real pass", Some("duress pass"), DuressMode::Decoy, 0, params)
@@ -54,6 +58,7 @@ fn duress_decoy_unlocks_separately() {
 /// follows the key all the way to an open DB, the way the app does.
 #[test]
 fn duress_decoy_opens_its_own_database() {
+    common::protected_credentials();
     let dir = tempfile::tempdir().unwrap();
     let params = ArgonParams { m: 8192, t: 1, p: 1 };
     Vault::create_with_params(dir.path(), "real pass", Some("duress pass"), DuressMode::Decoy, 0, params)
@@ -92,6 +97,7 @@ fn duress_decoy_opens_its_own_database() {
 /// completed profile → occupied; wrong passphrase → occupied.
 #[test]
 fn first_run_interrupted_is_resumable() {
+    common::protected_credentials();
     let dir = tempfile::tempdir().unwrap();
     let params = ArgonParams { m: 8192, t: 1, p: 1 };
 
@@ -124,6 +130,7 @@ fn first_run_interrupted_is_resumable() {
 /// meaningful numbers; CI publishes the `[timing]` lines to the job summary.
 #[test]
 fn kdf_timing_report() {
+    common::protected_credentials();
     for (label, params) in [
         ("desktop (256MiB, t=4)", ArgonParams { m: 262144, t: 4, p: 1 }),
         ("mobile  (64MiB,  t=3)", ArgonParams { m: 65536, t: 3, p: 1 }),
@@ -143,4 +150,119 @@ fn kdf_timing_report() {
         // Catch pathological regressions only — runners vary a lot.
         assert!(unlock_ms < 30_000, "unlock took {unlock_ms} ms — something is badly wrong");
     }
+}
+
+#[test]
+fn simultaneous_wrong_passwords_keep_attempt_limit_and_throttle() {
+    use gipny_libcore::security::SecurityError;
+    use std::sync::{Arc, Barrier};
+    use std::time::Duration;
+
+    common::protected_credentials();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Arc::new(Vault::create_with_params(
+        dir.path(), "correct pass", None, DuressMode::Wipe, 3,
+        ArgonParams { m: 8192, t: 1, p: 1 },
+    ).unwrap());
+    assert!(matches!(vault.unlock("wrong pass"), Err(SecurityError::InvalidPassphrase)));
+    let barrier = Arc::new(Barrier::new(3));
+    let started = Instant::now();
+    let workers: Vec<_> = (0..2).map(|_| {
+        let vault = vault.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            vault.unlock("wrong pass")
+        })
+    }).collect();
+    barrier.wait();
+    let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|outcome| matches!(outcome, Ok(UnlockOutcome::Wiped))).count(), 1);
+    assert_eq!(outcomes.iter().filter(|outcome| matches!(outcome, Err(SecurityError::InvalidPassphrase))).count(), 1);
+    assert!(!Vault::exists(dir.path()), "the third failed attempt must wipe even when callers race");
+    assert!(started.elapsed() >= Duration::from_millis(750), "parallel attempts must not share one throttle delay");
+}
+
+#[test]
+fn concurrent_passphrase_changes_cannot_both_authenticate_stale_password() {
+    use gipny_libcore::security::SecurityError;
+    use std::sync::{Arc, Barrier};
+
+    common::protected_credentials();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = Arc::new(Vault::create_with_params(
+        dir.path(), "old pass", None, DuressMode::Wipe, 0,
+        ArgonParams { m: 8192, t: 1, p: 1 },
+    ).unwrap());
+    let barrier = Arc::new(Barrier::new(3));
+    let workers: Vec<_> = ["first new pass", "second new pass"].into_iter().map(|new| {
+        let vault = vault.clone();
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            barrier.wait();
+            (new, vault.change_passphrase("old pass", new))
+        })
+    }).collect();
+    barrier.wait();
+    let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|(_, result)| result.is_ok()).count(), 1);
+    assert_eq!(outcomes.iter().filter(|(_, result)| matches!(result, Err(SecurityError::InvalidPassphrase))).count(), 1);
+    let winner = outcomes.iter().find(|(_, result)| result.is_ok()).unwrap().0;
+    let reopened = Vault::open(dir.path()).unwrap();
+    assert!(matches!(reopened.unlock(winner).unwrap(), UnlockOutcome::Primary(_)));
+    assert!(matches!(reopened.unlock("old pass"), Err(SecurityError::InvalidPassphrase)));
+}
+
+#[test]
+fn independent_vault_opens_share_wrong_password_counter_and_throttle() {
+    use gipny_libcore::security::SecurityError;
+    use std::sync::{Arc, Barrier};
+    use std::time::Duration;
+
+    common::protected_credentials();
+    let dir = tempfile::tempdir().unwrap();
+    let keeper = Vault::create_with_params(dir.path(), "correct pass", None, DuressMode::Wipe, 3,
+        ArgonParams { m: 8192, t: 1, p: 1 }).unwrap();
+    assert!(matches!(keeper.unlock("wrong pass"), Err(SecurityError::InvalidPassphrase)));
+    // This mirrors separate Tauri IPCs: new Vault objects, including a path
+    // alias, rather than cloning one Arc<Vault> and its instance mutex.
+    let vaults = [Vault::open(dir.path()).unwrap(), Vault::open(&dir.path().join(".")).unwrap()];
+    let barrier = Arc::new(Barrier::new(3));
+    let started = Instant::now();
+    let workers: Vec<_> = vaults.into_iter().map(|vault| {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || { barrier.wait(); vault.unlock("wrong pass") })
+    }).collect();
+    barrier.wait();
+    let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|result| matches!(result, Ok(UnlockOutcome::Wiped))).count(), 1);
+    assert_eq!(outcomes.iter().filter(|result| matches!(result, Err(SecurityError::InvalidPassphrase))).count(), 1);
+    assert!(!Vault::exists(dir.path()), "independent IPC handles must not lose the third failed attempt");
+    assert!(started.elapsed() >= Duration::from_millis(350), "independent live handles must share the last-try throttle");
+}
+
+#[test]
+fn independent_vault_opens_cannot_both_change_the_same_old_password() {
+    use gipny_libcore::security::SecurityError;
+    use std::sync::{Arc, Barrier};
+
+    common::protected_credentials();
+    let dir = tempfile::tempdir().unwrap();
+    Vault::create_with_params(dir.path(), "old pass", None, DuressMode::Wipe, 0,
+        ArgonParams { m: 8192, t: 1, p: 1 }).unwrap();
+    let first = Vault::open(dir.path()).unwrap();
+    let second = Vault::open(&dir.path().join(".")).unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let workers: Vec<_> = [(first, "first new pass"), (second, "second new pass")].into_iter().map(|(vault,new)| {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || { barrier.wait(); (new, vault.change_passphrase("old pass", new)) })
+    }).collect();
+    barrier.wait();
+    let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    assert_eq!(outcomes.iter().filter(|(_,result)|result.is_ok()).count(),1);
+    assert_eq!(outcomes.iter().filter(|(_,result)|matches!(result,Err(SecurityError::InvalidPassphrase))).count(),1);
+    let winner = outcomes.iter().find(|(_,result)|result.is_ok()).unwrap().0;
+    let reopened = Vault::open(dir.path()).unwrap();
+    assert!(matches!(reopened.unlock(winner).unwrap(),UnlockOutcome::Primary(_)));
+    assert!(matches!(reopened.unlock("old pass"),Err(SecurityError::InvalidPassphrase)));
 }

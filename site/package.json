@@ -1,0 +1,10 @@
+{
+  "name": "gipny-project-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-isolation=none tests/site.test.mjs",
+    "build": "node build.mjs"
+  },
+  "engines": { "node": ">=24" }
+}

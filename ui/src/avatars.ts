@@ -1,3 +1,4 @@
+import { t as tr } from './i18n';
 import { Api } from './api';
 
 /** Default avatars: characters cut from Japanese woodblock prints in the public
@@ -11,12 +12,14 @@ import { Api } from './api';
  *   fabrics»; «Octopus, red fish»; «A cat dressed as a woman tapping the head
  *   of an octopus». Utagawa Hiroshige — «Owl on a pine branch» (Brooklyn
  *   Museum). Order below is the sprite's, row by row. */
-export const AVATARS = [
-  'Тануки с бородой', 'Чёрный пёс', 'Лис', 'Заяц', 'Крыса', 'Барсук',
-  'Кошка-красавица', 'Кот с лапой', 'Кот в платке', 'Сонный кот', 'Трёхцветная', 'Осьминог',
-  'Морской осьминог', 'Сова', 'Карп', 'Белый кот', 'Кот у корзины', 'Кот-ворчун',
-  'Кошка с платком', 'Кот в ошейнике', 'Кот смотрит вверх', 'Пятнистый кот', 'Кот с добычей', 'Кот умывается',
+const AVATAR_KEYS = [
+  'avatars.bearded_tanuki', 'avatars.black_dog', 'avatars.fox', 'avatars.hare', 'avatars.rat', 'avatars.badger',
+  'avatars.elegant_cat', 'avatars.cat_with_a_raised_paw', 'avatars.cat_in_a_headscarf', 'avatars.sleepy_cat', 'avatars.calico_cat', 'avatars.octopus',
+  'avatars.sea_octopus', 'avatars.owl', 'avatars.carp', 'avatars.white_cat', 'avatars.cat_by_a_basket', 'avatars.grumpy_cat',
+  'avatars.cat_with_a_scarf', 'avatars.cat_with_a_collar', 'avatars.cat_looking_up', 'avatars.spotted_cat', 'avatars.cat_with_prey', 'avatars.cat_washing',
 ] as const;
+
+export const avatarNames = (): string[] => AVATAR_KEYS.map((key) => tr(key));
 
 const COLS = 6;
 const ROWS = 4;
@@ -38,13 +41,13 @@ export function onAvatarsChanged(fn: () => void): () => void {
 function hashIndex(seed: string): number {
   let hash = 2166136261;
   for (let i = 0; i < seed.length; i++) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619) >>> 0;
-  return hash % AVATARS.length;
+  return hash % AVATAR_KEYS.length;
 }
 
 /** The avatar index for a key: the person's pick, else the random default. */
 export function avatarIndex(seed: string): number {
   const picked = Number(choices[seed]);
-  return Number.isInteger(picked) && picked >= 0 && picked < AVATARS.length ? picked : hashIndex(seed);
+  return Number.isInteger(picked) && picked >= 0 && picked < AVATAR_KEYS.length ? picked : hashIndex(seed);
 }
 
 export function isPicked(seed: string): boolean {

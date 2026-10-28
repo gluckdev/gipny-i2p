@@ -10,12 +10,13 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
 use crate::crypto::AttachmentCipher;
-use crate::session::WireFileAck;
+use crate::db::{Db, NewAttachment, NewGroupAttachment, NewOutgoingGroup};
+use crate::session::{WireFileAck, WireFileOffer};
 
 /// Attachments up to this size still ride inside their letter.
 pub const INLINE_MAX: usize = 128 * 1024;
@@ -30,6 +31,102 @@ pub const CHUNK_SIZE: u32 = 192 * 1024;
 pub const WINDOW: u32 = 16;
 /// Largest file sent in parts.
 pub const MAX_FILE_BYTES: u64 = 2 << 30;
+
+/// Files created while preparing one group message. Only a successful database
+/// commit transfers ownership to the message. Ordinary preparation/SQL errors
+/// delete these files; process death can leave encrypted, unreferenced orphans.
+pub struct StagedGroupAttachments {
+    directory: PathBuf,
+    paths: Vec<PathBuf>,
+    attachments: Vec<NewGroupAttachment>,
+    published: bool,
+    failed: bool,
+}
+
+impl StagedGroupAttachments {
+    pub fn new(directory: &Path) -> io::Result<Self> {
+        std::fs::create_dir_all(directory)?;
+        Ok(Self { directory: directory.to_path_buf(), paths: Vec::new(), attachments: Vec::new(), published: false, failed: false })
+    }
+
+    fn new_file(&mut self) -> io::Result<(File, String)> {
+        let random: [u8; 24] = crate::crypto::random_array();
+        let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = self.directory.join(&name);
+        let file = OpenOptions::new().write(true).create_new(true).open(&path)?;
+        self.paths.push(path);
+        Ok((file, name))
+    }
+
+    pub fn inline(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
+        let result = self.stage_inline(name, data);
+        if result.is_err() { self.failed = true; }
+        result
+    }
+
+    fn stage_inline(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
+        let cipher = AttachmentCipher::generate();
+        let encrypted = cipher.encrypt_chunk(0, &[], data).map_err(io::Error::other)?;
+        let (mut file, path) = self.new_file()?;
+        file.write_all(&encrypted)?;
+        file.sync_all()?;
+        self.attachments.push(NewGroupAttachment {
+            attachment: NewAttachment {
+                name: name.into(), size: data.len() as i64, key: cipher.key().to_vec(), path, chunk_size: None,
+            },
+            file_offer: None,
+        });
+        Ok(())
+    }
+
+    pub fn parts(&mut self, name: &str, source: impl Read) -> io::Result<()> {
+        let result = self.stage_parts(name, source);
+        if result.is_err() { self.failed = true; }
+        result
+    }
+
+    fn stage_parts(&mut self, name: &str, source: impl Read) -> io::Result<()> {
+        let cipher = AttachmentCipher::generate();
+        let (file, path) = self.new_file()?;
+        drop(file);
+        let (size, sha256) = seal_from(source, &self.directory.join(&path), &cipher, CHUNK_SIZE)?;
+        self.attachments.push(NewGroupAttachment {
+            attachment: NewAttachment {
+                name: name.into(), size: size as i64, key: cipher.key().to_vec(), path,
+                chunk_size: Some(CHUNK_SIZE as i64),
+            },
+            file_offer: Some((crate::crypto::random_array(), sha256)),
+        });
+        Ok(())
+    }
+
+    /// Build the initial wire offers from the same stable ids/hashes committed
+    /// below, so no fallible metadata registration is needed after acceptance.
+    pub fn offers(&self) -> Vec<WireFileOffer> {
+        self.attachments.iter().filter_map(|staged| {
+            let (file_id, sha256) = staged.file_offer?;
+            Some(WireFileOffer {
+                file_id, sha256, name: staged.attachment.name.clone(), size: staged.attachment.size as u64,
+                chunk_size: CHUNK_SIZE,
+            })
+        }).collect()
+    }
+
+    pub fn publish(mut self, db: &Db, group: &NewOutgoingGroup<'_>) -> crate::db::Result<i64> {
+        if self.failed { return Err(crate::db::DbError::State); }
+        let id = db.commit_outgoing_group(group, &self.attachments)?;
+        self.published = true;
+        Ok(id)
+    }
+}
+
+impl Drop for StagedGroupAttachments {
+    fn drop(&mut self) {
+        if !self.published {
+            for path in &self.paths { let _ = std::fs::remove_file(path); }
+        }
+    }
+}
 /// A receiver acknowledges at least this often, in parts: every one. The
 /// sender's window is timed by the acks, and one every few left a small
 /// window (after a loss) waiting out the timeout for an ack that was due
@@ -549,6 +646,105 @@ impl Flow {
     pub fn forget(&mut self, file_id: [u8; 16]) {
         self.sent.retain(|(f, _), _| *f != file_id);
         self.known.remove(&file_id);
+    }
+}
+
+#[cfg(test)]
+mod group_staging_tests {
+    use super::*;
+
+    fn setup(path: &Path) -> (Db, Vec<i64>) {
+        let db = Db::open_plain(path).unwrap();
+        db.create_group(b"group", "group").unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        (db, vec![a, b])
+    }
+
+    fn draft(recipients: &[i64]) -> NewOutgoingGroup<'_> {
+        NewOutgoingGroup {
+            group_id: b"group", sender_sign_pk: &[9; 32], body: "staged group", sent_at: 1_800_000_000_000,
+            expires_at: None, reply_to: None, buttons: None, notify_sound: None, recipients,
+        }
+    }
+
+    #[test]
+    fn sql_failure_removes_only_files_owned_by_this_group_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sender.db");
+        let attachment_dir = dir.path().join("attachments");
+        let (db, recipients) = setup(&path);
+        let mut staged = StagedGroupAttachments::new(&attachment_dir).unwrap();
+        let existing = attachment_dir.join("unrelated");
+        std::fs::write(&existing, b"keep this").unwrap();
+        staged.inline("small", b"inline bytes").unwrap();
+        staged.parts("big", &b"chunked bytes"[..]).unwrap();
+        let injector = rusqlite::Connection::open(&path).unwrap();
+        injector.execute_batch("CREATE TRIGGER fail_outbox BEFORE INSERT ON pending_outbound
+            WHEN NEW.recipient_contact_id = 2 BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        drop(injector);
+        assert!(staged.publish(&db, &draft(&recipients)).is_err());
+        assert_eq!(std::fs::read_dir(&attachment_dir).unwrap().count(), 1);
+        assert_eq!(std::fs::read(existing).unwrap(), b"keep this");
+        drop(db);
+        let reopened = Db::open_plain(&path).unwrap();
+        assert!(reopened.list_group_messages(b"group", 10, None).unwrap().is_empty());
+        for recipient in recipients {
+            assert!(reopened.pending_outbound_for_recipient(recipient, 1_800_000_000_000, 0, 0, 50).unwrap().is_empty());
+            assert!(reopened.file_peers_for(recipient).unwrap().is_empty());
+        }
+    }
+
+    struct BrokenSource { remaining: usize }
+    impl Read for BrokenSource {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.remaining == 0 { return Err(io::Error::other("injected source read failure")); }
+            let n = buf.len().min(self.remaining);
+            buf[..n].fill(7);
+            self.remaining -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn incomplete_disk_staging_cannot_be_accepted_even_if_caller_ignores_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, recipients) = setup(&dir.path().join("sender.db"));
+        let attachment_dir = dir.path().join("attachments");
+        let mut staged = StagedGroupAttachments::new(&attachment_dir).unwrap();
+        staged.inline("already staged", b"small").unwrap();
+        assert!(staged.parts("broken", BrokenSource { remaining: CHUNK_SIZE as usize }).is_err());
+        assert!(staged.publish(&db, &draft(&recipients)).is_err());
+        assert_eq!(std::fs::read_dir(attachment_dir).unwrap().count(), 0);
+        assert!(db.list_group_messages(b"group", 10, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn accepted_files_and_stable_offers_survive_database_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sender.db");
+        let attachment_dir = dir.path().join("attachments");
+        let (db, recipients) = setup(&path);
+        let mut staged = StagedGroupAttachments::new(&attachment_dir).unwrap();
+        staged.inline("inline", b"small").unwrap();
+        let bytes = vec![42; CHUNK_SIZE as usize + 7];
+        let source = dir.path().join("source.bin");
+        std::fs::write(&source, &bytes).unwrap();
+        staged.parts("from disk", io::BufReader::new(File::open(&source).unwrap())).unwrap();
+        let offers = staged.offers();
+        let id = staged.publish(&db, &draft(&recipients)).unwrap();
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        let attachments = db.list_attachments(id).unwrap();
+        assert_eq!(attachments.len(), 2);
+        for (attachment, expected) in attachments.iter().zip([&b"small"[..], &bytes[..]]) {
+            let key: [u8; 32] = attachment.key.clone().try_into().unwrap();
+            assert_eq!(read_attachment(&attachment_dir.join(&attachment.path), key, attachment.size as u64, attachment.chunk_size).unwrap(), expected);
+        }
+        let stored = db.files_out_for_message(id).unwrap();
+        assert_eq!(stored[0].file_id, offers[0].file_id);
+        assert_eq!(stored[0].sha256, offers[0].sha256);
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
     }
 }
 

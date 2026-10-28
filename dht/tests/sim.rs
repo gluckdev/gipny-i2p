@@ -90,10 +90,14 @@ fn config() -> NodeConfig {
 }
 
 fn new_node(net: &Arc<Net>, destination: Option<&str>, stores: bool) -> Arc<Node> {
+    new_node_with_config(net, destination, stores, config())
+}
+
+fn new_node_with_config(net: &Arc<Net>, destination: Option<&str>, stores: bool, cfg: NodeConfig) -> Arc<Node> {
     let node = Arc::new(DhtNode::new(
         Arc::new(MemTransport { net: net.clone() }),
         Arc::new(MemStorage::new(StoreLimits::default())),
-        config(),
+        cfg,
         { let clock = net.clock.clone(); Arc::new(move || clock.load(Ordering::Relaxed)) },
     ));
     if let Some(d) = destination {
@@ -208,6 +212,26 @@ async fn a_letter_is_in_the_network_only_when_someone_else_holds_it() {
 
 #[tokio::test]
 async fn mail_outlives_every_node_it_was_first_stored_on() {
+    // Exercise independent mailbox keys and leaf-bootstrap targets. A single
+    // random sample previously hid a routing-admission failure in CI.
+    for case in 0..16 {
+        mail_survives_churn(case).await;
+    }
+}
+
+async fn maintenance_cycle(net: &Arc<Net>, nodes: &[Arc<Node>]) {
+    // Two complete fair-probe cycles also admit reciprocal candidates learned
+    // late in the first cycle. No sleeps, get-until-lucky or global peer seeding.
+    let ticks = 2 * nodes.len().div_ceil(config().k * 2);
+    let offline = net.offline.lock().unwrap().clone();
+    for _ in 0..ticks {
+        for node in nodes.iter().filter(|node| !offline.contains(&node.me().unwrap().destination)) {
+            node.maintain().await;
+        }
+    }
+}
+
+async fn mail_survives_churn(case: usize) {
     let net = Net::new();
     let mut nodes = network(&net, 30).await;
     let (alice, bob) = (Person::new(), Person::new());
@@ -237,6 +261,9 @@ async fn mail_outlives_every_node_it_was_first_stored_on() {
         node.bootstrap().await;
         nodes.push(node);
     }
+    // Runtime performs routing upkeep before republishing. Merely sending
+    // inbound messages does not prove a newcomer's return destination works.
+    maintenance_cycle(&net, &nodes).await;
     let offline = net.offline.lock().unwrap().clone();
     for node in nodes.iter().filter(|n| !offline.contains(&n.me().unwrap().destination)) {
         node.republish().await;
@@ -247,6 +274,12 @@ async fn mail_outlives_every_node_it_was_first_stored_on() {
     let now_holding = holders(&nodes, &letter.key, &net);
     assert!(!now_holding.is_empty(), "nobody holds the letter any more");
     assert!(now_holding.iter().all(|d| !first.contains(d)));
+
+    maintenance_cycle(&net, &nodes).await;
+    let offline = net.offline.lock().unwrap().clone();
+    for node in nodes.iter().filter(|node| !offline.contains(&node.me().unwrap().destination)) {
+        node.republish().await;
+    }
 
     // Bob comes back a day later, knowing one node that is still up.
     net.clock.fetch_add(DAY_MS, Ordering::Relaxed);
@@ -261,12 +294,95 @@ async fn mail_outlives_every_node_it_was_first_stored_on() {
             got.push((key, items::open_mail(&pair, &key, &it.value).expect("opens")));
         }
     }
-    assert_eq!(got.len(), 1);
+    assert_eq!(got.len(), 1, "case {case}: first={first:?}, surviving holders={now_holding:?}, reader peers={:?}",
+        bob_node.known_peers().iter().map(|peer| peer.info.destination.clone()).collect::<Vec<_>>());
     let (key, mail) = &got[0];
     assert_eq!(mail.envelope, b"see you tomorrow");
 
     assert!(bob_node.delete(key, &mail.delete_token).await >= 1);
     assert!(bob_node.get(key).await.is_empty(), "deleted everywhere it was found");
+}
+
+async fn new_holder_is_discovered(holder_destination: &str, seed_in_nearest: bool) {
+    let net = Net::new();
+    let cfg = NodeConfig { k: 2, alpha: 1, ..config() };
+    let old: Vec<_> = ["seed", "old-a", "old-b"].iter()
+        .map(|destination| new_node_with_config(&net, Some(destination), true, cfg.clone())).collect();
+    for node in &old {
+        for peer in &old {
+            let destination = peer.me().unwrap().destination;
+            if node.me().unwrap().destination != destination {
+                assert!(node.ping(&destination).await);
+            }
+        }
+    }
+    let seed = &old[0];
+    let holder = new_node_with_config(&net, Some(holder_destination), true, cfg.clone());
+    assert!(holder.ping("seed").await);
+    let key = dnode::id_of(holder_destination);
+    let item = StoredItem { key, value: b"synthetic encrypted envelope".to_vec(), delete_hash: None,
+        expires_at_ms: net.now() + DAY_MS };
+    let challenge = [7; 32];
+    let pow = gipny_dht::proto::solve_pow(&challenge, &item, DIFFICULTY);
+    assert!(matches!(holder.handle(&challenge, DhtEnvelope { from: None,
+        req: DhtRequest::Store { item: item.clone(), pow } }), DhtResponse::Stored));
+
+    // An inbound claim must not bypass the confirmed-peer sharing policy.
+    let shared = seed.handle(&[0; 32], DhtEnvelope { from: None, req: DhtRequest::FindNode { target: key } });
+    assert!(matches!(shared, DhtResponse::Nodes { nodes, .. }
+        if nodes.iter().all(|node| node.destination != holder_destination)));
+    let reader = new_node_with_config(&net, None, false, cfg.clone());
+    reader.add_candidates(&["seed".into()], true);
+    reader.bootstrap().await;
+    let nearest = reader.lookup(&key).await;
+    assert_eq!(nearest.iter().any(|node| node.destination == "seed"), seed_in_nearest,
+        "the fixture must exercise the intended XOR geometry");
+    assert!(reader.get(&key).await.is_empty());
+
+    // There are more candidates than one tick's budget. Dead claims neither
+    // become advertised nodes nor make maintenance probe the whole table.
+    seed.add_candidates(&["absent-a".into(), "absent-b".into(), "absent-c".into()], false);
+    net.dials.lock().unwrap().clear();
+    seed.maintain().await;
+    assert_eq!(net.dials.lock().unwrap().values().sum::<usize>(), cfg.k * 2);
+    assert!(seed.known_peers().iter().any(|peer| peer.info.destination == holder_destination));
+    assert!(seed.known_peers().iter().all(|peer| !peer.info.destination.starts_with("absent-")));
+
+    // For the second geometry only Get(seed), not FindNode's nearest set,
+    // reveals the holder. The same poll must follow that closer response.
+    let found = reader.get(&key).await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0], item);
+}
+
+#[tokio::test]
+async fn maintenance_confirms_a_new_holder_before_sharing_it() {
+    new_holder_is_discovered("new-holder", true).await;
+}
+
+#[tokio::test]
+async fn get_follows_a_holder_learned_from_a_seed_outside_the_nearest_set() {
+    new_holder_is_discovered("new-holder-1", false).await;
+}
+
+#[tokio::test]
+async fn fresh_claims_and_repeated_inbound_claims_do_not_starve_health_probes() {
+    let net = Net::new();
+    let cfg = NodeConfig { k: 2, alpha: 1, ..config() };
+    let root = new_node_with_config(&net, Some("root"), true, cfg.clone());
+    let stable = new_node_with_config(&net, Some("stable"), true, cfg.clone());
+    root.add_candidates(&["stable".into()], true);
+    for tick in 0..5 {
+        let fresh: Vec<_> = (0..8).map(|index| format!("absent-{tick}-{index}")).collect();
+        root.add_candidates(&fresh, false);
+        root.handle(&[0; 32], DhtEnvelope { from: stable.me(), req: DhtRequest::Ping });
+        let before = net.dials.lock().unwrap().values().sum::<usize>();
+        root.maintain().await;
+        let after = net.dials.lock().unwrap().values().sum::<usize>();
+        assert_eq!(after - before, cfg.k * 2, "maintenance exceeded its per-tick work budget");
+    }
+    assert!(net.dials.lock().unwrap().get("stable").copied().unwrap_or(0) >= 2,
+        "new candidates or forged inbound activity starved an established peer");
 }
 
 #[tokio::test]
@@ -491,4 +607,3 @@ async fn sybil_nodes_cannot_eclipse_key_from_seed() {
     assert_eq!(items.len(), 1, "reader retrieved item from seed");
     assert_eq!(items[0].value, b"hello-through-eclipse");
 }
-

@@ -2,9 +2,13 @@ pub mod core;
 pub mod web_server;
 mod notify;
 mod sanitizer;
+#[cfg(any(target_os = "android", test))]
+mod update_staging;
 mod tray;
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "android")]
+mod android_keystore;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -86,16 +90,14 @@ fn log_level_path(base_dir: &std::path::Path) -> std::path::PathBuf {
     base_dir.join("log.conf")
 }
 
-/// `true` unless the person turned it off. The default changed (2026-09-18, the
-/// owner's call): when something goes wrong there has to be something to read,
-/// and "reproduce it with the env var set" is not an answer for a phone.
+/// Capture is a developer/test capability. Release ignores old settings and
+/// environment overrides, including an existing `log.conf` from an older app.
 fn log_enabled(base_dir: &std::path::Path) -> bool {
-    if std::env::var_os("GIPNY_DEBUG_LOG").is_some() {
-        return true;
-    }
-    !matches!(
-        std::fs::read_to_string(log_level_path(base_dir)).map(|s| s.trim().to_ascii_lowercase()),
-        Ok(ref v) if v == "off"
+    if !gipny_libcore::diagnostics::AVAILABLE { return false; }
+    let environment = std::env::var("GIPNY_DEBUG_LOG").ok();
+    let persisted = std::fs::read_to_string(log_level_path(base_dir)).ok();
+    gipny_libcore::diagnostics::capture_enabled(
+        environment.as_deref(), persisted.as_deref(),
     )
 }
 
@@ -106,7 +108,7 @@ fn log_enabled(base_dir: &std::path::Path) -> bool {
 /// file so every line can be stamped — without that, a log of "relay failed"
 /// and "router ready" says nothing about *when*, which is most of what one
 /// needs from it.
-#[cfg(unix)]
+#[cfg(all(unix, any(debug_assertions, test)))]
 fn install_log_capture(base_dir: &std::path::Path) {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::io::FromRawFd;
@@ -147,7 +149,7 @@ fn install_log_capture(base_dir: &std::path::Path) {
 
 /// `HH:MM:SS.mmm` in local time — enough to line our log up against i2pd's,
 /// which stamps the same way, without dragging in a date library.
-#[cfg(unix)]
+#[cfg(all(unix, any(debug_assertions, test)))]
 fn log_stamp() -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs() as i64;
@@ -158,7 +160,7 @@ fn log_stamp() -> String {
 }
 
 /// The offset `localtime_r` reports for now, in seconds.
-#[cfg(unix)]
+#[cfg(all(unix, any(debug_assertions, test)))]
 fn local_utc_offset_secs() -> i64 {
     unsafe {
         let mut t: libc::time_t = 0;
@@ -208,15 +210,12 @@ fn scrub_one_log(p: &std::path::Path) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     register_aumid();
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    gipny_libcore::security::harden_process();
+    gipny_libcore::security::harden_process().expect("process dump protection unavailable");
     let base_dir = resolve_base_dir();
     std::fs::create_dir_all(&base_dir).ok();
-    // Persistent stderr capture writes a PLAINTEXT debug.log at the app-global
-    // base dir (outside the per-profile dir that duress-wipe scrubs). Off by
-    // default in release so no transport/app traces survive at rest; opt in with
-    // GIPNY_DEBUG_LOG=1 (or any debug build) when you actually need it.
-    #[cfg(unix)]
+    // Plaintext stderr capture is compiled only into developer/test builds.
+    // No environment variable, saved setting or UI command enables release.
+    #[cfg(all(unix, any(debug_assertions, test)))]
     if log_enabled(&base_dir) {
         install_log_capture(&base_dir);
     }
@@ -257,7 +256,7 @@ pub fn run() {
             accept_contact_request, decline_contact_request,
             set_contact_bot, reset_contact_session,
             get_agent_mode, set_agent_mode, send_console_command, send_agent_off,
-            list_messages, message_position, unread_count, mark_read, delete_message,
+            list_messages, message_position, unread_count, mark_read, delete_message, clear_dm_chat,
             send_message, send_message_paths, send_edit, send_edit_group,
             forward_message,
             list_attachments, load_attachment, save_attachment, save_paste_temp,
@@ -285,11 +284,15 @@ pub fn run() {
 
     let builder = builder
         .setup(|app| {
+            #[cfg(target_os = "android")]
+            android::configure(app.handle().clone());
             // Where pasted, dropped and (on Android) picked files are copied
             // before they are read. std::env::temp_dir() is /data/local/tmp on
             // Android, which an app cannot write to.
             use tauri::Manager;
             if let Ok(dir) = app.path().app_cache_dir() {
+                #[cfg(target_os = "android")]
+                update_staging::configure_cache(dir.clone());
                 let _ = PASTE_DIR.set(dir.join("gipny-i2p-paste"));
             }
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -421,6 +424,9 @@ pub(crate) struct MessageDto {
     pub(crate) delivered: bool,
     pub(crate) read: bool,
     pub(crate) expires_at: Option<i64>,
+    pub(crate) dm_seq: Option<i64>,
+    pub(crate) deleted_at: Option<i64>,
+    pub(crate) delete_pending: bool,
     pub(crate) buttons: Option<Vec<Vec<ButtonDto>>>,
     pub(crate) reply_to: Option<i64>,
     /// Console framing: a command, its output, or an agent-mode marker.
@@ -441,6 +447,7 @@ pub(crate) fn attach_extras(db: &gipny_libcore::db::Db, dtos: &mut [MessageDto])
     let map = db.load_buttons_batch(&ids).map_err(err)?;
     let consoles = db.load_settings_batch("console_", &ids).map_err(err)?;
     for dto in dtos.iter_mut() {
+        dto.delete_pending = dto.deleted_at.is_some() && db.dm_delete_pending(dto.id).map_err(err)?;
         if let Some(bytes) = map.get(&dto.id) {
             if let Ok(wire) = bincode::deserialize::<Vec<Vec<gipny_libcore::WireButton>>>(bytes) {
                 dto.buttons = Some(wire.into_iter()
@@ -469,6 +476,7 @@ impl From<Message> for MessageDto {
             outgoing: matches!(m.direction, gipny_libcore::db::Direction::Out),
             body: m.body, sent_at: m.sent_at,
             sent: m.sent, delivered: m.delivered, read: m.read, expires_at: m.expires_at,
+            dm_seq: m.dm_seq, deleted_at: m.deleted_at, delete_pending: false,
             buttons: None,
             reply_to: m.reply_to,
             console: None,
@@ -596,6 +604,8 @@ async fn vault_create(
     duress_wipe: bool, max_attempts: u32,
     ctx: State<'_, AppCtx>, app: AppHandle,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    android_keystore::wait_ready().await?;
     let display = display_name.trim();
     if display.is_empty() { return Err("display name required".into()); }
     if display.chars().count() > 64 { return Err("display name too long (max 64)".into()); }
@@ -637,6 +647,8 @@ async fn vault_unlock(
     profile: String, pass: String,
     ctx: State<'_, AppCtx>, app: AppHandle,
 ) -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    android_keystore::wait_ready().await?;
     let dir = profile_dir(&ctx, &profile)?;
     let prev = ctx.core.lock().await.take();
     if let Some(c) = prev {
@@ -721,9 +733,9 @@ fn resolve_bundled_router(app: &AppHandle) {
 /// password is typed — and the router has to start before that. So the last
 /// values used are left beside the profile in the clear.
 ///
-/// Nothing new is disclosed: the router's own directory next to this file
-/// holds `i2pd.log`, which says far more about how it was started. The file is
-/// inside the profile directory, so a duress wipe takes it with everything else.
+/// This deliberately persists the transit/Yggdrasil choices in cleartext,
+/// independently of diagnostics (release has no router log). It contains no
+/// keys or messages and is inside the profile directory for a duress wipe.
 fn router_hint_path(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join("router.hint")
 }
@@ -880,7 +892,15 @@ async fn boot(
     // unlocked, and well before the ~1-3 min router wait below. A staged
     // Windows update means the app closes and reopens once here, rather than
     // after the user has sat through both of those for nothing.
-    gipny_libcore::update::apply_staged_windows_installer(dir);
+    match gipny_libcore::update::apply_staged_windows_installer(dir, env!("CARGO_PKG_VERSION")) {
+        Ok(true) => std::process::exit(0),
+        Ok(false) => {}
+        Err(error) => {
+            // Keep the old application usable and retain the staged installer
+            // when CreateProcess, verification or a previous attempt failed.
+            let _ = app.emit("core_event", crate::core::CoreEvent::UpdateFailed { reason: error.to_string() });
+        }
+    }
     boot_status(&app, "vault", "active", "unlocking the vault (argon2id)");
     // Argon2id with 256 MiB takes a second or three on a desktop and longer on
     // a tired laptop, at 100% of a core. Saying so beats a frozen button.
@@ -1345,7 +1365,12 @@ async fn mark_read(contact_id: i64, ctx: State<'_, AppCtx>) -> Result<(), String
 
 #[tauri::command]
 async fn delete_message(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    core_of(&ctx).await?.db().delete_message(id).map_err(err)
+    core_of(&ctx).await?.delete_message(id).map_err(err)
+}
+
+#[tauri::command]
+async fn clear_dm_chat(contact_id:i64, ctx:State<'_,AppCtx>) -> Result<usize,String> {
+    core_of(&ctx).await?.clear_dm_contact(contact_id).map_err(err)
 }
 
 #[tauri::command]
@@ -1980,6 +2005,14 @@ async fn update_configured(ctx: State<'_, AppCtx>) -> Result<bool, String> {
     Ok(core_of(&ctx).await?.update_configured())
 }
 
+fn update_command_error(error: crate::core::CoreError) -> String {
+    match error {
+        crate::core::CoreError::Update(inner) => inner.to_string(),
+        crate::core::CoreError::Io(inner) => inner.to_string(),
+        other => other.to_string(),
+    }
+}
+
 #[tauri::command]
 async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
     use gipny_libcore::update::CheckOutcome;
@@ -1988,7 +2021,7 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, Strin
     // answer to four different situations, one of which was "this install
     // cannot be updated from here at all" — which is what a .deb was told
     // while three releases went by without it.
-    Ok(match core.check_update_detailed().await.map_err(err)? {
+    Ok(match core.check_update_detailed().await.map_err(update_command_error)? {
         CheckOutcome::Update(i) => serde_json::json!({
             "status": "update",
             "version": i.version,
@@ -2003,17 +2036,14 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, Strin
     })
 }
 
-/// Whether this build can put an update in place itself. False on packages we do
-/// not manage (.deb, macOS) — the interface then offers the file instead of a
-/// button that lies. Android now auto-installs via system installer intent.
 /// A contact card as a QR picture, so two people can exchange cards by
-/// pointing one phone at another instead of copying 500 characters. Rendered
+/// pointing one phone at another instead of copying a card. Rendered
 /// here (pure Rust) rather than in the interface: one small dependency instead
 /// of a JavaScript one. Returns an SVG that scales to whatever box it is put in.
 #[tauri::command]
 fn qr_svg(text: String) -> Result<String, String> {
-    // A v2 card is ~600 characters, comfortably inside QR's limits at the
-    // lowest correction level; anything much larger is not a card.
+    // v3 is 187 ASCII characters without a name (at most316 with one).
+    // Keep the existing larger bound for legacy v1/v2 cards.
     if text.is_empty() || text.len() > 2000 {
         return Err("nothing to encode".into());
     }
@@ -2039,6 +2069,7 @@ fn restart_app(app: AppHandle) {
 #[tauri::command]
 fn update_installs_itself() -> bool {
     cfg!(target_os = "windows")
+        || cfg!(target_os = "macos")
         || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
         || cfg!(target_os = "android")
         || gipny_libcore::update::is_deb_install()
@@ -2055,7 +2086,7 @@ fn update_asks_for_root() -> bool {
 #[tauri::command]
 async fn install_update(ctx: State<'_, AppCtx>) -> Result<(), String> {
     let core = core_of(&ctx).await?;
-    core.install_update().await.map_err(err)
+    core.install_update().await.map_err(update_command_error)
 }
 
 #[tauri::command]
@@ -2100,7 +2131,7 @@ fn current_version() -> String {
 #[tauri::command]
 async fn list_apk_artifacts(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
     let core = core_of(&ctx).await?;
-    let (version, items) = core.list_apk_artifacts().await.map_err(err)?;
+    let (version, items) = core.list_apk_artifacts().await.map_err(update_command_error)?;
     let arr: Vec<serde_json::Value> = items.into_iter()
         .map(|(arch, size)| serde_json::json!({ "arch": arch, "size": size }))
         .collect();
@@ -2110,7 +2141,7 @@ async fn list_apk_artifacts(ctx: State<'_, AppCtx>) -> Result<serde_json::Value,
 #[tauri::command]
 async fn download_apk(arch: String, dest_path: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     let core = core_of(&ctx).await?;
-    core.download_apk(arch, dest_path).await.map_err(err)
+    core.download_apk(arch, dest_path).await.map_err(update_command_error)
 }
 
 #[tauri::command]
@@ -2125,6 +2156,9 @@ fn read_previous_log(ctx: State<'_, AppCtx>) -> Result<String, String> {
 }
 
 fn read_log_file(p: &std::path::Path) -> Result<String, String> {
+    if !gipny_libcore::diagnostics::AVAILABLE {
+        return Err("diagnostic logging is unavailable in release builds".into());
+    }
     let raw = std::fs::read_to_string(p).unwrap_or_else(|_| String::from("(журнал пуст)"));
     let lines: Vec<&str> = raw.lines().collect();
     let take = lines.len().saturating_sub(2000);
@@ -2135,8 +2169,11 @@ fn read_log_file(p: &std::path::Path) -> Result<String, String> {
 #[tauri::command]
 fn log_settings(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
+        "available": gipny_libcore::diagnostics::AVAILABLE,
         "enabled": log_enabled(&ctx.base_dir),
-        "path": ctx.base_dir.join("debug.log").display().to_string(),
+        "path": if gipny_libcore::diagnostics::AVAILABLE {
+            ctx.base_dir.join("debug.log").display().to_string()
+        } else { String::new() },
     }))
 }
 
@@ -2144,6 +2181,9 @@ fn log_settings(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
 /// once, at startup, and there is no way back to a file descriptor that is gone.
 #[tauri::command]
 fn set_log_enabled(enabled: bool, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    if !gipny_libcore::diagnostics::AVAILABLE {
+        return Err("diagnostic logging is unavailable in release builds".into());
+    }
     std::fs::write(log_level_path(&ctx.base_dir), if enabled { "debug" } else { "off" }).map_err(err)?;
     if !enabled {
         scrub_debug_log(&ctx.base_dir);
@@ -2192,9 +2232,9 @@ fn clear_history_on_exit(app: &tauri::AppHandle) {
         })
         .await;
         match cleared {
-            Ok(Ok(true)) => eprintln!("[clear-on-exit] transcript cleared on quit"),
+            Ok(Ok(true)) => gipny_libcore::debug_trace!("[clear-on-exit] transcript cleared on quit"),
             Ok(Ok(false)) => {}
-            // Nobody is left to tell, but stderr is the debug log: a person who
+            // Nobody is left to tell, but stderr remains available: a person who
             // asked for this and finds the history still there should be able
             // to see that it was tried and failed, not wonder whether it ran.
             Ok(Err(e)) => eprintln!("[clear-on-exit] could not clear the transcript: {e}"),
@@ -2377,7 +2417,9 @@ struct BackupPreKey {
 }
 
 pub(crate) fn export_raw_backup_data(db: &gipny_libcore::db::Db) -> Result<Vec<u8>, String> {
-    let settings = db.list_all_settings().map_err(err)?;
+    let mut settings = db.list_all_settings().map_err(err)?;
+    settings.retain(|(key,_)|key!=gipny_libcore::db::Db::DM_BACKUP_KEY);
+    settings.push((gipny_libcore::db::Db::DM_BACKUP_KEY.into(),db.export_dm_state().map_err(err)?));
     let contacts: Vec<BackupContact> = db.list_contacts().map_err(err)?.into_iter().map(|c| BackupContact {
         sign_pk: c.identity_sign, dh_pk: c.identity_dh, onion: c.onion_address, name: c.display_name,
         trust: match c.trust {
@@ -2430,7 +2472,7 @@ pub(crate) async fn restore_raw_backup_data(
         return Err("bad profile name".into());
     }
     if vault_pass.len() < 8 { return Err("vault passphrase too short".into()); }
-    let backup = decode_backup(plain)?;
+    let mut backup = decode_backup(plain)?;
     let dir = ctx.base_dir.join("profiles").join(&profile);
     if dir.exists() {
         if Vault::exists(&dir) { return Err("profile already exists".into()); }
@@ -2458,6 +2500,15 @@ pub(crate) async fn restore_raw_backup_data(
     }
     db.bulk_update_contacts(&contact_updates).map_err(err)?;
 
+    if let Some(contact_map)=db.dm_backup_contact_map().map_err(err)? {
+        for message in &mut backup.messages {
+            if let Some(old)=message.contact_id {message.contact_id=Some(*contact_map.get(&old).ok_or("backup contact identity is missing")?);}
+        }
+        for (contact_id,_,_,_) in &mut backup.pinned {
+            if let Some(old)=*contact_id {*contact_id=Some(*contact_map.get(&old).ok_or("backup pin contact identity is missing")?);}
+        }
+    }
+
     let mut members_flat: Vec<gipny_libcore::db::GroupMember> = Vec::new();
     for g in &backup.groups {
         db.create_group(&g.id, &g.name).map_err(err)?;
@@ -2483,7 +2534,7 @@ pub(crate) async fn restore_raw_backup_data(
         direction: if m.direction == 1 { gipny_libcore::db::Direction::Out } else { gipny_libcore::db::Direction::In },
         body: m.body, sent_at: m.sent_at, sent: m.sent, delivered: m.delivered, read: m.read,
         expires_at: m.expires_at, last_attempt_at: m.last_attempt_at,
-        send_attempts: m.send_attempts as i64, reply_to: m.reply_to,
+        send_attempts: m.send_attempts as i64, reply_to: m.reply_to, dm_seq: None, deleted_at: None,
     }).collect();
     db.bulk_insert_messages(&messages).map_err(err)?;
 
@@ -2503,6 +2554,8 @@ pub(crate) async fn restore_raw_backup_data(
     db.bulk_insert_attachments(&attachments_db).map_err(err)?;
 
     db.bulk_insert_pinned(&backup.pinned).map_err(err)?;
+    db.restore_dm_state().map_err(err)?;
+    db.cleanup_deleted_files(&attach_dir).map_err(err)?;
 
     Ok(())
 }
@@ -2522,6 +2575,8 @@ async fn import_identity_to_profile(
     profile: String, vault_pass: String, backup_path: String, backup_pass: String,
     ctx: State<'_, AppCtx>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    android_keystore::wait_ready().await?;
     let blob = std::fs::read(&backup_path).map_err(err)?;
     let plain = gipny_libcore::security::backup_open(&backup_pass, &blob).map_err(|_| "wrong backup passphrase or corrupt file".to_string())?;
     restore_raw_backup_data(ctx.inner(), profile, vault_pass, &plain).await

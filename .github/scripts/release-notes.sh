@@ -39,6 +39,11 @@ ROWS=(
   "Агент · macOS 15+ Intel|консольный демон, tar.gz|gipny-agent_${VERSION}_darwin-amd64.tar.gz"
   "Агент · macOS 15+ Apple Silicon|консольный демон, tar.gz|gipny-agent_${VERSION}_darwin-arm64.tar.gz"
   "Агент · Windows x64|консольный демон, tar.gz|gipny-agent_${VERSION}_windows-amd64.tar.gz"
+  "Агент · OpenWrt / Linux AArch64|статический musl, tar.gz|gipny-agent_${VERSION}_aarch64-unknown-linux-musl.tar.gz"
+  "Агент · OpenWrt / Linux ARMv7-A|статический musl soft-float, tar.gz|gipny-agent_${VERSION}_armv7-unknown-linux-musleabi.tar.gz"
+  "Агент · OpenWrt / Linux x86_64|статический musl, tar.gz|gipny-agent_${VERSION}_x86_64-unknown-linux-musl.tar.gz"
+  "Агент · OpenWrt / Linux x86 Pentium 4+|статический musl i686/SSE2, tar.gz|gipny-agent_${VERSION}_i686-unknown-linux-musl.tar.gz"
+  "Исходники всех платформ|репозиторий и рекурсивные git submodules|gipny-source_${VERSION}_$(git rev-parse "$REF").tar.gz"
 )
 
 human() { awk -v b="$1" 'BEGIN { split("Б КБ МБ ГБ", u, " "); i = 1; while (b >= 1024 && i < 4) { b /= 1024; i++ } if (i == 1) printf "%d %s", b, u[i]; else printf "%.1f %s", b, u[i] }'; }
@@ -58,13 +63,16 @@ done
 
 for f in "$DIR"/*; do
   name="$(basename "$f")"
-  [ "$name" = "SHA256SUMS.txt" ] && continue
+  case "$name" in SHA256SUMS.txt|BUILD-MANIFEST.json|SOURCE-MANIFEST.json) continue ;; esac
   if ! printf '%s\n' "${claimed[@]}" | grep -qxF "$name"; then
     echo "release-notes: asset not in the download table: $name" >&2
     exit 1
   fi
 done
 [ -f "$DIR/SHA256SUMS.txt" ] || { echo "release-notes: SHA256SUMS.txt missing" >&2; exit 1; }
+for metadata in BUILD-MANIFEST.json SOURCE-MANIFEST.json; do
+  [ -f "$DIR/$metadata" ] || { echo "release-notes: $metadata missing" >&2; exit 1; }
+done
 
 # Changelog: conventional-commit subjects since the previous tag, sorted into
 # what users notice and what they do not.
@@ -114,10 +122,12 @@ highlights="docs/releases/$VERSION.md"
   echo "- **Android** — разрешите установку из этого источника, когда телефон спросит. Релизы подписаны одним постоянным ключом, поэтому следующие версии ставятся поверх установленной."
   echo "- **Релей** — архив для своего сервера: \`gipny-relay\` (роутер внутри) и systemd-юнит. Отдельного \`i2pd\` в архиве нет. Как развернуть — [в README](https://github.com/$REPO#2-запуск-собственного-выделенного-релея)."
   echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P. В архиве \`gipny-agent\` (роутер внутри), снимок сети \`i2pd-netdb-seed.tar.gz\` и установщик для соответствующей платформы; Linux также содержит systemd-юнит. Команду установки можно скопировать в настройках GIPNY; как поставить вручную — в \`README.txt\` внутри и [в README](https://github.com/$REPO#%EF%B8%8F-remote-agent--удалённая-консоль)."
+  echo "- **OpenWrt** — отдельные статические musl-архивы агента для четырёх ABI, без systemd и без внешнего i2pd. Выбор по CPU/ABI и памяти, а не году выпуска роутера; MIPS/MIPSel в эту версию не входят. [Совместимость, установка procd и пределы проверки](https://github.com/$REPO/blob/$REF/docs/openwrt.md)."
   echo
   echo "## Проверка файлов"
   echo
   echo "\`SHA256SUMS.txt\` содержит SHA-256 каждого файла. В папке со скачанным:"
+  echo "Все сборки выполнены GitHub Actions из публичного [commit $(git rev-parse "$REF")](https://github.com/$REPO/commit/$(git rev-parse "$REF")). [BUILD-MANIFEST.json]($BASE/BUILD-MANIFEST.json) связывает каждый пакет с SHA256, исходниками, архитектурой и конкретным CI run; [SOURCE-MANIFEST.json]($BASE/SOURCE-MANIFEST.json) описывает исходный архив и пины сабмодулей."
   echo
   echo '```'
   echo "sha256sum -c SHA256SUMS.txt --ignore-missing"

@@ -56,6 +56,16 @@ pub fn destination_hash(address: &str) -> Option<[u8; 32]> {
     Some(sha2::Sha256::digest(&raw).into())
 }
 
+/// Same I2P destination across full base64 and compact b32 spellings. Invalid
+/// addresses (including two empty strings) never compare equal. Base64 case is
+/// significant; only decoded destination hashes are compared.
+pub fn same_destination(a: &str, b: &str) -> bool {
+    match (crate::card::address_hash(a), crate::card::address_hash(b)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn i2p_base64_decode(s: &str) -> Option<Vec<u8>> {
     let body = s.trim_end_matches('=');
     let mut out = Vec::with_capacity(body.len() * 3 / 4);
@@ -270,19 +280,19 @@ async fn handshake(
         loop {
             match recv::<_, RelayToClient>(&mut read_half).await {
                 Ok(f) => {
-                    eprintln!("[relay-wire] recv {}", frame_kind(&f));
-                    if in_tx.send(f).await.is_err() { eprintln!("[relay-wire] in_tx closed, recv-task exit"); break; }
+                    crate::debug_trace!("[relay-wire] recv {}", frame_kind(&f));
+                    if in_tx.send(f).await.is_err() { crate::debug_trace!("[relay-wire] in_tx closed, recv-task exit"); break; }
                 }
-                Err(e) => { eprintln!("[relay-wire] recv err: {:?}, recv-task exit", e); break; }
+                Err(e) => { crate::debug_trace!("[relay-wire] recv err: {:?}, recv-task exit", e); break; }
             }
         }
     });
 
     tokio::spawn(async move {
         while let Some(f) = out_rx.recv().await {
-            eprintln!("[relay-wire] send {}", out_kind(&f));
+            crate::debug_trace!("[relay-wire] send {}", out_kind(&f));
             if let Err(e) = send(&mut write_half, &f).await {
-                eprintln!("[relay-wire] send err: {:?}, send-task exit", e);
+                crate::debug_trace!("[relay-wire] send err: {:?}, send-task exit", e);
                 break;
             }
         }
@@ -510,6 +520,10 @@ mod destination {
     fn garbage_is_not_a_destination() {
         assert!(destination_hash("not/base64").is_none());
         assert!(destination_hash("abc.b32.i2p").is_none());
+        assert!(!same_destination("", ""));
+        assert!(!same_destination("not-an-address", "not-an-address"));
+        assert!(!same_destination(B32, "abc.b32.i2p"));
+        assert!(same_destination(B32, &B32.to_uppercase()));
     }
 
     #[test]

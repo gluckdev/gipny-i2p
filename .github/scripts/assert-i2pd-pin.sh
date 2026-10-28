@@ -43,3 +43,7 @@ if [ "$expected" != "$actual" ]; then
 fi
 
 echo "i2pd pin: $actual"
+
+# The pin stays immutable; the small, public patch is part of Gipny's source
+# tree and source/provenance artifacts. Every native build compiles this diff.
+bash scripts/apply-i2pd-memory-patches.sh "$sub"

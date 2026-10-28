@@ -7,12 +7,11 @@
 //! (`libcore::i2p_http::OUTPROXY`), never straight over clearnet: this
 //! is an i2p-first app, and a direct HTTPS call to GitHub at every launch
 //! would tell GitHub (and anyone watching that link) which real IP runs
-//! gipny. The outproxy only ever sees an encrypted CONNECT to
-//! `api.github.com` / `objects.githubusercontent.com`, never content — TLS is
-//! still end to end to GitHub, which is also why the asset's SHA256 (from the
-//! same release's `SHA256SUMS.txt`) is only a defense-in-depth check here, not
-//! the source of trust the old signed-manifest design
-//! (superseded; see git history) needed.
+//! gipny. The outproxy sees the GitHub host requested by CONNECT, but not the
+//! HTTPS content: TLS still ends at GitHub. The asset's SHA256 (from the
+//! same release's `SHA256SUMS.txt`) is a mandatory integrity check, not an
+//! independent release signature. Missing or invalid checksums stop the
+//! update; HTTPS and the release publisher remain the source of trust.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,6 +29,9 @@ pub const GITHUB_REPO: &str = "gluckdev/gipny-i2p";
 /// Refuse anything absurdly large rather than trust a response's declared
 /// size unconditionally.
 const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_RELEASE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+const CHECKSUM_MANIFEST: &str = "SHA256SUMS.txt";
 
 /// First check this long after start; then every `UPDATE_CHECK_INTERVAL_SECS`.
 /// Shared by the app and `gipny-agent` so both poll on the same cadence.
@@ -49,6 +51,13 @@ pub enum UpdateError {
     #[error("io: {0}")] Io(#[from] std::io::Error),
     #[error("bad json: {0}")] Json(String),
     #[error("downloaded file does not match the release's SHA256SUMS.txt")] BadSha256,
+    #[error("release has no SHA256SUMS.txt")] MissingChecksumManifest,
+    #[error("release has multiple SHA256SUMS.txt assets")] AmbiguousChecksumManifest,
+    #[error("release has multiple assets named {0}")] AmbiguousAsset(String),
+    #[error("SHA256SUMS.txt has no checksum for {0}")] MissingChecksum(String),
+    #[error("invalid SHA256SUMS.txt line {0}")] InvalidChecksumManifest(usize),
+    #[error("SHA256SUMS.txt has multiple entries for {0}")] AmbiguousChecksum(String),
+    #[error("download size {actual} differs from release size {expected}")] BadSize { expected: u64, actual: u64 },
     #[error("artifact too large")] TooLarge,
     #[error("unsupported: {0}")] Unsupported(String),
     #[error("update checking is unavailable this run (no local HTTP proxy)")] NotConfigured,
@@ -74,8 +83,11 @@ pub enum InstallOutcome {
     /// ([`apply_staged_windows_installer`]), because this platform cannot
     /// overwrite a running executable.
     StagedForNextLaunch,
-    /// Downloaded, but this build has no way to install it automatically
-    /// (macOS, .deb, Android). The message says where the file is.
+    /// The verified installer/package was opened or retained for the person
+    /// who manages this install. This is not an installed or dismissed update.
+    InstallerOpened(PathBuf),
+    /// Downloaded, but this build has no supported installation route.
+    /// The message says where the retained file is.
     Unsupported(String),
 }
 
@@ -99,8 +111,37 @@ pub struct UpdateInfo {
     pub version: String,
     pub notes: String,
     pub asset: ReleaseAsset,
-    /// From the release's `SHA256SUMS.txt`, when that asset was found there.
-    pub sha256: Option<String>,
+    /// Required, validated entry from this release's `SHA256SUMS.txt`.
+    pub sha256: Sha256Digest,
+}
+
+/// A validated SHA256 from a release manifest. Download APIs require this
+/// value so callers cannot accidentally request an unchecked executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sha256Digest([u8; 32]);
+
+impl Sha256Digest {
+    fn parse(hex: &[u8]) -> Option<Self> {
+        if hex.len() != 64 || !hex.iter().all(u8::is_ascii_hexdigit) { return None; }
+        let nibble = |b: u8| match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => unreachable!("validated hex"),
+        };
+        let mut bytes = [0; 32];
+        for (i, pair) in hex.chunks_exact(2).enumerate() {
+            bytes[i] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+        }
+        Some(Self(bytes))
+    }
+}
+
+impl std::fmt::Display for Sha256Digest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 { write!(f, "{byte:02x}")?; }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -147,8 +188,8 @@ struct Transport {
 }
 
 impl Transport {
-    async fn text(&self, url: &str, accept: Option<&str>) -> Result<String> {
-        Ok(crate::i2p_http::get(&self.node, &self.tls, url, accept).await?.text().await?)
+    async fn text(&self, url: &str, accept: Option<&str>, max_bytes: usize) -> Result<String> {
+        Ok(crate::i2p_http::get(&self.node, &self.tls, url, accept).await?.text(max_bytes).await?)
     }
 
     async fn body(&self, url: &str) -> Result<crate::i2p_http::Body> {
@@ -189,7 +230,7 @@ pub enum CheckOutcome {
     /// A newer version was already offered and the person chose «Позже».
     /// Not the same as being current, and must not be reported as it.
     Dismissed { version: String },
-    /// A newer version exists, but this install (macOS, a dev run) has no
+    /// A newer version exists, but this install (for example a dev run) has no
     /// file it could be updated from.
     UnsupportedInstall { latest: String },
     /// A newer version exists and this platform is supported, but that
@@ -216,9 +257,13 @@ impl Updater {
         let text = client.text(
             &format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"),
             Some("application/vnd.github+json"),
+            MAX_RELEASE_BYTES,
         ).await?;
         let release: GhRelease = serde_json::from_str(&text).map_err(|e| UpdateError::Json(e.to_string()))?;
         let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name).to_string();
+        if release_version(&version).is_none() {
+            return Err(UpdateError::Json("latest release must have a stable major.minor.patch version".into()));
+        }
         Ok(ReleaseInfo {
             version,
             notes: release.body.unwrap_or_default(),
@@ -256,20 +301,29 @@ impl Updater {
         let Some((prefix, suffix)) = target_suffix(self.component) else {
             return Ok(CheckOutcome::UnsupportedInstall { latest: release.version });
         };
-        let Some(asset) = release.assets.iter().find(|a| a.name.starts_with(prefix) && a.name.ends_with(suffix)).cloned() else {
-            return Ok(CheckOutcome::NoAsset { latest: release.version, wanted: format!("{prefix}<версия>{suffix}") });
+        let wanted = format!("{prefix}{}{suffix}", release.version);
+        let Some(asset) = unique_asset(&release.assets, &wanted)?.cloned() else {
+            return Ok(CheckOutcome::NoAsset { latest: release.version, wanted });
         };
-        let sha256 = find_sha256(self.client.as_ref().unwrap(), &release.assets, &asset.name).await;
+        let sha256 = self.asset_sha256(&release, &asset.name).await?;
         Ok(CheckOutcome::Update(UpdateInfo { version: release.version, notes: release.notes, asset, sha256 }))
     }
 
-    /// Downloads `asset` into `dest_dir` (created if missing), verifying its
-    /// SHA256 against `expected_sha256` when one is known. Streamed, so
+    /// Resolve a required checksum from the same release as the selected
+    /// asset. Used by the APK picker as well as automatic update checks.
+    pub async fn asset_sha256(&self, release: &ReleaseInfo, asset_name: &str) -> Result<Sha256Digest> {
+        let client = self.client.as_ref().ok_or(UpdateError::NotConfigured)?;
+        find_sha256(&release.assets, asset_name, |url| async move {
+            client.text(&url, None, MAX_MANIFEST_BYTES).await
+        }).await
+    }
+
+    /// Downloads `asset` into `dest_dir` (created if missing), requiring its
+    /// checksum from the same release. Streamed, so
     /// `on_progress(downloaded, total)` can drive a progress notice.
-    pub async fn download_asset<F>(&self, asset: &ReleaseAsset, expected_sha256: Option<&str>, dest_dir: &Path, on_progress: F) -> Result<PathBuf>
+    pub async fn download_asset<F>(&self, asset: &ReleaseAsset, expected_sha256: &Sha256Digest, dest_dir: &Path, on_progress: F) -> Result<PathBuf>
     where F: FnMut(u64, u64) + Send,
     {
-        std::fs::create_dir_all(dest_dir)?;
         let dest = dest_dir.join(&asset.name);
         self.download_asset_to(asset, expected_sha256, &dest, on_progress).await?;
         Ok(dest)
@@ -278,44 +332,13 @@ impl Updater {
     /// As [`Self::download_asset`], but to an exact path instead of a
     /// directory — for the Android APK sideload picker, which already has a
     /// destination from the user's own save dialog.
-    pub async fn download_asset_to<F>(&self, asset: &ReleaseAsset, expected_sha256: Option<&str>, dest: &Path, mut on_progress: F) -> Result<()>
+    pub async fn download_asset_to<F>(&self, asset: &ReleaseAsset, expected_sha256: &Sha256Digest, dest: &Path, on_progress: F) -> Result<()>
     where F: FnMut(u64, u64) + Send,
     {
         if asset.size > MAX_ARTIFACT_BYTES { return Err(UpdateError::TooLarge); }
         let client = self.client.as_ref().ok_or(UpdateError::NotConfigured)?;
-        if let Some(parent) = dest.parent() { std::fs::create_dir_all(parent)?; }
-        let partial = dest.with_extension(format!(
-            "{}.partial", dest.extension().and_then(|s| s.to_str()).unwrap_or("")
-        ));
-
-        let mut resp = client.body(&asset.download_url).await?;
-        let mut file = std::fs::File::create(&partial)?;
-        let mut hasher = Sha256::new();
-        let mut total: u64 = 0;
-        use std::io::Write;
-        while let Some(chunk) = resp.chunk().await? {
-            hasher.update(&chunk);
-            file.write_all(&chunk)?;
-            total += chunk.len() as u64;
-            on_progress(total, asset.size);
-            if total > MAX_ARTIFACT_BYTES {
-                drop(file);
-                let _ = std::fs::remove_file(&partial);
-                return Err(UpdateError::TooLarge);
-            }
-        }
-        drop(file);
-
-        if let Some(expected) = expected_sha256 {
-            let got = hex_encode(&hasher.finalize());
-            if got != expected {
-                let _ = std::fs::remove_file(&partial);
-                return Err(UpdateError::BadSha256);
-            }
-        }
-        let _ = std::fs::remove_file(dest);
-        std::fs::rename(&partial, dest)?;
-        Ok(())
+        let resp = client.body(&asset.download_url).await?;
+        save_verified_asset(resp, asset, expected_sha256, dest, on_progress).await
     }
 
     /// Convenience over [`Self::download_asset`] for the update this
@@ -323,7 +346,7 @@ impl Updater {
     pub async fn download<F>(&self, info: &UpdateInfo, dest_dir: &Path, on_progress: F) -> Result<PathBuf>
     where F: FnMut(u64, u64) + Send,
     {
-        self.download_asset(&info.asset, info.sha256.as_deref(), dest_dir, on_progress).await
+        self.download_asset(&info.asset, &info.sha256, dest_dir, on_progress).await
     }
 
     /// Installs a verified download. `data_dir` is only used to stage a
@@ -331,7 +354,7 @@ impl Updater {
     /// immediate. `agent_exe` is the agent's own binary path, resolved once by
     /// the caller before its first install this run — required for
     /// `Component::Agent`, ignored for `Component::App` (which finds its own
-    /// path, preferring `$APPIMAGE` over `current_exe()`; see
+    /// AppImage path from `$APPIMAGE`; see
     /// `install_appimage_now`). Not `self.component`-derived internally
     /// because a second install within one long-running agent process would
     /// otherwise resolve `current_exe()` again — by then a path to a deleted,
@@ -348,15 +371,25 @@ impl Updater {
                 } else if cfg!(target_os = "windows") {
                     stage_windows_installer(downloaded, data_dir)?;
                     Ok(InstallOutcome::StagedForNextLaunch)
+                } else if cfg!(target_os = "macos") {
+                    open_macos_package(downloaded)?;
+                    Ok(InstallOutcome::InstallerOpened(downloaded.to_path_buf()))
                 } else {
                     Ok(InstallOutcome::Unsupported(format!("downloaded to {}", downloaded.display())))
                 }
             }
             Component::Agent => {
-                if cfg!(target_os = "linux") {
+                if cfg!(any(target_os = "linux", target_os = "macos")) {
                     let exe = agent_exe.ok_or_else(|| UpdateError::Unsupported("no resolved agent binary path given".into()))?;
                     install_agent_binary_now(downloaded, exe)?;
                     Ok(InstallOutcome::InstalledNow)
+                } else if cfg!(target_os = "windows") {
+                    let exe = agent_exe.ok_or_else(|| UpdateError::Unsupported("no resolved agent binary path given".into()))?;
+                    if !exe.parent().is_some_and(|parent| parent.join("start-agent.ps1").is_file()) {
+                        return Err(UpdateError::Unsupported("Windows agent bootstrap is missing; reinstall the agent with install-agent.ps1 to enable updates on next task start".into()));
+                    }
+                    stage_windows_agent(downloaded, data_dir)?;
+                    Ok(InstallOutcome::StagedForNextLaunch)
                 } else {
                     Ok(InstallOutcome::Unsupported(format!("downloaded to {}", downloaded.display())))
                 }
@@ -424,168 +457,738 @@ fn install_deb_now(_: &Path) -> Result<()> {
 
 /// Which release assets belong to this component's platform: assets are named
 /// `<prefix><version><suffix>` (e.g. `gipny-i2p_0.4.2_amd64.AppImage`), so
-/// matching on prefix+suffix does not need to know the version. `None` means
-/// this platform has no applicable asset at all (macOS, .deb, a dev run) —
+/// the caller matches the full name including version. `None` means
+/// this platform has no applicable asset (for example an unpackaged dev run) —
 /// auto-update quietly does nothing rather than guessing.
 fn target_suffix(component: Component) -> Option<(&'static str, &'static str)> {
-    let arch = std::env::consts::ARCH;
+    target_suffix_for(component, std::env::consts::OS, std::env::consts::ARCH,
+        env!("GIPNY_BUILD_TARGET"), std::env::var_os("APPIMAGE").is_some(), is_deb_install())
+}
+
+fn target_suffix_for(component: Component, os: &str, arch: &str, triple: &str, appimage: bool, deb: bool) -> Option<(&'static str, &'static str)> {
     match component {
-        Component::App if cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some() => {
-            Some(("gipny-i2p_", if arch == "aarch64" { "_aarch64.AppImage" } else { "_amd64.AppImage" }))
+        Component::App if os == "linux" && appimage => {
+            Some(("gipny-i2p_", match arch { "aarch64" => "_aarch64.AppImage", "x86_64" => "_amd64.AppImage", _ => return None }))
         }
-        Component::App if cfg!(target_os = "windows") => Some(("gipny-i2p_", "_x64-setup.exe")),
+        Component::App if os == "windows" && arch == "x86_64" => Some(("gipny-i2p_", "_x64-setup.exe")),
         // Installed from a package: update with a package, through the package
         // manager — see `install_deb_now`.
-        Component::App if is_deb_install() => {
-            Some(("gipny-i2p_", if arch == "aarch64" { "_arm64.deb" } else { "_amd64.deb" }))
+        Component::App if os == "linux" && deb => {
+            Some(("gipny-i2p_", match arch { "aarch64" => "_arm64.deb", "x86_64" => "_amd64.deb", _ => return None }))
         }
+        Component::App if os == "macos" => Some(("gipny-i2p_", match arch { "aarch64" => "_aarch64.dmg", "x86_64" => "_x64.dmg", _ => return None })),
         // Android can check and download over i2p, but installing an APK is
         // the system installer's business, not ours — see `install`.
-        Component::App if cfg!(target_os = "android") => {
-            Some(("gipny-i2p_", if arch == "aarch64" { "_android-arm64.apk" } else { "_android-armv7.apk" }))
+        Component::App if os == "android" => {
+            Some(("gipny-i2p_", match arch { "aarch64" => "_android-arm64.apk", "arm" => "_android-armv7.apk", _ => return None }))
         }
-        Component::Agent if cfg!(target_os = "linux") => {
-            Some(("gipny-agent_", if arch == "aarch64" { "_linux-arm64.tar.gz" } else { "_linux-amd64.tar.gz" }))
+        Component::Agent if os == "linux" && triple.contains("-musl") => {
+            Some(("gipny-agent_", match triple {
+                "aarch64-unknown-linux-musl" => "_aarch64-unknown-linux-musl.tar.gz",
+                "x86_64-unknown-linux-musl" => "_x86_64-unknown-linux-musl.tar.gz",
+                "i686-unknown-linux-musl" => "_i686-unknown-linux-musl.tar.gz",
+                "armv7-unknown-linux-musleabi" => "_armv7-unknown-linux-musleabi.tar.gz",
+                _ => return None,
+            }))
         }
+        Component::Agent if os == "linux" && triple.ends_with("-gnu") => Some(("gipny-agent_", match arch { "aarch64" => "_linux-arm64.tar.gz", "x86_64" => "_linux-amd64.tar.gz", _ => return None })),
+        Component::Agent if os == "macos" => Some(("gipny-agent_", match arch { "aarch64" => "_darwin-arm64.tar.gz", "x86_64" => "_darwin-amd64.tar.gz", _ => return None })),
+        Component::Agent if os == "windows" && arch == "x86_64" => Some(("gipny-agent_", "_windows-amd64.tar.gz")),
         _ => None,
     }
 }
 
-/// `SHA256SUMS.txt` is `sha256sum -- *` output: `<hex>  <filename>` per line
-/// (sometimes `*filename` in binary mode). Best-effort — a miss just means no
-/// extra check on top of TLS, not a failure.
-async fn find_sha256(client: &Transport, assets: &[ReleaseAsset], asset_name: &str) -> Option<String> {
-    let sums = assets.iter().find(|a| a.name == "SHA256SUMS.txt")?;
-    let text = client.text(&sums.download_url, None).await.ok()?;
-    text.lines().find_map(|line| {
-        let mut parts = line.split_whitespace();
-        let hash = parts.next()?;
-        let name = parts.next()?.trim_start_matches('*');
-        (name == asset_name).then(|| hash.to_string())
-    })
+pub fn unique_asset<'a>(assets: &'a [ReleaseAsset], name: &str) -> Result<Option<&'a ReleaseAsset>> {
+    let mut matches = assets.iter().filter(|asset| asset.name == name);
+    let asset = matches.next();
+    if matches.next().is_some() { return Err(UpdateError::AmbiguousAsset(name.into())); }
+    Ok(asset)
+}
+
+/// Shared application/agent policy. A stored opt-out and an explicit developer
+/// override both win; setting the environment variable to `0` does not opt out.
+pub fn auto_update_allowed(setting: Option<&[u8]>, disabled: Option<&str>) -> bool {
+    setting != Some(b"0".as_slice())
+        && !disabled.is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// Resolve the sole manifest before fetching it. Fetch/HTTP errors propagate;
+/// an unavailable integrity check must never become an unchecked update.
+async fn find_sha256<F, Fut>(assets: &[ReleaseAsset], asset_name: &str, fetch: F) -> Result<Sha256Digest>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<String>>,
+{
+    let mut manifests = assets.iter().filter(|a| a.name == CHECKSUM_MANIFEST);
+    let sums = manifests.next().ok_or(UpdateError::MissingChecksumManifest)?;
+    if manifests.next().is_some() { return Err(UpdateError::AmbiguousChecksumManifest); }
+    if sums.size > MAX_MANIFEST_BYTES as u64 { return Err(UpdateError::TooLarge); }
+    let text = fetch(sums.download_url.clone()).await?;
+    parse_sha256_manifest(&text, asset_name)
+}
+
+/// Accept GNU sha256sum text/binary mode and CRLF. Every nonempty row must
+/// have one valid 64-hex digest and one filename. Duplicate names, even with
+/// equal digests, are ambiguous. Release filenames need no GNU escaping.
+fn parse_sha256_manifest(text: &str, asset_name: &str) -> Result<Sha256Digest> {
+    if text.len() > MAX_MANIFEST_BYTES { return Err(UpdateError::TooLarge); }
+    let mut found = None;
+    let mut names = std::collections::HashSet::new();
+    for (line_index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() { continue; }
+        let bytes = line.as_bytes();
+        let bad_line = || UpdateError::InvalidChecksumManifest(line_index + 1);
+        if bytes.len() < 67 || bytes[64] != b' ' || !matches!(bytes[65], b' ' | b'*') {
+            return Err(bad_line());
+        }
+        let digest = Sha256Digest::parse(&bytes[..64]).ok_or_else(bad_line)?;
+        // The validated ASCII prefix makes this a UTF-8 boundary.
+        let name = &line[66..];
+        if name.contains(['\0', '\r', '\n']) { return Err(bad_line()); }
+        if !names.insert(name) { return Err(UpdateError::AmbiguousChecksum(name.into())); }
+        if name == asset_name { found = Some(digest); }
+    }
+    found.ok_or_else(|| UpdateError::MissingChecksum(asset_name.into()))
+}
+
+/// Write only to a uniquely owned temporary file in the destination directory.
+/// The guard cleans up on read/write errors and cancellation. Persist replaces
+/// the destination only after both metadata size and checksum are verified.
+async fn save_verified_asset<F>(
+    mut resp: crate::i2p_http::Body, asset: &ReleaseAsset, expected: &Sha256Digest,
+    dest: &Path, mut on_progress: F,
+) -> Result<()>
+where F: FnMut(u64, u64) + Send,
+{
+    if asset.size > MAX_ARTIFACT_BYTES { return Err(UpdateError::TooLarge); }
+    let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut partial = tempfile::Builder::new().prefix(".gipny-update-").tempfile_in(parent)?;
+    let mut hasher = Sha256::new();
+    let mut total: u64 = 0;
+    use std::io::Write;
+    while let Some(chunk) = resp.chunk().await? {
+        total += chunk.len() as u64;
+        if total > MAX_ARTIFACT_BYTES { return Err(UpdateError::TooLarge); }
+        if total > asset.size { return Err(UpdateError::BadSize { expected: asset.size, actual: total }); }
+        hasher.update(&chunk);
+        partial.write_all(&chunk)?;
+        on_progress(total, asset.size);
+    }
+    if total != asset.size { return Err(UpdateError::BadSize { expected: asset.size, actual: total }); }
+    let got: [u8; 32] = hasher.finalize().into();
+    if got != expected.0 { return Err(UpdateError::BadSha256); }
+    partial.as_file().sync_all()?;
+    partial.persist(dest).map_err(|e| e.error)?;
+    Ok(())
 }
 
 fn version_newer(candidate: &str, current: &str) -> bool {
-    let c: Vec<u64> = candidate.split('.').filter_map(|s| s.parse().ok()).collect();
-    let n: Vec<u64> = current.split('.').filter_map(|s| s.parse().ok()).collect();
-    for i in 0..c.len().max(n.len()) {
-        let a = c.get(i).copied().unwrap_or(0);
-        let b = n.get(i).copied().unwrap_or(0);
-        if a > b { return true; }
-        if a < b { return false; }
+    match (release_version(candidate), release_version(current)) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => false,
     }
-    false
 }
 
-/// Replaces the running AppImage's file in place. Safe on Linux even though
-/// this process is currently executing from that path: the kernel keeps the
-/// already-mapped old file alive for this process, and the rename is what the
-/// *next* launch sees. No relaunch.
+fn release_version(value: &str) -> Option<[u64; 3]> {
+    let mut parts = value.strip_prefix('v').unwrap_or(value).split('.');
+    let mut version = [0; 3];
+    for number in &mut version {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) || (part.len() > 1 && part.starts_with('0')) { return None; }
+        *number = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(version)
+}
+
+/// Each replacement owns its staging inode. An error or a concurrent attempt
+/// cannot truncate the old executable or another attempt's temporary file.
+#[cfg(all(unix, any(target_os = "linux", test)))]
+fn atomic_executable_copy(source: &Path, current: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let parent = current.parent().ok_or_else(|| UpdateError::Unsupported("executable has no parent directory".into()))?;
+    let mut staged = tempfile::Builder::new().prefix(".gipny-executable-").tempfile_in(parent)?;
+    std::io::copy(&mut std::fs::File::open(source)?, staged.as_file_mut())?;
+    staged.as_file().set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    staged.as_file().sync_all()?;
+    staged.persist(current).map_err(|error| error.error)?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn install_appimage_now(downloaded: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let current = std::env::var("APPIMAGE").map(PathBuf::from).or_else(|_| std::env::current_exe())?;
-    let parent = current.parent().ok_or_else(|| UpdateError::Unsupported("no parent dir".into()))?;
-    let tmp = parent.join(format!(".{}.new", current.file_name().unwrap_or_default().to_string_lossy()));
-    std::fs::copy(downloaded, &tmp)?;
-    let mut perms = std::fs::metadata(&tmp)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&tmp, perms)?;
-    std::fs::rename(&tmp, &current)?;
-    Ok(())
+    let current = std::env::var_os("APPIMAGE").map(PathBuf::from)
+        .ok_or_else(|| UpdateError::Unsupported("this process is not an AppImage".into()))?;
+    atomic_executable_copy(downloaded, &current)
 }
 #[cfg(not(target_os = "linux"))]
 fn install_appimage_now(_: &Path) -> Result<()> {
     Err(UpdateError::Unsupported("AppImage install only on linux".into()))
 }
 
-/// Extracts `gipny-agent` from the downloaded release tarball and replaces
-/// `current`'s file in place — the same safe rename as the AppImage case.
-/// Leaves the bundled `i2pd` in the tarball alone. Takes `current` from the
-/// caller rather than resolving `current_exe()` itself: after a first replace
-/// in a long-running process, `current_exe()` resolves to a deleted, already
-/// gone path (the kernel-held old inode, not the new file at that path).
-#[cfg(target_os = "linux")]
-fn install_agent_binary_now(downloaded_tar_gz: &Path, current: &Path) -> Result<()> {
+/// Extract exactly one regular executable without extracting archive paths.
+/// Reject duplicates, links, unsafe paths, empty binaries and excessive sizes.
+fn extract_agent_binary(archive: &Path, executable: &str, output: &mut std::fs::File) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let file = std::fs::File::open(archive)?;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut found = false;
+    let mut total = 0u64;
+    for (count, entry) in archive.entries()?.enumerate() {
+        if count >= 128 { return Err(UpdateError::TooLarge); }
+        let mut entry = entry?;
+        total = total.checked_add(entry.size()).ok_or(UpdateError::TooLarge)?;
+        if total > MAX_ARTIFACT_BYTES { return Err(UpdateError::TooLarge); }
+        let path = entry.path()?.into_owned();
+        if path.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+            return Err(UpdateError::Unsupported("unsafe path in agent archive".into()));
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some(executable) { continue; }
+        if found || !entry.header().entry_type().is_file() || entry.size() == 0 {
+            return Err(UpdateError::Unsupported("agent archive must contain one regular executable".into()));
+        }
+        let copied = std::io::copy(&mut (&mut entry).take(MAX_ARTIFACT_BYTES + 1), output)?;
+        if copied > MAX_ARTIFACT_BYTES { return Err(UpdateError::TooLarge); }
+        found = true;
+    }
+    if !found { return Err(UpdateError::Unsupported(format!("no {executable} binary in the downloaded archive"))); }
+    output.seek(SeekFrom::Start(0))?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn install_agent_binary_now(downloaded: &Path, current: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let tmp = current.with_extension("new");
-    {
-        let file = std::fs::File::open(downloaded_tar_gz)?;
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
-        let mut found = false;
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.into_owned();
-            if path.file_name().and_then(|n| n.to_str()) == Some("gipny-agent") {
-                let mut out = std::fs::File::create(&tmp)?;
-                std::io::copy(&mut entry, &mut out)?;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            return Err(UpdateError::Unsupported("no gipny-agent binary in the downloaded archive".into()));
-        }
-    }
-    let mut perms = std::fs::metadata(&tmp)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&tmp, perms)?;
-    std::fs::rename(&tmp, current)?;
+    let parent = current.parent().ok_or_else(|| UpdateError::Unsupported("agent executable has no parent".into()))?;
+    let mut staged = tempfile::Builder::new().prefix(".gipny-agent-").tempfile_in(parent)?;
+    extract_agent_binary(downloaded, "gipny-agent", staged.as_file_mut())?;
+    staged.as_file().set_permissions(std::fs::Permissions::from_mode(0o755))?;
+    staged.as_file().sync_all()?;
+    staged.persist(current).map_err(|error| error.error)?;
     Ok(())
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn install_agent_binary_now(_: &Path, _: &Path) -> Result<()> {
-    Err(UpdateError::Unsupported("agent tarball install only on linux".into()))
+    Err(UpdateError::Unsupported("agent replacement requires Linux or macOS".into()))
 }
 
-/// Stages the downloaded NSIS installer under `data_dir` for
-/// [`apply_staged_windows_installer`] to run at the next launch. Windows
-/// cannot overwrite this process's own running exe, so nothing happens now.
+#[cfg(target_os = "macos")]
+fn open_macos_package(downloaded: &Path) -> Result<()> {
+    let status = std::process::Command::new("/usr/bin/open").arg(downloaded).status()?;
+    if !status.success() { return Err(UpdateError::Unsupported(format!("macOS could not open {}: {status}", downloaded.display()))); }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+fn open_macos_package(_: &Path) -> Result<()> { Err(UpdateError::Unsupported("DMG installer requires macOS".into())) }
+
+fn file_digest(path: &Path) -> Result<Sha256Digest> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut bytes = [0; 32 * 1024];
+    loop {
+        let count = file.read(&mut bytes)?;
+        if count == 0 { break; }
+        digest.update(&bytes[..count]);
+    }
+    Ok(Sha256Digest(digest.finalize().into()))
+}
+
+/// The installed Windows Scheduled Task starts a PowerShell bootstrap which
+/// verifies this record and replaces the stopped executable before launching it.
+fn stage_windows_agent(downloaded: &Path, data_dir: &Path) -> Result<()> {
+    use std::io::Write;
+    let name = downloaded.file_name().and_then(|name| name.to_str())
+        .ok_or_else(|| UpdateError::Unsupported("agent package has no release filename".into()))?;
+    let version = name.strip_prefix("gipny-agent_").and_then(|name| name.strip_suffix("_windows-amd64.tar.gz"))
+        .filter(|version| release_version(version).is_some()).ok_or_else(|| UpdateError::Unsupported("unexpected Windows agent package name".into()))?;
+    let directory = data_dir.join("pending_agent");
+    std::fs::create_dir_all(&directory)?;
+    let ready_path = directory.join("ready.json");
+    if ready_path.exists() {
+        let ready: serde_json::Value = serde_json::from_slice(&std::fs::read(&ready_path)?)
+            .map_err(|error| UpdateError::Json(error.to_string()))?;
+        let queued = ready.get("version").and_then(|version| version.as_str())
+            .ok_or_else(|| UpdateError::Json("pending agent has no version".into()))?;
+        if release_version(queued).is_none() { return Err(UpdateError::Json("invalid queued agent version".into())); }
+        if queued == version || version_newer(queued, version) {
+            let file = ready.get("file").and_then(|file| file.as_str())
+                .filter(|file| file.starts_with("agent-") && file.ends_with(".exe") && Path::new(file).components().count() == 1 && !file.contains(['/', '\\']))
+                .ok_or_else(|| UpdateError::Json("invalid queued agent file".into()))?;
+            let expected = ready.get("sha256").and_then(|digest| digest.as_str()).and_then(|digest| Sha256Digest::parse(digest.as_bytes()))
+                .ok_or(UpdateError::BadSha256)?;
+            if file_digest(&directory.join(file))? != expected { return Err(UpdateError::BadSha256); }
+            return Ok(());
+        }
+    }
+    let mut executable = tempfile::Builder::new().prefix("agent-").suffix(".exe").tempfile_in(&directory)?;
+    extract_agent_binary(downloaded, "gipny-agent.exe", executable.as_file_mut())?;
+    executable.as_file().sync_all()?;
+    let digest = file_digest(executable.path())?;
+    let (file, path) = executable.keep().map_err(|error| error.error)?;
+    drop(file);
+    let publication = (|| -> Result<()> {
+        let file_name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| UpdateError::Unsupported("invalid pending agent path".into()))?;
+        let record = serde_json::json!({ "file": file_name, "sha256": digest.to_string(), "version": version });
+        let mut ready = tempfile::Builder::new().prefix(".ready-").tempfile_in(&directory)?;
+        ready.write_all(record.to_string().as_bytes())?;
+        ready.as_file().sync_all()?;
+        ready.persist(directory.join("ready.json")).map_err(|error| error.error)?;
+        Ok(())
+    })();
+    if publication.is_err() { let _ = std::fs::remove_file(path); }
+    publication
+}
+
+/// Publish the complete installer directory at once. Never overwrite a
+/// pending/claimed installer another process may already be executing.
 fn stage_windows_installer(downloaded: &Path, data_dir: &Path) -> Result<()> {
-    let dir = data_dir.join(PENDING_DIR);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::copy(downloaded, dir.join(PENDING_INSTALLER))?;
+    std::fs::create_dir_all(data_dir)?;
+    let staged = tempfile::Builder::new().prefix(".pending-update-").tempdir_in(data_dir)?;
+    let installer = staged.path().join(PENDING_INSTALLER);
+    std::fs::copy(downloaded, &installer)?;
+    std::fs::OpenOptions::new().write(true).open(&installer)?.sync_all()?;
+    std::fs::write(staged.path().join("SHA256"), file_digest(&installer)?.to_string())?;
+    std::fs::OpenOptions::new().write(true).open(staged.path().join("SHA256"))?.sync_all()?;
+    let version = downloaded.file_name().and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("gipny-i2p_"))
+        .and_then(|name| name.strip_suffix("_x64-setup.exe"))
+        .filter(|version| release_version(version).is_some())
+        .ok_or_else(|| UpdateError::Unsupported("unexpected Windows installer filename".into()))?;
+    std::fs::write(staged.path().join("VERSION"), version)?;
+    std::fs::OpenOptions::new().write(true).open(staged.path().join("VERSION"))?.sync_all()?;
+    std::fs::rename(staged.path(), data_dir.join(PENDING_DIR))?;
     Ok(())
 }
 
-/// Call as early as possible in a profile's own startup — `lib.rs`'s `boot()`
-/// calls it before the vault unlock and before the ~1-3 min router wait, not
-/// after either. If the previous launch staged an installer, this runs it and
-/// exits; the app closes and reopens once, instead of the user sitting
-/// through unlock and router start only to have it close anyway.
-///
-/// `/S /UPDATE /R`: Tauri's NSIS template checks `/R` in silent mode (there is
-/// no UI toggle to ask) and restarts the app itself once install finishes;
-/// `/UPDATE` skips re-creating shortcuts and touching app data. No manual
-/// wait-then-relaunch needed. Compiles; not run against a real installer yet
-/// — needs a Windows CI build to confirm `/R` actually reopens gipny.
-#[cfg(target_os = "windows")]
-pub fn apply_staged_windows_installer(data_dir: &Path) {
-    let dir = data_dir.join(PENDING_DIR);
-    let installer = dir.join(PENDING_INSTALLER);
-    if !installer.exists() {
-        return;
+/// Atomically claim before launch; failed launch restores a retryable package.
+/// A surviving claim means the earlier installer did not finish. Keep the old
+/// app running and report that state rather than entering an exit/relaunch loop.
+#[cfg(any(target_os = "windows", test))]
+fn launch_pending_windows_installer(
+    data_dir: &Path, current_version: &str, launch: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<bool> {
+    let directory = data_dir.join(PENDING_DIR);
+    if !directory.exists() { return Ok(false); }
+    let version = std::fs::read_to_string(directory.join("VERSION"))?;
+    if release_version(version.trim()).is_none() || release_version(current_version).is_none() {
+        return Err(UpdateError::Unsupported("invalid staged/current Windows update version".into()));
     }
-    eprintln!("[update] installing the staged update before starting...");
-    let _ = std::process::Command::new(&installer)
-        .args(["/S", "/UPDATE", "/R", "/NCRC"])
-        .spawn();
-    let _ = std::fs::remove_dir_all(&dir);
-    std::process::exit(0);
+    if !version_newer(version.trim(), current_version) {
+        // The new executable is running: a completed handoff can be
+        // cleaned up. Windows may still hold the old installer open.
+        let _ = std::fs::remove_dir_all(&directory);
+        return Ok(false);
+    }
+    let pending = directory.join(PENDING_INSTALLER);
+    let claimed = directory.join("installer.claimed.exe");
+    if claimed.exists() {
+        return Err(UpdateError::Unsupported(format!("previous Windows update did not finish; installer retained at {}", claimed.display())));
+    }
+    match std::fs::rename(&pending, &claimed) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    let attempt = (|| {
+        let expected = std::fs::read_to_string(directory.join("SHA256"))?;
+        let expected = Sha256Digest::parse(expected.trim().as_bytes())
+            .ok_or(UpdateError::BadSha256)?;
+        if file_digest(&claimed)? != expected { return Err(UpdateError::BadSha256); }
+        launch(&claimed)?;
+        Ok(true)
+    })();
+    if attempt.is_err() { let _ = std::fs::rename(&claimed, &pending); }
+    attempt
+}
+
+#[cfg(target_os = "windows")]
+pub fn apply_staged_windows_installer(data_dir: &Path, current_version: &str) -> Result<bool> {
+    crate::debug_trace!("[update] checking the staged Windows installer");
+    launch_pending_windows_installer(data_dir, current_version, |installer| {
+        std::process::Command::new(installer).args(["/S", "/UPDATE", "/R"]).spawn().map(|_| ())
+    })
 }
 #[cfg(not(target_os = "windows"))]
-pub fn apply_staged_windows_installer(_data_dir: &Path) {}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes { s.push_str(&format!("{:02x}", b)); }
-    s
-}
+pub fn apply_staged_windows_installer(_: &Path, _: &str) -> Result<bool> { Ok(false) }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shipping_targets_select_their_own_architecture_and_runtime() {
+        let cases = [
+            (Component::App, "linux", "x86_64", "x86_64-unknown-linux-gnu", true, false, "_amd64.AppImage"),
+            (Component::App, "linux", "aarch64", "aarch64-unknown-linux-gnu", false, true, "_arm64.deb"),
+            (Component::App, "windows", "x86_64", "x86_64-pc-windows-msvc", false, false, "_x64-setup.exe"),
+            (Component::App, "macos", "aarch64", "aarch64-apple-darwin", false, false, "_aarch64.dmg"),
+            (Component::App, "macos", "x86_64", "x86_64-apple-darwin", false, false, "_x64.dmg"),
+            (Component::App, "android", "arm", "armv7-linux-androideabi", false, false, "_android-armv7.apk"),
+            (Component::Agent, "linux", "x86_64", "x86_64-unknown-linux-gnu", false, false, "_linux-amd64.tar.gz"),
+            (Component::Agent, "macos", "aarch64", "aarch64-apple-darwin", false, false, "_darwin-arm64.tar.gz"),
+            (Component::Agent, "macos", "x86_64", "x86_64-apple-darwin", false, false, "_darwin-amd64.tar.gz"),
+            (Component::Agent, "windows", "x86_64", "x86_64-pc-windows-msvc", false, false, "_windows-amd64.tar.gz"),
+            (Component::Agent, "linux", "aarch64", "aarch64-unknown-linux-musl", false, false, "_aarch64-unknown-linux-musl.tar.gz"),
+            (Component::Agent, "linux", "arm", "armv7-unknown-linux-musleabi", false, false, "_armv7-unknown-linux-musleabi.tar.gz"),
+            (Component::Agent, "linux", "x86", "i686-unknown-linux-musl", false, false, "_i686-unknown-linux-musl.tar.gz"),
+        ];
+        for (component, os, arch, triple, appimage, deb, suffix) in cases {
+            assert_eq!(target_suffix_for(component, os, arch, triple, appimage, deb).unwrap().1, suffix, "{triple}");
+        }
+        for (os, arch, triple) in [
+            ("linux", "mips", "mips-unknown-linux-musl"),
+            ("linux", "arm", "arm-unknown-linux-musleabi"),
+            ("linux", "x86_64", "x86_64-unknown-linux-muslx32"),
+            ("windows", "aarch64", "aarch64-pc-windows-msvc"),
+        ] {
+            assert_eq!(target_suffix_for(Component::Agent, os, arch, triple, false, false), None);
+        }
+        assert!(target_suffix_for(Component::App, "android", "x86_64", "x86_64-linux-android", false, false).is_none());
+    }
+
+    #[test]
+    fn exact_asset_selection_never_installs_a_stale_or_ambiguous_release() {
+        let asset = |name: &str| ReleaseAsset { name: name.into(), download_url: "https://fixture.invalid/file".into(), size: 1 };
+        let wanted = "gipny-i2p_0.4.20_amd64.AppImage";
+        let mut assets = vec![asset("gipny-i2p_0.4.19_amd64.AppImage"), asset(wanted)];
+        assert_eq!(unique_asset(&assets, wanted).unwrap().unwrap().name, wanted);
+        assert!(unique_asset(&assets, "gipny-i2p_0.4.21_amd64.AppImage").unwrap().is_none());
+        assets.push(asset(wanted));
+        assert!(matches!(unique_asset(&assets, wanted), Err(UpdateError::AmbiguousAsset(_))));
+        assert!(release_version("0.4.20-invalid").is_none());
+        assert!(release_version("0.04.20").is_none());
+        assert!(!version_newer("garbage.99", "0.4.20"));
+    }
+
+    #[test]
+    fn automatic_updates_honor_preferences_and_explicit_environment_override() {
+        assert!(auto_update_allowed(None, None));
+        assert!(auto_update_allowed(Some(b"1"), Some("0")));
+        assert!(!auto_update_allowed(Some(b"0"), None));
+        assert!(!auto_update_allowed(Some(b"1"), Some("1")));
+        assert!(!auto_update_allowed(None, Some("TRUE")));
+    }
+
+    fn agent_archive(path: &Path, entries: &[(&str, &[u8])]) {
+        let gzip = flate2::write::GzEncoder::new(std::fs::File::create(path).unwrap(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(gzip);
+        for (name, bytes) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            archive.append_data(&mut header, name, *bytes).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_executable_replacements_are_complete_and_failure_preserves_old_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("gipny");
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::write(&executable, b"old").unwrap();
+        assert!(atomic_executable_copy(&dir.path().join("missing"), &executable).is_err());
+        assert_eq!(std::fs::read(&executable).unwrap(), b"old");
+        let a = vec![1u8; 1024 * 1024];
+        let b = vec![2u8; 1024 * 1024];
+        std::fs::write(&first, &a).unwrap();
+        std::fs::write(&second, &b).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = [first, second].into_iter().map(|source| {
+            let executable = executable.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || { barrier.wait(); atomic_executable_copy(&source, &executable).unwrap(); })
+        }).collect();
+        barrier.wait();
+        for worker in workers { worker.join().unwrap(); }
+        let result = std::fs::read(executable).unwrap();
+        assert!(result == a || result == b);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_agent_archive_cannot_replace_the_running_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("gipny-agent");
+        let archive = dir.path().join("agent.tar.gz");
+        std::fs::write(&executable, b"old agent").unwrap();
+        agent_archive(&archive, &[("release/gipny-agent", b"first"), ("duplicate/gipny-agent", b"second")]);
+        assert!(install_agent_binary_now(&archive, &executable).is_err());
+        assert_eq!(std::fs::read(&executable).unwrap(), b"old agent");
+        agent_archive(&archive, &[("release/gipny-agent", b"new agent")]);
+        install_agent_binary_now(&archive, &executable).unwrap();
+        assert_eq!(std::fs::read(executable).unwrap(), b"new agent");
+    }
+
+    #[test]
+    fn windows_launch_failure_restores_pending_and_success_is_claimed_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("gipny-i2p_0.4.20_x64-setup.exe");
+        std::fs::write(&source, b"verified installer").unwrap();
+        stage_windows_installer(&source, dir.path()).unwrap();
+        let failed = launch_pending_windows_installer(dir.path(), "0.4.19", |_| {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "injected CreateProcess denial"))
+        });
+        assert!(failed.is_err());
+        assert!(dir.path().join(PENDING_DIR).join(PENDING_INSTALLER).exists());
+        assert!(launch_pending_windows_installer(dir.path(), "0.4.19", |_| Ok(())).unwrap());
+        assert!(launch_pending_windows_installer(dir.path(), "0.4.19", |_| panic!("must not launch twice")).is_err());
+        assert!(!launch_pending_windows_installer(dir.path(), "0.4.20", |_| panic!("already running the new build")).unwrap());
+        assert!(!dir.path().join(PENDING_DIR).exists());
+    }
+
+    #[test]
+    fn windows_pending_tamper_never_launches_and_preserves_package_for_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("gipny-i2p_0.4.20_x64-setup.exe");
+        std::fs::write(&source, b"verified installer").unwrap();
+        stage_windows_installer(&source, dir.path()).unwrap();
+        let pending = dir.path().join(PENDING_DIR).join(PENDING_INSTALLER);
+        std::fs::write(&pending, b"damaged").unwrap();
+        assert!(matches!(launch_pending_windows_installer(dir.path(), "0.4.19", |_| panic!("unverified installer")), Err(UpdateError::BadSha256)));
+        assert!(pending.exists());
+        std::fs::remove_file(dir.path().join(PENDING_DIR).join("VERSION")).unwrap();
+        assert!(launch_pending_windows_installer(dir.path(), "0.4.19", |_| panic!("unversioned installer")).is_err());
+        assert!(pending.exists());
+    }
+
+    #[test]
+    fn windows_agent_publication_keeps_newer_ready_version_and_exact_binary_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("gipny-agent_0.4.20_windows-amd64.tar.gz");
+        agent_archive(&source, &[("release/gipny-agent.exe", b"new agent")]);
+        stage_windows_agent(&source, dir.path()).unwrap();
+        let ready_path = dir.path().join("pending_agent/ready.json");
+        let first = std::fs::read(&ready_path).unwrap();
+        let ready: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        let binary = dir.path().join("pending_agent").join(ready["file"].as_str().unwrap());
+        assert_eq!(file_digest(&binary).unwrap().to_string(), ready["sha256"].as_str().unwrap());
+        let older = dir.path().join("gipny-agent_0.4.19_windows-amd64.tar.gz");
+        agent_archive(&older, &[("release/gipny-agent.exe", b"old agent")]);
+        stage_windows_agent(&older, dir.path()).unwrap();
+        assert_eq!(std::fs::read(&ready_path).unwrap(), first);
+        std::fs::write(binary, b"corrupted").unwrap();
+        assert!(matches!(stage_windows_agent(&older, dir.path()), Err(UpdateError::BadSha256)));
+    }
+
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn artifact(size: u64) -> ReleaseAsset {
+        ReleaseAsset { name: "app.apk".into(), download_url: "https://fixture.invalid/app.apk".into(), size }
+    }
+
+    fn manifest() -> ReleaseAsset {
+        ReleaseAsset { name: CHECKSUM_MANIFEST.into(), download_url: "https://fixture.invalid/SHA256SUMS.txt".into(), size: 100 }
+    }
+
+    fn abc_digest() -> Sha256Digest {
+        Sha256Digest::parse(ABC_SHA256.as_bytes()).unwrap()
+    }
+
+    // Real hyper HTTP decoding over an in-memory socket: no listening port,
+    // router, TLS substitution or production transport fallback is involved.
+    async fn http_fixture(wire: Vec<u8>, stall: bool) -> (crate::i2p_http::Body, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client, mut server) = tokio::io::duplex(1024);
+        let writer = tokio::spawn(async move {
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let Ok(byte) = server.read_u8().await else { return };
+                request.push(byte);
+            }
+            if server.write_all(&wire).await.is_ok() && stall {
+                std::future::pending::<()>().await;
+            }
+        });
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(client)).await.unwrap();
+        tokio::spawn(async move { let _ = connection.await; });
+        let request = hyper::Request::get("/").header(hyper::header::HOST, "fixture.invalid")
+            .body(http_body_util::Empty::<bytes::Bytes>::new()).unwrap();
+        let response = sender.send_request(request).await.unwrap();
+        (crate::i2p_http::Body::new(response.into_body()), writer)
+    }
+
+    async fn body(wire: &[u8]) -> crate::i2p_http::Body {
+        http_fixture(wire.to_vec(), false).await.0
+    }
+
+    fn assert_only_destination(dir: &Path, dest: &Path, contents: &[u8]) {
+        assert_eq!(std::fs::read(dest).unwrap(), contents);
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 1, "no staging file should survive");
+    }
+
+    #[test]
+    fn manifest_accepts_release_text_binary_uppercase_crlf_and_exact_names() {
+        for separator in ["  ", " *"] {
+            let text = format!("{}{}app.apk\r\n\r\n", ABC_SHA256.to_uppercase(), separator);
+            assert_eq!(parse_sha256_manifest(&text, "app.apk").unwrap(), abc_digest());
+        }
+        let text = format!("{ABC_SHA256}  app with spaces.apk\n{ABC_SHA256}  other.apk\n");
+        assert_eq!(parse_sha256_manifest(&text, "app with spaces.apk").unwrap(), abc_digest());
+        assert!(matches!(parse_sha256_manifest(&text, "app"), Err(UpdateError::MissingChecksum(_))));
+        assert_eq!(abc_digest().to_string(), ABC_SHA256);
+    }
+
+    #[test]
+    fn missing_malformed_or_ambiguous_checksums_are_errors() {
+        assert!(matches!(parse_sha256_manifest("", "app.apk"), Err(UpdateError::MissingChecksum(_))));
+        let bad_rows = [
+            format!("{}  app.apk", &ABC_SHA256[..63]),
+            format!("{ABC_SHA256}0  app.apk"),
+            format!("{}g  app.apk", &ABC_SHA256[..63]),
+            format!("{ABC_SHA256} app.apk"),
+            format!("{ABC_SHA256}\t app.apk"),
+            format!("{ABC_SHA256}  "),
+            format!("{ABC_SHA256}  app.apk\ninvalid unrelated row"),
+        ];
+        for text in bad_rows {
+            assert!(matches!(parse_sha256_manifest(&text, "app.apk"), Err(UpdateError::InvalidChecksumManifest(_))), "{text:?}");
+        }
+        for second_hash in [ABC_SHA256.to_string(), "0".repeat(64)] {
+            let text = format!("{ABC_SHA256}  app.apk\n{second_hash} *app.apk\n");
+            assert!(matches!(parse_sha256_manifest(&text, "app.apk"), Err(UpdateError::AmbiguousChecksum(_))));
+        }
+        let oversized = " ".repeat(MAX_MANIFEST_BYTES + 1);
+        assert!(matches!(parse_sha256_manifest(&oversized, "app.apk"), Err(UpdateError::TooLarge)));
+    }
+
+    #[tokio::test]
+    async fn manifest_resolution_fails_before_fetch_when_missing_ambiguous_or_oversized() {
+        let mut oversized = manifest();
+        oversized.size = MAX_MANIFEST_BYTES as u64 + 1;
+        let inputs = [vec![], vec![manifest(), manifest()], vec![oversized]];
+        for (index, assets) in inputs.into_iter().enumerate() {
+            let fetched = std::cell::Cell::new(false);
+            let result = find_sha256(&assets, "app.apk", |_| {
+                fetched.set(true);
+                std::future::ready(Err(UpdateError::NotConfigured))
+            }).await;
+            assert!(!fetched.get());
+            assert!(match index {
+                0 => matches!(result, Err(UpdateError::MissingChecksumManifest)),
+                1 => matches!(result, Err(UpdateError::AmbiguousChecksumManifest)),
+                _ => matches!(result, Err(UpdateError::TooLarge)),
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn manifest_fetch_failure_and_missing_entry_are_never_optional() {
+        let assets = [manifest()];
+        let failed = find_sha256(&assets, "app.apk", |url| async move {
+            assert_eq!(url, "https://fixture.invalid/SHA256SUMS.txt");
+            Err(UpdateError::I2pHttp(crate::i2p_http::HttpError::Status(404)))
+        }).await;
+        assert!(matches!(failed, Err(UpdateError::I2pHttp(crate::i2p_http::HttpError::Status(404)))));
+        let missing = find_sha256(&assets, "app.apk", |_| async {
+            Ok(format!("{ABC_SHA256}  other.apk\n"))
+        }).await;
+        assert!(matches!(missing, Err(UpdateError::MissingChecksum(_))));
+        let valid = find_sha256(&assets, "app.apk", |_| async {
+            Ok(format!("{ABC_SHA256}  app.apk\n"))
+        }).await.unwrap();
+        assert_eq!(valid, abc_digest());
+    }
+
+    #[tokio::test]
+    async fn bounded_http_text_rejects_chunked_overflow_and_invalid_utf8() {
+        let response = body(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n").await;
+        assert!(matches!(response.text(3).await, Err(crate::i2p_http::HttpError::TooLarge(3))));
+        let response = body(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n\xff").await;
+        assert!(matches!(response.text(8).await, Err(crate::i2p_http::HttpError::Http(_))));
+    }
+
+    #[tokio::test]
+    async fn verified_chunked_download_replaces_destination_only_after_integrity_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("app.apk");
+        std::fs::write(&dest, b"previous update").unwrap();
+        let response = body(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n2\r\nbc\r\n0\r\n\r\n").await;
+        let mut progress = Vec::new();
+        save_verified_asset(response, &artifact(3), &abc_digest(), &dest, |done, total| {
+            progress.push((done, total));
+        }).await.unwrap();
+        assert_eq!(progress.last(), Some(&(3, 3)));
+        assert_only_destination(dir.path(), &dest, b"abc");
+    }
+
+    #[tokio::test]
+    async fn checksum_mismatch_preserves_existing_destination_and_removes_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("app.apk");
+        std::fs::write(&dest, b"previous update").unwrap();
+        let response = body(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabd").await;
+        let error = save_verified_asset(response, &artifact(3), &abc_digest(), &dest, |_, _| {}).await.unwrap_err();
+        assert!(matches!(error, UpdateError::BadSha256));
+        assert_only_destination(dir.path(), &dest, b"previous update");
+    }
+
+    #[tokio::test]
+    async fn complete_but_wrong_size_and_truncated_http_preserve_destination() {
+        let cases: &[(u64, &[u8])] = &[
+            (4, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"),
+            (2, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"),
+            (3, b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nab"),
+        ];
+        for (index, (size, wire)) in cases.iter().enumerate() {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("app.apk");
+            std::fs::write(&dest, b"previous update").unwrap();
+            let response = body(wire).await;
+            let result = save_verified_asset(response, &artifact(*size), &abc_digest(), &dest, |_, _| {}).await;
+            assert!(if index < 2 { matches!(result, Err(UpdateError::BadSize { .. })) }
+                else { matches!(result, Err(UpdateError::I2pHttp(_))) });
+            assert_only_destination(dir.path(), &dest, b"previous update");
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_release_asset_is_rejected_before_transport_or_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("absent").join("app.apk");
+        let updater = Updater { client: None, component: Component::App };
+        let result = updater.download_asset_to(&artifact(MAX_ARTIFACT_BYTES + 1), &abc_digest(), &dest, |_, _| {}).await;
+        assert!(matches!(result, Err(UpdateError::TooLarge)));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_destination_replace_cleans_its_owned_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("occupied");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(dest.join("keep"), b"keep").unwrap();
+        let response = body(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc").await;
+        assert!(matches!(save_verified_asset(response, &artifact(3), &abc_digest(), &dest, |_, _| {}).await, Err(UpdateError::Io(_))));
+        assert_eq!(std::fs::read(dest.join("keep")).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_download_cleans_partial_and_preserves_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("app.apk");
+        std::fs::write(&dest, b"previous update").unwrap();
+        let (response, writer) = http_fixture(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc".to_vec(), true).await;
+        let path = dest.clone();
+        let (progress, started) = tokio::sync::oneshot::channel();
+        let mut progress = Some(progress);
+        let download = tokio::spawn(async move {
+            save_verified_asset(response, &artifact(6), &abc_digest(), &path, move |_, _| {
+                if let Some(progress) = progress.take() { let _ = progress.send(()); }
+            }).await
+        });
+        started.await.unwrap();
+        download.abort();
+        assert!(download.await.unwrap_err().is_cancelled());
+        writer.abort();
+        assert_only_destination(dir.path(), &dest, b"previous update");
+    }
 
     #[test]
     fn a_v_prefixed_tag_compares_correctly() {
@@ -608,13 +1211,19 @@ mod tests {
     }
 
     #[test]
-    fn agent_target_is_always_known_on_linux() {
-        if cfg!(target_os = "linux") {
+    fn agent_target_matches_the_compiled_runtime_on_linux() {
+        if cfg!(target_os = "linux") && cfg!(target_env = "gnu") && matches!(std::env::consts::ARCH, "x86_64" | "aarch64") {
             let expect_arm64 = std::env::consts::ARCH == "aarch64";
             assert_eq!(
                 target_suffix(Component::Agent),
                 Some(("gipny-agent_", if expect_arm64 { "_linux-arm64.tar.gz" } else { "_linux-amd64.tar.gz" })),
             );
+        }
+        if cfg!(target_os = "linux") && cfg!(target_env = "musl") {
+            let triple = env!("GIPNY_BUILD_TARGET");
+            if matches!(triple, "aarch64-unknown-linux-musl" | "x86_64-unknown-linux-musl" | "armv7-unknown-linux-musleabi" | "i686-unknown-linux-musl") {
+                assert_eq!(target_suffix(Component::Agent).unwrap().1, format!("_{triple}.tar.gz"));
+            } else { assert!(target_suffix(Component::Agent).is_none()); }
         }
     }
 }

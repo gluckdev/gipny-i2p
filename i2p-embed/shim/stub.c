@@ -9,6 +9,7 @@
 #include "shim.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 int gipny_router_init(int argc, const char *const *argv) { (void)argc; (void)argv; return 0; }
 void gipny_router_start(const char *log_path) { (void)log_path; }
@@ -41,4 +42,11 @@ void gipny_stream_send(gipny_stream *stream, const uint8_t *buf, size_t len, gip
 }
 void gipny_stream_close(gipny_stream *stream) { (void)stream; }
 void gipny_stream_free(gipny_stream *stream) { (void)stream; }
-void gipny_string_free(char *s) { free(s); }
+void gipny_string_free(char *s) {
+    if (s) {
+        size_t len = strlen(s);
+        volatile unsigned char *bytes = (volatile unsigned char *)s;
+        while (len) bytes[--len] = 0;
+    }
+    free(s);
+}

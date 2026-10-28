@@ -19,7 +19,7 @@
 //!   — the app's built-in relay, in the order the app does it.
 //! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
 //!   far side is the real `gipny-agent` binary at that path, started with
-//!   bot-a's v2 card, on its own router in its own process, with no
+//!   bot-a's v3 card, on its own router in its own process, with no
 //!   `--relay` — proving the agent hosts a personal relay for itself, the
 //!   same as the app does. The master gets its own in-process relay too.
 //!   `E2E_N_MESSAGES` is the number of commands.
@@ -76,14 +76,11 @@ fn no_local_ports(who: &str, pid: &str) -> Result<()> {
     if !cfg!(target_os = "linux") {
         return Ok(());
     }
-    let listeners = ports::tcp_listeners(pid).with_context(|| format!("{who}: read /proc/{pid}"))?;
+    let listeners = ports::observed_tcp_listeners(pid).with_context(|| format!("{who}: inspect /proc/{pid}"))?;
     for l in &listeners {
         eprintln!("[e2e] {who} listens on {}:{}{}", l.addr, l.port, if l.loopback { " (LOOPBACK)" } else { "" });
     }
-    let local: Vec<_> = listeners.iter().filter(|l| l.loopback).map(|l| format!("{}:{}", l.addr, l.port)).collect();
-    if !local.is_empty() {
-        bail!("{who} listens on loopback: {}", local.join(", "));
-    }
+    ports::reject_loopback(&listeners).with_context(|| format!("{who}: loopback policy"))?;
     eprintln!("[e2e] {who}: no local ports");
     Ok(())
 }
@@ -357,7 +354,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
         relay: Some(relay_dest.clone()),
         name: Some("bot-a".into()),
     }
-    .encode();
+    .encode()?;
 
     // The agent's data dir is fresh, so this is a first run: --master given,
     // remembered in master.card. Its stdout/stderr are inherited so its own
@@ -530,9 +527,15 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
 
     // While both still run: neither listens on loopback.
     if let Err(e) = no_local_ports("harness", "self") { failures.push(e.to_string()); }
-    match child.id() {
-        Some(pid) => if let Err(e) = no_local_ports("agent", &pid.to_string()) { failures.push(e.to_string()); },
-        None => failures.push("the agent exited before OFF".into()),
+    match child.try_wait().context("poll agent before listener observation")? {
+        Some(status) => failures.push(format!("the agent exited before OFF: {status}")),
+        None => {
+            let pid = child.id().context("live agent has no PID")?;
+            if let Err(error) = no_local_ports("agent", &pid.to_string()) { failures.push(format!("{error:#}")); }
+            if let Some(status) = child.try_wait().context("poll agent after listener observation")? {
+                failures.push(format!("the agent exited during listener observation: {status}"));
+            }
+        }
     }
 
     // 5. OFF: the agent answers REVOKE and exits 0 once that is delivered.
@@ -872,12 +875,13 @@ async fn run_update_check_mode() -> Result<()> {
         Ok(other) => eprintln!("[e2e] check from 0.0.0: {other:?}"),
         Err(e) => bail!("check_detailed: {e}"),
     }
-    let Some(asset) = release.assets.iter().filter(|a| a.size > 0).min_by_key(|a| a.size) else {
-        bail!("the latest release has no files");
+    let Some(asset) = release.assets.iter().filter(|a| a.size > 0 && a.name != "SHA256SUMS.txt").min_by_key(|a| a.size) else {
+        bail!("the latest release has no artifacts with a release checksum");
     };
     let t2 = Instant::now();
     let dest = data_dir.join("download").join(&asset.name);
-    updater.download_asset_to(asset, None, &dest, |_, _| {}).await.with_context(|| format!("download {}", asset.name))?;
+    let sha256 = updater.asset_sha256(&release, &asset.name).await.context("release checksum")?;
+    updater.download_asset_to(asset, &sha256, &dest, |_, _| {}).await.with_context(|| format!("download {}", asset.name))?;
     let got = std::fs::metadata(&dest)?.len();
     if got != asset.size {
         bail!("{}: {got} bytes, the release says {}", asset.name, asset.size);
@@ -892,8 +896,15 @@ async fn run_update_check_mode() -> Result<()> {
 // Main
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // This metadata-only branch must run before Tokio, profiles or libi2pd.
+    // It lets CI inspect its non-dumpable child without relaxing hardening.
+    if ports::run_observer_mode()? { return Ok(()); }
+    gipny_libcore::security::harden_process()?;
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
+}
+
+async fn run() -> Result<()> {
     if let Some(bin) = std::env::var_os("E2E_AGENT_BIN") {
         return run_agent_mode(PathBuf::from(bin)).await;
     }

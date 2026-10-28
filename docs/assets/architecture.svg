@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="100%" height="auto">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="100%" height="auto" role="img" aria-labelledby="architecture-title architecture-description">
+  <title id="architecture-title">gipny-i2p: router inside each native client process</title>
+  <desc id="architecture-description">Rust Core uses i2p-embed and a C++ shim to call libi2pd in the same process. I2P tunnels reach the recipient relay, with encrypted relay-network DHT storage as fallback. No local SAM bridge or HTTP proxy is used.</desc>
   <defs>
     <linearGradient id="cardGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#182218"/>
@@ -37,7 +39,7 @@
     <rect x="30" y="40" width="230" height="250" rx="12" fill="url(#cardGrad)" stroke="#263026" stroke-width="1.5"/>
     <rect x="30" y="40" width="230" height="4" rx="2" fill="url(#accentGrad)"/>
     <text x="50" y="75" class="title">gipny Client (Alice)</text>
-    <text x="50" y="95" class="subtitle">Ephemeral I2P destination</text>
+    <text x="50" y="95" class="subtitle">Ephemeral outbound destination</text>
 
     <rect x="45" y="115" width="200" height="40" rx="8" fill="#121712" stroke="#232d23"/>
     <text x="55" y="133" class="badge">UI &amp; Core (Rust + Tauri)</text>
@@ -48,8 +50,9 @@
     <text x="55" y="197" class="subtitle">Encrypted Vault on disk</text>
 
     <rect x="45" y="215" width="200" height="55" rx="8" fill="#141c14" stroke="#26a226" stroke-dasharray="3 3"/>
-    <text x="55" y="235" class="badge">i2pd daemon (in-process)</text>
-    <text x="55" y="250" class="code">SAMv3 127.0.0.1:7656</text>
+    <text x="55" y="233" class="badge">i2p-embed → C++ shim</text>
+    <text x="55" y="249" class="code">libi2pd (same process)</text>
+    <text x="55" y="264" class="subtitle">No local bridge / proxy</text>
   </g>
 
   <!-- Middle: I2P Cloud & Blind Relay -->
@@ -59,16 +62,16 @@
     <text x="345" y="85" class="subtitle">Inbound / Outbound Tunnels</text>
 
     <rect x="330" y="105" width="220" height="175" rx="10" fill="#0d140d" stroke="#26a226"/>
-    <text x="345" y="132" class="title" fill="#6ce86c">Blind I2P Relay</text>
-    <text x="345" y="150" class="badge">Ephemeral / Dedicated</text>
+    <text x="345" y="132" class="title" fill="#6ce86c">Recipient Relay</text>
+    <text x="345" y="150" class="badge">Published destination</text>
 
     <path d="M 345 165 L 535 165" stroke="#232d23" stroke-width="1"/>
 
-    <text x="345" y="185" class="code">from: [0u8; 32] (Sealed)</text>
-    <text x="345" y="205" class="code">to:   recipient_dh_pk</text>
-    <text x="345" y="225" class="code">payload: encrypted blob</text>
-    <text x="345" y="255" class="subtitle">Holds blobs until polled</text>
-    <text x="345" y="270" class="subtitle">No LeaseSet publication</text>
+    <text x="345" y="185" class="code">to: recipient_sign_pk</text>
+    <text x="345" y="205" class="code">payload: encrypted blob</text>
+    <text x="345" y="225" class="subtitle">Push / transport ACK</text>
+    <text x="345" y="250" class="badge">Relay-network DHT fallback</text>
+    <text x="345" y="269" class="subtitle">Encrypted mail · TTL · quotas</text>
   </g>
 
   <!-- Right: Client B (Bob) -->
@@ -76,7 +79,7 @@
     <rect x="620" y="40" width="230" height="250" rx="12" fill="url(#cardGrad)" stroke="#263026" stroke-width="1.5"/>
     <rect x="620" y="40" width="230" height="4" rx="2" fill="url(#accentGrad)"/>
     <text x="640" y="75" class="title">gipny Client (Bob)</text>
-    <text x="640" y="95" class="subtitle">Polls his assigned relay</text>
+    <text x="640" y="95" class="subtitle">Embedded or external inbox</text>
 
     <rect x="635" y="115" width="200" height="40" rx="8" fill="#121712" stroke="#232d23"/>
     <text x="645" y="133" class="badge">UI &amp; Core (Rust + Tauri)</text>
@@ -87,8 +90,9 @@
     <text x="645" y="197" class="subtitle">Decoy / Duress wipe</text>
 
     <rect x="635" y="215" width="200" height="55" rx="8" fill="#141c14" stroke="#26a226" stroke-dasharray="3 3"/>
-    <text x="645" y="235" class="badge">i2pd daemon (in-process)</text>
-    <text x="645" y="250" class="code">SAMv3 127.0.0.1:7656</text>
+    <text x="645" y="233" class="badge">i2p-embed → C++ shim</text>
+    <text x="645" y="249" class="code">libi2pd (same process)</text>
+    <text x="645" y="264" class="subtitle">No local bridge / proxy</text>
   </g>
 
   <!-- Arrows -->
@@ -98,5 +102,5 @@
   <path d="M 620 160 L 555 160" stroke="#46b846" stroke-width="2.5" marker-end="url(#arrow)"/>
   <text x="562" y="152" class="label">Poll / Push</text>
 
-  <text x="440" y="325" text-anchor="middle" class="subtitle">E2EE Double Ratchet · XChaCha20-Poly1305 · Fixed bucket padding (256B..16MB)</text>
+  <text x="440" y="325" text-anchor="middle" class="subtitle">E2E encrypted before I2P · Core and SessionManager share the router integration</text>
 </svg>

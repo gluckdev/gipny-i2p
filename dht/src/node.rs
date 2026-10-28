@@ -4,6 +4,7 @@
 //! thing as full buckets until it is not).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -85,6 +86,9 @@ struct Peer {
     seed: bool,
     first_seen_ms: u64,
     last_ok_ms: u64,
+    // Local scheduling only, never trusted from a peer or persisted. New
+    // candidates join the tail so an inbound flood cannot starve old peers.
+    last_probe_order: u64,
 }
 
 /// A known node, as the embedding app may want to persist it.
@@ -110,11 +114,12 @@ pub struct DhtNode<T: Transport, S: Storage> {
     cfg: NodeConfig,
     clock: Clock,
     peers: Mutex<HashMap<String, Peer>>,
+    probe_order: AtomicU64,
 }
 
 impl<T: Transport, S: Storage> DhtNode<T, S> {
     pub fn new(transport: Arc<T>, storage: Arc<S>, cfg: NodeConfig, clock: Clock) -> Self {
-        Self { me: RwLock::new(None), storage, transport, cfg, clock, peers: Mutex::default() }
+        Self { me: RwLock::new(None), storage, transport, cfg, clock, peers: Mutex::default(), probe_order: AtomicU64::new(1) }
     }
 
     /// Become reachable as `me` (once our relay is up). Until then this node
@@ -163,6 +168,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                     seed,
                     first_seen_ms: now,
                     last_ok_ms: 0,
+                    last_probe_order: self.probe_order.fetch_add(1, Ordering::Relaxed),
                 });
         }
         self.trim_peers(&mut peers);
@@ -207,6 +213,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                     p.confirmed = true;
                     p.failures = 0;
                     p.last_ok_ms = now;
+                    p.last_probe_order = self.probe_order.fetch_add(1, Ordering::Relaxed);
                 }
             }
             None => {
@@ -217,6 +224,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                     seed: false,
                     first_seen_ms: now,
                     last_ok_ms: if confirmed { now } else { 0 },
+                    last_probe_order: self.probe_order.fetch_add(1, Ordering::Relaxed),
                 });
             }
         }
@@ -371,6 +379,9 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     }
 
     async fn open(&self, destination: &str) -> Option<T::Conn> {
+        if let Some(peer) = self.peers().get_mut(destination) {
+            peer.last_probe_order = self.probe_order.fetch_add(1, Ordering::Relaxed);
+        }
         match tokio::time::timeout(self.cfg.dial_timeout, self.transport.open(destination)).await {
             Ok(Ok(c)) => Some(c),
             _ => {
@@ -555,8 +566,24 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                 targets.push(seed);
             }
         }
-        for items in join_all(targets.iter().map(|n| self.items_at(n, key))).await.into_iter().flatten() {
-            take(items, &mut out);
+        // Get replies may reveal a closer holder that FindNode did not see
+        // (notably a seed outside the lookup's k nearest). Follow that frontier
+        // in this poll instead of returning an empty result until the next one.
+        // Bound unique Get destinations even if a peer fabricates addresses;
+        // all explicitly trusted seeds still get their original first chance.
+        let budget = self.cfg.k.saturating_add(targets.len());
+        let mut queried = HashSet::new();
+        loop {
+            let remaining = budget.saturating_sub(queried.len());
+            let batch: Vec<_> = targets.into_iter()
+                .filter(|node| !queried.contains(&node.destination))
+                .take(remaining).collect();
+            if batch.is_empty() { break; }
+            for node in &batch { queried.insert(node.destination.clone()); }
+            for items in join_all(batch.iter().map(|node| self.items_at(node, key))).await.into_iter().flatten() {
+                take(items, &mut out);
+            }
+            targets = self.closest(key, self.cfg.k, true);
         }
         out
     }
@@ -604,14 +631,33 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         handed
     }
 
-    /// Forget expired items and nodes that stopped answering.
+    /// Expire items and fairly probe known peers, including fresh inbound
+    /// candidates and confirmed peers that disappeared without a failed RPC.
+    /// Each tick admits at most 2*k probes in alpha-sized batches. Only an
+    /// answering Ping confirms a candidate; hearsay is never promoted here.
     pub async fn maintain(&self) {
         self.storage.gc(self.now_ms());
-        let stale: Vec<String> = self.peers().values()
-            .filter(|p| p.confirmed && p.failures > 0)
-            .map(|p| p.info.destination.clone())
-            .collect();
-        join_all(stale.iter().map(|d| self.ping(d))).await;
+        let probes: Vec<String> = {
+            let mut peers = self.peers();
+            let mut ordered: Vec<_> = peers.iter()
+                .map(|(destination, peer)| (peer.last_probe_order, destination.clone()))
+                .collect();
+            ordered.sort();
+            let probes: Vec<_> = ordered.into_iter()
+                .take(self.cfg.k.saturating_mul(2).min(self.cfg.max_peers))
+                .map(|(_, destination)| destination).collect();
+            // Reserve before awaiting so overlapping calls prefer other old
+            // candidates when available; this is not an in-flight request set.
+            for destination in &probes {
+                if let Some(peer) = peers.get_mut(destination) {
+                    peer.last_probe_order = self.probe_order.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            probes
+        };
+        for batch in probes.chunks(self.cfg.alpha.max(1)) {
+            join_all(batch.iter().map(|destination| self.ping(destination))).await;
+        }
     }
 }
 

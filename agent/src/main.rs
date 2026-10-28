@@ -6,14 +6,14 @@
 //! CONSOLE_COMMAND messages, replies go back as CONSOLE_OUTPUT messages.
 //!
 //! Usage:
-//!   gipny-agent --data <dir> --master <gipny:v2:…card…>
+//!   gipny-agent --data <dir> --master <gipny:v3:…card…>
 //!
 //! `--master` is needed once: the card is kept in `<data>/master.card` and
 //! later runs read it from there. `--data` can also come from the
 //! `GIPNY_AGENT_DATA` environment variable.
 //!
 //! Optional flags:
-//!   --name <display name>   what the agent calls itself (default: hostname)
+//!   --name <display name>   what the agent calls itself (default: saved cat name)
 //!   --relay <dest>          external relay to collect from, remembered in <data>/relay.txt;
 //!                           default: none — the agent hosts a personal relay for itself,
 //!                           the same way the app does for its own inbox
@@ -43,19 +43,21 @@ use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SEC
 const MASTER_CARD_FILE: &str = "master.card";
 const RELAY_FILE: &str = "relay.txt";
 const OWN_CARD_FILE: &str = "card.txt";
-/// Same DB setting key/convention as the app's `dismissed_update_version`:
-/// which version this run already downloaded and installed, so a later check
-/// this same launch does not redo it every `UPDATE_CHECK_INTERVAL_SECS`.
+/// Same explicit dismissal key as the app. Automatic preparation never writes
+/// this preference; its per-process state is kept separately in the update loop.
 const SETTING_DISMISSED_UPDATE: &str = "dismissed_update_version";
 /// How long the closing REVOKE may take to reach the master before the agent
 /// exits anyway. It is queued and retried like any message; this only bounds
 /// how long a stopped service lingers.
 const REVOKE_WAIT: Duration = Duration::from_secs(60);
 
+mod bootstrap;
+
 fn usage() -> ! {
     eprintln!(
         "Usage: gipny-agent --data <dir> [--master <card>] [--name <name>] \
-        [--relay <dest>] [--cwd <dir>] [--timeout <secs>]"
+        [--relay <dest>] [--cwd <dir>] [--timeout <secs>]\n\
+        Validation only: gipny-agent --check-master-card <card>"
     );
     std::process::exit(1);
 }
@@ -64,6 +66,7 @@ fn usage() -> ! {
 struct Args {
     data: Option<PathBuf>,
     master_card: Option<String>,
+    check_master_card: Option<String>,
     name: Option<String>,
     relay: Option<String>,
     cwd: Option<PathBuf>,
@@ -77,6 +80,7 @@ fn parse_args() -> Args {
         match flag.as_str() {
             "--data"    => a.data        = it.next().map(PathBuf::from),
             "--master"  => a.master_card = it.next(),
+            "--check-master-card" => a.check_master_card = Some(it.next().unwrap_or_else(|| usage())),
             "--name"    => a.name        = it.next(),
             "--relay"   => a.relay       = it.next(),
             "--cwd"     => a.cwd         = it.next().map(PathBuf::from),
@@ -121,6 +125,13 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_master_card(raw: &str) -> Result<ContactCard> {
+    // The card may be sensitive contact metadata: errors never echo its fields.
+    let card = ContactCard::parse(raw).map_err(|_| anyhow::anyhow!("invalid GIPNY master contact card"))?;
+    if card.relay.is_none() { bail!("the master contact card must contain a relay"); }
+    Ok(card)
+}
+
 /// The master's card: from `--master`, which is then remembered, or from the
 /// copy an earlier run left behind. A new `--master` replaces the old one.
 fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
@@ -128,7 +139,7 @@ fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
     let raw = match &args.master_card {
         Some(raw) => {
             let raw = raw.trim().to_string();
-            ContactCard::parse(&raw).context("invalid --master card")?;
+            validate_master_card(&raw).context("invalid --master card")?;
             write_private(&path, &raw)?;
             raw
         }
@@ -137,7 +148,7 @@ fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
             path.display()
         ))?,
     };
-    ContactCard::parse(&raw).with_context(|| format!("invalid master card in {}", path.display()))
+    validate_master_card(&raw).with_context(|| format!("invalid master card in {}", path.display()))
 }
 
 /// `--relay` is remembered like `--master`: given once, read back afterwards.
@@ -215,37 +226,46 @@ struct Job {
     body: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    gipny_libcore::security::harden_process()?;
     let args = parse_args();
+    if let Some(card) = args.check_master_card.as_deref() {
+        validate_master_card(card)?;
+        return Ok(());
+    }
+    let readiness = bootstrap::Readiness::take_environment()?;
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()
+        .context("start agent runtime")?.block_on(run(args, readiness))
+}
+
+async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> {
     let data_dir = data_dir(&args)?;
     let master_card = load_master(&args, &data_dir)?;
     // The agent's own relay is separate from the master's: this is only about
-    // reaching the master to deliver a message, which needs a v2 card either
+    // reaching the master to deliver a message, which needs a relay-bearing card
     // way.
     if master_card.relay.is_none() {
         bail!(
             "the master's card is a v1 card without a relay, and the agent has no way to \
-            reach the master until it gets a v2 card (Settings → my card)"
+            reach the master until it gets a relay-bearing v3/v2 card (Settings → my card)"
         );
     }
     let relay_override = load_relay(&args, &data_dir)?;
 
-    // A plain (unencrypted) database: a headless daemon has nobody to type a
-    // passphrase. The data dir is 0700 for that reason.
+    // OS-provider-bound SQLCipher supports unattended startup without a raw
+    // key file or silently falling back to an unencrypted database.
     let db = Arc::new(
-        Db::open_plain(&data_dir.join("agent.db")).context("open agent database")?,
+        gipny_libcore::security::open_device_bound_database(&data_dir, &data_dir.join("agent.db"))
+            .context("open device-bound agent database; provision the OS credential provider before unattended startup")?,
     );
 
-    eprintln!("[agent] starting the i2p router (in this process, no ports)…");
+    gipny_libcore::debug_trace!("[agent] starting the i2p router (in this process, no ports)…");
     let node = Arc::new(
         I2pNode::start(&data_dir, RouterSettings::default()).await.context("start i2p node")?,
     );
-    eprintln!("[agent] i2p address: {}", node.b32_address().unwrap_or_else(|| node.onion_address().to_string()));
+    gipny_libcore::debug_trace!("[agent] i2p address: {}", node.b32_address().unwrap_or_else(|| node.onion_address().to_string()));
 
-    tokio::spawn(run_update_loop(db.clone(), data_dir.clone(), node.clone()));
-
-    let display_name = args.name.clone().unwrap_or_else(agent::hostname);
+    let display_name = persistent_agent_name(&db, args.name.as_deref())?;
     let (session, mut events) = SessionManager::start(data_dir.clone(), db.clone(), node.clone())
         .await
         .context("start session manager")?;
@@ -263,7 +283,7 @@ async fn main() -> Result<()> {
             (r, None)
         }
         None => {
-            eprintln!("[agent] starting the built-in relay (this can take a minute or two)…");
+            gipny_libcore::debug_trace!("[agent] starting the built-in relay (this can take a minute or two)…");
             let relay = gipny_libcore::EphemeralRelay::start(
                 gipny_libcore::MemStoreLimits::personal(me.sign_pk),
                 Some(session.dht_handler()),
@@ -272,7 +292,7 @@ async fn main() -> Result<()> {
             .context("start the agent's built-in relay")?;
             let relay = std::sync::Arc::new(relay);
             let address = relay.address().to_string();
-            eprintln!("[agent] built-in relay ready");
+            gipny_libcore::debug_trace!("[agent] built-in relay ready");
             // Collect from it over a pipe, not out through i2p and back.
             session.set_local_relay(relay.clone());
             session.set_relay_onion(&address)?;
@@ -292,10 +312,10 @@ async fn main() -> Result<()> {
         dh_pk: me.dh_pk,
         relay: Some(relay_onion.clone()),
         name: Some(display_name.clone()),
-    }.encode();
+    }.encode()?;
     write_private(&data_dir.join(OWN_CARD_FILE), &own_card)?;
     println!("agent card: {own_card}");
-    eprintln!("[agent] master sign_pk: {}…", agent::hex8(&master_card.sign_pk));
+    gipny_libcore::debug_trace!("[agent] master sign_pk: {}…", agent::hex8(&master_card.sign_pk));
 
     // The master as a contact, with the relay their card names; idempotent
     // across restarts (INSERT OR IGNORE on the identity).
@@ -308,7 +328,7 @@ async fn main() -> Result<()> {
         )
         .await
         .context("register master contact")?;
-    eprintln!("[agent] master contact_id = {master_id}");
+    gipny_libcore::debug_trace!("[agent] master contact_id = {master_id}");
 
     // Ready. Delivered whenever the master is next online; their app creates
     // the contact from it.
@@ -316,7 +336,7 @@ async fn main() -> Result<()> {
         .send_console(master_id, BODY_GRANT.to_string(), WireConsole::new(CONSOLE_GRANT), vec![])
         .await
         .context("send GRANT to master")?;
-    eprintln!("[agent] ready — waiting for commands");
+    gipny_libcore::debug_trace!("[agent] ready — waiting for commands");
 
     let exec_opts = ExecOptions {
         timeout: Duration::from_secs(args.timeout_secs.unwrap_or(120)),
@@ -335,13 +355,9 @@ async fn main() -> Result<()> {
         async move {
             while let Some(job) = queue_rx.recv().await {
                 let files = load_attachments(&db, &data_dir, job.message_id);
-                eprintln!(
-                    "[agent] exec: {}{}",
-                    job.body,
-                    if files.is_empty() { String::new() } else { format!(" (+{} files)", files.len()) },
-                );
+                gipny_libcore::debug_trace!("[agent] executing command with {} file(s)", files.len());
                 let reply = agent::handle_console_request(&job.body, &files, &exec_opts).await;
-                eprintln!(
+                gipny_libcore::debug_trace!(
                     "[agent] exit={:?} dur={:?}ms truncated={}",
                     reply.console.exit_code, reply.console.duration_ms, reply.console.truncated,
                 );
@@ -366,6 +382,8 @@ async fn main() -> Result<()> {
     // master hears REVOKE and the router in this process stops before exit.
     #[cfg(unix)]
     let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).context("SIGTERM handler")?;
+    if let Some(readiness) = readiness { readiness.signal(&data_dir).context("signal bootstrap readiness")?; }
+    tokio::spawn(run_update_loop(db.clone(), data_dir.clone(), node.clone()));
     loop {
         #[cfg(unix)]
         let terminate = sigterm.recv();
@@ -406,7 +424,7 @@ async fn main() -> Result<()> {
                                 let waiting = !payload.files.is_empty()
                                     && !session.db.files_in_for_message(message_id).unwrap_or_default().is_empty();
                                 if waiting {
-                                    eprintln!("[agent] command {message_id} waits for its files");
+                                    gipny_libcore::debug_trace!("[agent] command {message_id} waits for its files");
                                 }
                                 for job in held.push(Job { message_id, body: payload.body.clone() }, !waiting) {
                                     let _ = queue_tx.send(job);
@@ -462,49 +480,78 @@ async fn main() -> Result<()> {
 /// no restart, and no disruption to commands already in flight; the next
 /// time this process starts (a service restart, a reboot) runs the new build.
 async fn run_update_loop(db: Arc<Db>, data_dir: PathBuf, node: Arc<I2pNode>) {
+    use gipny_libcore::update::{auto_update_allowed, CheckOutcome, InstallOutcome};
     let updater = Updater::new(node, UpdateComponent::Agent);
-    if !updater.is_configured() {
-        eprintln!("[agent] no local HTTP proxy this run — auto-update disabled");
-        return;
-    }
-    // Resolved once, before any install: after a first in-place replace,
-    // `current_exe()` would resolve to the old, now-deleted file instead of
-    // the path a later install needs to overwrite.
     let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => { eprintln!("[agent] cannot resolve our own binary path — auto-update disabled: {e}"); return; }
+        Ok(path) => path,
+        Err(error) => { eprintln!("[agent] cannot resolve our executable for updates: {error}"); return; }
     };
+    // Only this running process remembers a successful replacement/stage. The
+    // persistent dismissal belongs to the person, not an installer handoff.
+    let mut prepared_version: Option<String> = None;
+    let mut failures = 0usize;
     tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INITIAL_SECS)).await;
     loop {
-        match updater.check(env!("CARGO_PKG_VERSION")).await {
-            Ok(Some(info)) => {
-                let already_handled = db.get_setting(SETTING_DISMISSED_UPDATE).ok().flatten()
-                    .is_some_and(|v| v == info.version.as_bytes());
-                if already_handled {
-                    // Downloaded and installed earlier this run; nothing to
-                    // redo until the next actual restart picks it up.
-                } else {
-                    eprintln!("[agent] update {} found; downloading...", info.version);
-                    let dl_dir = data_dir.join("update_dl");
-                    let outcome = match updater.download(&info, &dl_dir, |_, _| {}).await {
-                        Ok(path) => updater.install(&path, &data_dir, Some(&exe)),
-                        Err(e) => Err(e),
-                    };
-                    match outcome {
-                        Ok(outcome) => {
-                            let _ = std::fs::remove_dir_all(&dl_dir);
-                            let _ = db.set_setting(SETTING_DISMISSED_UPDATE, info.version.as_bytes());
-                            eprintln!("[agent] update {}: {:?} — takes effect next start", info.version, outcome);
-                        }
-                        Err(e) => eprintln!("[agent] update {} failed: {e:?}", info.version),
-                    }
+        let attempt: Result<()> = async {
+            let setting = db.get_setting("auto_update")?;
+            if !auto_update_allowed(setting.as_deref(), std::env::var("GIPNY_NO_AUTO_UPDATE").ok().as_deref()) { return Ok(()); }
+            let info = match updater.check_detailed(env!("CARGO_PKG_VERSION")).await? {
+                CheckOutcome::Update(info) => info,
+                CheckOutcome::UpToDate { .. } | CheckOutcome::Dismissed { .. } => return Ok(()),
+                CheckOutcome::NoAsset { latest, wanted } => bail!("release {latest} has no required agent package {wanted}"),
+                CheckOutcome::UnsupportedInstall { latest } => bail!("release {latest} cannot update this agent target"),
+                CheckOutcome::NotConfigured => bail!("agent update transport is unavailable"),
+            };
+            let explicitly_dismissed = db.get_setting(SETTING_DISMISSED_UPDATE)?
+                .is_some_and(|value| value == info.version.as_bytes());
+            if explicitly_dismissed || prepared_version.as_deref() == Some(info.version.as_str()) { return Ok(()); }
+            let directory = data_dir.join("update_dl");
+            let path = updater.download(&info, &directory, |_, _| {}).await?;
+            match updater.install(&path, &data_dir, Some(&exe))? {
+                InstallOutcome::InstalledNow | InstallOutcome::StagedForNextLaunch => {
+                    gipny_libcore::debug_trace!("[agent] update {} prepared; takes effect on the next service/process start", info.version);
+                    prepared_version = Some(info.version);
                 }
+                InstallOutcome::InstallerOpened(package) => {
+                    bail!("agent update needs an operator; verified package retained at {}", package.display());
+                }
+                InstallOutcome::Unsupported(reason) => bail!("agent update was not installed: {reason}"),
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("[agent] update check failed: {e:?}"),
-        }
-        tokio::time::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS)).await;
+            Ok(())
+        }.await;
+        let wait = match attempt {
+            Ok(()) => { failures = 0; UPDATE_CHECK_INTERVAL_SECS }
+            Err(error) => {
+                eprintln!("[agent] update failed: {error:#}");
+                let waits = [60, 300, 1_200, 3_600];
+                let wait = waits[failures.min(waits.len() - 1)];
+                failures += 1;
+                wait
+            }
+        };
+        tokio::time::sleep(Duration::from_secs(wait)).await;
     }
+}
+
+const CAT_NAMES: &[&str] = &[
+    "Murka", "Barsik", "Felix", "Matroskin", "Busya", "Kuzya", "Simba", "Bagira",
+    "Murzik", "Pushok", "Ryzhik", "Leopold", "Salem", "Tom", "Cheshire", "Luna",
+];
+
+fn persistent_agent_name(db: &Db, explicit: Option<&str>) -> Result<String> {
+    const KEY: &str = "agent_name";
+    if let Some(name) = explicit.map(str::trim).filter(|name| !name.is_empty()) {
+        db.set_setting(KEY, name.as_bytes())?;
+        return Ok(name.to_owned());
+    }
+    if let Some(name) = db.get_setting(KEY)? {
+        let name = String::from_utf8(name).context("stored agent name is not UTF-8")?;
+        if !name.is_empty() { return Ok(name); }
+    }
+    let random: [u8; 8] = gipny_libcore::crypto::random_array();
+    let name = CAT_NAMES[(u64::from_le_bytes(random) % CAT_NAMES.len() as u64) as usize];
+    db.set_setting(KEY, name.as_bytes())?;
+    Ok(name.to_owned())
 }
 
 /// Queues the closing REVOKE and returns its row id with the deadline by
@@ -542,5 +589,26 @@ mod held_tests {
         assert!(h.ready(99).is_empty(), "not a held command");
         assert_eq!(ids(h.ready(2)), vec![2, 3]);
         assert_eq!(ids(h.push(job(4), true)), vec![4]);
+    }
+
+    #[test]
+    fn default_cat_name_survives_restart_and_explicit_name_overrides_it() {
+        let random: [u8; 16] = gipny_libcore::crypto::random_array();
+        let name: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let directory = std::env::temp_dir().join(format!("gipny-agent-name-{name}"));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("agent.db");
+        let db = Db::open_plain(&path).unwrap();
+        let first = persistent_agent_name(&db, None).unwrap();
+        assert!(CAT_NAMES.contains(&first.as_str()));
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(persistent_agent_name(&db, None).unwrap(), first);
+        assert_eq!(persistent_agent_name(&db, Some("OperatorChosenCat")).unwrap(), "OperatorChosenCat");
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(persistent_agent_name(&db, None).unwrap(), "OperatorChosenCat");
+        drop(db);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

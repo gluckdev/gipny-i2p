@@ -98,7 +98,7 @@ pub async fn join(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, addr
     // With nothing to try, bootstrap is a lookup into an empty routing table:
     // it returns promptly and leaves us alone in the network. Say which of the
     // two happened, because "joined" used to be printed for both.
-    eprintln!(
+    crate::debug_trace!(
         "[dht] joined: {peers} nodes known ({}){}",
         if had_candidates { "candidates offered" } else { "nothing to try" },
         if peers == 0 { " — reached nobody" } else { "" }
@@ -121,7 +121,7 @@ pub async fn maintain(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, 
         let had_candidates = add_candidates(node, db);
         node.bootstrap().await;
         let peers = node.peer_count();
-        eprintln!(
+        crate::debug_trace!(
             "[dht] retry: {peers} nodes known ({})",
             if had_candidates { "candidates offered" } else { "nothing to try" }
         );
@@ -174,7 +174,6 @@ fn save_peers(node: &Arc<Node>, db: &Arc<Db>) {
 /// we collect at `address`. One at a time: every copy costs proof of work.
 async fn publish_addresses(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, address: &str) {
     let Ok(contacts) = db.list_contacts() else { return };
-    let signing = identity.signing_key();
     let me = identity.card();
     let mut published = 0;
     for c in contacts {
@@ -184,14 +183,16 @@ async fn publish_addresses(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identi
         let (Ok(their_sign), Ok(their_dh)) = (<[u8; 32]>::try_from(c.identity_sign.as_slice()), <[u8; 32]>::try_from(c.identity_dh.as_slice())) else {
             continue;
         };
-        let Some(pair) = gipny_dht::crypto::pair_secret(identity.dh_secret(), &their_dh, &me.sign_pk, &their_sign) else { continue };
-        let Some(item) = gipny_dht::items::address_record(&signing, &pair, node.now_ms(), address) else { continue };
+        let Ok(Some(item)) = identity.with_secret_bytes(|sign, dh| {
+            let pair = gipny_dht::crypto::pair_secret(dh, &their_dh, &me.sign_pk, &their_sign)?;
+            gipny_dht::items::address_record(&ed25519_dalek::SigningKey::from_bytes(sign), &pair, node.now_ms(), address)
+        }) else { continue };
         let item = StoredItem { key: item.key, value: item.value, delete_hash: item.delete_hash, expires_at_ms: item.expires_at_ms };
         if node.put(item).await > 0 {
             published += 1;
         }
     }
-    eprintln!("[dht] address published for {published} contact(s)");
+    crate::debug_trace!("[dht] address published for {published} contact(s)");
 }
 
 // ── mail through the network ─────────────────────────────────────────────
@@ -201,8 +202,11 @@ async fn publish_addresses(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identi
 // already hold. The storing nodes see ciphertext under a key that rolls daily.
 
 /// The secret only these two can compute, from our identity and their card.
-pub fn pair_with(identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32]) -> Option<zeroize::Zeroizing<[u8; 32]>> {
-    gipny_dht::crypto::pair_secret(identity.dh_secret(), their_dh, &identity.card().sign_pk, their_sign)
+fn pair_with(identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32]) -> Option<crate::memory::Sealed<32>> {
+    let pair = identity.with_secret_bytes(|_, dh| {
+        gipny_dht::crypto::pair_secret(dh, their_dh, &identity.card().sign_pk, their_sign)
+    }).ok()??;
+    crate::memory::Sealed::from_slice(crate::memory::SecretKind::Ratchet, &*pair).ok()
 }
 
 fn to_stored(item: gipny_dht::items::PreparedItem) -> StoredItem {
@@ -213,7 +217,11 @@ fn to_stored(item: gipny_dht::items::PreparedItem) -> StoredItem {
 /// node took it.
 pub async fn put_mail(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32], envelope: &[u8]) -> bool {
     let Some(pair) = pair_with(identity, their_sign, their_dh) else { return false };
-    let Some(item) = gipny_dht::items::mail(&pair, their_sign, node.now_ms(), envelope) else { return false };
+    let item = {
+        let Ok(guard) = pair.open() else { return false };
+        let Some(item) = gipny_dht::items::mail(&guard, their_sign, node.now_ms(), envelope) else { return false };
+        item
+    };
     node.put(to_stored(item)).await > 0
 }
 
@@ -237,9 +245,17 @@ pub async fn collect_mail(node: &Arc<Node>, identity: &Arc<Identity>, their_sign
     let Some(pair) = pair_with(identity, their_sign, their_dh) else { return Vec::new() };
     let me = identity.card().sign_pk;
     let mut out = Vec::new();
-    for key in gipny_dht::items::mail_keys_to_poll(&pair, &me, node.now_ms(), days) {
+    let keys = {
+        let Ok(guard) = pair.open() else { return out };
+        gipny_dht::items::mail_keys_to_poll(&guard, &me, node.now_ms(), days)
+    };
+    for key in keys {
         for item in node.get(&key).await {
-            if let Some(opened) = gipny_dht::items::open_mail(&pair, &key, &item.value) {
+            let opened = {
+                let Ok(guard) = pair.open() else { return out };
+                gipny_dht::items::open_mail(&guard, &key, &item.value)
+            };
+            if let Some(opened) = opened {
                 out.push(Letter { envelope: opened.envelope, key, delete_token: opened.delete_token });
             }
         }
@@ -253,7 +269,7 @@ pub async fn collect_intros(node: &Arc<Node>, identity: &Arc<Identity>, days: u3
     let mut out = Vec::new();
     for key in gipny_dht::items::intro_keys_to_poll(&me.sign_pk, &me.dh_pk, node.now_ms(), days) {
         for item in node.get(&key).await {
-            if let Some(opened) = gipny_dht::items::open_intro(identity.dh_secret(), &key, &item.value) {
+            if let Ok(Some(opened)) = identity.with_secret_bytes(|_, dh| gipny_dht::items::open_intro(dh, &key, &item.value)) {
                 out.push(Letter { envelope: opened.envelope, key, delete_token: opened.delete_token });
             }
         }
@@ -275,9 +291,10 @@ pub async fn drop_letter(node: &Arc<Node>, letter: &Letter) {
 /// Where this contact collects now, as they published it, and when.
 pub async fn find_address(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32]) -> Option<(String, u64)> {
     let pair = pair_with(identity, their_sign, their_dh)?;
-    let key = gipny_dht::items::address_key(&pair, their_sign);
+    let key = { let guard = pair.open().ok()?; gipny_dht::items::address_key(&guard, their_sign) };
     let values: Vec<Vec<u8>> = node.get(&key).await.into_iter().map(|i| i.value).collect();
-    gipny_dht::items::open_address_record(&pair, their_sign, &values, node.now_ms())
+    let guard = pair.open().ok()?;
+    gipny_dht::items::open_address_record(&guard, their_sign, &values, node.now_ms())
 }
 
 /// Their prekey bundle, for starting a session while they are away.
@@ -292,7 +309,7 @@ pub async fn find_bundle(node: &Arc<Node>, their_sign: &[u8; 32], their_dh: &[u8
 /// design — but a storing node cannot tell whose it is.
 pub async fn publish_bundle(node: &Arc<Node>, identity: &Arc<Identity>, bundle: &[u8]) -> bool {
     let me = identity.card();
-    let Some(item) = gipny_dht::items::bundle_record(&identity.signing_key(), &me.dh_pk, node.now_ms(), bundle) else {
+    let Ok(Some(item)) = identity.with_signing_key(|sign| gipny_dht::items::bundle_record(sign, &me.dh_pk, node.now_ms(), bundle)) else {
         return false;
     };
     node.put(to_stored(item)).await > 0

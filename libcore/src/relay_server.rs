@@ -605,7 +605,7 @@ where
     loop {
         tokio::select! {
             () = &mut silent => {
-                eprintln!("[relay-server] client silent for {CLIENT_SILENT:?}, dropping it");
+                crate::debug_trace!("[relay-server] client silent for {CLIENT_SILENT:?}, dropping it");
                 break;
             }
             (rd, frame) = &mut reading => {
@@ -758,12 +758,15 @@ impl EphemeralRelay {
     async fn start_embedded(store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
         let router = crate::embedded::running().ok_or(NetError::Closed)?;
         // Kept in memory only, for rebuilding on the same address.
-        let private_key = zeroize::Zeroizing::new(i2p_embed::generate_keys());
+        let private_key = {
+            let raw = zeroize::Zeroizing::new(i2p_embed::generate_keys());
+            crate::memory::SealedBlob::from_slice(raw.as_bytes())
+                .map_err(|error| NetError::I2p(format!("protected relay key: {error}")))?
+        };
         let hops = Arc::new(AtomicU8::new(crate::net::start_hops()));
         let rebuild = Arc::new(tokio::sync::Notify::new());
         let open = |hops: u8| {
-            i2p_embed::Destination::new(&router, Some(private_key.as_str()), &crate::embedded::destination_options(true, hops))
-                .map_err(|e| NetError::I2p(format!("relay destination: {e}")))
+            crate::embedded::destination_from_sealed(&router, &private_key, &crate::embedded::destination_options(true, hops))
         };
         let first = open(hops.load(Ordering::Relaxed))?;
         first.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("relay tunnels: {e}")))?;
@@ -792,7 +795,7 @@ impl EphemeralRelay {
                                 let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
                                 clients.spawn(async move {
                                     if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
-                                        eprintln!("[relay-server] client gone: {e}");
+                                        crate::debug_trace!("[relay-server] client gone: {e}");
                                     }
                                 });
                             }
@@ -803,7 +806,7 @@ impl EphemeralRelay {
                                 dest = None;
                                 clients.abort_all();
                                 let opts = crate::embedded::destination_options(true, hops.load(Ordering::Relaxed));
-                                match i2p_embed::Destination::new(&router, Some(private_key.as_str()), &opts) {
+                                match crate::embedded::destination_from_sealed(&router, &private_key, &opts) {
                                     Ok(d) => {
                                         let _ = d.ready(Duration::from_secs(600)).await;
                                         dest = Some(d);
@@ -849,7 +852,7 @@ impl EphemeralRelay {
         let destination_hash = self.destination_hash;
         tokio::spawn(async move {
             if let Err(e) = handle_client(server, store, connections, destination_hash, dht).await {
-                eprintln!("[relay-server] local client gone: {e}");
+                crate::debug_trace!("[relay-server] local client gone: {e}");
             }
         });
         Box::pin(client)
@@ -877,7 +880,7 @@ impl EphemeralRelay {
         if self.hops.swap(hops, Ordering::Relaxed) == hops {
             return;
         }
-        eprintln!("[relay-server] rebuilding inbound tunnels at {hops} hops");
+        crate::debug_trace!("[relay-server] rebuilding inbound tunnels at {hops} hops");
         self.rebuild.notify_one();
     }
 

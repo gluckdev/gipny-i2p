@@ -42,7 +42,8 @@ fn identity_signs_and_verifies() {
 #[test]
 fn identity_survives_a_round_trip_through_bytes() {
     let id = Identity::generate();
-    let restored = Identity::from_bytes(*id.sign_seed(), *id.dh_secret());
+    let (sign, dh) = id.with_secret_bytes(|sign, dh| (zeroize::Zeroizing::new(*sign), zeroize::Zeroizing::new(*dh))).unwrap();
+    let restored = Identity::try_from_bytes(*sign, *dh).unwrap();
     assert_eq!(id.card(), restored.card());
     assert_eq!(id.fingerprint(), restored.fingerprint());
 

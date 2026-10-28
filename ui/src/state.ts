@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus, Lane } from './api';
 import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 
@@ -111,6 +113,11 @@ export class Store {
   groups = new Signal<Group[]>([]);
   selectedChat = new Signal<ChatTarget | null>(null);
   messages = new Signal<Map<string, Message[]>>(new Map());
+  private contentEpoch = 0;
+  private static readonly VISIBLE_MESSAGES = 2000;
+  private profileEpoch = 0;
+  private contentLocked = false;
+  private deletedMessages = new Map<number, { deleted_at: number; pending: boolean }>();
   /** Messages whose files in parts moved on, and how far (for the bar). */
   fileProgress = new Signal<Map<number, { done: number; total: number; incoming: boolean }>>(new Map());
   /** Bumped when a file in parts becomes an attachment of message `mid`. */
@@ -151,6 +158,7 @@ export class Store {
   updateReadyPath = new Signal<string | null>(null);
   /// A version installed and waiting for a restart to take effect.
   updateStaged = new Signal<string | null>(null);
+  updateInstallerOpened = new Signal<{ version: string; path: string } | null>(null);
   updateError = new Signal<string | null>(null);
   scrollToMessage = new Signal<{ target: ChatTarget; messageId: number; nonce: number } | null>(null);
   sidebarCollapsed = new Signal<boolean>(typeof localStorage !== 'undefined' && localStorage.getItem('gipny:sidebar-collapsed') === '1');
@@ -229,8 +237,63 @@ export class Store {
   private audioCtx: AudioContext | null = null;
   private audioBufferCache: Map<string, AudioBuffer> = new Map();
   private audioPathOk: boolean | null = null;
+  private audioSources = new Set<AudioBufferSourceNode>();
+
+  constructor() {
+    let previousKey: string | null = null;
+    this.selectedChat.subscribe((target) => {
+      this.contentEpoch++;
+      const key = target ? targetKey(target) : null;
+      if (key !== previousKey) this.deletedMessages.clear();
+      previousKey = key;
+      const activeOnly = (map: Map<string, Message[]>): Map<string, Message[]> =>
+        key && map.has(key) ? new Map([[key, map.get(key)!]]) : new Map();
+      this.messages.update(activeOnly);
+      this.pinned.update(activeOnly);
+      this.fileProgress.set(new Map());
+      this.fileArrived.set({ mid: 0, n: 0 });
+      this.scrollToMessage.set(null);
+    });
+    this.view.subscribe((view) => {
+      if (view === 'main') { this.contentLocked = false; return; }
+      this.contentEpoch++;
+      this.messages.set(new Map());
+      this.pinned.set(new Map());
+      this.deletedMessages.clear();
+    });
+  }
+
+  private acceptsContent(target: ChatTarget, epoch: number): boolean {
+    return !this.contentLocked && epoch === this.contentEpoch && sameTarget(this.selectedChat.get(), target);
+  }
+
+  get contentVersion(): number { return this.contentEpoch; }
+
+  private redactDeleted(message: Message): Message {
+    const deleted = this.deletedMessages.get(message.id);
+    if (!deleted && message.deleted_at == null) return message;
+    return { ...message, body: '', buttons: null, console: null, reply_to: null, read: true,
+      expires_at: null, deleted_at: deleted?.deleted_at ?? message.deleted_at,
+      delete_pending: deleted?.pending ?? message.delete_pending };
+  }
+
+  private clearAudio(): void {
+    for (const source of this.audioSources) { try { source.stop(); source.disconnect(); } catch {} }
+    this.audioSources.clear();
+    for (const audio of this.soundCache.values()) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
+    this.soundCache.clear();
+    for (const buffer of this.audioBufferCache.values()) {
+      for (let channel = 0; channel < buffer.numberOfChannels; channel++) buffer.getChannelData(channel).fill(0);
+    }
+    this.audioBufferCache.clear();
+    void this.audioCtx?.close().catch(() => {});
+    this.audioCtx = null;
+    this.audioPathOk = null;
+  }
 
   private async playViaAudioContext(url: string): Promise<boolean> {
+    const epoch = this.profileEpoch;
+    if (this.contentLocked) return true;
     try {
       if (!this.audioCtx) {
         const Ctor = (window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
@@ -244,6 +307,7 @@ export class Store {
         if (!r.ok) return false;
         const data = await r.arrayBuffer();
         buf = await ctx.decodeAudioData(data);
+        if (epoch !== this.profileEpoch || this.contentLocked) return true;
         this.audioBufferCache.set(url, buf);
       }
       const src = ctx.createBufferSource();
@@ -252,6 +316,9 @@ export class Store {
       gain.gain.value = 0.4;
       src.connect(gain).connect(ctx.destination);
       if (ctx.state === 'suspended') await ctx.resume();
+      if (epoch !== this.profileEpoch || this.contentLocked) return true;
+      this.audioSources.add(src);
+      src.onended = () => { this.audioSources.delete(src); src.disconnect(); };
       src.start();
       return true;
     } catch {
@@ -260,6 +327,7 @@ export class Store {
   }
 
   private playViaHtmlAudio(url: string): void {
+    if (this.contentLocked) return;
     let audio = this.soundCache.get(url);
     if (!audio) {
       audio = new Audio(url);
@@ -272,8 +340,10 @@ export class Store {
   }
 
   private playNotify(name?: string | null): void {
+    const epoch = this.profileEpoch;
     const url = name ? `/sounds/${name}.wav` : '/notify.wav';
     void this.playViaAudioContext(url).then((ok) => {
+      if (epoch !== this.profileEpoch || this.contentLocked) return;
       if (ok) { this.audioPathOk = true; return; }
       if (this.linuxDesktop) {
         Api.playNotifySound(name ?? null).then(() => { this.audioPathOk = true; })
@@ -306,8 +376,8 @@ export class Store {
         try {
           await createChannel({
             id: 'gipny_messages',
-            name: 'messages',
-            description: 'incoming chat messages',
+            name: tr('state.messages'),
+            description: tr('state.incoming_chat_messages'),
             importance: Importance.High,
             visibility: Visibility.Private,
             lights: true,
@@ -320,8 +390,11 @@ export class Store {
   }
 
   private nativeNotify(title: string, body: string): void {
+    if (this.contentLocked) return;
+    const epoch = this.profileEpoch;
     if (this.linuxDesktop) {
       Api.notifyOs(title, body).catch((e) => {
+        if (epoch !== this.profileEpoch || this.contentLocked) return;
         console.error('[notify-os]', e);
         if (!this.pluginNotify(title, body)) this.inAppToastNotify(title, body);
       });
@@ -340,7 +413,7 @@ export class Store {
 
   private inAppToastNotify(title: string, body: string): void {
     const preview = body.length > 80 ? body.slice(0, 80) + '…' : body;
-    this.toast.set({ text: `${title}: ${preview}`, err: false });
+    this.showToast(`${title}: ${preview}`);
   }
 
   async bootstrap(): Promise<void> {
@@ -714,6 +787,15 @@ export class Store {
 
   async lock(): Promise<void> {
     const wasProfile = this.currentProfile.get();
+    this.profileEpoch++;
+    this.contentLocked = true;
+    this.contentEpoch++;
+    this.selectedChat.set(null);
+    this.messages.set(new Map());
+    this.pinned.set(new Map());
+    this.deletedMessages.clear();
+    this.clearAudio();
+    this.toast.set(null);
     this.stopWatchdog();
     this.unsubEvents?.();
     this.unsubEvents = null;
@@ -750,6 +832,8 @@ export class Store {
     this.updateAvailable.set(null);
     this.updateProgress.set(null);
     this.updateReadyPath.set(null);
+    this.updateInstallerOpened.set(null);
+    this.updateStaged.set(null);
     this.updateError.set(null);
     await this.cancelToProfileSelect();
     // Locking killed the router with the session that held it. Start the next
@@ -869,19 +953,24 @@ export class Store {
   async refreshGroups(): Promise<void> { await this.refreshAll(); }
 
   async selectChat(target: ChatTarget | null): Promise<void> {
+    if (this.contentLocked) return;
     // In «кофеин» the chat does not change, whatever gets tapped.
     const pinnedTo = this.caffeine.get();
     if (pinnedTo && !sameTarget(pinnedTo, target)) return;
     this.selectedChat.set(target);
     if (!target) return;
+    const epoch = this.contentEpoch;
     await this.loadMessages(target);
+    if (!this.acceptsContent(target, epoch)) return;
     await this.loadPinned(target);
+    if (!this.acceptsContent(target, epoch)) return;
     if (target.kind === 'contact') {
       await Api.markRead(target.id);
     } else {
       await Api.markGroupRead(target.id);
       if (!this.groupMembers.get().has(target.id)) {
         const members = await Api.listGroupMembers(target.id);
+        if (!this.acceptsContent(target, epoch)) return;
         this.groupMembers.update((m) => { const n = new Map(m); n.set(target.id, members); return n; });
       }
     }
@@ -889,9 +978,12 @@ export class Store {
   }
 
   async loadMessages(target: ChatTarget): Promise<void> {
+    const epoch = this.contentEpoch;
+    if (!this.acceptsContent(target, epoch)) return;
     const list = target.kind === 'contact'
       ? await Api.listMessages(target.id, 200)
       : await Api.listGroupMessages(target.id, 200);
+    if (!this.acceptsContent(target, epoch)) return;
     list.reverse();
     const key = targetKey(target);
     this.messages.update((m) => {
@@ -900,13 +992,15 @@ export class Store {
       if (list.length === 0) { n.set(key, existing); return n; }
       const serverMinId = list[0]?.id ?? Number.POSITIVE_INFINITY;
       const olderLocal = existing.filter((msg) => msg.id < serverMinId);
-      const merged = [...olderLocal, ...list];
+      const merged = [...olderLocal, ...list].slice(-Store.VISIBLE_MESSAGES).map((message) => this.redactDeleted(message));
       n.set(key, merged);
       return n;
     });
   }
 
   async loadMoreMessages(target: ChatTarget): Promise<boolean> {
+    const epoch = this.contentEpoch;
+    if (!this.acceptsContent(target, epoch)) return false;
     const key = targetKey(target);
     const existing = this.messages.get().get(key) ?? [];
     const oldest = existing.length > 0 ? existing[0]?.id : null;
@@ -917,18 +1011,21 @@ export class Store {
     const more = target.kind === 'contact'
       ? await Api.listMessages(target.id, 200, oldest)
       : await Api.listGroupMessages(target.id, 200, oldest);
+    if (!this.acceptsContent(target, epoch)) return false;
     if (more.length === 0) return false;
     more.reverse();
     this.messages.update((m) => {
       const n = new Map(m);
       const cur = n.get(key) ?? [];
-      n.set(key, [...more, ...cur]);
+      n.set(key, [...more, ...cur].slice(0, Store.VISIBLE_MESSAGES).map((message) => this.redactDeleted(message)));
       return n;
     });
     return true;
   }
 
   async loadUntilMessage(target: ChatTarget, messageId: number): Promise<boolean> {
+    const epoch = this.contentEpoch;
+    if (!this.acceptsContent(target, epoch)) return false;
     const key = targetKey(target);
     const list = this.messages.get().get(key) ?? [];
     if (list.some((m) => m.id === messageId)) return true;
@@ -936,12 +1033,16 @@ export class Store {
     const contactId = target.kind === 'contact' ? target.id : null;
     const groupId = target.kind === 'group' ? target.id : null;
     const pos = await Api.messagePosition(contactId, groupId, messageId);
+    if (!this.acceptsContent(target, epoch)) return false;
     if (pos == null) return false;
 
-    const limit = Math.min(pos + 50, 20_000);
+    const limit = Math.min(pos + 50, Store.VISIBLE_MESSAGES);
+    // For a distant search hit, open a bounded window ending at the target.
+    const before = pos >= Store.VISIBLE_MESSAGES ? messageId + 1 : undefined;
     const slice = target.kind === 'contact'
-      ? await Api.listMessages(target.id, limit)
-      : await Api.listGroupMessages(target.id, limit);
+      ? await Api.listMessages(target.id, limit, before)
+      : await Api.listGroupMessages(target.id, limit, before);
+    if (!this.acceptsContent(target, epoch)) return false;
     slice.reverse();
     if (slice.length === 0) return false;
     this.messages.update((m) => {
@@ -951,18 +1052,23 @@ export class Store {
       const sliceMax = slice[slice.length - 1]?.id ?? Number.NEGATIVE_INFINITY;
       const olderLocal = existing.filter((msg) => msg.id < sliceMin);
       const newerLocal = existing.filter((msg) => msg.id > sliceMax);
-      n.set(key, [...olderLocal, ...slice, ...newerLocal]);
+      const window = before == null ? [...olderLocal, ...slice, ...newerLocal].slice(-Store.VISIBLE_MESSAGES) : slice;
+      n.set(key, window.map((message) => this.redactDeleted(message)));
       return n;
     });
     return (this.messages.get().get(key) ?? []).some((m) => m.id === messageId);
   }
 
   async loadPinned(target: ChatTarget): Promise<void> {
+    const epoch = this.contentEpoch;
+    if (!this.acceptsContent(target, epoch)) return;
     const list = target.kind === 'contact'
       ? await Api.listPinnedContact(target.id)
       : await Api.listPinnedGroup(target.id);
+    if (!this.acceptsContent(target, epoch)) return;
     const key = targetKey(target);
-    this.pinned.update((m) => { const n = new Map(m); n.set(key, list); return n; });
+    this.pinned.update((m) => { const n = new Map(m); n.set(key,
+      list.filter((message) => message.deleted_at == null && !this.deletedMessages.has(message.id)).slice(-Store.VISIBLE_MESSAGES)); return n; });
   }
 
   async sendMessage(
@@ -1151,6 +1257,7 @@ export class Store {
       return;
     }
     if (!e || typeof e !== 'object') return;
+    if (this.contentLocked) return;
     if ('IncomingMessage' in e) {
       const m = e.IncomingMessage;
       const target: ChatTarget | null = m.group_id
@@ -1163,7 +1270,7 @@ export class Store {
       // written. Stamping `Date.now()` here lit up every contact whose mail
       // had been waiting on the relay — a whole list "в сети" after each
       // reconnect, none of whom were.
-      this.loadMessages(target);
+      if (sameTarget(this.selectedChat.get(), target)) void this.loadMessages(target);
       const selected = this.selectedChat.get();
       const isActiveChat = sameTarget(selected, target);
       const visible = this.windowVisible;
@@ -1186,18 +1293,50 @@ export class Store {
         && !isConsoleEvent(m.console_kind);
       if (shouldNotify) {
         const label = target.kind === 'contact'
-          ? (this.contacts.get().find((c) => c.id === target.id)?.name ?? 'unknown')
-          : (this.groups.get().find((g) => g.id === target.id)?.name ?? 'group');
+          ? (this.contacts.get().find((c) => c.id === target.id)?.name ?? tr('auth.unknown'))
+          : (this.groups.get().find((g) => g.id === target.id)?.name ?? tr('sidebar.group'));
         const senderName = target.kind === 'group' && m.sender_sign_pk
           ? (this.groupMembers.get().get(target.id)?.find((mm) => mm.sign_pk === m.sender_sign_pk)?.name
             ?? this.contacts.get().find((c) => c.sign_pk === m.sender_sign_pk)?.name
-            ?? 'someone')
+            ?? tr('chat.someone'))
           : label;
         const preview = m.body.length > 60 ? m.body.slice(0, 60) + '…' : m.body;
         const prefix = target.kind === 'group' ? `[${label}] ${senderName}` : label;
         this.nativeNotify(prefix, preview);
         this.playNotify(m.notify_sound ?? null);
       }
+    } else if ('MessageDeleted' in e) {
+      const deleted = e.MessageDeleted;
+      const target: ChatTarget = { kind: 'contact', id: deleted.contact_id };
+      const key = targetKey(target);
+      if (!sameTarget(this.selectedChat.get(), target) || this.contentLocked) {
+        const epoch = this.profileEpoch;
+        void Api.unreadCount(deleted.contact_id).then((count) => {
+          if (epoch === this.profileEpoch && !this.contentLocked)
+            this.unread.update((map) => new Map(map).set(key, count));
+        }).catch(() => {});
+        return;
+      }
+      this.deletedMessages.set(deleted.message_id, { deleted_at: deleted.deleted_at, pending: deleted.pending });
+      this.messages.update((map) => {
+        const next = new Map(map);
+        next.set(key, (next.get(key) ?? []).map((message) => message.id === deleted.message_id
+          ? { ...message, body: '', buttons: null, console: null, reply_to: null, read: true,
+            expires_at: null, deleted_at: deleted.deleted_at, delete_pending: deleted.pending }
+          : message));
+        return next;
+      });
+      this.fileProgress.update((map) => { const next = new Map(map); next.delete(deleted.message_id); return next; });
+      this.pinned.update((map) => {
+        const next = new Map(map); next.set(key, (next.get(key) ?? []).filter((message) => message.id !== deleted.message_id)); return next;
+      });
+      // A tombstone is not incoming content: no sound, notification or new unread.
+      const epoch = this.profileEpoch;
+      void Api.unreadCount(deleted.contact_id).then((count) => {
+        if (epoch === this.profileEpoch && !this.contentLocked)
+          this.unread.update((map) => new Map(map).set(key, count));
+      }).catch(() => {});
+      void this.loadMessages(target).catch(() => {});
     } else if ('MessageSent' in e) {
       const id = e.MessageSent.message_id;
       const bumps: Array<{ target: ChatTarget; ts: number }> = [];
@@ -1221,17 +1360,21 @@ export class Store {
       for (const b of bumps) this.bumpChatOrder(b.target, b.ts);
     } else if ('FileProgress' in e) {
       const { message_id, done, total, incoming } = e.FileProgress;
+      if (![...this.messages.get().values()].some((list) => list.some((message) => message.id === message_id))) return;
+      if ([...this.messages.get().values()].some((list) => list.some((message) => message.id === message_id && message.deleted_at != null))) return;
       this.fileProgress.update((m) => new Map(m).set(message_id, { done, total, incoming }));
     } else if ('FileReceived' in e) {
       const mid = e.FileReceived.message_id;
+      if (![...this.messages.get().values()].some((list) => list.some((message) => message.id === mid))) return;
+      if ([...this.messages.get().values()].some((list) => list.some((message) => message.id === mid && message.deleted_at != null))) return;
       this.fileProgress.update((m) => { const n = new Map(m); n.delete(mid); return n; });
       this.fileArrived.update((v) => ({ mid, n: v.n + 1 }));
     } else if ('FileFailed' in e) {
       const { message_id, reason } = e.FileFailed;
       this.fileProgress.update((m) => { const n = new Map(m); n.delete(message_id); return n; });
-      const why = reason === 'not taken' ? 'у собеседника версия без передачи частями'
-        : reason === 'cancelled' ? 'отправка отменена' : 'файл пришёл повреждённым';
-      this.showToast(`Файл не передан: ${why}`, true);
+      const why = reason === 'not taken' ? tr('state.the_recipient_s_version_does_not_support_chunked')
+        : reason === 'cancelled' ? tr('state.transfer_cancelled') : tr('state.the_received_file_was_corrupted');
+      this.showToast(tr('state.file_not_transferred', { p0: (why) }), true);
     } else if ('MessageDelivered' in e) {
       const id = e.MessageDelivered.message_id;
       this.messages.update((m) => {
@@ -1284,7 +1427,7 @@ export class Store {
         const n = new Map(m);
         for (const [k, list] of n) {
           const idx = list.findIndex((x) => x.id === message_id);
-          if (idx >= 0) {
+          if (idx >= 0 && list[idx]?.deleted_at == null) {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, body, buttons };
             n.set(k, copy);
@@ -1296,7 +1439,7 @@ export class Store {
         const n = new Map(m);
         for (const [k, list] of n) {
           const idx = list.findIndex((x) => x.id === message_id);
-          if (idx >= 0) {
+          if (idx >= 0 && list[idx]?.deleted_at == null) {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, body, buttons };
             n.set(k, copy);
@@ -1319,14 +1462,14 @@ export class Store {
       const sel = this.selectedChat.get();
       if (sel?.kind === 'contact' && sel.id === contact_id) this.selectedChat.set(null);
       void this.refreshContacts();
-      const who = name || 'Контакт';
-      this.showToast(`${who} удалил(а) переписку с вами — она удалена и здесь`);
+      const who = name || tr('contact.contact');
+      this.showToast(tr('state.deleted_the_conversation_with_you_it_has_been', { p0: (who) }));
     } else if ('ContactRequest' in e) {
       const id = e.ContactRequest.contact_id;
       void this.refreshContacts().then(() => {
-        const name = this.contacts.get().find((c) => c.id === id)?.name ?? 'someone';
-        this.showToast(`${name} wants to add you`);
-        if (this.settled) this.nativeNotify('contact request', `${name} wants to add you`);
+        const name = this.contacts.get().find((c) => c.id === id)?.name ?? tr('chat.someone');
+        this.showToast(tr('state.wants_to_add_you', { p0: (name) }));
+        if (this.settled) this.nativeNotify(tr('state.contact_request'), tr('state.wants_to_add_you', { p0: (name) }));
       });
     } else if ('RelayInfoChanged' in e) {
       const info = e.RelayInfoChanged.info;
@@ -1370,7 +1513,7 @@ export class Store {
       this.markPeerActive(contact_id, at_ms);
       this.recomputeOnline();
     } else if ('UpdateAvailable' in e) {
-      // Only fires when auto-update is off — the manual install prompt.
+      // Manual start, including platforms requiring system consent.
       this.updateAvailable.set(e.UpdateAvailable);
     } else if ('UpdateProgress' in e) {
       this.updateProgress.set(e.UpdateProgress);
@@ -1381,14 +1524,18 @@ export class Store {
       this.updateAvailable.set(null);
       this.updateProgress.set(null);
       this.updateStaged.set(e.UpdateStaged.version);
+    } else if ('UpdateInstallerOpened' in e) {
+      this.updateProgress.set(null);
+      this.updateError.set(null);
+      this.updateInstallerOpened.set(e.UpdateInstallerOpened);
     } else if ('UpdateReady' in e) {
       this.updateReadyPath.set(e.UpdateReady.path);
       this.updateProgress.set(null);
-      this.showToast(`update downloaded to ${e.UpdateReady.path}`);
+      this.showToast(tr('state.update_downloaded_to', { p0: (e.UpdateReady.path) }));
     } else if ('UpdateFailed' in e) {
       this.updateError.set(e.UpdateFailed.reason);
       this.updateProgress.set(null);
-      this.showToast(`update failed: ${e.UpdateFailed.reason}`, true);
+      this.showToast(tr('state.update_failed', { p0: errorText(e.UpdateFailed.reason) }), true);
     }
   }
 

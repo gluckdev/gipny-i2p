@@ -10,6 +10,7 @@ sha=${1:?usage: i2pd-under-test.sh <sha>}
 git submodule update --init --recursive -- third_party/i2pd
 git -C third_party/i2pd fetch --quiet origin "$sha" || git -C third_party/i2pd fetch --quiet origin
 git -C third_party/i2pd checkout --quiet "$sha"
+bash "$(dirname "$0")/../../scripts/apply-i2pd-memory-patches.sh" "$PWD/third_party/i2pd"
 echo "i2pd under test: $(git -C third_party/i2pd log --oneline -1)"
 sudo apt-get update -qq
 sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev

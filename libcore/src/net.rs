@@ -158,10 +158,8 @@ pub struct I2pNode {
     dest: Mutex<Arc<i2p_embed::Destination>>,
     /// Shareable public destination (opaque address; the old code's "onion").
     address: String,
-    /// Private keys, reused when the destination is rebuilt. Wrapped in
-    /// `Zeroizing` so our long-lived copy is scrubbed from memory on drop (the
-    /// process also mlocks to keep it out of swap).
-    privkey: zeroize::Zeroizing<String>,
+    /// Private keys are ciphertext between synchronous destination FFI calls.
+    privkey: crate::memory::SealedBlob,
     created_at: Instant,
     /// Hops each of our tunnels is built with.
     ///
@@ -212,8 +210,12 @@ impl I2pNode {
             })?;
         note(&progress, "router-ready", "router running");
         note(&progress, "session", "generating an address for this session...");
-        let privkey = i2p_embed::generate_keys();
-        let dest = i2p_embed::Destination::new(&router, Some(&privkey), &crate::embedded::destination_options(false, start_hops()))
+        let privkey = {
+            let raw = zeroize::Zeroizing::new(i2p_embed::generate_keys());
+            crate::memory::SealedBlob::from_slice(raw.as_bytes())
+                .map_err(|error| NetError::I2p(format!("protected destination key: {error}")))?
+        };
+        let dest = crate::embedded::destination_from_sealed(&router, &privkey, &crate::embedded::destination_options(false, start_hops()))
             .map_err(|e| {
                 note(&progress, "session-failed", format!("the address could not be made: {e}"));
                 NetError::I2p(format!("destination: {e}"))
@@ -230,7 +232,7 @@ impl I2pNode {
         Ok(Self {
             dest: Mutex::new(Arc::new(dest)),
             address,
-            privkey: zeroize::Zeroizing::new(privkey),
+            privkey,
             created_at: Instant::now(),
             hops: AtomicU8::new(start_hops()),
             relay_fail_count: AtomicU32::new(0),
@@ -334,13 +336,13 @@ impl I2pNode {
                 if t.elapsed() < RECREATE_COOLDOWN { return; }
             }
         }
-        eprintln!("[i2p] {} consecutive relay failures past {}s mark, rebuilding our tunnels",
+        crate::debug_trace!("[i2p] {} consecutive relay failures past {}s mark, rebuilding our tunnels",
             fail_count, RECREATE_MIN_AGE.as_secs());
         *self.last_recreate_at.lock().await = Some(Instant::now());
         match self.recreate().await {
             Ok(()) => {
                 self.relay_fail_count.store(0, Ordering::Relaxed);
-                eprintln!("[i2p] session rebuild succeeded; relay loop will resume on next attempt");
+                crate::debug_trace!("[i2p] session rebuild succeeded; relay loop will resume on next attempt");
             }
             Err(e) => eprintln!("[i2p] session rebuild failed: {:?}", e),
         }
@@ -368,10 +370,10 @@ impl I2pNode {
         if previous == hops {
             return Ok(());
         }
-        eprintln!("[i2p] rebuilding tunnels: {previous} hops -> {hops}");
+        crate::debug_trace!("[i2p] rebuilding tunnels: {previous} hops -> {hops}");
         match self.recreate().await {
             Ok(()) => {
-                eprintln!("[i2p] tunnels now {hops} hops");
+                crate::debug_trace!("[i2p] tunnels now {hops} hops");
                 Ok(())
             }
             Err(e) => {
@@ -386,8 +388,7 @@ impl I2pNode {
     /// without changing our address. The router keeps running.
     pub async fn recreate(&self) -> Result<()> {
         let router = crate::embedded::running().ok_or(NetError::Closed)?;
-        let dest = i2p_embed::Destination::new(&router, Some(self.privkey.as_str()), &crate::embedded::destination_options(false, self.hops()))
-            .map_err(|e| NetError::I2p(format!("destination: {e}")))?;
+        let dest = crate::embedded::destination_from_sealed(&router, &self.privkey, &crate::embedded::destination_options(false, self.hops()))?;
         dest.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("tunnels: {e}")))?;
         *self.dest.lock().await = Arc::new(dest);
         Ok(())

@@ -1,3 +1,7 @@
+> Требование владельца от 2026-10-28: все дальнейшие сборки только в GitHub Actions,
+> из публичных исходников. GitLab относится к AiBlow. Полный контракт source archive,
+> provenance, SDK и границ проверки: [docs/build-release.md](../../docs/build-release.md).
+
 # .github/workflows — CI, релизы, e2e по живой i2p и тестовый релей
 
 Всё собирается только здесь, на раннерах GitHub: локальных сборок у проекта нет. Этот файл описывает и соседей: `.github/scripts/`, `.github/codeql/`, `.github/dependabot.yml`.
@@ -6,18 +10,34 @@
 
 | Файл | Когда запускается | Джобы | Что доказывает / производит |
 |---|---|---|---|
+| `security-fast.yml` | PR/push `main` с изменением Rust/UI и вручную | `unit + callers` на Linux, Windows, macOS arm64/Intel; `Android Rust + JNI types` | Быстрая компиляция callers и unit tests memory/device-binding/vault/card/deletion без C++ роутера (`I2P_EMBED_STUB=1`). Android job проверяет реальные JNI types для arm64. Shipping artifacts не создаёт; не заменяет full native/I2P, hardware Keystore и установку на устройстве. Kotlin instrumentation sources отдельно собирает `build.yml`, без заявления о прохождении TEE на эмуляторе. |
 | `build.yml` | push в `main`, любой PR, вручную | `rust workspace`, `macos (app + libcore tests)`, `rust tests (crypto/vault/kdf)`, `ui typecheck`, `android APK`, `android emulator smoke` | Наш код компилируется и тесты проходят. Роутер вкомпилирован в каждый бинарь (`i2p-embed`), поэтому десктопные и тестовые джобы собирают и libi2pd — против boost из дистрибутива (macOS — Homebrew). APK собираются с заглушкой прослойки (`I2P_EMBED_STUB=1`) и `ORG_GRADLE_PROJECT_skipRouter`: они проверяют сборку, упаковку и запуск, а не связь. Тайминги KDF попадают в summary джобы. |
 | `cleanup.yml` | воскресной ночью и вручную | `delete stale artifacts and caches` | Хранилище Actions не растёт бесконечно: удаляет артефакты старше 7 дней и кеши, к которым не обращались 21 день. К 0.4.6 накопилось 1132 артефакта на 29,6 ГБ, а кеши упёрлись в потолок 10 ГБ и начали вытеснять друг друга — вместе с кешем роутера, ради которого всё и затевалось. |
 | `codeql.yml` | push/PR в `main`, раз в неделю (пн) | `analyze (actions / javascript-typescript / rust)` | Статический анализ, `build-mode: none`. Настройки — `.github/codeql/codeql-config.yml` (тесты не сканируются: в фикстурах ключи зашиты намеренно). |
-| `e2e-i2pd.yml` | каждую ночь, вручную, PR с изменениями в `third_party/**` или в самом файле | `i2pd revision under test` → `e2e (relay + two bots)`, `e2e (relays inside the bots)`, `e2e (agent binary)`, `e2e (relay network, each side away in turn)` → `record the proven revision` | Единственная проверка того, что сообщения реально доходят по i2p. Каждый бинарь вкомпилирует **голову ветки** сабмодуля, а не пин (`.github/scripts/i2pd-under-test.sh`); отдельного i2pd, SAM и портов нет. Четыре сценария: два `gipny-relay` + два бота; релеи внутри ботов (`E2E_IN_PROCESS_RELAYS`); настоящий `gipny-agent` (`E2E_AGENT_BIN`); сеть релеев со своим сидом `gipny-relay --dht` внутри джобы, стороны уходят по очереди (`E2E_DHT_OFFLINE`, `E2E_DHT_SEED_DEST`). Успех — строка `[e2e] SUCCESS` в логе харнесса. Джобы ~10–15 мин (лимит 45), сеть релеев ~16 мин (лимит 60). Пин i2pd двигает только первый сценарий. |
+| `e2e-i2pd.yml` | каждую ночь, вручную, PR с изменениями router/workflow | `i2pd revision under test` → четыре live e2e jobs → `record the proven revision` | PR и обычный manual проверяют **committed pin**; schedule и явный `test_upstream=true` разрешают upstream probe. Один SHA передаётся всем четырём сценариям через `.github/scripts/i2pd-under-test.sh`: внешние релеи/боты, встроенные релеи, agent, DHT с уходом сторон и новыми адресами. Отдельного i2pd/SAM/local listener нет. Успех — `[e2e] SUCCESS`; подтверждение shipping pin отличается от успеха upstream probe. Bump допустим только upstream-режиму после успеха всех четырёх сценариев; pinned checks не меняют pin. |
 | `i2p-embed.yml` | push/PR, меняющие `i2p-embed/**`, `libcore/**`, `tests/e2e-harness/**`, `android-router/**` и скрипты сборки роутера | `live` (Linux), `jammy` (boost 1.74, static), `macos` (arm64 и intel), `windows` (MSVC, vcpkg), `android` (arm64: `libi2pd.so` + линковка), `e2e` (релеи внутри ботов, одновременная первая запись), `updater` (обновлятор через аутпрокси) | Роутер внутри процесса собирается и работает на всех платформах релиза: live-тест поднимает две destination и гоняет эхо по живой i2p. e2e выкладывает `i2pd.log` артефактом. `updater` — живая проверка обновлений: список релизов и файл с GitHub через аутпрокси; аутпрокси чужой, так что его падение ничего больше не блокирует. На ветку — один прогон, последний (`concurrency` по имени ветки): push и pull_request одной ветки больше не гоняют всё дважды. |
-| `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `network database snapshot`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует (один раз на версию: если тег уже есть — только превью). При ручном запуске — только превью (артефакт `release-page-preview`). Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
+| `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `network database snapshot`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует один раз. Ручной запуск по умолчанию — превью; явный `publish=true` только с `main` продолжает неопубликованную версию через ту же полную матрицу и строгие draft/asset guards. Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
 | `relay-testnet.yml` | push в `main`, меняющий `core/relay/**`, `libcore/**`, `third_party/i2pd`, `scripts/**` или сам workflow; по расписанию каждые 5 ч; вручную | `relay` | **Временный** публичный `gipny-relay --dht` на раннере GitHub (~5,5 ч на запуск): и тестовый релей, и **сид сети релеев**. Идентичность, очередь, узел сети и роутер переносятся между запусками через `actions/cache` (`dht-seed-state-*`) **только зашифрованными `age`** (секрет `DHT_SEED_AGE_KEY`; без него сервис работает, но ничего не сохраняет, и адрес меняется каждый запуск). Адрес — в summary и в артефакте `relay-destination`; его вписывают в переменную `GIPNY_DHT_SEEDS`. |
+
+`security-fast.yml` дополнительно выполняет реальный macOS local Keychain
+enrollment/read/copy-isolation/delete под бесплатной ad-hoc подписью в двух
+временных OS Keychain. На Linux отдельная регрессия создаёт настоящий
+non-dumpable child с loopback listener и проверяет узкий metadata observer;
+это не native I2P transport test. Fixtures не являются fallback приложения:
+они не публикуют OS credentials и не запускают production agent от root.
+
+Build/CodeQL badges README явно обозначают `main`; статус открытого PR смотрят
+по его checks. Успех отдельного e2e «5/5» не заменяет полный build/release matrix.
+Недоступный hosted runner или отменённая очередь не являются выполненным тестом.
+`build.yml`, `e2e-i2pd.yml` и `codeql.yml` отменяют устаревший прогон той же ветки,
+сохраняя ресурсы для последнего изменения. Release preview остаётся отдельным
+ручным запуском с `publish=false` без публикации тега.
 
 **Скрипты и настройки рядом:**
 
 - `.github/scripts/release-notes.sh <tag> <assets-dir> <owner/repo> [<git-ref>]` пишет текст страницы релиза. Сверху кладёт `docs/releases/<version>.md`, если файл есть, затем таблицу загрузок и changelog от предыдущего тега. Падает, если какого-то платформенного файла нет или среди файлов есть лишний.
-- `.github/scripts/vcpkg-i2p-deps.sh` ставит boost и OpenSSL из vcpkg для Windows (MSVC) одинаково в `i2p-embed.yml` и `release.yml`.
+- `.github/scripts/release-guard.py` проверяет main-only eligibility, отличие отсутствующего тега от ошибки запроса, актуальность собранного SHA, точную привязку draft и полный remote asset set. `test-release-guard.py` исполняется в GitHub CI на Linux/Windows и перед release matrix; API mutations тестам не нужны. Восстановление неопубликованной версии — [контракт](../../docs/build-release.md#как-запускать-и-проверять).
+- `.github/scripts/vcpkg-i2p-deps.sh` собирает boost и OpenSSL из pinned public vcpkg ports для Windows (MSVC) одинаково в `i2p-embed.yml` и `release.yml`; проверяет commit object/HEAD, binary registry отключён.
 - `.github/scripts/boost-po-pic.sh` собирает `boost_program_options` 1.74 статически с `-fPIC` для Linux-десктопа в `release.yml` (и проверки в `i2p-embed.yml` → `jammy`): крейт приложения — ещё и cdylib, а статическая boost из Ubuntu 22.04 на x86_64 собрана без `-fPIC` и в разделяемый объект не линкуется. Ключ `rust-cache` в релизных джобах — образ раннера: build-скрипты, собранные на 24.04 (`relay-testnet.yml`), на 22.04 не запускаются (GLIBC_2.39).
 - `.github/scripts/i2pd-under-test.sh <sha>` ставит сабмодуль на проверяемую ревизию для всех джоб `e2e-i2pd.yml`.
 - `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e, `relay-testnet.yml`), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.
@@ -49,11 +69,11 @@
 
 - **boost и OpenSSL для Windows (vcpkg) и Android (`android-deps-*`)
   кешируются** — это самая долгая часть холодной сборки; `libi2pd.so` для
-  Android кешируется по пину i2pd, NDK и хэшу `android-router/jni/**` и
-  `i2p-embed/shim/**`.
+  Android в shipping pipeline каждый раз собирается из исходников;
+  его manifest и SHA256 проверяются перед упаковкой APK.
 - **Rust и Gradle кешируются в сборке APK** (`Swatinem/rust-cache`, `~/.gradle`),
-  а `tauri-cli` ставится готовым бинарём через `cargo binstall` вместо
-  компиляции из исходников — и в `release.yml`, и в `build.yml`.
+  `tauri-cli 2.12.2` компилируется из публичного crate через `cargo install --locked`.
+  Fallback на готовый CLI отсутствует. Rust закреплён на `1.93.1`.
 - **APK собирается по одной джобе на ABI** (`arm64-v8a`, `armeabi-v7a`).
   `ORG_GRADLE_PROJECT_routerAbis` содержит только ABI этой джобы.
 - **Артефакты живут 5 дней** (debug-APK из `build.yml` — 3): это передача файлов
@@ -94,9 +114,9 @@ pre-release ассет, который не вытесняет ничто.
 
 ## Что менять вместе, инварианты и грабли
 
-- **Версия.** Джоба `versions agree` сверяет версии в `core/tauri.conf.json`, `ui/package.json`, `core/Cargo.toml` и `agent/Cargo.toml` и падает первой, до долгих сборок. Поднимайте их в одном коммите. Публикуется версия один раз: если тег `vX.Y.Z` уже есть, прогон делает только превью. Руками тег не ставить: триггера по тегу больше нет, а при ручном теге страницу релиза никто не создаст.
-- **Пин i2pd двигается только по доставке.** Все workflow, кроме `e2e-i2pd.yml`, собирают закреплённый коммит сабмодуля. `bump` коммитит новый пин, только если `e2e (relay + two bots)` доставил сообщения, и **пушит в ветку, на которой запущен workflow**. Ручной запуск на своей ветке может добавить в неё коммит пина. Push в эту ветку, пока идёт `bump`, отклонится — сделайте `git pull --rebase` и пушьте снова.
-- **`gh` CLI на этой машине не может запускать workflow** (`HTTP 403` на `gh workflow run`, `gh run cancel`, `gh release edit`, `gh pr create`). Ручной запуск — через страницу Actions в браузере: *workflow → Run workflow → ветка → Run workflow*. PR и merge работают через GitHub MCP. Чтение (`gh run list/view`, `gh pr checks`, `gh api …/actions/jobs/<id>/logs`) работает.
+- **Версия.** Джоба `versions agree` сверяет версии в `core/tauri.conf.json`, `ui/package.json`, `core/Cargo.toml` и `agent/Cargo.toml` и падает первой, до долгих сборок. Поднимайте их в одном коммите. Публикуется версия один раз: push с уже существующим тегом делает только превью, явный `publish=true` отклоняется. Для исправленного SHA ещё не опубликованной версии используйте `publish=true` с `main`, сохраняя номер и все проверки. Руками тег не ставить: триггера по тегу больше нет.
+- **Пин i2pd двигается только после всех четырёх live сценариев.** PR и обычный manual компилируют committed pin без его изменения. Schedule или явный `test_upstream=true` проверяют upstream; лишь после всех четырёх PASS job `bump` создаёт коммит от проверенного application SHA и делает обычный non-force push. Если ветка успела измениться, push отказывает: proof не присваивается молча другой ревизии.
+- **Права GitHub проверяются по текущему API-ответу.** Старые 403 относились к прежнему token/session. В сессии интеграции `gh api` успешно обновлял PR, запускал manual preview и отменял устаревшие runs. Не переносите старый отказ на новый токен и не обещайте доступ к secrets без отдельной проверки. Запуск доступен также через Actions → Run workflow; merge/publish выполняются в пределах задачи владельца.
 - **Сборка релиза для Android требует секретов подписи.** Без них шаг `configure Android signing` падает на `test -n`.
 - **`release-notes.sh` строгий:** новый файл в `dist/` без строки в таблице, как и строка без файла, валят публикацию.
 - **Кэш `relay-testnet` читается из PR-workflow** (особенность скоупа кэша), поэтому состояние сида лежит там только зашифрованным `age`. Старые кэши `relay-testnet-state-*` держали ключ открытым — сид начинает с нового ключа. Две копии одного адреса одновременно — конфликт LeaseSet, поэтому стоит `concurrency: relay-testnet`.
@@ -113,3 +133,41 @@ pre-release ассет, который не вытесняет ничто.
 - Страницу релиза без публикации даёт ручной запуск `release` (артефакт `release-page-preview`).
 - Синтаксис YAML локально: `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" .github/workflows/<файл>.yml`.
 - **Скрипт `android emulator smoke` — в файле `.github/scripts/android-smoke.sh`, а не в `script:`.** `reactivecircus/android-emulator-runner` выполняет каждую строку `script` отдельной `sh -c`, и переменные между строками теряются (так `adb install` получал пустой путь). Поэтому в `script:` — одна команда, а джобе нужен `actions/checkout`.
+
+
+Проверка UI включает `npm run build` и `npm test` (джоба
+`ui typecheck`): оба языка, буквальные параметры, переключение
+и сохранение черновика в DOM. Она не требует роутера или браузерного бинаря;
+методика и пределы — [локализация](../../docs/localization.md).
+
+## Проверка происхождения релиза
+
+`release.yml` создаёт committed source archive всех рекурсивных сабмодулей,
+`SOURCE-MANIFEST.json` и per-job build manifests. Финальная collection требует
+совпадения workflow Git SHA, SHA256/размера каждого файла и полной матрицы assets;
+создаёт `BUILD-MANIFEST.json` и `SHA256SUMS.txt`. Tauri не может молча изменить
+reviewed Cargo/npm lockfiles. `I2P_EMBED_STUB`, `I2P_EMBED_SKIP_NATIVE` и release
+assertions блокируются shipping gate. Debug stub APK из `build.yml` не являются
+релизами. Проверки manifest на синтетических данных выполняет
+`.github/scripts/test-build-provenance.py`; они не компилируют приложение.
+
+Windows preview выявил exact-byte drift `Cargo.lock` после успешной сборки
+приложения и агента. Теперь все три reviewed lockfiles имеют `text eol=lf`
+в `.gitattributes`; Windows `core.autocrlf` не должен менять их байты.
+`build-provenance.py locks` проверяет каждый файл сразу после checkout,
+а `record` повторяет строгую проверку после build. Отсутствующий файл, CRLF
+и содержательное изменение — ошибки; нормализация при приёмке не разрешена.
+Диагностика различает CRLF и content drift, не объявляя причиной старого
+прогона гипотезу без его checkout snapshot. Tauri получает Cargo `--locked`
+после разделителя: `cargo tauri build --ci --bundles … -- --locked`.
+Synthetic regressions и реальные checkout bytes проверяются в installer CI
+на Linux и Windows; локальной сборкой приложения это не заменяют.
+
+Windows source builds вызывают `.github/scripts/windows-source-tools.ps1`:
+установленный Microsoft `vswhere` выбирает VC x64, затем штатный
+`Launch-VsDevShell.ps1` с явными host/target amd64. Helper проверяет compiler
+и linker, переносит только allowlist build-tool переменных и добавленные
+PATH entries, сохраняет native Strawberry Perl. Полный process environment
+не экспортируется. Это заменяет `ilammy/msvc-dev-cmd@v1`, чей опубликованный
+action ещё использует deprecated Node 20; совместимость нового helper
+подтверждается следующими Windows CI builds, не чтением PowerShell source.

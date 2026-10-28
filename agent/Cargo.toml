@@ -1,6 +1,6 @@
 [package]
 name = "gipny-agent"
-version = "0.4.18"
+version = "0.4.19"
 edition = "2021"
 publish = false
 description = "Headless Gipny console agent"
@@ -14,4 +14,3 @@ gipny-libcore = { path = "../libcore" }
 tokio = { workspace = true }
 anyhow = "1"
 bincode = { workspace = true }
-

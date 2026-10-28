@@ -1,13 +1,117 @@
 Репозиторий: gluckdev/gipny-i2p — мессенджер на Rust (Tauri для десктопа +
 Android), работающий поверх I2P. Роутер — libi2pd, вкомпилированный в каждый
 бинарь (крейт `i2p-embed`), один на процесс; SAM, дочернего процесса i2pd и
-локальных портов нет (с 2026-09-24, раздел «РОУТЕР ВНУТРИ ПРОЦЕССА»). Разделы
+локальных bridge/proxy нет (с 2026-09-24, раздел «РОУТЕР ВНУТРИ ПРОЦЕССА»).
+Сам роутер использует IP-транспорты NTCP2/SSU2 и reseed. Разделы
 ниже датированы: где они говорят о SAM, `yosemite`, `RouterHandle` или
 HTTP-прокси, это история.
 
 Передача контекста тому, кто возьмёт проект дальше — человеку или другому
 агенту. Заменяет бриф от 2026-07-19, который описывал роутер go-i2p, которого в
 этом дереве больше нет.
+
+СОСТОЯНИЕ ОБЪЕДИНЁННОЙ ВЕТКИ (2026-10-29)
+
+Текущий вход — [снимок интеграции](today-2026-10-28.md). Ветка
+`feat/today-integration-20261028`, версия manifests `0.4.19` — кандидат;
+последний опубликованный релиз `0.4.18`. Последний подтверждённый native Rust
+и agent e2e checkpoint — `0fd14f2`; новые Windows/provenance source fixes
+требуют следующих GitHub результатов;
+подтверждённые компонентные результаты не обозначают готовый новый релиз.
+На историческом `d907307` TypeScript/Vite и 13/13 UI tests прошли; первый Windows bootstrap
+job нашёл ошибку `$null` path binding; fix `5d3500d` и реальные Windows
+readiness/rollback/recovery fixtures прошли повторный GitHub run.
+Позднее `38892f6` прошёл 17/17 UI, 173 libcore unit, 14 crypto, 4 compat,
+7 first-run и doctest; все новые DM DB/wire cases включены. На `a66d223`
+прошли libcore 175/175, crypto 14/14, compat 4 PASS + 1 ignored generator,
+first_run 9/9, doctest и UI 18/18. Новые registry tests и два теста независимых
+`Vault::open` вошли в этот успешный прогон; Windows bootstrap тоже повторно PASS.
+На `38892f6` отдельно подтверждены Core 29/29, agent 4 main unit + 1 card
+integration, embed 10/10, Android APK и
+emulator smoke, все четыре OpenWrt targets. OpenWrt повторно PASS на `a66d223`.
+На этом же SHA whole macOS Intel security job PASS, включая ровно один
+положительный native local Keychain test под бесплатной ad-hoc подписью;
+Позднее на `93295f1` оба native Keychain test прошли; Linux packaged agent
+smoke тоже PASS. Полный preview и общая матрица пока не зелёные: последующие
+fixes Windows quota, Intel bundle и DHT discovery описаны в текущем снимке.
+На `0fd14f2` DHT уже прошёл 19 unit + 10 sim, включая 16 churn placements;
+native agent e2e — observer 7/7 и команды/ответы 7/7, no-loopback, script,
+REVOKE/exit0. Windows затем собрал native app и agent на `93295f1`, но
+provenance отказал на несовпадении bytes `Cargo.lock`: новый LF/early/locked
+gate сохраняет strict source guard. Новый MSVC helper использует штатный
+Microsoft DevShell вместо deprecated Node 20 action.
+Ссылки и точные границы —
+в [текущем снимке](today-2026-10-28.md#github-ci-checkpoint).
+Новые сборки и исполнение тестов — только GitHub Actions по требованию
+владельца; локальные команды ниже в исторических разделах не обозначают
+разрешение или результат новой сборки. Текущий контракт —
+[build-release.md](build-release.md).
+
+- Включены полный EN/RU UI (`bf7f012`), обязательная сумма обновлений
+  (`7a7bc21`), очередь групп до E2E ACK каждого получателя (`0460e2f`) и
+  атомарная публикация подготовленного group outbox (`c246d86`). Последняя
+  закрывает прежнее окно metadata-before-queue: сообщение, reply/settings,
+  attachment metadata, file offers и весь fan-out фиксируются одной
+  синхронной транзакцией до network awaits. Контракты и пределы —
+  [group-delivery.md](group-delivery.md),
+  [update-verification.md](update-verification.md),
+  [localization.md](localization.md).
+- Android JNI/APK staging включены `db9814f` и интеграцией digest `ca1201e`:
+  живой контекст Tauri, проверенная копия в private `cache/updates`, ограниченный
+  FileProvider и dispatch installer. Изолированный cross-check
+  `aarch64-linux-android` с Rust `1.93.1`, NDK r27d и stub router прошёл;
+  6 host tests staging/dispatch прошли. На `38892f6` затем прошли сборка APK
+  и emulator smoke; физическое устройство и живая доставка этим не проверены.
+  Исходные 14 JNI compile errors воспроизводились на baseline
+  `main` `26487a5`, отдельно от изменения групповой доставки.
+- Новая политика владельца: подробная диагностика только в тестовых и
+  диагностических сборках; release — предупреждения/ошибки без `debug.log`,
+  `debug.prev.log` и подробного файла i2pd. Старые записи ниже о постоянном
+  журнале и его UI относятся к прежней политике. Точный контракт и локальные
+  проверки — [release-diagnostics.md](release-diagnostics.md).
+- Pages site (`4453081`) — статический EN/RU вход в проект, не web messenger.
+  Deployment отдельно, только с `main`; он ещё не выполнялся. Будущий
+  браузерный клиент с crypto/storage на устройстве и независимыми временными
+  долями offline mail остаётся исследованием. Существующий `gipny-web` хранит
+  профиль/crypto на сервере и не реализует эту цель.
+- Оба корневых README и первоисточник `assets/architecture.svg` обновлены:
+  Rust `i2p-embed` → C++ shim → `libi2pd` внутри процесса. SAM service,
+  внешний router CLI и старые probes не нужны; исторические SAM разделы
+  ниже и планы сохранены, архив явно отделён в [индексе](README.md).
+- Удаление DM в текущих исходниках охватывает сообщения обоих авторов,
+  attachments/chunks, очистку диалога/истории и явные таймеры, включая pinned.
+  Stable author/origin references, durable tombstones и запрос до E2E ACK
+  сохраняют локальные номера без перенумерации. На `38892f6` и `a66d223`
+  прошли 8 DB + 2 wire cases и соответствующие UI regressions;
+  legacy backup без incoming origin даёт честный отказ. Контракт —
+  [message-deletion.md](message-deletion.md).
+- Защита app-owned секретов в RAM и очистка WebView copies прошли Linux
+  libcore/crypto/first_run и UI checks на `a66d223`; платформенные границы
+  фиксируются отдельно. Guarded/encrypted containers,
+  короткие zeroizing exposures, active-chat-only history/pinned и stale IPC
+  guards не являются гарантией шифрования всей RAM или стирания JS/GC.
+  [Контракт и ограничения](memory-security.md).
+- Новый OS device binding не использует raw key file fallback: provider
+  требуется до открытия vault/SQLCipher, в том числе агенту/боту. Старые
+  unbound профили автоматически не мигрируются, недоступный provider даёт
+  явный отказ; OpenWrt binary target сам по себе не гарантирует runtime.
+- Платформенные updater paths, Windows bootstrap и выбранные OpenWrt
+  targets описаны в [platform-updates.md](platform-updates.md) и
+  [openwrt.md](openwrt.md); наличие кода не доказывает установку на устройстве.
+- Default contact-card export `38892f6` использует короткий `gipny:v3:`:
+  187 ASCII chars с релеем без имени, целые public keys и b32 hashes обоих
+  destinations. Старые v1/v2 читаются; checksum не заменяет fingerprint check.
+  7 Rust card tests и UI cases PASS на `38892f6` и `a66d223`;
+  живой lookup отдельно ещё требует проверки;
+  data-only golden vectors также проверены. [Формат и ограничения](contact-cards.md).
+
+Исторические компонентные результаты на 2026-10-28 до GitHub-only требования
+и финальных DM/memory изменений: atomic outbox — 125 libcore + 23 Core
+tests со stub router, updater — 22 tests, agent — 2 tests, Pages — 9 checks,
+diagnostics — 4 policy tests, UI — 9 tests после updater handoff. Это разные
+прогоны до финальной интеграционной проверки, не проверка новых DM/WebView
+regressions, не полный live I2P или device acceptance. Итоговые проверки,
+платформенная матрица, публикация и выпуск должны фиксироваться отдельно.
 
 СОСТОЯНИЕ (2026-09-16, вечер).
 
@@ -798,9 +902,40 @@ DHT: ЧТО ОТДАЁМ ДРУГИМ (`55fb1d8`, `9b43134`): узел отве�
 Отдельно: до `f9ed99b` в `paths`-фильтрах `build.yml` не было `dht/**`, и
 ни один workflow не запускал тесты `gipny-dht` — дыра старше этой работы.
 
+ГРУППОВАЯ ОЧЕРЕДЬ ДО ACK (2026-10-28, ещё не выпущено)
+
+Ветка `fix/durable-group-delivery`, база `main`
+`26487a5ca213c4ccbbd372038d14a71e17ca6314`: исправлена потеря групповых
+сообщений при удалении pending сразу после локального enqueue. Изменены обе
+реализации — приложение и `SessionManager`; очередь сохраняется по каждому
+получателю, а полная доставка отмечается по последнему ожидаемому ACK.
+
+Контракт публикации очереди после подготовки метаданных, семидневная очистка,
+совместимость и ограничения описаны в [group-delivery.md](group-delivery.md).
+Там же команды и результаты локальных тестов, проверки сборки зависимых
+компонентов и отрицательной проверки возвратом дефекта. Использовалась
+заглушка роутера; живую доставку I2P этот результат не подтверждает.
+
 СОГЛАШЕНИЯ: коммиты идут от git-личности владельца репозитория, без трейлеров
 ИИ-соавторства. Другие инструменты коммитят здесь под той же личностью; прежде
 чем считать изменение в дереве своим, проверьте его происхождение
 (docs/plans/2026-09-16-inspection.md, «Контекст»). Не коммитьте бинари, снимок netDb
 (`core/resources/i2pd-netdb-seed.tar.gz`) и DEBUG-логи — .gitignore их
 покрывает.
+
+
+ЛОКАЛИЗАЦИЯ (2026-10-28)
+
+Ветка `feat/complete-en-ru-localization` от `26487a5`: полный английский UI
+при сохранении русского, без изменения wire, криптографии и маршрутизации.
+Словари вынесены в `ui/src/locales/`; язык выбирается до входа и в настройках.
+`bootLabels()` и `avatarNames()` вычисляют подписи при показе. При переключении
+сохраняется состояние ввода; дочерние views снимают подписки при уничтожении.
+Интерполяция больше не интерпретирует `$&` и другие replacement tokens в данных.
+
+Проверки: TypeScript/Vite и DOM regression через `npm test` в `ui/`. Они не
+подтверждают нативную упаковку, камеру Android и живую I2P. Полный перевод ещё
+не опубликован в tagged release. Инструкции — `docs/localization.md`,
+английский вход — `README.en.md`. Исторические планы не переписаны как новые
+обещания. Статический browser client и распределённые доли остаются отдельной
+архитектурной работой; существующий `gipny-web` является server gateway.

@@ -2,7 +2,8 @@ name: build
 
 # Compile check for the i2p fork: the Rust workspace, the frontend and the
 # Android APK on GitHub-hosted runners. Full release artifacts (installers) are
-# produced by release.yml on a tag. All builds are CI-only.
+# produced by release.yml on a main version bump or a manual preview.
+# Only the main version-bump path publishes a release. All builds are CI-only.
 #
 # Every binary compiles the i2p router in (i2p-embed), so the desktop and
 # test jobs build libi2pd too, against the distro's boost. The Android APKs
@@ -55,6 +56,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   # ---------------------------------------------------------------------------
   # Rust workspace: libcore + relay + the Tauri app (compile check).
@@ -73,7 +78,11 @@ jobs:
             libunwind-dev libsoup-3.0-dev libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             libasound2-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: actions/setup-node@v7
+        with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - name: release diagnostics policy (no native build)
+        run: bash scripts/check-release-diagnostics.sh
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -103,6 +112,8 @@ jobs:
       # The bot SDK, agent and the e2e harness call into libcore too.
       - name: build bot-sdk + agent + e2e harness
         run: cargo build --release -p gipny-bot -p gipny-agent -p e2e-harness
+      - name: libcore security, device-copy, storage and delivery regressions
+        run: cargo test --locked --release -p gipny-libcore --lib
       - name: build app (frontend + tauri)
         run: |
           cd ui && npm ci && npm run build && cd ..
@@ -124,13 +135,13 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@v7
-        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+        with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
       - name: stage router placeholder (tauri.conf resources glob needs a match)
         run: |
           mkdir -p core/resources
@@ -174,7 +185,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -214,7 +225,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
-  # Frontend type-check (classic UI).
+  # Frontend type-check, build and bilingual UI regression tests.
   # ---------------------------------------------------------------------------
   ui:
     name: ui typecheck
@@ -223,10 +234,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - run: cd ui && npm ci && npm run build
+      - run: cd ui && npm ci && npm run build && npm test
 
   # ---------------------------------------------------------------------------
   # Android integration: build installable debug APKs for arm64-v8a (real
@@ -252,7 +263,7 @@ jobs:
       # upstream's current set, as every build compiles in.
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi
       - uses: actions/setup-java@v6
@@ -280,7 +291,7 @@ jobs:
           echo "$tc" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: ui/package-lock.json
       # The APK job compiled the whole workspace and tauri-cli from scratch on
@@ -298,9 +309,8 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('core/gen/android/**/*.gradle*', 'core/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-
-      - uses: cargo-bins/cargo-binstall@main
       - name: install tauri-cli
-        run: cargo binstall -y --locked tauri-cli@^2 || cargo install tauri-cli --version '^2' --locked
+        run: cargo install tauri-cli --version '=2.12.2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
       # tauri builds every requested target into the "universal" flavor output
@@ -348,6 +358,14 @@ jobs:
           apk="$(find core/gen/android/app/build/outputs -type f -name '*.apk' -print -quit)"
           test -n "$apk"
           unzip -l "$apk" | grep -F 'lib/armeabi-v7a/libgipny_lib.so'
+      - name: Compile Android Keystore instrumentation tests (no hardware claim)
+        working-directory: core/gen/android
+        env:
+          ORG_GRADLE_PROJECT_skipRouter: 'true'
+        # The previous CLI build generated the Tauri Gradle bindings. Its
+        # websocket is now closed: reuse the built Rust library rather than
+        # invoking android-studio-script outside a live cargo-tauri session.
+        run: ./gradlew :app:assembleUniversalDebugAndroidTest -x :app:rustBuildUniversalDebug
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-debug-apk-no-router

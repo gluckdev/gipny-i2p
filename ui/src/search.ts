@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import { Api, type SearchHit } from './api';
 import type { Store, ChatTarget } from './state';
 import { h, fmtTime, fmtDate } from './view';
@@ -9,6 +11,8 @@ export class SearchModal {
   private results: HTMLElement;
   private status: HTMLElement;
   private timer: number | null = null;
+  private closed = false;
+  private generation = 0;
   private store: Store;
   private close: () => void;
   private scope: { contactId: number | null; groupId: string | null } = { contactId: null, groupId: null };
@@ -23,23 +27,23 @@ export class SearchModal {
 
     this.input = h('input', {
       class: 'input',
-      placeholder: 'type to search…',
+      placeholder: tr('search.type_to_search'),
       onInput: () => this.scheduleSearch(),
     }) as HTMLInputElement;
 
     const scopeLabel = this.scope.contactId != null
-      ? `in this contact`
+      ? tr('search.in_this_contact')
       : this.scope.groupId != null
-        ? `in this group`
-        : `global (all chats)`;
+        ? tr('search.in_this_group')
+        : tr('search.global_all_chats');
 
     this.status = h('div', { class: 'hint' }, scopeLabel);
     this.results = h('div', { class: 'search-results' });
 
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, 'Поиск по сообщениям'),
-        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
+        h('div', { class: 'modal-title' }, tr('sidebar.search_messages')),
+        h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'field' }, this.input),
@@ -48,7 +52,12 @@ export class SearchModal {
       ),
     );
 
-    setTimeout(() => this.input.focus(), 50);
+    this.el.addEventListener('gipny-modal-close', () => {
+      this.closed = true; this.generation++;
+      if (this.timer != null) window.clearTimeout(this.timer);
+      this.input.value = ''; this.results.replaceChildren(); this.status.textContent = '';
+    }, { once: true });
+    setTimeout(() => { if (!this.closed) this.input.focus(); }, 50);
   }
 
   private scheduleSearch(): void {
@@ -57,6 +66,8 @@ export class SearchModal {
   }
 
   private async runSearch(): Promise<void> {
+    if (this.closed) return;
+    const generation = ++this.generation;
     const q = this.input.value.trim();
     if (q.length < 2) {
       this.results.replaceChildren();
@@ -64,20 +75,22 @@ export class SearchModal {
     }
     try {
       const hits = await Api.searchMessages(q, this.scope.contactId, this.scope.groupId, 100);
+      if (this.closed || generation !== this.generation) return;
       this.renderResults(hits, q);
     } catch (e) {
-      this.results.replaceChildren(h('div', { class: 'hint' }, 'search failed: ' + String(e)));
+      if (this.closed || generation !== this.generation) return;
+      this.results.replaceChildren(h('div', { class: 'hint' }, tr('search.search_failed') + errorText(e)));
     }
   }
 
   private renderResults(hits: SearchHit[], needle: string): void {
     this.results.replaceChildren();
     if (hits.length === 0) {
-      this.results.appendChild(h('div', { class: 'hint' }, 'no matches'));
+      this.results.appendChild(h('div', { class: 'hint' }, tr('sidebar.nothing_found')));
       return;
     }
     for (const hit of hits) {
-      const where = hit.group_name ? `group: ${hit.group_name}` : (hit.contact_name ? `dm: ${hit.contact_name}` : 'unknown');
+      const where = hit.group_name ? `group: ${hit.group_name}` : (hit.contact_name ? `dm: ${hit.contact_name}` : tr('auth.unknown'));
       const row = h('div', {
         class: 'search-row',
         onClick: () => this.openHit(hit),
@@ -109,10 +122,13 @@ export class SearchModal {
     if (hit.contact_id != null) target = { kind: 'contact', id: hit.contact_id };
     else if (hit.group_id != null) target = { kind: 'group', id: hit.group_id };
     if (!target) return;
-    this.store.selectedChat.set(target);
-    setTimeout(() => {
-      this.store.scrollToMessage.set({ target: target!, messageId: hit.message.id, nonce: Date.now() });
-    }, 100);
+    const messageId = hit.message.id;
+    const selecting = this.store.selectChat(target);
+    const version = this.store.contentVersion;
+    void selecting.then(() => {
+      if (version !== this.store.contentVersion || this.store.view.get() !== 'main') return;
+      this.store.requestScrollTo(target!, messageId);
+    }).catch(() => {});
     this.close();
   }
 }

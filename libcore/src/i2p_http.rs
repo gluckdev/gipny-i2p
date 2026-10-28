@@ -37,6 +37,8 @@ pub enum HttpError {
     Status(u16),
     #[error("too many redirects")]
     Redirects,
+    #[error("response body exceeds {0} bytes")]
+    TooLarge(usize),
 }
 
 /// A response body, read chunk by chunk.
@@ -45,6 +47,10 @@ pub struct Body {
 }
 
 impl Body {
+    pub(crate) fn new(inner: hyper::body::Incoming) -> Self {
+        Self { inner }
+    }
+
     pub async fn chunk(&mut self) -> Result<Option<bytes::Bytes>, HttpError> {
         loop {
             match self.inner.frame().await {
@@ -59,9 +65,13 @@ impl Body {
         }
     }
 
-    pub async fn text(mut self) -> Result<String, HttpError> {
+    /// Bound release metadata before allocating memory for untrusted input.
+    pub async fn text(mut self, max_bytes: usize) -> Result<String, HttpError> {
         let mut out = Vec::new();
         while let Some(c) = self.chunk().await? {
+            if c.len() > max_bytes.saturating_sub(out.len()) {
+                return Err(HttpError::TooLarge(max_bytes));
+            }
             out.extend_from_slice(&c);
         }
         String::from_utf8(out).map_err(|e| HttpError::Http(e.to_string()))
@@ -84,7 +94,7 @@ pub async fn get(node: &Arc<TorNode>, tls: &Arc<rustls::ClientConfig>, url: &str
         if !status.is_success() {
             return Err(HttpError::Status(status.as_u16()));
         }
-        return Ok(Body { inner: resp.into_body() });
+        return Ok(Body::new(resp.into_body()));
     }
     Err(HttpError::Redirects)
 }

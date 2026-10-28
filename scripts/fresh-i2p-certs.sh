@@ -28,4 +28,5 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   # Read by build.rs, a native program: a Windows path on Windows.
   if command -v cygpath >/dev/null; then abs=$(cygpath -w "$abs"); fi
   echo "I2P_EMBED_CERTS_DIR=$abs" >> "$GITHUB_ENV"
+  echo "GIPNY_RESEED_SOURCE_SHA=$commit" >> "$GITHUB_ENV"
 fi
