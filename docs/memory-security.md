@@ -97,8 +97,15 @@ Metadata, plaintext сообщений, содержимое файлов, па�
 `memory::capabilities()` проверяет строгий backend на текущей ОС и возвращает
 его фактический размер страницы. Успех на одной машине не подтверждает работу
 на другом Android/vendor kernel или всех OpenWrt-устройствах. Недостаточный
-`RLIMIT_MEMLOCK`/working set означает явный отказ; приложение не увеличивает
-лимиты и не вызывает `mlockall`.
+`RLIMIT_MEMLOCK` означает явный отказ; приложение не повышает этот Unix limit
+и не вызывает `mlockall`. В Windows только после фактического отказа
+`VirtualLock` с `ERROR_WORKING_SET_QUOTA` backend запрашивает увеличение minimum
+working set через `GetProcessWorkingSetSizeEx` / `SetProcessWorkingSetSizeEx`:
+шаг 1 MiB, общий предел увеличений 16 MiB на процесс, существующие большие
+min/max и hard/soft flags сохраняются. Успех всё равно требует настоящего
+`VirtualLock` собственной страницы. Отказ OS, переполнение арифметики или
+исчерпание бюджета возвращают ошибку; unlocked fallback отсутствует. Это
+не закрепление всего процесса и не гарантия блокировки SQLCipher workspace.
 
 Общий `i2p_embed::process_security::harden_process` вызывают GUI (включая
 Android), агент, bot SDK, standalone relay и e2e harness. На Unix ошибки

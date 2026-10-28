@@ -29,7 +29,9 @@ integration, embed 10/10, Android APK и
 emulator smoke, все четыре OpenWrt targets. OpenWrt повторно PASS на `a66d223`.
 На этом же SHA whole macOS Intel security job PASS, включая ровно один
 положительный native local Keychain test под бесплатной ad-hoc подписью;
-Apple Silicon и preview run `40763730801` ещё ожидаются.
+Позднее на `93295f1` оба native Keychain test прошли; Linux packaged agent
+smoke тоже PASS. Полный preview и общая матрица пока не зелёные: последующие
+fixes Windows quota, Intel bundle и DHT discovery описаны в текущем снимке.
 Ссылки и точные границы —
 в [текущем снимке](today-2026-10-28.md#github-ci-checkpoint).
 Новые сборки и исполнение тестов — только GitHub Actions по требованию

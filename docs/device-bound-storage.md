@@ -171,20 +171,32 @@ legacy rejection, enrollment interruption, одновременная публи
 не получил hosted runner: annotation сообщает `The job was not acquired by
 Runner of type hosted even after multiple attempts`, с notice о capacity
 constraints macOS arm64. Он отменён до исполнения; native positive на arm64
-на момент записи не проверен, это ограничение ёмкости CI, а не source failure.
+тогда не был проверен из-за ёмкости CI, а не source failure. На `93295f1`
+[Intel](https://github.com/gluckdev/gipny-i2p/actions/runs/40772462125/job/123112992184)
+и [Apple Silicon](https://github.com/gluckdev/gipny-i2p/actions/runs/40772462125/job/123112992186)
+прошли полностью; в каждом логе настоящий native Keychain case дал
+**1 passed, 0 failed, 0 ignored**. В каждом также прошли 175 libcore unit,
+8 `first_run`, 4 compat, 4 agent unit + 1 card integration, 29 Core и 10 i2p-embed.
 
 На `a66d223` [Windows unit job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085162/job/123080655160)
 прошёл compile checks всех callers, но завершился `STATUS_STACK_OVERFLOW`
 после `sqlcipher_mlock: VirtualLock() returned 0 LastError=1453`.
 Исходник pinned SQLCipher 4.14 и [upstream issue #619](https://github.com/sqlcipher/sqlcipher/issues/619)
 подтвердили рекурсию Windows logger через собственный защищённый allocator.
-Подготовлен переход на `rusqlite 0.41.1` / `libsqlite3-sys 0.39.1` /
+На `93295f1` выполнен переход на `rusqlite 0.41.1` / `libsqlite3-sys 0.39.1` /
 публичный `sqlcipher-src 419.0.6` (SQLCipher 4.19): logger использует исправление
 upstream `afbb132`, без отключения `cipher_memory_security` и увеличения стека.
 Source archive проверен по checksum `Cargo.lock`; новый Windows integration
 `sqlcipher_windows` исчерпывает lock quota отдельного child process и требует
 успешного SQL запроса и настоящего предупреждения отказа `VirtualLock`.
-Результат этого исправления должен подтвердить следующий GitHub CI.
+На [Windows `93295f1`](https://github.com/gluckdev/gipny-i2p/actions/runs/40772462125/job/123112992335)
+исходный retry test и native DPAPI roundtrip прошли; переполнение стека
+не повторилось. Полный libcore suite дал **146 passed / 21 failed** из-за
+отдельного отказа `VirtualLock` в нашем обязательном key-page backend.
+Dedicated SQLCipher quota test после этого был skipped; успешный runtime
+результат ему ещё не приписывается. Подготовлен ограниченный Windows quota retry
+и отдельный child test восстановления/исчерпания общего бюджета, см.
+[memory-security.md](memory-security.md); они ожидают следующего GitHub CI.
 SQLCipher memory locking остаётся best effort при отказе OS quota; это отличается
 от наших обязательных locked pages для ключей и не даёт гарантии полного
 закрепления SQL workspace в RAM.

@@ -269,6 +269,10 @@ jobs:
       - name: tauri build from this checkout
         working-directory: core
         run: cargo tauri build --bundles ${{ matrix.bundles }}
+      - name: Verify native macOS app composition and ad-hoc signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash .github/scripts/verify-macos-bundle.sh target/release/bundle/macos/gipny-i2p.app '${{ matrix.target }}'
       # Reuse desktop's static router dependencies for the headless agent.
       - name: build and package agent (macOS / Windows)
         if: runner.os != 'Linux'

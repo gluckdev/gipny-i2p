@@ -52,12 +52,21 @@ sudo, timeout, parse или смена identity остаются ошибкам�
 но [job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085219/job/123080056599)
 завершился ошибкой именно на прежнем cross-process `/proc` чтении. Это не общий
 PASS agent e2e. Исправление observer и его новые tests требуют следующего GHA run.
-Отдельный шаг после сборки задаёт `E2E_OBSERVER_BIN=./target/release/e2e-harness`
+Отдельный шаг после сборки задаёт абсолютный
+`E2E_OBSERVER_BIN="$GITHUB_WORKSPACE/target/release/e2e-harness"`
 и выполняет `cargo test --locked --release -p e2e-harness`: настоящий hardened
 child с loopback должен быть недоступен обычному reader и обнаружен privileged
 observer; loopback и неверный starttime должны отвергаться. Отсутствие binary/env
 не превращается в пропуск проверки. Это разрешение sudo только для тестовой
 среды, без запуска агента или пользовательских команд от root.
+На `93295f1` первые 6/7 tests прошли, но реальный child test остановился до
+spawn: прежний относительный путь искался из каталога Cargo package. Workflow
+исправлен на абсолютный путь. При этом отдельный
+[Linux security job на том же SHA](https://github.com/gluckdev/gipny-i2p/actions/runs/40772462125/job/123112992138),
+где путь изначально был абсолютным, прошёл все 7/7 observer tests, включая
+реальный non-dumpable child, sudo observation, loopback rejection и неверный
+starttime. Этот job использует stub router: он доказывает OS/proc-проверку,
+но не заменяет ещё не выполненный после path fix живой agent e2e.
 
 `security-fast.yml` повторяет observer regressions на Linux с debug/stub
 бинарником: `cargo build --locked -p e2e-harness`, затем

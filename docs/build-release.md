@@ -45,6 +45,14 @@ Windows memory-security CI также выявил upstream SQLCipher logger rec
 как публичный source crate `sqlcipher-src`, не готовая DLL. Обе lockfile должны
 оставаться согласованными. Отдельный Windows child-process regression
 форсирует lock failure при включённом `cipher_memory_security`.
+
+Первый Intel preview также выявил unsigned вложенный `gipny-web`: pinned Tauri
+CLI рассматривал оба Cargo bin как содержимое desktop bundle. Gateway теперь
+требует явной non-default feature `web-gateway`; обычное `.app` содержит только
+`gipny`. Gateway продолжает проверяться с явной feature в desktop fast CI.
+После Tauri build `verify-macos-bundle.sh` проверяет Info.plist, единственный
+executable, точную архитектуру и `codesign --verify --deep --strict` для обеих
+macOS архитектур. Отказ подписи нельзя заменять отключением проверки.
 macOS запрашивает source build Boost/OpenSSL через Homebrew. OpenWrt проверяет
 SHA256 официального toolchain, Boost, OpenSSL source crate и zlib до сборки.
 

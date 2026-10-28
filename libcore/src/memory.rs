@@ -56,6 +56,47 @@ fn system_error(operation: &'static str) -> MemoryError {
     MemoryError::System { operation, source: std::io::Error::last_os_error() }
 }
 
+#[cfg(windows)]
+fn lock_windows_page(ptr: NonNull<u8>, len: usize) -> Result<()> {
+    use windows_sys::Win32::System::{Memory::*, Threading::GetCurrentProcess};
+    const QUOTA_STEP: usize = 1024 * 1024;
+    const MAX_QUOTA_INCREASE: usize = 16 * QUOTA_STEP;
+    // Shared process quota, not a fresh allowance for each key/profile. Windows
+    // limits VirtualLock to the minimum working set minus OS overhead. SQLCipher
+    // also uses that quota; only a real successful VirtualLock admits our page.
+    // https://learn.microsoft.com/windows/win32/api/memoryapi/nf-memoryapi-virtuallock
+    static INCREASED: Mutex<usize> = Mutex::new(0);
+    if unsafe { VirtualLock(ptr.as_ptr().cast(), len) } != 0 { return Ok(()); }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() != Some(1453) {
+        return Err(MemoryError::System { operation: "VirtualLock", source: error });
+    }
+    let mut increased = INCREASED.lock().map_err(|_| MemoryError::Poisoned)?;
+    loop {
+        // Another protected allocation may already have provisioned quota or
+        // released its page while this caller waited for the process mutex.
+        if unsafe { VirtualLock(ptr.as_ptr().cast(), len) } != 0 { return Ok(()); }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(1453) || *increased >= MAX_QUOTA_INCREASE {
+            return Err(MemoryError::System { operation: "VirtualLock", source: error });
+        }
+        let (mut minimum, mut maximum, mut flags) = (0, 0, 0);
+        let process = unsafe { GetCurrentProcess() };
+        if unsafe { GetProcessWorkingSetSizeEx(process, &mut minimum, &mut maximum, &mut flags) } == 0 {
+            return Err(system_error("GetProcessWorkingSetSizeEx"));
+        }
+        let step = QUOTA_STEP.min(MAX_QUOTA_INCREASE - *increased);
+        let minimum = minimum.checked_add(step).ok_or(MemoryError::Size)?;
+        // Retain existing larger limits and hard/soft working-set flags. This
+        // asks the OS for quota; it does not replace VirtualLock or pin 16 MiB.
+        let maximum = maximum.max(minimum);
+        if unsafe { SetProcessWorkingSetSizeEx(process, minimum, maximum, flags) } == 0 {
+            return Err(system_error("SetProcessWorkingSetSizeEx"));
+        }
+        *increased = increased.checked_add(step).ok_or(MemoryError::Size)?;
+    }
+}
+
 struct LockedPage { ptr: NonNull<u8>, len: usize }
 
 // The allocation is exclusively owned; access is always through the Mutex in
@@ -96,9 +137,7 @@ impl LockedPage {
             if len < SCRATCH_OFFSET + MAX_SECRET { return Err(MemoryError::Size); }
             let ptr = unsafe { VirtualAlloc(std::ptr::null(), len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) };
             let page = Self { ptr: NonNull::new(ptr.cast()).ok_or_else(|| system_error("VirtualAlloc"))?, len };
-            if unsafe { VirtualLock(page.ptr.as_ptr().cast(), len) } == 0 {
-                return Err(system_error("VirtualLock"));
-            }
+            lock_windows_page(page.ptr, len)?;
             Ok(page)
         }
         #[cfg(not(any(unix, windows)))]

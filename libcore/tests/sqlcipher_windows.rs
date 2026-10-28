@@ -10,6 +10,7 @@ use rusqlite::Connection;
 extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn SetProcessWorkingSetSize(process: *mut c_void, minimum: usize, maximum: usize) -> i32;
+    fn GetProcessWorkingSetSize(process: *mut c_void, minimum: *mut usize, maximum: *mut usize) -> i32;
     fn VirtualAlloc(address: *const c_void, size: usize, allocation: u32, protection: u32) -> *mut c_void;
     fn VirtualLock(address: *const c_void, size: usize) -> i32;
     fn VirtualUnlock(address: *const c_void, size: usize) -> i32;
@@ -52,6 +53,55 @@ impl Drop for LockedQuota {
             unsafe { VirtualUnlock(page, PAGE); VirtualFree(page, 0, 0x8000); }
         }
     }
+}
+
+fn working_set_limits() -> (usize, usize) {
+    let (mut minimum, mut maximum) = (0, 0);
+    assert_ne!(unsafe { GetProcessWorkingSetSize(GetCurrentProcess(), &mut minimum, &mut maximum) }, 0);
+    (minimum, maximum)
+}
+
+#[test]
+fn protected_keys_recover_from_lock_quota_but_stop_at_the_process_budget() {
+    const KEY_CHILD: &str = "GIPNY_TEST_WINDOWS_KEY_LOCK_CHILD";
+    if std::env::var_os(KEY_CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "protected_keys_recover_from_lock_quota_but_stop_at_the_process_budget", "--nocapture", "--test-threads=1"])
+            .env(KEY_CHILD, "1").output().unwrap();
+        assert!(output.status.success(), "isolated protected-key quota child failed: {}\n{}\n{}",
+            output.status, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+
+    use gipny_libcore::memory::{self, MemoryError, SealedBlob};
+    let mut total_increase = 0;
+    let mut recovered = false;
+    for _ in 0..=16 {
+        let quota = LockedQuota::exhaust();
+        let before = working_set_limits();
+        match SealedBlob::from_slice(b"synthetic protected-key regression") {
+            Ok(secret) => {
+                recovered = true;
+                let after = working_set_limits();
+                assert!(after.0 > before.0 && after.1 >= before.1);
+                total_increase += after.0 - before.0;
+                assert!(total_increase <= 16 * 1024 * 1024, "quota increased beyond the process budget");
+                assert_eq!(&*secret.open().unwrap(), b"synthetic protected-key regression");
+                let capabilities = memory::capabilities().unwrap();
+                assert!(capabilities.locked && capabilities.idle_no_access);
+                drop(secret);
+            }
+            Err(MemoryError::System { operation: "VirtualLock", source }) => {
+                assert!(recovered, "the bounded quota policy never recovered a protected page");
+                assert_eq!(source.raw_os_error(), Some(1453));
+                assert_eq!(working_set_limits(), before, "failed admission still changed OS policy");
+                return; // No unlocked key was returned after the budget ran out.
+            }
+            Err(error) => panic!("unexpected protected-key admission failure: {error}"),
+        }
+        drop(quota);
+    }
+    panic!("repeated lock pressure bypassed the process-wide quota budget");
 }
 
 #[test]

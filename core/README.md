@@ -2,11 +2,19 @@
 
 Крейт `gipny`. Rust-часть приложения: `Core` (логика клиента поверх `libcore`), команды для интерфейса из `ui/`, запуск профиля. Рядом лежат `relay/` (выделенный релей, свой README) и `gen/android/` (Android-обёртка, свой README).
 
+`gipny-web` — отдельный серверный gateway; его криптография и данные находятся
+на сервере. Он требует явной feature `web-gateway` и не включается в обычную
+сборку или desktop bundle. Для отдельной сборки в GitHub CI используйте
+`cargo build --locked --release -p gipny --features web-gateway --bin gipny-web`;
+для запуска — `cargo run --locked -p gipny --features web-gateway --bin gipny-web`.
+Это не браузерный клиент с ключами на устройстве пользователя.
+
 ## Что здесь
 
 | Путь | За что отвечает |
 |---|---|
 | `src/main.rs` | Точка входа, вызывает `gipny_lib::run()` |
+| `src/web_main.rs` | Отдельный серверный gateway, только с feature `web-gateway`; не sidecar приложения |
 | `src/lib.rs` | Сборка Tauri (`run`), каталог данных (`resolve_base_dir`, `profile_dir`), `AppCtx`, **все `#[tauri::command]`** и список `invoke_handler!`, DTO для интерфейса (`ContactDto`, `MessageDto`…), запуск профиля `boot` (установка отложенного обновления Windows → разблокировка vault → база → i2p → `Core::start`) |
 | `src/core.rs` | `Core`, клиент целиком (см. разбивку ниже), и `CoreEvent` — события в интерфейс |
 | `src/sanitizer.rs` | Очистка метаданных вложений перед отправкой (EXIF и подобное) |

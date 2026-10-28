@@ -375,7 +375,7 @@ jobs:
         run: cargo build --locked --release -p e2e-harness -p gipny-agent
       - name: Hardened-child port observer regressions
         env:
-          E2E_OBSERVER_BIN: ./target/release/e2e-harness
+          E2E_OBSERVER_BIN: ${{ github.workspace }}/target/release/e2e-harness
         run: cargo test --locked --release -p e2e-harness
       - name: run e2e harness against the agent binary
         env:

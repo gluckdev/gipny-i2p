@@ -70,17 +70,20 @@ jobs:
       - name: Check every libcore caller and its test targets
         run: cargo check --locked -p gipny-libcore -p gipny-agent -p gipny-bot -p e2e-harness --all-targets
       - name: Check native app commands and test targets
-        run: cargo check --locked -p gipny --all-targets
-      - name: Memory, device-copy, vault, card and deletion regressions
-        run: cargo test --locked -p gipny-libcore --lib
+        run: cargo check --locked -p gipny --all-targets --features web-gateway
       - name: SQLCipher logging survives a real Windows lock-quota failure
         if: runner.os == 'Windows'
         run: cargo test --locked -p gipny-libcore --test sqlcipher_windows -- --test-threads=1
+      - name: Memory, device-copy, vault, card and deletion regressions
+        run: cargo test --locked -p gipny-libcore --lib
       - name: Observe a real hardened child without relaxing process security
         if: runner.os == 'Linux'
         run: |
           cargo build --locked -p e2e-harness
           E2E_OBSERVER_BIN="$PWD/target/debug/e2e-harness" cargo test --locked -p e2e-harness
+      - name: DHT discovery, bounded maintenance and churn regressions
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p gipny-dht
       - name: Native macOS Keychain enrollment under a free ad-hoc signature
         if: runner.os == 'macOS'
         run: |
