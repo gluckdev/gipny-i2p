@@ -1832,9 +1832,7 @@ impl Core {
 
         #[cfg(target_os = "android")]
         {
-            let staged = info.sha256.as_deref().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "APK checksum is required")
-            }).and_then(|expected| crate::update_staging::stage_for_install(&path, expected));
+            let staged = crate::update_staging::stage_for_install(&path, &info.sha256.to_string());
             let apk_path = match staged {
                 Ok(path) => path,
                 Err(error) => {
