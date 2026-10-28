@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::crypto::{self, AttachmentCipher, Identity, PreKeyBundle, PreKeyPair, RatchetState, X3dhInitial, CryptoError};
-use crate::db::{Contact, Db, DbError, Direction, GroupDeliveryAck, GroupMember, NewAttachment, PreKeyKind, TrustLevel};
+use crate::db::{Contact, Db, DbError, Direction, GroupDeliveryAck, GroupMember, NewAttachment, NewOutgoingGroup, PreKeyKind, TrustLevel};
 use crate::dht_client;
 use crate::net::{NetError, TorNode};
 use crate::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayError, RelayToClient, DEFAULT_RELAY};
@@ -1185,37 +1185,37 @@ impl SessionManager {
             }
         }
         let recipients: Vec<i64> = contacts.iter().map(|contact| contact.id).collect();
-        let (stored, parts) = self.store_outgoing(&attachments)?;
-        let msg_id = self.db.insert_group_message(
-            group_id, Some(&self.identity.card().sign_pk), Direction::Out, &body, sent_at, None, &stored,
-        )?;
-        if let Some(b) = &buttons {
-            if let Ok(bytes) = bincode::serialize(b) {
-                self.db.set_setting(&format!("buttons_{}", msg_id), &bytes)?;
-            }
+        let buttons_bytes = buttons.as_ref().map(bincode::serialize).transpose()?;
+        let mut staged = crate::files::StagedGroupAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        for (name, data) in &attachments {
+            if data.len() > crate::files::INLINE_MAX { staged.parts(name, &data[..])?; }
+            else { staged.inline(name, data)?; }
         }
-        if let Some(s) = &notify_sound {
-            self.db.set_setting(&format!("sound_{}", msg_id), s.as_bytes())?;
-        }
+        let offers = staged.offers();
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
             .filter(|(_, data)| data.len() <= crate::files::INLINE_MAX)
             .map(|(name, data)| WireAttachment { name, data }).collect();
-        self.register_offers(msg_id, &parts, &recipients)?;
-        let offers = self.offers_for(msg_id)?;
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
             sign_pk: m.sign_pk.clone(), dh_pk: m.dh_pk.clone(),
             onion: m.onion.clone(), name: m.display_name.clone(),
         }).collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef { id: group_id.to_vec(), name: gname, members: gref_members };
-        // Publish only after all metadata is ready: another runtime worker may
-        // immediately retry these rows. Register everyone before any await.
-        self.db.queue_group_recipients(msg_id, &recipients)?;
+        let sender_sign_pk = self.identity.card().sign_pk;
+        let msg_id = staged.publish(&self.db, &NewOutgoingGroup {
+            group_id, sender_sign_pk: &sender_sign_pk, body: &body, sent_at, expires_at: None, reply_to: None,
+            buttons: buttons_bytes.as_deref(), notify_sound: notify_sound.as_ref().map(|sound| sound.as_bytes()),
+            recipients: &recipients,
+        })?;
         for recipient in recipients {
             // Earlier recipients may have awaited the network; honor a contact
             // deletion or block that happened while that attempt was pending.
-            let contact = match self.db.get_contact(recipient)? {
-                Some(contact) if contact.trust != TrustLevel::Blocked => contact,
+            let contact = match self.db.get_contact(recipient) {
+                Ok(Some(contact)) if contact.trust != TrustLevel::Blocked => contact,
+                Err(error) => {
+                    eprintln!("[session] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
+                    continue;
+                }
                 _ => continue,
             };
             let mut payload = WirePayload::simple(

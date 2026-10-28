@@ -14,7 +14,7 @@ use tokio::time::MissedTickBehavior;
 use gipny_libcore::crypto::{
     self, AttachmentCipher, Identity, IdentityCard, PreKeyBundle, PreKeyPair, RatchetState,
 };
-use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, PreKeyKind, RequestState, TrustLevel};
+use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, NewOutgoingGroup, PreKeyKind, RequestState, TrustLevel};
 use gipny_libcore::net::{NetError, TorNode};
 use gipny_libcore::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY};
 use gipny_libcore::update::{Component as UpdateComponent, InstallOutcome, UpdateError, UpdateInfo, Updater};
@@ -2007,7 +2007,6 @@ impl Core {
         let sent_at = now_ms();
         let expires_at: Option<i64> = None;
         let ttl: Option<Duration> = None;
-        let (stored, parts) = self.store_outgoing(&attachments)?;
         let members = self.db.list_group_members(group_id)?;
         let mut recipients = Vec::new();
         for member in members.iter().filter(|member| !member.is_self) {
@@ -2015,22 +2014,22 @@ impl Core {
                 if contact.trust != TrustLevel::Blocked { recipients.push(contact.id); }
             }
         }
-        let msg_id = self.db.insert_group_message(
-            group_id, Some(&self.identity.card().sign_pk), Direction::Out,
-            &body, sent_at, expires_at, &stored,
-        )?;
-        if let Some(rt) = reply_to {
-            self.db.set_reply_to(msg_id, Some(rt))?;
-        }
         let wire_reply = match reply_to {
             Some(rt) => self.build_wire_reply(rt)?,
             None => None,
         };
+        let mut staged = gipny_libcore::files::StagedGroupAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        for attachment in &attachments {
+            match &attachment.from {
+                Some(source) => staged.parts(&attachment.name, std::io::BufReader::new(std::fs::File::open(source)?))?,
+                None if attachment.data.len() > gipny_libcore::files::INLINE_MAX => staged.parts(&attachment.name, &attachment.data[..])?,
+                None => staged.inline(&attachment.name, &attachment.data)?,
+            }
+        }
+        let offers = staged.offers();
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
             .filter(|a| a.from.is_none() && a.data.len() <= gipny_libcore::files::INLINE_MAX)
             .map(|a| WireAttachment { name: a.name, data: a.data }).collect();
-        self.register_offers(msg_id, &parts, &recipients)?;
-        let offers = self.offers_for(msg_id)?;
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
             sign_pk: m.sign_pk.clone(),
             dh_pk: m.dh_pk.clone(),
@@ -2039,14 +2038,20 @@ impl Core {
         }).collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef { id: group_id.to_vec(), name: gname, members: gref_members };
-        // A background retry may run on another worker as soon as these rows
-        // commit. Publish only after the complete local payload is ready.
-        self.db.queue_group_recipients(msg_id, &recipients)?;
+        let sender_sign_pk = self.identity.card().sign_pk;
+        let msg_id = staged.publish(&self.db, &NewOutgoingGroup {
+            group_id, sender_sign_pk: &sender_sign_pk, body: &body, sent_at, expires_at, reply_to,
+            buttons: None, notify_sound: None, recipients: &recipients,
+        })?;
         for recipient in recipients {
             // A previous attempt may have awaited while this contact was
             // blocked or deleted; do not send to that contact afterwards.
-            let contact = match self.db.get_contact(recipient)? {
-                Some(contact) if contact.trust != TrustLevel::Blocked => contact,
+            let contact = match self.db.get_contact(recipient) {
+                Ok(Some(contact)) if contact.trust != TrustLevel::Blocked => contact,
+                Err(error) => {
+                    eprintln!("[relay-client] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
+                    continue;
+                }
                 _ => continue,
             };
             let mut payload = WirePayload::simple(
