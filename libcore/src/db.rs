@@ -38,6 +38,11 @@ pub enum DbError {
     #[error("payload too large")] TooLarge,
 }
 
+/// Result of acknowledging one persisted group recipient. Only `Complete`
+/// means the last remaining queued recipient has acknowledged the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupDeliveryAck { NotPending, PendingRecipients, Complete }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrustLevel { Unverified, Verified, Blocked }
 impl TrustLevel {
@@ -508,6 +513,7 @@ impl Db {
                 PRIMARY KEY (msg_id, recipient_contact_id)
             );
             CREATE INDEX IF NOT EXISTS idx_pending_outbound_recipient ON pending_outbound(recipient_contact_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_outbound_age ON pending_outbound(created_at);
 
             -- Relay network (gipny-dht): items held for others, opaque
             -- ciphertext under opaque keys, and nodes that answered us.
@@ -1049,6 +1055,26 @@ impl Db {
         })
     }
 
+    /// Publish a fully prepared group message to the retry loop. Register the
+    /// complete recipient snapshot atomically, after settings/file offers are
+    /// ready and before the first network await. Preparation itself is separate.
+    pub fn queue_group_recipients(&self, msg_id: i64, recipients: &[i64]) -> Result<()> {
+        self.with_tx(|tx| {
+            let created_at: i64 = tx.query_row(
+                "SELECT sent_at FROM messages WHERE id = ?1 AND direction = 1 AND group_id IS NOT NULL",
+                params![msg_id], |row| row.get(0),
+            )?;
+            for recipient in recipients {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_outbound
+                     (msg_id, recipient_contact_id, send_attempts, created_at) VALUES (?1, ?2, 0, ?3)",
+                    params![msg_id, recipient, created_at],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn list_messages(&self, contact_id: i64, limit: i64, before_id: Option<i64>) -> Result<Vec<Message>> {
         self.with_conn(|c| match before_id {
             Some(b) => c.prepare_cached(concat!("SELECT ", message_cols!(),
@@ -1160,6 +1186,44 @@ impl Db {
         self.with_conn(|c| { c.execute(
             "DELETE FROM pending_outbound WHERE msg_id = ?1 AND recipient_contact_id = ?2",
             params![msg_id, recipient_contact_id])?; Ok(()) })
+    }
+
+    /// Call only after authenticating the peer and validating the message's
+    /// group id. The recipient obligation and final delivered flag commit
+    /// together; unrelated, duplicate and already-purged ACKs are no-ops.
+    pub fn acknowledge_group_delivery(&self, msg_id: i64, recipient_contact_id: i64) -> Result<GroupDeliveryAck> {
+        self.with_tx(|tx| {
+            let removed = tx.execute(
+                "DELETE FROM pending_outbound WHERE msg_id = ?1 AND recipient_contact_id = ?2
+                 AND EXISTS (SELECT 1 FROM messages WHERE id = ?1 AND direction = 1 AND group_id IS NOT NULL)",
+                params![msg_id, recipient_contact_id],
+            )?;
+            if removed == 0 { return Ok(GroupDeliveryAck::NotPending); }
+            let remaining: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM pending_outbound WHERE msg_id = ?1)",
+                params![msg_id], |row| row.get(0),
+            )?;
+            if remaining { return Ok(GroupDeliveryAck::PendingRecipients); }
+            let completed = tx.execute(
+                "UPDATE messages SET sent = 1, delivered = 1 WHERE id = ?1 AND delivered = 0",
+                params![msg_id],
+            )?;
+            Ok(if completed > 0 { GroupDeliveryAck::Complete } else { GroupDeliveryAck::NotPending })
+        })
+    }
+
+    /// Bound undeliverable group queue state to the same seven days as retry.
+    /// Expire the whole message if any recipient is stale, including legacy
+    /// rows queued at different times. Otherwise a late ACK could turn partial
+    /// expiry into apparent complete delivery. Never erase history or mark it delivered.
+    pub fn purge_expired_group_outbound(&self, now_ms: i64) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute(
+            "DELETE FROM pending_outbound WHERE msg_id IN (
+                 SELECT p.msg_id FROM pending_outbound p JOIN messages m ON m.id = p.msg_id
+                 WHERE p.created_at <= ?1 AND m.group_id IS NOT NULL AND m.direction = 1
+             )",
+            params![now_ms.saturating_sub(RETRY_TTL_MS)],
+        )?))
     }
 
     pub fn pending_outbound_for_recipient(
@@ -2266,5 +2330,169 @@ mod file_tests {
         // Deleting the message forgets the transfer.
         db.delete_message(msg).unwrap();
         assert!(db.file_out(&fid).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod group_delivery_tests {
+    use super::*;
+
+    fn due(db: &Db, recipient: i64) -> Vec<i64> {
+        db.pending_outbound_for_recipient(recipient, now_ms(), 0, 0, 100).unwrap()
+    }
+
+    #[test]
+    fn prepared_group_and_complete_recipient_snapshot_survive_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group.db");
+        let db = Db::open_plain(&path).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32];
+        db.create_group(&group, "Team").unwrap();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "durable", now_ms(), None, &[]).unwrap();
+        assert!(due(&db, a).is_empty());
+        assert!(due(&db, b).is_empty());
+        db.set_setting(&format!("sound_{id}"), b"prepared").unwrap();
+        db.queue_group_recipients(id, &[a, b, a]).unwrap();
+        drop(db); // No enqueue or network call has happened yet.
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(db.get_message(id).unwrap().unwrap().body, "durable");
+        assert_eq!(due(&db, a), vec![id]);
+        assert_eq!(due(&db, b), vec![id]);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+    }
+
+    #[test]
+    fn failed_recipient_registration_rolls_back_every_recipient() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("group.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32];
+        db.create_group(&group, "Team").unwrap();
+        db.with_conn(|c| { c.execute_batch(&format!(
+            "CREATE TEMP TRIGGER fail_second_recipient BEFORE INSERT ON pending_outbound
+             WHEN NEW.recipient_contact_id = {b} BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END;"
+        ))?; Ok(()) }).unwrap();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "rollback", now_ms(), None, &[]).unwrap();
+        assert!(db.queue_group_recipients(id, &[a, b]).is_err());
+        assert_eq!(db.list_group_messages(&group, 100, None).unwrap().len(), 1);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+        assert!(due(&db, a).is_empty());
+        assert!(due(&db, b).is_empty());
+    }
+
+    #[test]
+    fn group_ack_is_recipient_scoped_idempotent_and_delivered_only_when_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group.db");
+        let db = Db::open_plain(&path).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let other = db.add_contact(&[7; 32], &[8; 32], "", "other", None).unwrap();
+        let group = [5; 32]; db.create_group(&group, "Team").unwrap();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "receipt", now_ms(), None, &[]).unwrap();
+        db.queue_group_recipients(id, &[a, b]).unwrap();
+        assert_eq!(db.acknowledge_group_delivery(id, other).unwrap(), GroupDeliveryAck::NotPending);
+        assert_eq!(db.acknowledge_group_delivery(id, a).unwrap(), GroupDeliveryAck::PendingRecipients);
+        assert_eq!(db.acknowledge_group_delivery(id, a).unwrap(), GroupDeliveryAck::NotPending);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        assert!(due(&db, a).is_empty()); assert_eq!(due(&db, b), vec![id]);
+        assert_eq!(db.acknowledge_group_delivery(id, b).unwrap(), GroupDeliveryAck::Complete);
+        assert!(db.get_message(id).unwrap().unwrap().delivered);
+        assert!(db.get_message(id).unwrap().unwrap().sent);
+        assert_eq!(db.acknowledge_group_delivery(id, b).unwrap(), GroupDeliveryAck::NotPending);
+    }
+
+    #[test]
+    fn concurrent_recipient_acks_complete_once_and_survive_reopen() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("concurrent-group.db");
+        let db = Arc::new(Db::open_plain(&path).unwrap());
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32];
+        db.create_group(&group, "Team").unwrap();
+        let id = db.insert_group_message(
+            &group, Some(&[6; 32]), Direction::Out, "concurrent receipts", now_ms(), None, &[],
+        ).unwrap();
+        db.queue_group_recipients(id, &[a, b]).unwrap();
+
+        // Both authenticated receive workers reach the ACK boundary together.
+        let ready = Arc::new(Barrier::new(3));
+        let workers: Vec<_> = [a, b].into_iter().map(|recipient| {
+            let db = Arc::clone(&db);
+            let ready = Arc::clone(&ready);
+            std::thread::spawn(move || {
+                ready.wait();
+                db.acknowledge_group_delivery(id, recipient).unwrap()
+            })
+        }).collect();
+        ready.wait();
+        let outcomes: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(outcomes.iter().filter(|&&outcome| outcome == GroupDeliveryAck::Complete).count(), 1);
+        assert_eq!(outcomes.iter().filter(|&&outcome| outcome == GroupDeliveryAck::PendingRecipients).count(), 1);
+        for recipient in [a, b] {
+            assert_eq!(db.acknowledge_group_delivery(id, recipient).unwrap(), GroupDeliveryAck::NotPending);
+        }
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        let message = db.get_message(id).unwrap().unwrap();
+        assert!(message.sent);
+        assert!(message.delivered);
+        for recipient in [a, b] {
+            assert!(due(&db, recipient).is_empty());
+            assert_eq!(db.acknowledge_group_delivery(id, recipient).unwrap(), GroupDeliveryAck::NotPending);
+        }
+    }
+
+    #[test]
+    fn expiration_clears_group_queue_without_erasing_history_or_touching_dm() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("group.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let group = [5; 32]; db.create_group(&group, "Team").unwrap();
+        let now = now_ms();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "expired", now, None, &[]).unwrap();
+        db.queue_group_recipients(id, &[a]).unwrap();
+        let fresh = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "fresh", now + 1, None, &[]).unwrap();
+        db.queue_group_recipients(fresh, &[a]).unwrap();
+        let dm = db.insert_message(a, Direction::Out, "DM", now, None, &[]).unwrap();
+        db.pending_outbound_add(dm, a).unwrap();
+        assert_eq!(db.purge_expired_group_outbound(now + RETRY_TTL_MS).unwrap(), 1);
+        assert_eq!(db.acknowledge_group_delivery(id, a).unwrap(), GroupDeliveryAck::NotPending);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
+        assert_eq!(due(&db, a), vec![fresh, dm]);
+        assert_eq!(db.list_group_messages(&group, 10, None).unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod group_expiry_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_recipient_timestamps_cannot_turn_partial_expiry_into_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("legacy.db")).unwrap();
+        let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
+        let b = db.add_contact(&[3; 32], &[4; 32], "", "B", None).unwrap();
+        let group = [5; 32]; db.create_group(&group, "Team").unwrap();
+        let now = now_ms();
+        let id = db.insert_group_message(&group, Some(&[6; 32]), Direction::Out, "legacy", now, None, &[]).unwrap();
+        db.queue_group_recipients(id, &[a, b]).unwrap();
+        db.with_conn(|c| { c.execute(
+            "UPDATE pending_outbound SET created_at = ?1 WHERE msg_id = ?2 AND recipient_contact_id = ?3",
+            params![now + 60_000, id, b],
+        )?; Ok(()) }).unwrap();
+        assert_eq!(db.purge_expired_group_outbound(now + RETRY_TTL_MS).unwrap(), 2);
+        assert_eq!(db.acknowledge_group_delivery(id, b).unwrap(), GroupDeliveryAck::NotPending);
+        assert!(!db.get_message(id).unwrap().unwrap().delivered);
     }
 }

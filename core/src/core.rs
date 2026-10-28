@@ -2001,6 +2001,13 @@ impl Core {
         let expires_at: Option<i64> = None;
         let ttl: Option<Duration> = None;
         let (stored, parts) = self.store_outgoing(&attachments)?;
+        let members = self.db.list_group_members(group_id)?;
+        let mut recipients = Vec::new();
+        for member in members.iter().filter(|member| !member.is_self) {
+            if let Some(contact) = self.db.find_contact_by_identity(&member.dh_pk)? {
+                if contact.trust != TrustLevel::Blocked { recipients.push(contact.id); }
+            }
+        }
         let msg_id = self.db.insert_group_message(
             group_id, Some(&self.identity.card().sign_pk), Direction::Out,
             &body, sent_at, expires_at, &stored,
@@ -2015,13 +2022,6 @@ impl Core {
         let wire_atts: Vec<WireAttachment> = attachments.into_iter()
             .filter(|a| a.from.is_none() && a.data.len() <= gipny_libcore::files::INLINE_MAX)
             .map(|a| WireAttachment { name: a.name, data: a.data }).collect();
-        let members = self.db.list_group_members(group_id)?;
-        let recipients: Vec<i64> = members.iter()
-            .filter(|m| !m.is_self)
-            .filter_map(|m| self.db.find_contact_by_identity(&m.dh_pk).ok().flatten())
-            .filter(|c| c.trust != TrustLevel::Blocked)
-            .map(|c| c.id)
-            .collect();
         self.register_offers(msg_id, &parts, &recipients)?;
         let offers = self.offers_for(msg_id)?;
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
@@ -2032,14 +2032,16 @@ impl Core {
         }).collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef { id: group_id.to_vec(), name: gname, members: gref_members };
-        for m in members {
-            if m.is_self { continue; }
-            let contact = match self.db.find_contact_by_identity(&m.dh_pk)? {
-                Some(c) => c,
-                None => continue,
+        // A background retry may run on another worker as soon as these rows
+        // commit. Publish only after the complete local payload is ready.
+        self.db.queue_group_recipients(msg_id, &recipients)?;
+        for recipient in recipients {
+            // A previous attempt may have awaited while this contact was
+            // blocked or deleted; do not send to that contact afterwards.
+            let contact = match self.db.get_contact(recipient)? {
+                Some(contact) if contact.trust != TrustLevel::Blocked => contact,
+                _ => continue,
             };
-            if contact.trust == TrustLevel::Blocked { continue; }
-            self.db.pending_outbound_add(msg_id, contact.id)?;
             let mut payload = WirePayload::simple(
                 msg_id as u64, body.clone(), wire_atts.clone(), sent_at,
                 ttl.map(|d| d.as_millis() as i64),
@@ -2047,9 +2049,10 @@ impl Core {
             payload.group = Some(gref.clone());
             payload.reply_to = wire_reply.clone();
             payload.files = offers.clone();
-            match self.send_to_contact(contact.id, &mut payload).await {
-                Ok(()) => { let _ = self.db.pending_outbound_remove(msg_id, contact.id); }
-                Err(e) => eprintln!("[relay-client] group send to contact {} failed (msg {}): {:?} — kept in pending_outbound", contact.id, msg_id, e),
+            if let Err(e) = Self::attempt_group_delivery(
+                &self.db, msg_id, contact.id, self.send_to_contact(contact.id, &mut payload),
+            ).await {
+                eprintln!("[relay-client] group send to contact {} failed (msg {}): {:?} — kept in pending_outbound", contact.id, msg_id, e);
             }
         }
         Ok(msg_id)
@@ -2941,26 +2944,16 @@ impl Core {
                 let _ = self.events.try_send(CoreEvent::ContactUpdated { contact_id });
             }
         }
-        if let Some(gref) = &payload.group {
-            ensure_group_from_wire(&self.db, &self.events, &self.identity, gref).await?;
-        }
-
-        if let Some(ack_local) = payload.ack_for {
-            let local_id = ack_local as i64;
-            if let Some(msg) = self.db.get_message(local_id)? {
-                let belongs = match (msg.contact_id, &msg.group_id, &payload.group) {
-                    (Some(cid), _, None) => cid == contact_id,
-                    (_, Some(gid), Some(gref)) => gid == &gref.id,
-                    _ => false,
-                };
-                if belongs && matches!(msg.direction, Direction::Out) {
-                    let _ = self.db.pending_outbound_remove(local_id, contact_id);
-                    self.db.mark_delivered(local_id)?;
-                    self.note_round_trip(contact_id, &msg).await;
-                    let _ = self.events.try_send(CoreEvent::MessageDelivered { message_id: local_id });
-                }
+        if payload.ack_for.is_some() {
+            if let Some(msg) = Self::acknowledge_delivery(&self.db, contact_id, &payload)? {
+                self.note_round_trip(contact_id, &msg).await;
+                let _ = self.events.try_send(CoreEvent::MessageDelivered { message_id: msg.id });
             }
             return Ok(());
+        }
+
+        if let Some(gref) = &payload.group {
+            ensure_group_from_wire(&self.db, &self.events, &self.identity, gref).await?;
         }
 
         if payload.callback_data.is_some()
@@ -3245,6 +3238,7 @@ impl Core {
     }
 
     async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
+        self.db.purge_expired_group_outbound(now_ms())?;
         // Sending needs *their* relay, not ours: a letter is deposited where the
         // recipient collects it. Ours is where replies come back to, and it takes
         // a minute or two of tunnel building — waiting for it held every outgoing
@@ -3379,17 +3373,49 @@ impl Core {
                     payload.group = Some(WireGroupRef { id: gid.clone(), name: gname, members: gref_members });
                 }
                 eprintln!("[relay-client] retry group msg {} to contact {}", msg_id, contact.id);
-                self.db.pending_outbound_record_attempt(msg_id, contact.id)?;
-                match self.send_payload_via_relay(&contact, &mut payload, &out).await {
-                    Ok(()) => { let _ = self.db.pending_outbound_remove(msg_id, contact.id); }
-                    Err(e) => {
-                        eprintln!("[relay-client] retry group err to contact {}: {:?}", contact.id, e);
-                        break;
-                    }
+                if let Err(e) = Self::attempt_group_delivery(
+                    &self.db, msg_id, contact.id,
+                    self.send_payload_via_relay(&contact, &mut payload, &out),
+                ).await {
+                    eprintln!("[relay-client] retry group err to contact {}: {:?}", contact.id, e);
+                    break;
                 }
             }
         }
         Ok(())
+    }
+
+    /// Both the initial send and retries retain the durable recipient row
+    /// until its end-to-end ACK. Record before polling the send future so
+    /// failures and accepted-but-lost relay enqueues obey the same backoff.
+    async fn attempt_group_delivery<F>(db: &Db, message_id: i64, contact_id: i64, send: F) -> Result<()>
+    where F: std::future::Future<Output = Result<()>>,
+    {
+        db.pending_outbound_record_attempt(message_id, contact_id)?;
+        send.await
+    }
+
+    /// `contact_id` comes from the authenticated, decrypted session. A group
+    /// ACK may consume only that recipient's obligation for this message.
+    fn acknowledge_delivery(db: &Db, contact_id: i64, payload: &WirePayload) -> Result<Option<gipny_libcore::db::Message>> {
+        let Some(ack_id) = payload.ack_for else { return Ok(None) };
+        let Ok(local_id) = i64::try_from(ack_id) else { return Ok(None) };
+        let Some(msg) = db.get_message(local_id)? else { return Ok(None) };
+        let belongs = match (msg.contact_id, &msg.group_id, &payload.group) {
+            (Some(cid), _, None) => cid == contact_id,
+            (_, Some(gid), Some(gref)) => gid == &gref.id,
+            _ => false,
+        };
+        if !belongs || !matches!(msg.direction, Direction::Out) { return Ok(None); }
+        if msg.group_id.is_some() {
+            if !matches!(db.acknowledge_group_delivery(local_id, contact_id)?, gipny_libcore::db::GroupDeliveryAck::Complete) {
+                return Ok(None);
+            }
+        } else {
+            let _ = db.pending_outbound_remove(local_id, contact_id);
+            db.mark_delivered(local_id)?;
+        }
+        Ok(Some(msg))
     }
 
     async fn send_to_contact(self: &Arc<Self>, contact_id: i64, payload: &mut WirePayload) -> Result<()> {
@@ -4271,5 +4297,117 @@ mod relay_mode_tests {
         assert_eq!(resolve_relay_mode(Some(b"external"), ""), RelayMode::External);
         // Garbage in the setting is no choice at all.
         assert_eq!(resolve_relay_mode(Some(b"???"), ""), RelayMode::Builtin);
+    }
+}
+
+#[cfg(test)]
+mod group_delivery_tests {
+    use super::*;
+
+    fn pending(db: &Db, recipient: i64) -> Vec<i64> {
+        db.pending_outbound_for_recipient(
+            recipient, now_ms() + RETRY_MAX_BACKOFF_MS + 1,
+            RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
+        ).unwrap()
+    }
+
+    #[tokio::test]
+    async fn group_enqueue_and_retry_survive_restart_until_recipient_ack() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("core.db");
+        let db = Db::open_plain(&path).unwrap();
+        let first = db.add_contact(&[1; 32], &[2; 32], "", "first", None).unwrap();
+        let second = db.add_contact(&[3; 32], &[4; 32], "", "second", None).unwrap();
+        let outsider = db.add_contact(&[5; 32], &[6; 32], "", "outsider", None).unwrap();
+        let group = [9; 16];
+        db.create_group(&group, "group").unwrap();
+        let message = db.insert_group_message(&group, Some(&[7; 32]), Direction::Out, "durable", now_ms(), None, &[]).unwrap();
+        db.queue_group_recipients(message, &[first, second]).unwrap();
+
+        // Exercise the same send boundary used by both Core send paths. The
+        // relay accepts the first enqueue but never supplies an end-to-end ACK.
+        let (relay, mut received) = mpsc::channel(4);
+        let before_send = now_ms();
+        Core::attempt_group_delivery(&db, message, first, async {
+            relay.send((message, first)).await.map_err(|_| CoreError::State)?;
+            db.mark_sent(message)?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(received.recv().await, Some((message, first)));
+        assert!(Core::attempt_group_delivery(
+            &db, message, second, std::future::ready(Err(CoreError::State)),
+        ).await.is_err());
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+        assert!(db.pending_outbound_for_recipient(
+            first, before_send, RETRY_BASE_BACKOFF_MS, RETRY_MAX_BACKOFF_MS, 50,
+        ).unwrap().is_empty(), "an initial enqueue must observe the retry backoff");
+        assert!(!db.get_message(message).unwrap().unwrap().delivered);
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+        // Resynchronizing the encryption session must not discard delivery
+        // obligations. A fresh retry can be accepted and lost in the same way.
+        db.record_resync(first).unwrap();
+        db.delete_session(first).unwrap();
+        Core::attempt_group_delivery(&db, message, first, async {
+            relay.send((message, first)).await.map_err(|_| CoreError::State)?;
+            db.mark_sent(message)?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(received.recv().await, Some((message, first)));
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+
+        let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+        ack.ack_for = Some(message as u64);
+        ack.group = Some(WireGroupRef { id: group.to_vec(), name: "group".into(), members: vec![] });
+        assert!(Core::acknowledge_delivery(&db, outsider, &ack).unwrap().is_none());
+        let mut wrong_group = ack.clone();
+        wrong_group.group.as_mut().unwrap().id = vec![8; 16];
+        assert!(Core::acknowledge_delivery(&db, first, &wrong_group).unwrap().is_none());
+        let mut wrong_message = ack.clone();
+        wrong_message.ack_for = Some(message as u64 + 1_000);
+        assert!(Core::acknowledge_delivery(&db, first, &wrong_message).unwrap().is_none());
+        assert_eq!(pending(&db, first), vec![message]);
+        assert_eq!(pending(&db, second), vec![message]);
+
+        assert!(Core::acknowledge_delivery(&db, first, &ack).unwrap().is_none());
+        assert!(pending(&db, first).is_empty());
+        assert_eq!(pending(&db, second), vec![message]);
+        assert!(!db.get_message(message).unwrap().unwrap().delivered);
+        assert!(Core::acknowledge_delivery(&db, first, &ack).unwrap().is_none(), "duplicate ACK must not acknowledge another recipient");
+        let completed = Core::acknowledge_delivery(&db, second, &ack).unwrap().unwrap();
+        assert_eq!(completed.id, message);
+        assert!(pending(&db, second).is_empty());
+        assert!(db.get_message(message).unwrap().unwrap().delivered);
+        assert!(Core::acknowledge_delivery(&db, second, &ack).unwrap().is_none(), "completion must not emit twice");
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        assert!(pending(&db, first).is_empty());
+        assert!(pending(&db, second).is_empty());
+        assert!(db.get_message(message).unwrap().unwrap().delivered);
+    }
+
+    #[test]
+    fn delivery_ack_keeps_direct_message_contact_and_direction_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("core.db")).unwrap();
+        let recipient = db.add_contact(&[1; 32], &[2; 32], "", "recipient", None).unwrap();
+        let outsider = db.add_contact(&[3; 32], &[4; 32], "", "outsider", None).unwrap();
+        let outgoing = db.insert_message(recipient, Direction::Out, "out", now_ms(), None, &[]).unwrap();
+        let incoming = db.insert_message(recipient, Direction::In, "in", now_ms(), None, &[]).unwrap();
+        let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+        ack.ack_for = Some(outgoing as u64);
+        assert!(Core::acknowledge_delivery(&db, outsider, &ack).unwrap().is_none());
+        assert!(!db.get_message(outgoing).unwrap().unwrap().delivered);
+        assert_eq!(Core::acknowledge_delivery(&db, recipient, &ack).unwrap().unwrap().id, outgoing);
+        assert!(db.get_message(outgoing).unwrap().unwrap().delivered);
+        ack.ack_for = Some(incoming as u64);
+        assert!(Core::acknowledge_delivery(&db, recipient, &ack).unwrap().is_none());
+        assert!(!db.get_message(incoming).unwrap().unwrap().delivered);
     }
 }

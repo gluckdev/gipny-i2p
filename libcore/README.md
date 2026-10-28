@@ -33,6 +33,7 @@
 | Правила входа на релей | `relay.rs` (`handshake`, `predates_auth_v2`), `relay_server.rs` (`handle_client`, `client_loop`) |
 | Сколько и как долго встроенный релей держит почту | `relay_server.rs`: `MemStoreLimits` |
 | Политика повторной отправки | `db.rs`: `RETRY_TTL_MS`, `list_unacked_outgoing`, `pending_outbound_for_recipient`; бэкофф — константы `RETRY_*` в `core.rs`/`session.rs` |
+| Очередь и подтверждения групп | `db.rs`: `queue_group_recipients`, `acknowledge_group_delivery`, `GroupDeliveryAck`, `purge_expired_group_outbound`; `session.rs` и `core/src/core.rs`: `attempt_group_delivery`, `acknowledge_delivery`; [контракт](../docs/group-delivery.md) |
 | Новая колонка или таблица | `db.rs`: `migrate`: колонка — через `ensure_column` (таблица должна быть в `MIGRATE_TABLES`), новая таблица — `CREATE TABLE IF NOT EXISTS` в общем батче; для контактов и сообщений ещё `select_contact!`/`message_cols!` и `map_contact`/`map_message` |
 | Состояние запроса в контакты | `db.rs`: `RequestState`, `set_contact_request_state`, `list_incoming_requests` |
 | Криптография сессий | `crypto.rs` + `tests/crypto.rs` |
@@ -68,6 +69,7 @@
 - **Relay выдаёт `Incoming` с `from = [0; 32]` (sealed sender).** Получатель перебирает сессии всех контактов.
 - **Собирать и публиковать через релей можно только после `AuthV2`.** Простой `Auth` оставлен для 0.4.2 и даёт только право положить письмо.
 - **`Db::open` — SQLCipher с ключом из vault.** `open_plain` используют только агент и боты.
+- **Групповая очередь хранится до ACK каждого ожидаемого получателя** (следующая версия). `queue_group_recipients` публикует весь снимок одной транзакцией после подготовки метаданных. ACK привязан к исходящему сообщению, группе и аутентифицированному контакту; только `GroupDeliveryAck::Complete` отмечает доставку группы. При семидневной очистке снимаются все оставшиеся ожидания этого сообщения, включая старые записи с разными датами, без удаления истории и без отметки доставки. Подробности и ограничения — в [group-delivery.md](../docs/group-delivery.md).
 
 ## Как проверить
 

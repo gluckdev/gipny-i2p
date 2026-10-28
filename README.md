@@ -8,7 +8,7 @@
 [![Live I2P e2e](https://img.shields.io/badge/I2P%20e2e-5%2F5%20delivered-brightgreen?logo=i2p&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/e2e-i2pd.yml)
 [![Security CodeQL](https://img.shields.io/github/actions/workflow/status/gluckdev/gipny-i2p/codeql.yml?branch=main&label=CodeQL&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/codeql.yml)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Stable-orange?logo=rust&style=flat-square)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 <p align="center">
   <b>Анонимный десктопный и мобильный мессенджер со сквозным шифрованием поверх сети I2P.</b><br/>
@@ -85,6 +85,11 @@
 
 - Личные чаты и группы: создание группы, участники, отдельные счётчики
   непрочитанного (0.4.0).
+- Групповые сообщения сохраняются в очереди до подтверждения каждого
+  ожидаемого получателя и повторяются после обрыва или перезапуска до семи
+  дней. «Доставлено» появляется после последнего ожидаемого подтверждения
+  (следующая версия, ветка `fix/durable-group-delivery`;
+  [контракт и ограничения](docs/group-delivery.md)).
 - Вложения: файлы и картинки, галерея «медиа и файлы» по чату, вставка
   картинки из буфера обмена, сохранение на диск (0.4.0). Файлы больше 128 КБ
   идут частями по 192 КБ и собираются у получателя в любом порядке: до 512 МБ
