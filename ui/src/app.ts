@@ -16,17 +16,21 @@ export class App extends View {
   private updateProgressEl: HTMLElement | null = null;
   private updateStatusEl: HTMLElement | null = null;
   private updateActionsEl: HTMLElement | null = null;
+  private modalClosers = new Set<() => void>();
+  private toastNodes = new Set<HTMLElement>();
 
   constructor(private store: Store) {
     super();
     this.el = h('div', { class: 'stack', style: { height: '100%' } });
     this.sub(store.view, (v) => this.render(v));
+    this.sub(store.selectedChat, () => this.closeModals(), false);
     this.sub(store.toast, (t) => this.renderToast(t));
     this.sub(store.updateAvailable, (info) => this.onUpdateAvailable(info));
     this.sub(store.updateProgress, (p) => this.onUpdateProgress(p));
     this.sub(store.updateReadyPath, (path) => this.onUpdateReady(path));
     this.sub(store.updateError, (err) => this.onUpdateError(err));
     this.sub(store.updateStaged, (version) => this.onUpdateStaged(version));
+    this.sub(store.updateInstallerOpened, (info) => this.onUpdateInstallerOpened(info));
     this.subs.push(onLangChange(() => this.refreshLanguage()));
   }
 
@@ -47,6 +51,8 @@ export class App extends View {
   }
 
   override destroy(): void {
+    this.closeModals();
+    this.clearToasts();
     this.current?.destroy();
     this.current = null;
     this.closeUpdateModal();
@@ -54,6 +60,7 @@ export class App extends View {
   }
 
   private render(view: string): void {
+    this.closeModals();
     this.current?.destroy();
     let next: View;
     switch (view) {
@@ -69,21 +76,42 @@ export class App extends View {
   }
 
   private renderToast(t: { text: string; err: boolean } | null): void {
-    if (!t) return;
+    if (!t) { this.clearToasts(); return; }
     const el = h('div', { class: t.err ? 'toast err' : 'toast' }, t.text);
     const existing = document.querySelectorAll('.toast');
     const offset = existing.length * 56;
     (el as HTMLElement).style.bottom = `${20 + offset}px`;
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+    this.toastNodes.add(el);
+    setTimeout(() => { el.replaceChildren(); el.remove(); this.toastNodes.delete(el); }, 3500);
   }
 
-  openModal(build: (close: () => void) => HTMLElement): void {
+  private clearToasts(): void {
+    for (const el of this.toastNodes) { el.replaceChildren(); el.remove(); }
+    this.toastNodes.clear();
+  }
+
+  closeModals(): void {
+    for (const close of [...this.modalClosers]) close();
+  }
+
+  openModal(build: (close: () => void) => HTMLElement, onClose?: () => void): () => void {
     const backdrop = h('div', { class: 'modal-backdrop' });
-    const close = () => backdrop.remove();
+    const close = () => {
+      if (!this.modalClosers.delete(close)) return;
+      backdrop.firstElementChild?.dispatchEvent(new Event('gipny-modal-close'));
+      onClose?.();
+      backdrop.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea').forEach((input) => { input.value = ''; });
+      backdrop.querySelectorAll<HTMLMediaElement>('audio, video').forEach((media) => { media.pause(); media.removeAttribute('src'); media.load(); });
+      backdrop.querySelectorAll('img').forEach((image) => image.removeAttribute('src'));
+      backdrop.replaceChildren();
+      backdrop.remove();
+    };
+    this.modalClosers.add(close);
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
     backdrop.appendChild(build(close));
     document.body.appendChild(backdrop);
+    return close;
   }
 
   /** Ask for one line of text; resolves null when cancelled. */
@@ -94,7 +122,7 @@ export class App extends View {
           class: 'input', value: initial, maxlength: '80',
           ...(password ? { type: 'password' } : {}),
         });
-        const done = (v: string | null) => { close(); resolve(v); };
+        const done = (v: string | null) => { resolve(v); close(); };
         const submit = () => { const v = input.value.trim(); if (v) done(v); };
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') submit();
@@ -114,7 +142,7 @@ export class App extends View {
             h('button', { class: 'btn', onClick: submit }, action),
           ),
         );
-      });
+      }, () => resolve(null));
     });
   }
 
@@ -127,17 +155,17 @@ export class App extends View {
       this.openModal((close) => h('div', { class: 'modal' },
         h('div', { class: 'modal-header' },
           h('div', { class: 'modal-title' }, title),
-          h('button', { class: 'icon-btn', title: tr('common.close'), onClick: () => { close(); resolve(false); } }, icon('close')),
+          h('button', { class: 'icon-btn', title: tr('common.close'), onClick: () => { resolve(false); close(); } }, icon('close')),
         ),
         h('div', { class: 'modal-body' }, h('div', { class: 'fp' }, body)),
         h('div', { class: 'modal-footer' },
-          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, tr('common.cancel')),
+          h('button', { class: 'btn btn-ghost', onClick: () => { resolve(false); close(); } }, tr('common.cancel')),
           h('button', {
             class: danger ? 'btn btn-danger' : 'btn',
-            onClick: () => { close(); resolve(true); },
+            onClick: () => { resolve(true); close(); },
           }, tr('app.confirm')),
         ),
-      ));
+      ), () => resolve(false));
     });
   }
 
@@ -171,7 +199,26 @@ export class App extends View {
     );
   }
 
-  /// An update is installed and takes effect on the next start. The person is
+  private onUpdateInstallerOpened(info: { version: string; path: string } | null): void {
+    if (!info) return;
+    this.closeUpdateModal();
+    this.openModal((close) => h('div', { class: 'modal modal-sm update-installer-handoff' },
+      h('div', { class: 'modal-header' },
+        h('div', { class: 'modal-title' }, tr('app.installer_opened')),
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'about-p' }, tr('app.complete_update_in_system', { version: info.version })),
+      ),
+      h('div', { class: 'modal-footer' },
+        h('button', {
+          class: 'btn',
+          onClick: () => { this.store.updateInstallerOpened.set(null); close(); },
+        }, tr('common.close')),
+      ),
+    ));
+  }
+
+  /// An update is prepared and takes effect on the next start. The person is
   /// asked once, and can keep working — the running version still functions.
   private onUpdateStaged(version: string | null): void {
     if (!version) return;
@@ -250,8 +297,8 @@ export class App extends View {
             await this.store.installUpdate();
           }),
         }, tr('app.update_now')) as HTMLButtonElement;
-        // Android and unmanaged packages cannot install themselves; offering
-        // the button would download into a directory nobody can reach.
+        // Offer the action only when this build has a supported install or
+        // system-installer handoff route.
         Api.updateInstallsItself().then((can: boolean) => {
           if (!can) {
             b.remove();

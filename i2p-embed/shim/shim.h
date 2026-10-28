@@ -34,7 +34,7 @@ typedef struct gipny_stream gipny_stream;
 /* Router lifecycle. `argv` are i2pd's own options ("--datadir=…",
  * "--bandwidth=…"); argv[0] is ignored. Call once per process. */
 GIPNY_API int gipny_router_init(int argc, const char *const *argv);
-/* `log_path` NULL logs to <datadir>/gipny-i2pd.log. */
+/* `log_path` NULL uses stderr; never falls back to a default log file. */
 GIPNY_API void gipny_router_start(const char *log_path);
 GIPNY_API void gipny_router_stop(void);
 /* Tell the router the machine's network changed (Transports::SetOnline). */

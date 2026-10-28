@@ -10,6 +10,9 @@ use zeroize::Zeroizing;
 
 use crate::security::MasterKey;
 
+mod dm;
+pub use dm::{DmDelete, DmFileUpdate, DmReference};
+
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// How long an undelivered outgoing message keeps being retried.
@@ -34,8 +37,11 @@ pub enum DbError {
     #[error("io: {0}")] Io(#[from] std::io::Error),
     #[error("sql: {0}")] Sql(#[from] rusqlite::Error),
     #[error("bad key")] BadKey,
+    #[error(transparent)] Memory(#[from] crate::memory::MemoryError),
     #[error("state")] State,
     #[error("payload too large")] TooLarge,
+    #[error("This legacy message has no original sender ID; deletion for both sides cannot be verified")]
+    MissingMessageOrigin,
 }
 
 /// Result of acknowledging one persisted group recipient. Only `Complete`
@@ -119,6 +125,9 @@ pub struct Message {
     pub last_attempt_at: Option<i64>,
     pub send_attempts: i64,
     pub reply_to: Option<i64>,
+    /// Stable local arrival number within this direct conversation.
+    pub dm_seq: Option<i64>,
+    pub deleted_at: Option<i64>,
 }
 
 /// A file we send in parts, with its attachment (sealed in parts on disk).
@@ -328,19 +337,21 @@ CREATE TABLE settings (
 
 macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0), COALESCE(request_state, 0) FROM contacts" }; }
 macro_rules! select_group { () => { "SELECT id, name, created_at, pinned_at, last_message_at FROM groups" }; }
-macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to" }; }
-macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to" }; }
+macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to, dm_seq, deleted_at" }; }
+macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to, m.dm_seq, m.deleted_at" }; }
 
-pub struct Db { conn: Mutex<Connection> }
+pub struct Db { conn: Mutex<Connection>, file_mutations: Mutex<()> }
 
 impl Db {
     pub fn open(path: &Path, key: &MasterKey) -> Result<Self> {
         if let Some(p) = path.parent() { fs::create_dir_all(p)?; }
         let conn = Connection::open(path)?;
-        let pragma = Zeroizing::new(format!(
+        let pragma = {
+            let exposed = key.expose()?;
+            Zeroizing::new(format!(
             "PRAGMA key = \"x'{}'\";\nPRAGMA cipher_page_size = 4096;\nPRAGMA cipher_memory_security = ON;\nPRAGMA temp_store = MEMORY;",
-            &*Zeroizing::new(hex(key.as_bytes())),
-        ));
+            &*Zeroizing::new(hex(&*exposed)),
+        )) };
         conn.execute_batch(&pragma)?;
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
             .map_err(|_| DbError::BadKey)?;
@@ -348,7 +359,7 @@ impl Db {
             "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA foreign_keys = ON;\nPRAGMA secure_delete = ON;\nPRAGMA auto_vacuum = FULL;",
         )?;
         Self::migrate(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), file_mutations: Mutex::new(()) })
     }
 
     pub fn open_plain(path: &Path) -> Result<Self> {
@@ -358,15 +369,17 @@ impl Db {
             "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA foreign_keys = ON;\nPRAGMA temp_store = MEMORY;",
         )?;
         Self::migrate(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self { conn: Mutex::new(conn), file_mutations: Mutex::new(()) })
     }
 
     pub fn rekey(&self, key: &MasterKey) -> Result<()> {
         self.with_conn(|conn| {
-            let pragma = Zeroizing::new(format!(
+            let pragma = {
+                let exposed = key.expose()?;
+                Zeroizing::new(format!(
                 "PRAGMA rekey = \"x'{}'\";",
-                &*Zeroizing::new(hex(key.as_bytes())),
-            ));
+                &*Zeroizing::new(hex(&*exposed)),
+            )) };
             conn.execute_batch(&pragma)?;
             Ok(())
         })
@@ -418,7 +431,7 @@ impl Db {
         conn.execute_batch("
             DELETE FROM messages WHERE id IN (
                 SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (PARTITION BY contact_id, origin_msg_id ORDER BY id) AS rn
+                    SELECT id, ROW_NUMBER() OVER (PARTITION BY contact_id, direction, origin_msg_id ORDER BY id) AS rn
                     FROM messages
                     WHERE contact_id IS NOT NULL AND origin_msg_id IS NOT NULL
                 ) WHERE rn > 1
@@ -435,7 +448,7 @@ impl Db {
             DROP INDEX IF EXISTS idx_messages_group_origin;
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_origin
-                ON messages(contact_id, origin_msg_id)
+                ON messages(contact_id, direction, origin_msg_id)
                 WHERE contact_id IS NOT NULL AND origin_msg_id IS NOT NULL;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_group_origin
                 ON messages(group_id, sender_sign_pk, origin_msg_id)
@@ -716,6 +729,7 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_groups_sort
                 ON groups(pinned_at, last_message_at);
         ")?;
+        Self::migrate_dm(conn)?;
         Ok(())
     }
 
@@ -920,6 +934,11 @@ impl Db {
             .query_row(params![contact_id], |r| r.get::<_, Vec<u8>>(0)).optional().map_err(Into::into))
     }
 
+    pub fn has_session(&self, contact_id:i64) -> Result<bool> {
+        self.with_conn(|conn|Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE contact_id=?1)",
+            params![contact_id],|row|row.get(0))?))
+    }
+
     pub fn delete_session(&self, contact_id: i64) -> Result<()> {
         self.with_conn(|c| { c.execute("DELETE FROM sessions WHERE contact_id = ?1", params![contact_id])?; Ok(()) })
     }
@@ -986,6 +1005,14 @@ impl Db {
     ) -> Result<i64> {
         check_body(body)?;
         self.with_tx(|tx| {
+            if let Some(origin) = origin_msg_id.filter(|v| *v > 0) {
+                if matches!(direction, Direction::In) {
+                    if let Some(id) = tx.query_row("SELECT id FROM messages WHERE contact_id=?1 AND group_id IS NULL
+                        AND direction=0 AND origin_msg_id=?2 AND deleted_at IS NOT NULL", params![contact_id,origin], |r|r.get(0)).optional()? {
+                        return Ok(id);
+                    }
+                }
+            }
             tx.execute(
                 "INSERT INTO messages (contact_id, direction, body, sent_at, expires_at, origin_msg_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![contact_id, direction.to_i64(), body, sent_at, expires_at, origin_msg_id])?;
@@ -997,7 +1024,7 @@ impl Db {
 
     pub fn find_message_by_origin(&self, contact_id: i64, origin_msg_id: i64) -> Result<Option<i64>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT id FROM messages WHERE contact_id = ?1 AND origin_msg_id = ?2 ORDER BY id DESC LIMIT 1")?
+            "SELECT id FROM messages WHERE contact_id = ?1 AND direction = 0 AND origin_msg_id = ?2 ORDER BY id DESC LIMIT 1")?
             .query_row(params![contact_id, origin_msg_id], |r| r.get::<_, i64>(0)).optional().map_err(Into::into))
     }
 
@@ -1034,7 +1061,7 @@ impl Db {
 
     pub fn update_message_body(&self, id: i64, body: &str) -> Result<()> {
         check_body(body)?;
-        self.with_conn(|c| { c.execute("UPDATE messages SET body = ?1 WHERE id = ?2", params![body, id])?; Ok(()) })
+        self.with_conn(|c| { c.execute("UPDATE messages SET body = ?1 WHERE id = ?2 AND deleted_at IS NULL", params![body, id])?; Ok(()) })
     }
 
     pub fn set_reply_to(&self, id: i64, reply_to: Option<i64>) -> Result<()> {
@@ -1195,7 +1222,7 @@ impl Db {
 
     pub fn list_unsent_outgoing(&self, contact_id: i64, limit: i64) -> Result<Vec<Message>> {
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
-            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 0 ORDER BY id ASC LIMIT ?2"))?
+            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 0 AND deleted_at IS NULL ORDER BY id ASC LIMIT ?2"))?
             .query_map(params![contact_id, limit], Self::map_message)?.collect_rows())
     }
 
@@ -1206,7 +1233,7 @@ impl Db {
         &self, contact_id: i64, now_ms: i64, base_backoff_ms: i64, max_backoff_ms: i64, limit: i64,
     ) -> Result<Vec<Message>> {
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
-            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0
+            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0 AND deleted_at IS NULL
                AND sent_at > ?2 - ?6
                AND (last_attempt_at IS NULL OR (?2 - last_attempt_at) >= MIN(?4, ?3 * (1 << MIN(send_attempts, 16))))
              ORDER BY id ASC LIMIT ?5"))?
@@ -1402,7 +1429,7 @@ impl Db {
             "DELETE FROM messages WHERE id IN (
                 SELECT m.id FROM messages m
                 LEFT JOIN pinned_messages p ON p.message_id = m.id
-                WHERE m.expires_at IS NOT NULL AND m.expires_at > m.sent_at
+                WHERE m.group_id IS NOT NULL AND m.expires_at IS NOT NULL AND m.expires_at > m.sent_at
                   AND m.expires_at <= ?1 AND p.message_id IS NULL
             )", params![now])?))
     }
@@ -1412,17 +1439,12 @@ impl Db {
             "DELETE FROM pinned_messages WHERE message_id NOT IN (SELECT id FROM messages)", [])?))
     }
 
-    /// Drop the whole transcript of this profile, for the person who would
-    /// rather not find it there next time the app opens.
-    ///
-    /// Pinned messages stay behind: pinning is a deliberate "keep this", and
-    /// taking it away here would throw out something the owner saved on
-    /// purpose. `secure_delete` is on for this database, so what goes is
-    /// overwritten rather than left readable in the free pages, and
-    /// `foreign_keys` carries the attachment rows away with the messages.
+    /// Preserve the existing local group-history cleanup, including pins.
+    /// DM cleanup uses `clear_dm_history` so durable references and deletion
+    /// obligations survive instead of physically dropping those messages.
     pub fn purge_all_messages(&self) -> Result<usize> {
         self.with_conn(|c| Ok(c.execute(
-            "DELETE FROM messages WHERE id NOT IN (SELECT message_id FROM pinned_messages)", [],
+            "DELETE FROM messages WHERE group_id IS NOT NULL AND id NOT IN (SELECT message_id FROM pinned_messages)", [],
         )?))
     }
 
@@ -1442,6 +1464,8 @@ impl Db {
             last_attempt_at: r.get(11)?,
             send_attempts: r.get(12)?,
             reply_to: r.get(13)?,
+            dm_seq: r.get(14)?,
+            deleted_at: r.get(15)?,
         })
     }
 
@@ -1599,10 +1623,16 @@ impl Db {
     pub fn file_out_add(&self, file_id: &[u8; 16], attachment_id: i64, message_id: i64, sha256: &[u8; 32], recipients: &[i64]) -> Result<()> {
         self.with_tx(|tx| {
             tx.execute(
-                "INSERT OR IGNORE INTO file_out (file_id, attachment_id, message_id, sha256, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT OR IGNORE INTO file_out (file_id, attachment_id, message_id, sha256, created_at)
+                 SELECT ?1,?2,?3,?4,?5 WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL)
+                    AND EXISTS(SELECT 1 FROM attachments WHERE id=?2 AND message_id=?3)",
                 params![file_id.as_slice(), attachment_id, message_id, sha256.as_slice(), now_ms()])?;
             for c in recipients {
-                tx.execute("INSERT OR IGNORE INTO file_out_peer (file_id, contact_id) VALUES (?1, ?2)", params![file_id.as_slice(), c])?;
+                tx.execute("INSERT OR IGNORE INTO file_out_peer (file_id, contact_id)
+                    SELECT ?1,?2 WHERE EXISTS(SELECT 1 FROM file_out WHERE file_id=?1)", params![file_id.as_slice(), c])?;
+                tx.execute("INSERT OR IGNORE INTO dm_message_files(message_id,contact_id,file_id)
+                    SELECT id,?2,?3 FROM messages WHERE id=?1 AND contact_id=?2 AND group_id IS NULL AND deleted_at IS NULL",
+                    params![message_id,c,file_id.as_slice()])?;
             }
             Ok(())
         })
@@ -1686,7 +1716,9 @@ impl Db {
     pub fn file_in_add(&self, f: &FileIn) -> Result<bool> {
         self.with_conn(|c| Ok(c.execute(
             "INSERT OR IGNORE INTO file_in (file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+             WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL)
+                AND NOT EXISTS(SELECT 1 FROM dm_deleted_files WHERE contact_id=?2 AND file_id=?1)",
             params![f.file_id.as_slice(), f.contact_id, f.message_id, f.name, f.size as i64, f.sha256.as_slice(),
                     f.chunk_size, f.path, f.key, f.bits, f.received, f.created_at])? > 0))
     }
@@ -1723,7 +1755,12 @@ impl Db {
     /// The file is whole: it becomes an attachment of its message, and the
     /// transfer is forgotten. Returns the attachment's id.
     pub fn file_in_finish(&self, f: &FileIn) -> Result<i64> {
+        let _files=self.file_mutations.lock().map_err(|_|DbError::State)?;
         self.with_tx(|tx| {
+            let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM file_in WHERE file_id=?1 AND contact_id=?2
+                AND EXISTS(SELECT 1 FROM messages WHERE id=file_in.message_id AND deleted_at IS NULL))",
+                params![f.file_id.as_slice(),f.contact_id],|r|r.get(0))?;
+            if !live {return Err(DbError::State);}
             tx.execute(
                 "INSERT INTO attachments (message_id, name, size, key, path, chunk_size) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![f.message_id, f.name, f.size as i64, f.key, f.path, f.chunk_size])?;
@@ -1828,7 +1865,14 @@ impl Db {
     }
 
     pub fn set_setting(&self, key: &str, value: &[u8]) -> Result<()> {
-        self.with_conn(|c| { c.execute(
+        self.with_conn(|c| {
+            let message_id = ["buttons_", "sound_", "console_pending_", "console_"].iter()
+                .find_map(|prefix|key.strip_prefix(prefix).and_then(|id|id.parse::<i64>().ok()));
+            if let Some(id)=message_id {
+                let deleted:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND deleted_at IS NOT NULL)",params![id],|r|r.get(0))?;
+                if deleted {return Ok(());}
+            }
+            c.execute(
             "INSERT INTO settings (k, v) VALUES (?1, ?2) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
             params![key, value])?; Ok(()) })
     }
@@ -1969,7 +2013,8 @@ impl Db {
 
     pub fn pin_contact_message(&self, contact_id: i64, message_id: i64) -> Result<bool> {
         self.with_conn(|c| Ok(c.execute(
-            "INSERT OR IGNORE INTO pinned_messages (contact_id, message_id, pinned_at) VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO pinned_messages (contact_id, message_id, pinned_at)
+             SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM messages WHERE id=?2 AND contact_id=?1 AND deleted_at IS NULL)",
             params![contact_id, message_id, now_ms()])? > 0))
     }
 

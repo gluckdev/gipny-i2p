@@ -1,13 +1,83 @@
 Репозиторий: gluckdev/gipny-i2p — мессенджер на Rust (Tauri для десктопа +
 Android), работающий поверх I2P. Роутер — libi2pd, вкомпилированный в каждый
 бинарь (крейт `i2p-embed`), один на процесс; SAM, дочернего процесса i2pd и
-локальных портов нет (с 2026-09-24, раздел «РОУТЕР ВНУТРИ ПРОЦЕССА»). Разделы
+локальных bridge/proxy нет (с 2026-09-24, раздел «РОУТЕР ВНУТРИ ПРОЦЕССА»).
+Сам роутер использует IP-транспорты NTCP2/SSU2 и reseed. Разделы
 ниже датированы: где они говорят о SAM, `yosemite`, `RouterHandle` или
 HTTP-прокси, это история.
 
 Передача контекста тому, кто возьмёт проект дальше — человеку или другому
 агенту. Заменяет бриф от 2026-07-19, который описывал роутер go-i2p, которого в
 этом дереве больше нет.
+
+СОСТОЯНИЕ ОБЪЕДИНЁННОЙ ВЕТКИ (2026-10-28)
+
+Текущий вход — [снимок интеграции](today-2026-10-28.md). Ветка
+`feat/today-integration-20261028`, версия manifests `0.4.19` — кандидат;
+последний опубликованный релиз `0.4.18`. Общий CI этой ветки пока не запускался,
+поэтому старые зелёные runs и локальные компонентные проверки не обозначают
+готовый новый релиз.
+Новые сборки и исполнение тестов — только GitHub Actions по требованию
+владельца; локальные команды ниже в исторических разделах не обозначают
+разрешение или результат новой сборки. Текущий контракт —
+[build-release.md](build-release.md).
+
+- Включены полный EN/RU UI (`bf7f012`), обязательная сумма обновлений
+  (`7a7bc21`), очередь групп до E2E ACK каждого получателя (`0460e2f`) и
+  атомарная публикация подготовленного group outbox (`c246d86`). Последняя
+  закрывает прежнее окно metadata-before-queue: сообщение, reply/settings,
+  attachment metadata, file offers и весь fan-out фиксируются одной
+  синхронной транзакцией до network awaits. Контракты и пределы —
+  [group-delivery.md](group-delivery.md),
+  [update-verification.md](update-verification.md),
+  [localization.md](localization.md).
+- Android JNI/APK staging включены `db9814f` и интеграцией digest `ca1201e`:
+  живой контекст Tauri, проверенная копия в private `cache/updates`, ограниченный
+  FileProvider и dispatch installer. Изолированный cross-check
+  `aarch64-linux-android` с Rust `1.93.1`, NDK r27d и stub router прошёл;
+  6 host tests staging/dispatch прошли. APK/native router и устройство не
+  проверены. Исходные 14 JNI compile errors воспроизводились на baseline
+  `main` `26487a5`, отдельно от изменения групповой доставки.
+- Новая политика владельца: подробная диагностика только в тестовых и
+  диагностических сборках; release — предупреждения/ошибки без `debug.log`,
+  `debug.prev.log` и подробного файла i2pd. Старые записи ниже о постоянном
+  журнале и его UI относятся к прежней политике. Точный контракт и локальные
+  проверки — [release-diagnostics.md](release-diagnostics.md).
+- Pages site (`4453081`) — статический EN/RU вход в проект, не web messenger.
+  Deployment отдельно, только с `main`; он ещё не выполнялся. Будущий
+  браузерный клиент с crypto/storage на устройстве и независимыми временными
+  долями offline mail остаётся исследованием. Существующий `gipny-web` хранит
+  профиль/crypto на сервере и не реализует эту цель.
+- Оба корневых README и первоисточник `assets/architecture.svg` обновлены:
+  Rust `i2p-embed` → C++ shim → `libi2pd` внутри процесса. SAM service,
+  внешний router CLI и старые probes не нужны; исторические SAM разделы
+  ниже и планы сохранены, архив явно отделён в [индексе](README.md).
+- Удаление DM в текущих исходниках охватывает сообщения обоих авторов,
+  attachments/chunks, очистку диалога/истории и явные таймеры, включая pinned.
+  Stable author/origin references, durable tombstones и запрос до E2E ACK
+  сохраняют локальные номера без перенумерации. Новые тесты ещё не запускались;
+  legacy backup без incoming origin даёт честный отказ. Контракт —
+  [message-deletion.md](message-deletion.md).
+- Защита app-owned секретов в RAM и очистка WebView copies реализованы в
+  исходниках той же ветки; новый CI ещё нужен. Guarded/encrypted containers,
+  короткие zeroizing exposures, active-chat-only history/pinned и stale IPC
+  guards не являются гарантией шифрования всей RAM или стирания JS/GC.
+  [Контракт и ограничения](memory-security.md).
+- Новый OS device binding не использует raw key file fallback: provider
+  требуется до открытия vault/SQLCipher, в том числе агенту/боту. Старые
+  unbound профили автоматически не мигрируются, недоступный provider даёт
+  явный отказ; OpenWrt binary target сам по себе не гарантирует runtime.
+- Платформенные updater paths, Windows bootstrap и предварительные OpenWrt
+  targets описаны в [platform-updates.md](platform-updates.md) и
+  [openwrt.md](openwrt.md); наличие кода не доказывает установку на устройстве.
+
+Исторические компонентные результаты на 2026-10-28 до GitHub-only требования
+и финальных DM/memory изменений: atomic outbox — 125 libcore + 23 Core
+tests со stub router, updater — 22 tests, agent — 2 tests, Pages — 9 checks,
+diagnostics — 4 policy tests, UI — 9 tests после updater handoff. Это разные
+прогоны до финальной интеграционной проверки, не проверка новых DM/WebView
+regressions, не полный live I2P или device acceptance. Итоговые проверки,
+платформенная матрица, публикация и выпуск должны фиксироваться отдельно.
 
 СОСТОЯНИЕ (2026-09-16, вечер).
 

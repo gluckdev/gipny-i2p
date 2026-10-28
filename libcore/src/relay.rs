@@ -270,19 +270,19 @@ async fn handshake(
         loop {
             match recv::<_, RelayToClient>(&mut read_half).await {
                 Ok(f) => {
-                    eprintln!("[relay-wire] recv {}", frame_kind(&f));
-                    if in_tx.send(f).await.is_err() { eprintln!("[relay-wire] in_tx closed, recv-task exit"); break; }
+                    crate::debug_trace!("[relay-wire] recv {}", frame_kind(&f));
+                    if in_tx.send(f).await.is_err() { crate::debug_trace!("[relay-wire] in_tx closed, recv-task exit"); break; }
                 }
-                Err(e) => { eprintln!("[relay-wire] recv err: {:?}, recv-task exit", e); break; }
+                Err(e) => { crate::debug_trace!("[relay-wire] recv err: {:?}, recv-task exit", e); break; }
             }
         }
     });
 
     tokio::spawn(async move {
         while let Some(f) = out_rx.recv().await {
-            eprintln!("[relay-wire] send {}", out_kind(&f));
+            crate::debug_trace!("[relay-wire] send {}", out_kind(&f));
             if let Err(e) = send(&mut write_half, &f).await {
-                eprintln!("[relay-wire] send err: {:?}, send-task exit", e);
+                crate::debug_trace!("[relay-wire] send err: {:?}, send-task exit", e);
                 break;
             }
         }

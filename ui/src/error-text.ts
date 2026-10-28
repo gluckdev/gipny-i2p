@@ -3,6 +3,9 @@ import { getLang, t } from './i18n';
 /** Presentation only. Never change IPC error values or protocol comparisons. */
 export function errorText(error: unknown): string {
   const raw = String(error);
+  if (raw.endsWith('This legacy message has no original sender ID; deletion for both sides cannot be verified')) {
+    return t('chat.legacy_delete_unverifiable');
+  }
   if (getLang() === 'ru') return raw;
   const detail: Record<string, string> = {
     'содержимое не соответствует расширению': 'contents do not match the extension',

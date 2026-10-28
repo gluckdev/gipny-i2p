@@ -249,6 +249,10 @@ export interface Message {
   delivered: boolean;
   read: boolean;
   expires_at: number | null;
+  /** Immutable local arrival number in this direct conversation. */
+  dm_seq?: number | null;
+  deleted_at?: number | null;
+  delete_pending?: boolean;
   buttons?: Button[][] | null;
   reply_to: number | null;
   /** Set when the row is console-framed (command, output or mode marker). */
@@ -356,6 +360,7 @@ export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 export type CoreEvent =
   | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null; console_kind: number | null } }
   | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
+  | { MessageDeleted: { contact_id: number; message_id: number; deleted_at: number; pending: boolean } }
   | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageSent: { message_id: number } }
@@ -377,6 +382,7 @@ export type CoreEvent =
   | { UpdateAvailable: { version: string; notes: string; size: number } }
   | { UpdateProgress: { downloaded: number; total: number; pct: number } }
   | { UpdateStaged: { version: string } }
+  | { UpdateInstallerOpened: { version: string; path: string } }
   | { UpdateReady: { path: string } }
   | { UpdateFailed: { reason: string } }
   | { AgentModeChanged: { master: AgentMaster | null } }
@@ -547,6 +553,10 @@ export class Api {
   }
   static deleteMessage(id: number): Promise<void> {
     return invoke('delete_message', { id });
+  }
+
+  static clearDmChat(contactId: number): Promise<number> {
+    return invoke('clear_dm_chat', { contactId });
   }
   static sendMessage(contactId: number, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
     return invoke('send_message', { contactId, body, attachments, ttlSecs, replyTo });
@@ -859,7 +869,7 @@ export class Api {
   static readPreviousLog(): Promise<string> {
     return invoke('read_previous_log');
   }
-  static logSettings(): Promise<{ enabled: boolean; path: string }> {
+  static logSettings(): Promise<{ available: boolean; enabled: boolean; path: string }> {
     return invoke('log_settings');
   }
   static setLogEnabled(enabled: boolean): Promise<void> {

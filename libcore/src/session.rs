@@ -195,6 +195,141 @@ pub struct WirePayload {
     /// The sender stopped sending this file (or the recipient refused it).
     #[serde(default)]
     pub file_cancel: Option<[u8; 16]>,
+    /// DM content/file identity or authenticated deletion control.
+    #[serde(default)]
+    pub dm: Option<WireDm>,
+}
+
+/// A trailing extension: old clients still read ordinary content and ignore
+/// empty controls. They never acknowledge an operation they do not support.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct WireDm {
+    /// 0: content/chunk identity, 1: delete, 2: deletion ACK.
+    pub kind: u8,
+    pub reference: crate::db::DmReference,
+}
+
+impl WireDm {
+    pub fn is_control_payload(&self, payload:&WirePayload) -> bool {
+        matches!(self.kind,1|2) && payload.group.is_none() && payload.origin_msg_id==0
+            && payload.body.is_empty() && payload.attachments.is_empty() && payload.files.is_empty()
+            && payload.file_chunk.is_none() && payload.file_ack.is_none() && payload.file_cancel.is_none()
+            && payload.edit_of.is_none() && payload.wipe.is_none() && payload.console.is_none()
+            && payload.callback_data.is_none() && payload.ack_for.is_none() && payload.typing.is_none()
+            && payload.pin.is_none() && payload.reply_to.is_none() && payload.ttl_ms.is_none()
+            && payload.buttons.is_none() && payload.notify_sound.is_none()
+    }
+}
+
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct WireV10 {
+    pub origin_msg_id: u64,
+    pub body: String,
+    pub attachments: Vec<WireAttachment>,
+    pub sent_at: i64,
+    pub ttl_ms: Option<i64>,
+    pub group: Option<WireGroupRef>,
+    #[serde(default)]
+    pub buttons: Option<Vec<Vec<WireButton>>>,
+    #[serde(default)]
+    pub callback_data: Option<String>,
+    #[serde(default)]
+    pub edit_of: Option<u64>,
+    #[serde(default)]
+    pub pin: Option<WirePin>,
+    #[serde(default)]
+    pub ack_for: Option<u64>,
+    #[serde(default)]
+    pub sender_name: Option<String>,
+    #[serde(default)]
+    pub reply_to: Option<WireReply>,
+    #[serde(default)]
+    pub typing: Option<bool>,
+    #[serde(default)]
+    pub notify_sound: Option<String>,
+    #[serde(default)]
+    pub console: Option<WireConsole>,
+    #[serde(default)]
+    pub relay_address: Option<String>,
+    /// "Forget me": the sender deleted this contact and asks the recipient to
+    /// delete the conversation and the contact too. Only ever honoured from
+    /// the contact itself, inside its ratchet session.
+    #[serde(default)]
+    pub wipe: Option<bool>,
+    /// Files too large to ride inside one letter, named here and sent in parts
+    /// on the same session ([`WireFileChunk`]); see `crate::files`.
+    #[serde(default)]
+    pub files: Vec<WireFileOffer>,
+    /// One part of an offered file. A letter carrying it has no text and no
+    /// `origin_msg_id`: it is not a message in the chat.
+    #[serde(default)]
+    pub file_chunk: Option<WireFileChunk>,
+    /// What the recipient holds of a file so far.
+    #[serde(default)]
+    pub file_ack: Option<WireFileAck>,
+    /// The sender stopped sending this file (or the recipient refused it).
+    #[serde(default)]
+    pub file_cancel: Option<[u8; 16]>,
+}
+
+impl From<&WirePayload> for WireV10 {
+    fn from(p: &WirePayload) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id.clone(),
+            body: p.body.clone(),
+            attachments: p.attachments.clone(),
+            sent_at: p.sent_at.clone(),
+            ttl_ms: p.ttl_ms.clone(),
+            group: p.group.clone(),
+            buttons: p.buttons.clone(),
+            callback_data: p.callback_data.clone(),
+            edit_of: p.edit_of.clone(),
+            pin: p.pin.clone(),
+            ack_for: p.ack_for.clone(),
+            sender_name: p.sender_name.clone(),
+            reply_to: p.reply_to.clone(),
+            typing: p.typing.clone(),
+            notify_sound: p.notify_sound.clone(),
+            console: p.console.clone(),
+            relay_address: p.relay_address.clone(),
+            wipe: p.wipe.clone(),
+            files: p.files.clone(),
+            file_chunk: p.file_chunk.clone(),
+            file_ack: p.file_ack.clone(),
+            file_cancel: p.file_cancel.clone(),
+        }
+    }
+}
+
+impl From<WireV10> for WirePayload {
+    fn from(p: WireV10) -> Self {
+        Self {
+            origin_msg_id: p.origin_msg_id,
+            body: p.body,
+            attachments: p.attachments,
+            sent_at: p.sent_at,
+            ttl_ms: p.ttl_ms,
+            group: p.group,
+            buttons: p.buttons,
+            callback_data: p.callback_data,
+            edit_of: p.edit_of,
+            pin: p.pin,
+            ack_for: p.ack_for,
+            sender_name: p.sender_name,
+            reply_to: p.reply_to,
+            typing: p.typing,
+            notify_sound: p.notify_sound,
+            console: p.console,
+            relay_address: p.relay_address,
+            wipe: p.wipe,
+            files: p.files,
+            file_chunk: p.file_chunk,
+            file_ack: p.file_ack,
+            file_cancel: p.file_cancel,
+            dm: None,
+        }
+    }
 }
 
 /// A file sent in parts: what it is, so the recipient can take the parts in
@@ -245,7 +380,7 @@ impl WirePayload {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,
             group: None, buttons: None, callback_data: None, edit_of: None, pin: None,
             ack_for: None, sender_name: None, reply_to: None,
-            typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -439,7 +574,7 @@ impl From<WireV9> for WirePayload {
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound,
             console: v.console, relay_address: v.relay_address, wipe: v.wipe,
-            files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -488,7 +623,7 @@ impl From<WireV8> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound,
-            console: v.console, relay_address: v.relay_address, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            console: v.console, relay_address: v.relay_address, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -564,7 +699,7 @@ impl From<WireV7> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: v.notify_sound, console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -577,7 +712,7 @@ impl From<WireV6> for WirePayload {
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
             reply_to: v.reply_to, typing: v.typing, notify_sound: None, console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -645,7 +780,7 @@ impl From<WireV5> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            reply_to: v.reply_to, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -657,7 +792,7 @@ impl From<WireV4> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for, sender_name: v.sender_name,
-            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -669,7 +804,7 @@ impl From<WireV3> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin, ack_for: v.ack_for,
-            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -681,7 +816,7 @@ impl From<WireV2> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
             edit_of: v.edit_of, pin: v.pin,
-            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -692,7 +827,7 @@ impl From<WireV1> for WirePayload {
             origin_msg_id: v.origin_msg_id, body: v.body, attachments: v.attachments,
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: v.buttons, callback_data: v.callback_data,
-            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None, relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
@@ -704,14 +839,15 @@ impl From<WireV0> for WirePayload {
             sent_at: v.sent_at, ttl_ms: v.ttl_ms, group: v.group,
             buttons: None, callback_data: None,
             edit_of: None, pin: None, ack_for: None, sender_name: None, reply_to: None, typing: None, notify_sound: None, console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         }
     }
 }
 
 pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::Error> {
     let has_files = !p.files.is_empty() || p.file_chunk.is_some() || p.file_ack.is_some() || p.file_cancel.is_some();
-    if has_files                                         { bincode::serialize(p) }
+    if p.dm.is_some()                                    { bincode::serialize(p) }
+    else if has_files                                   { bincode::serialize(&WireV10::from(p)) }
     else if p.wipe.is_some()                             { bincode::serialize(&WireV9::from(p)) }
     else if p.console.is_some() || p.relay_address.is_some() { bincode::serialize(&WireV8::from(p)) }
     else if p.notify_sound.is_some()                    { bincode::serialize(&WireV7::from(p)) }
@@ -725,6 +861,7 @@ pub fn encode_payload(p: &WirePayload) -> std::result::Result<Vec<u8>, bincode::
 
 pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
     if let Ok(v) = bincode::deserialize::<WirePayload>(pt) { return Ok(v); }
+    if let Ok(v) = bincode::deserialize::<WireV10>(pt)     { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV9>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV8>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV7>(pt)      { return Ok(v.into()); }
@@ -735,6 +872,36 @@ pub fn decode_payload(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Er
     if let Ok(v) = bincode::deserialize::<WireV2>(pt)      { return Ok(v.into()); }
     if let Ok(v) = bincode::deserialize::<WireV1>(pt)      { return Ok(v.into()); }
     Ok(bincode::deserialize::<WireV0>(pt)?.into())
+}
+
+#[cfg(test)]
+mod dm_wire_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_extension_roundtrips_and_old_readers_see_no_chat_message() {
+        let mut payload=WirePayload::simple(0,String::new(),vec![],300,None);
+        payload.dm=Some(WireDm {kind:1,reference:crate::db::DmReference {author:[2;32],origin:44,sent_at:100}});
+        let bytes=encode_payload(&payload).unwrap();
+        assert_eq!(decode_payload(&bytes).unwrap().dm,payload.dm);
+        let old=bincode::deserialize::<WireV10>(&bytes).unwrap();
+        assert_eq!(old.origin_msg_id,0);
+        assert!(old.body.is_empty() && old.attachments.is_empty() && old.files.is_empty());
+        assert!(old.ack_for.is_none());
+        assert!(payload.dm.as_ref().unwrap().is_control_payload(&payload));
+        payload.edit_of=Some(1);
+        assert!(!payload.dm.as_ref().unwrap().is_control_payload(&payload));
+    }
+
+    #[test]
+    fn historical_chunk_payload_remains_decodable_without_dm_extension() {
+        let mut payload=WirePayload::simple(0,String::new(),vec![],300,None);
+        payload.file_chunk=Some(WireFileChunk {file_id:[3;16],index:0,data:vec![7;32]});
+        let historical=bincode::serialize(&WireV10::from(&payload)).unwrap();
+        let decoded=decode_payload(&historical).unwrap();
+        assert_eq!(decoded.file_chunk,payload.file_chunk);
+        assert!(decoded.dm.is_none());
+    }
 }
 
 const PADDING_BUCKETS: &[usize] = &[
@@ -792,6 +959,7 @@ pub enum SessionEvent {
     Disconnected,
     IncomingPayload { contact_id: i64, payload: WirePayload, message_id: i64 },
     MessageDelivered { message_id: i64 },
+    MessageDeleted { contact_id:i64, message_id:i64, deleted_at:i64, pending:bool },
     /// It will not go: too large for one letter (files go in parts; this is
     /// a letter that could not). Marked sent so it is not retried forever.
     MessageFailed { message_id: i64, reason: String },
@@ -874,6 +1042,8 @@ impl SessionManager {
     ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
         std::fs::create_dir_all(data_dir.join(ATTACHMENTS_DIR))?;
         let identity = Arc::new(load_or_create_identity(&db)?);
+        db.configure_dm_identity(&identity.card().sign_pk)?;
+        db.cleanup_deleted_files(&data_dir.join(ATTACHMENTS_DIR))?;
         let dht = dht_client::new_node(node.clone(), db.clone());
         let (events_tx, events_rx) = mpsc::channel(256);
         let this = Arc::new(Self {
@@ -1132,7 +1302,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1144,6 +1314,7 @@ impl SessionManager {
         new_body: String,
         buttons: Option<Vec<Vec<WireButton>>>,
     ) -> Result<()> {
+        if self.db.outgoing_dm_by_origin(contact_id,edit_target_origin)?.is_none() {return Err(SessionError::NotFound);}
         let mut payload = WirePayload {
             origin_msg_id: 0,
             body: new_body,
@@ -1161,7 +1332,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1228,7 +1399,7 @@ impl SessionManager {
             if let Err(e) = attempt_group_delivery(
                 &self.db, msg_id, contact.id, self.send_to_contact(contact.id, &mut payload),
             ).await {
-                eprintln!(
+                crate::debug_trace!(
                     "[session] group send to contact {} failed (msg {}): {:?}; queued",
                     contact.id, msg_id, e
                 );
@@ -1284,7 +1455,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
             };
             let _ = self.send_to_contact(contact.id, &mut payload).await;
         }
@@ -1322,7 +1493,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         self.send_to_contact(contact_id, &mut payload).await
     }
@@ -1331,13 +1502,15 @@ impl SessionManager {
         let id = self.db.get_setting(SETTING_SIGNED_PREKEY_ID)?;
         if id.is_none() {
             let pair = PreKeyPair::generate();
-            let pid = self.db.add_prekey(PreKeyKind::Signed, pair.secret(), pair.public())?;
+            let secret=pair.expose_secret()?;
+            let pid = self.db.add_prekey(PreKeyKind::Signed, &*secret, pair.public())?;
             self.db.set_setting(SETTING_SIGNED_PREKEY_ID, &pid.to_be_bytes())?;
         }
         let count = self.db.count_prekeys(PreKeyKind::OneTime)?;
         for _ in count..(TARGET_OPK as i64) {
             let pair = PreKeyPair::generate();
-            self.db.add_prekey(PreKeyKind::OneTime, pair.secret(), pair.public())?;
+            let secret=pair.expose_secret()?;
+            self.db.add_prekey(PreKeyKind::OneTime, &*secret, pair.public())?;
         }
         Ok(())
     }
@@ -1372,7 +1545,7 @@ impl SessionManager {
                     tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
-                eprintln!("[session] relay connect {}", &onion[..16.min(onion.len())]);
+                crate::debug_trace!("[session] relay connect {}", &onion[..16.min(onion.len())]);
                 let local = this.local_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
                     .filter(|r| r.address() == onion)
                     .map(|r| r.connect_local());
@@ -1391,7 +1564,7 @@ impl SessionManager {
                 };
                 match connected {
                     Ok(client) => {
-                        eprintln!("[session] relay connected & authed");
+                        crate::debug_trace!("[session] relay connected & authed");
                         backoff = RECONNECT_INITIAL_MS;
                         *this.relay_out.write().await = Some(client.out_tx.clone());
                         let _ = this.events.send(SessionEvent::Connected).await;
@@ -1405,7 +1578,7 @@ impl SessionManager {
                         *this.relay_out.write().await = None;
                         let _ = this.events.send(SessionEvent::Disconnected).await;
                     }
-                    Err(e) => eprintln!("[session] connect fail: {:?}", e),
+                    Err(e) => crate::debug_trace!("[session] connect fail: {:?}", e),
                 }
                 tokio::time::sleep(Duration::from_millis(backoff)).await;
                 backoff = (backoff * 2).min(RECONNECT_MAX_MS);
@@ -1433,7 +1606,7 @@ impl SessionManager {
                     let total = crate::files::chunk_count(fin.size as u64, fin.chunk_size);
                     let ack = crate::files::Received::from_bits(fin.bits.clone(), total).resume_ack(fin.file_id);
                     if this.send_file_message(fin.contact_id, |p| p.file_ack = Some(ack)).await {
-                        eprintln!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
+                        crate::debug_trace!("[files] told contact {} we are back, holding {} of {} parts", fin.contact_id, fin.received, total);
                     } else {
                         still.push(fin);
                     }
@@ -1462,7 +1635,7 @@ impl SessionManager {
                 let dial = tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, relay::connect(&this.node, &onion, &this.identity)).await;
                 let Ok(Ok(client)) = dial else { continue };
                 let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
-                eprintln!("[files] another connection to our relay for parts ({n} extra)");
+                crate::debug_trace!("[files] another connection to our relay for parts ({n} extra)");
                 let lane = this.clone();
                 // Tracked like every task of ours: one left running after
                 // shutdown kept reading mail on the old instance, with its own
@@ -1534,9 +1707,9 @@ impl SessionManager {
                     Ok(Ok(c)) => c,
                     other => {
                         match other {
-                            Err(_) => eprintln!("[session] peer relay {short} did not answer in {:?}",
+                            Err(_) => crate::debug_trace!("[session] peer relay {short} did not answer in {:?}",
                                 PEER_RELAY_CONNECT_TIMEOUT),
-                            Ok(Err(e)) => eprintln!("[session] peer relay {short} unreachable: {e:?}"),
+                            Ok(Err(e)) => crate::debug_trace!("[session] peer relay {short} unreachable: {e:?}"),
                             Ok(Ok(_)) => unreachable!(),
                         }
                         this.peer_relays.lock().await.insert(
@@ -1563,13 +1736,13 @@ impl SessionManager {
                         return;
                     }
                 };
-                eprintln!("[session] connected to peer relay {short}");
+                crate::debug_trace!("[session] connected to peer relay {short}");
                 this.peer_relays.lock().await
                     .insert(key.clone(), PeerRelay::Ready(client.out_tx.clone()));
                 // No session with them yet: ask for their bundle now, so a
                 // first letter does not wait a round trip for it.
                 let no_session = !this.sessions.lock().await.contains_key(&contact_id)
-                    && this.db.get_session(contact_id).ok().flatten().is_none();
+                    && !this.db.has_session(contact_id).unwrap_or(false);
                 if let (true, Some(pk)) = (no_session, contact_pk) {
                     let _ = client.out_tx.send(ClientToRelay::GetBundle { pk }).await;
                 }
@@ -1635,7 +1808,7 @@ impl SessionManager {
                     .await
                 };
                 if stored {
-                    eprintln!("[dht/session] letter for contact {} left in the network", contact.id);
+                    crate::debug_trace!("[dht/session] letter for contact {} left in the network", contact.id);
                     Ok(())
                 } else {
                     Err(SessionError::State)
@@ -1662,11 +1835,11 @@ impl SessionManager {
                     // ratchet on and not be saved.
                     if done.is_some_and(|d| d()) { break; }
                     if collecting_from.as_deref().is_some_and(|o| o != self.relay_onion()) {
-                        eprintln!("[session] our relay changed, reconnecting to the new one");
+                        crate::debug_trace!("[session] our relay changed, reconnecting to the new one");
                         break;
                     }
                     if last_activity.elapsed() > dead_threshold {
-                        eprintln!("[session] no relay activity for {:?}, forcing reconnect", last_activity.elapsed());
+                        crate::debug_trace!("[session] no relay activity for {:?}, forcing reconnect", last_activity.elapsed());
                         break;
                     }
                     if out_tx.send(ClientToRelay::Ping).await.is_err() { break; }
@@ -1678,11 +1851,11 @@ impl SessionManager {
                     // through: this relay would take our deposits and never
                     // hand us our mail. Reconnect, which tries AuthV2 again.
                     if collecting_from.is_some() && matches!(&frame, RelayToClient::Error(e) if e == relay::ERR_NEEDS_AUTH_V2) {
-                        eprintln!("[session] our relay wants AuthV2, reconnecting");
+                        crate::debug_trace!("[session] our relay wants AuthV2, reconnecting");
                         break;
                     }
                     if let Err(e) = self.handle_relay_frame(frame, &out_tx).await {
-                        eprintln!("[session] handle err: {:?}", e);
+                        crate::debug_trace!("[session] handle err: {:?}", e);
                     }
                 }
             }
@@ -1699,10 +1872,10 @@ impl SessionManager {
                 match self.handle_incoming_envelope(&from, &blob).await {
                     Ok(()) => { let _ = out_tx.send(ClientToRelay::Ack { id }).await; }
                     Err(SessionError::Codec) => {
-                        eprintln!("[session] codec err on msg {}, NOT acking", id);
+                        crate::debug_trace!("[session] codec err on msg {}, NOT acking", id);
                     }
                     Err(SessionError::StaleOpk) => {
-                        eprintln!("[session] stale-OPK X3dhInit on msg {}, ACK and skip (zombie)", id);
+                        crate::debug_trace!("[session] stale-OPK X3dhInit on msg {}, ACK and skip (zombie)", id);
                         let _ = out_tx.send(ClientToRelay::Ack { id }).await;
                     }
                     Err(SessionError::SealedDrop) => {
@@ -1715,18 +1888,18 @@ impl SessionManager {
                                 m.get(&c.id).map(|t| now_ms() - *t < FRESH_SESSION_GRACE_MS).unwrap_or(false)
                             };
                             if fresh {
-                                eprintln!("[session] crypto err on msg {} within fresh-session grace, ACK and skip", id);
+                                crate::debug_trace!("[session] crypto err on msg {} within fresh-session grace, ACK and skip", id);
                                 let _ = out_tx.send(ClientToRelay::Ack { id }).await;
                             } else {
-                                eprintln!("[session] crypto err on msg {}, requesting resync, NOT acking", id);
+                                crate::debug_trace!("[session] crypto err on msg {}, requesting resync, NOT acking", id);
                                 let _ = self.request_resync(&c).await;
                             }
                         } else {
-                            eprintln!("[session] crypto err on msg {}, no contact, NOT acking", id);
+                            crate::debug_trace!("[session] crypto err on msg {}, no contact, NOT acking", id);
                         }
                     }
                     Err(e) => {
-                        eprintln!("[session] incoming err: {:?}", e);
+                        crate::debug_trace!("[session] incoming err: {:?}", e);
                         let _ = out_tx.send(ClientToRelay::Ack { id }).await;
                     }
                 }
@@ -1747,7 +1920,7 @@ impl SessionManager {
             }
             RelayToClient::Error(reason) => {
                 // Dropped silently before, which hid a relay refusing us.
-                eprintln!("[session] relay error: {reason}");
+                crate::debug_trace!("[session] relay error: {reason}");
                 let _ = self.events.send(SessionEvent::RelayError { reason }).await;
             }
             _ => {}
@@ -1788,7 +1961,7 @@ impl SessionManager {
                     // Both opened a session at once. Ours stands; theirs is
                     // read for what it says (name, relay) and set aside, and
                     // they will take ours when it reaches them.
-                    eprintln!("[session] X3dhInit from contact {} crossed ours; ours stands", contact.id);
+                    crate::debug_trace!("[session] X3dhInit from contact {} crossed ours; ours stands", contact.id);
                     let (theirs, plaintext) = self.accept_x3dh(&init, &ad).await?;
                     self.lost_inits.lock().await.insert(contact.id, theirs);
                     let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
@@ -1802,9 +1975,9 @@ impl SessionManager {
                     // Theirs stands. What we sent on ours they read on it (they
                     // keep it for that); anything that did not make it goes
                     // again on the usual retry, so no resend of everything here.
-                    eprintln!("[session] X3dhInit from contact {} crossed ours; theirs stands", contact.id);
+                    crate::debug_trace!("[session] X3dhInit from contact {} crossed ours; theirs stands", contact.id);
                 } else {
-                    eprintln!("[session] received X3dhInit from contact {}, accepting", contact.id);
+                    crate::debug_trace!("[session] received X3dhInit from contact {}, accepting", contact.id);
                 }
                 self.own_inits.lock().await.remove(&contact.id);
                 self.lost_inits.lock().await.remove(&contact.id);
@@ -1818,9 +1991,10 @@ impl SessionManager {
                     s.get(&contact.id).unwrap().to_bytes()?
                 };
                 self.db.put_session(contact.id, &sb)?;
+                drop(sb);
                 let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
                 self.persist_incoming(contact.id, payload).await?;
-                eprintln!("[session] session established with contact {} via X3dhInit", contact.id);
+                crate::debug_trace!("[session] session established with contact {} via X3dhInit", contact.id);
                 if init.one_time_id.is_some() {
                     self.republish_bundle().await;
                 }
@@ -1841,7 +2015,7 @@ impl SessionManager {
                     let mut sess = self.sessions.lock().await;
                     let attempt = match sess.get_mut(&c.id) {
                         Some(state) => state.decrypt(&header, &ciphertext, &ad).map(|pt| (pt, state.to_bytes())),
-                        None => match self.db.get_session(c.id)? {
+                        None => match self.db.get_session(c.id)?.map(zeroize::Zeroizing::new) {
                             Some(blob) => {
                                 let mut state = RatchetState::from_bytes(&blob)?;
                                 let r = state.decrypt(&header, &ciphertext, &ad).map(|pt| (pt, state.to_bytes()));
@@ -1888,17 +2062,17 @@ impl SessionManager {
                             hit
                         };
                         if let Some((cid, pt)) = lost_hit {
-                            eprintln!("[session] letter from contact {cid} on its session that lost to ours; read on it");
+                            crate::debug_trace!("[session] letter from contact {cid} on its session that lost to ours; read on it");
                             let payload: WirePayload = decode_with_padding_fallback(&pt)?;
                             self.persist_incoming(cid, payload).await?;
                             return Ok(());
                         }
                         if sealed {
-                            eprintln!("[session] sealed ratchet: no session matched, ACK and drop");
+                            crate::debug_trace!("[session] sealed ratchet: no session matched, ACK and drop");
                             return Err(SessionError::SealedDrop);
                         }
                         if let Ok(Some(c)) = self.db.find_contact_by_sign_pk(from_pk) {
-                            eprintln!("[session] no session for {}, requesting resync", c.id);
+                            crate::debug_trace!("[session] no session for {}, requesting resync", c.id);
                             let _ = self.request_resync(&c).await;
                         }
                         return Err(SessionError::Crypto(CryptoError::Mac));
@@ -1949,20 +2123,22 @@ impl SessionManager {
     }
 
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        if self.handle_dm_control(contact_id, &payload).await? {return Ok(());}
+        if self.reject_deleted_dm_content(contact_id, &payload).await? {return Ok(());}
         self.heard.lock().unwrap_or_else(|p| p.into_inner()).insert(contact_id, now_ms());
         // Files in parts: these letters are nothing else.
         if let Some(ack) = &payload.file_ack {
             self.on_file_ack(contact_id, ack).await?;
         }
         if let Some(chunk) = &payload.file_chunk {
-            self.on_file_chunk(contact_id, chunk, payload.sent_at).await?;
+            self.on_file_chunk(contact_id, chunk, payload.sent_at, payload.dm.as_ref().map(|dm| &dm.reference)).await?;
         }
         if let Some(file_id) = &payload.file_cancel {
             self.on_file_cancel(contact_id, file_id).await?;
         }
         // As in the app: a contact who deleted us asks for the chat to go.
         if payload.wipe == Some(true) {
-            eprintln!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
+            crate::debug_trace!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
             self.db.delete_contact(contact_id)?;
             self.sessions.lock().await.remove(&contact_id);
             self.session_created_at.lock().await.remove(&contact_id);
@@ -1984,7 +2160,7 @@ impl SessionManager {
             if !trimmed.is_empty() && crate::card::is_valid_i2p_address(trimmed) {
                 if let Ok(current) = self.db.contact_relay(contact_id) {
                     if current.as_deref() != Some(trimmed) {
-                        eprintln!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
+                        crate::debug_trace!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
                         let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
                         self.warm_relay_of(contact_id);
                     }
@@ -2034,6 +2210,7 @@ impl SessionManager {
                 self.db.find_message_by_origin(contact_id, edit_target_origin as i64)?
             };
             if let Some(local_id) = lookup {
+                if self.db.get_message(local_id)?.is_some_and(|message| message.deleted_at.is_some()) {return Ok(());}
                 let buttons_bytes = payload.buttons.as_ref().and_then(|b| bincode::serialize(b).ok());
                 self.db.update_message_body(local_id, &payload.body)?;
                 if let Some(b) = buttons_bytes {
@@ -2041,12 +2218,16 @@ impl SessionManager {
                 } else {
                     let _ = self.db.delete_setting(&format!("buttons_{}", local_id));
                 }
-                let _ = self.events.send(SessionEvent::MessageEdited {
+                let permit=self.events.reserve().await.map_err(|_|SessionError::State)?;
+                self.db.if_message_live(local_id,|| { permit.send(SessionEvent::MessageEdited {
                     message_id: local_id, new_body: payload.body.clone(), buttons: payload.buttons.clone(),
-                }).await;
+                }); })?;
                 return Ok(());
             }
         }
+
+        // An edit whose original has not arrived is never a new DM.
+        if payload.edit_of.is_some() && payload.group.is_none() {return Ok(());}
 
         if let Some(pin) = &payload.pin {
             let self_sign = self.identity.card().sign_pk.to_vec();
@@ -2084,7 +2265,7 @@ impl SessionManager {
                 self.db.find_message_by_origin(contact_id, payload.origin_msg_id as i64)?
             };
             if existing.is_some() {
-                eprintln!("[session] duplicate origin={} from contact {}, re-acking", payload.origin_msg_id, contact_id);
+                crate::debug_trace!("[session] duplicate origin={} from contact {}, re-acking", payload.origin_msg_id, contact_id);
                 let _ = self.send_ack(&contact, &payload).await;
                 return Ok(());
             }
@@ -2108,6 +2289,10 @@ impl SessionManager {
                 Some(payload.origin_msg_id as i64),
             )?
         };
+        if self.db.get_message(mid)?.is_some_and(|message|message.deleted_at.is_some()) {
+            for attachment in &atts {let _=std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&attachment.path));}
+            return Ok(());
+        }
         if !payload.files.is_empty() {
             self.accept_offers(contact_id, mid, &payload.files).await?;
         }
@@ -2139,11 +2324,109 @@ impl SessionManager {
         }
         self.db.touch_contact(contact_id)?;
         let payload_for_ack = payload.clone();
-        let _ = self.events.send(SessionEvent::IncomingPayload {
+        let permit=self.events.reserve().await.map_err(|_|SessionError::State)?;
+        self.db.if_message_live(mid,|| { permit.send(SessionEvent::IncomingPayload {
             contact_id, payload, message_id: mid,
-        }).await;
+        }); })?;
         let _ = self.send_ack(&contact, &payload_for_ack).await;
         Ok(())
+    }
+
+    /// Delete an incoming or outgoing DM for both endpoints, keeping its number.
+    pub fn delete_message(&self, message_id:i64) -> Result<()> {
+        let deletion=self.db.delete_dm_message(message_id)?;
+        self.emit_dm_deleted(&deletion)
+    }
+
+    pub fn clear_message_history(&self) -> Result<usize> {
+        let deletions=self.db.clear_dm_history()?;
+        for deletion in &deletions {self.emit_dm_deleted(deletion)?;}
+        Ok(deletions.iter().filter(|deletion|deletion.changed).count())
+    }
+
+    pub fn clear_dm_contact(&self, contact_id:i64) -> Result<usize> {
+        let deletions=self.db.clear_dm_contact(contact_id)?;
+        for deletion in &deletions {self.emit_dm_deleted(deletion)?;}
+        Ok(deletions.iter().filter(|deletion|deletion.changed).count())
+    }
+
+    fn emit_dm_deleted(&self, deletion: &crate::db::DmDelete) -> Result<()> {
+        if let Some(flow) = self.flows.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&deletion.contact_id) {
+            for file in &deletion.files { flow.forget(*file); }
+        }
+        self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        let message = self.db.get_message(deletion.message_id)?.ok_or(SessionError::NotFound)?;
+        let _ = self.events.try_send(SessionEvent::MessageDeleted {
+            contact_id: deletion.contact_id, message_id: deletion.message_id,
+            deleted_at: message.deleted_at.ok_or(SessionError::State)?,
+            pending: self.db.dm_delete_pending(deletion.message_id)?,
+        });
+        self.send_kick.notify_one();
+        Ok(())
+    }
+
+    async fn handle_dm_control(self: &Arc<Self>, contact_id: i64, payload: &WirePayload) -> Result<bool> {
+        let Some(dm) = &payload.dm else { return Ok(false); };
+        if dm.kind == 0 { return Ok(false); }
+        if !dm.is_control_payload(payload) { return Err(SessionError::State); }
+        match dm.kind {
+            1 => {
+                let deleted = self.db.receive_dm_delete(contact_id, &dm.reference)?;
+                self.emit_dm_deleted(&deleted)?;
+                let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
+                let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+                ack.dm = Some(crate::session::WireDm { kind: 2, reference: dm.reference.clone() });
+                if let Some(route) = self.route_for(&contact).await {
+                    let _ = self.send_payload_via_relay(&contact, &mut ack, &route).await;
+                }
+            }
+            2 => {
+                if self.db.acknowledge_dm_delete(contact_id, &dm.reference)? {
+                    if let Some(message_id) = self.db.dm_deleted_message_id(contact_id, &dm.reference)? {
+                        self.emit_dm_deleted(&crate::db::DmDelete {
+                            contact_id, message_id, changed: false, files: vec![],
+                        })?;
+                    }
+                }
+            }
+            _ => return Err(SessionError::State),
+        }
+        Ok(true)
+    }
+
+    async fn reject_deleted_dm_content(self: &Arc<Self>, contact_id:i64, payload:&WirePayload) -> Result<bool> {
+        if payload.group.is_some() {
+            if payload.dm.is_some() { return Err(SessionError::State); }
+            return Ok(false);
+        }
+        let contact=self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
+        let ordinary=payload.origin_msg_id>0 && payload.edit_of.is_none()
+            && payload.ack_for.is_none() && payload.callback_data.is_none();
+        let reference=if let Some(dm)=&payload.dm {
+            if dm.kind!=0 || dm.reference.origin==0 || dm.reference.origin>i64::MAX as u64
+                || dm.reference.author.as_slice()!=contact.identity_sign.as_slice()
+                || (ordinary && (dm.reference.origin!=payload.origin_msg_id || dm.reference.sent_at!=payload.sent_at)) {
+                return Err(SessionError::State);
+            }
+            Some(dm.reference.clone())
+        } else if ordinary {
+            Some(crate::db::DmReference { author:to_arr32(contact.identity_sign.clone())?,
+                origin:payload.origin_msg_id,sent_at:payload.sent_at })
+        } else {None};
+        let Some(reference)=reference else {return Ok(false)};
+        let mut files:Vec<_>=payload.files.iter().map(|file|file.file_id).collect();
+        if let Some(chunk)=&payload.file_chunk {files.push(chunk.file_id);}
+        if self.db.reject_deleted_dm_files(contact_id,&reference,&files)? {
+            let _=self.send_ack(&contact,payload).await;
+            return Ok(true);
+        }
+        if ordinary && payload.ttl_ms.is_some_and(|ttl|ttl>0 && payload.sent_at.saturating_add(ttl)<=now_ms()) {
+            let deletion=self.db.expire_incoming_dm(contact_id,&reference)?;
+            self.db.reject_deleted_dm_files(contact_id,&reference,&files)?;
+            self.emit_dm_deleted(&deletion)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub async fn reset_contact_session(&self, contact_id: i64) -> Result<()> {
@@ -2171,7 +2454,7 @@ impl SessionManager {
     async fn request_resync(&self, contact: &Contact) -> Result<()> {
         let throttled = self.db.resync_recent(contact.id, 60_000)?;
         if !throttled {
-            eprintln!("[session] forcing resync for contact {}", contact.id);
+            crate::debug_trace!("[session] forcing resync for contact {}", contact.id);
             self.db.record_resync(contact.id)?;
             self.sessions.lock().await.remove(&contact.id);
             self.session_created_at.lock().await.remove(&contact.id);
@@ -2200,7 +2483,7 @@ impl SessionManager {
             typing: None,
             notify_sound: None,
             console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None,
+            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
         };
         let Some(route) = self.route_for(contact).await else { return Ok(()) };
         if self.ensure_session_for(contact, &route).await.is_err() {
@@ -2230,6 +2513,8 @@ impl SessionManager {
     }
 
     async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
+        for deletion in self.db.delete_expired_dm(now_ms())? {self.emit_dm_deleted(&deletion)?;}
+        self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
         self.db.purge_expired_group_outbound(now_ms())?;
         let contacts = self.db.list_contacts()?;
         let groups_by_id: HashMap<Vec<u8>, String> = self
@@ -2257,10 +2542,12 @@ impl SessionManager {
                 RETRY_MAX_BACKOFF_MS,
                 50,
             )?;
+            let deletions=self.db.pending_dm_deletes(contact.id,now_ms())?;
             let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
+                && deletions.is_empty()
                 && !needs_session
                 && !needs_keepalive
                 && !file_work
@@ -2277,29 +2564,35 @@ impl SessionManager {
                 None => continue,
             };
             if self.ensure_session_for(&contact, &route).await.is_err() { continue; }
+            for reference in deletions {
+                let mut payload=WirePayload::simple(0,String::new(),vec![],now_ms(),None);
+                payload.dm=Some(WireDm {kind:1,reference:reference.clone()});
+                self.db.record_dm_delete_attempt(contact.id,&reference,now_ms())?;
+                let _=self.send_payload_via_relay(&contact,&mut payload,&route).await;
+            }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
                 payload.ack_for = Some(0);
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
-                    eprintln!("[session] keepalive err to contact {}: {:?}", contact.id, e);
+                    crate::debug_trace!("[session] keepalive err to contact {}: {:?}", contact.id, e);
                 } else {
-                    eprintln!("[session] keepalive sent to contact {} (DH-roll forced)", contact.id);
+                    crate::debug_trace!("[session] keepalive sent to contact {} (DH-roll forced)", contact.id);
                 }
             }
             for msg in pending {
                 let mut payload = self.build_payload_from_db(&msg)?;
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
-                    eprintln!("[session] send err contact {}: {:?}", contact.id, e);
+                    crate::debug_trace!("[session] send err contact {}: {:?}", contact.id, e);
                     break;
                 }
             }
             for msg in unacked {
                 let mut payload = self.build_payload_from_db(&msg)?;
-                eprintln!("[session] retry unacked msg {} to contact {} (attempt {})",
+                crate::debug_trace!("[session] retry unacked msg {} to contact {} (attempt {})",
                     msg.id, contact.id, msg.send_attempts + 1);
                 self.db.record_send_attempt(msg.id)?;
                 if let Err(e) = self.send_payload_via_relay(&contact, &mut payload, &route).await {
-                    eprintln!("[session] retry err contact {}: {:?}", contact.id, e);
+                    crate::debug_trace!("[session] retry err contact {}: {:?}", contact.id, e);
                     break;
                 }
             }
@@ -2307,7 +2600,7 @@ impl SessionManager {
             // per key for a file (dht/src/store.rs); they wait for it.
             if file_work && matches!(route, Route::Relay(_)) {
                 if let Err(e) = self.send_file_parts(&contact, &route).await {
-                    eprintln!("[files] parts to contact {}: {:?}", contact.id, e);
+                    crate::debug_trace!("[files] parts to contact {}: {:?}", contact.id, e);
                 }
             }
             for msg_id in group_pending {
@@ -2345,7 +2638,7 @@ impl SessionManager {
                     &self.db, msg_id, contact.id,
                     self.send_payload_via_relay(&contact, &mut payload, &route),
                 ).await {
-                    eprintln!(
+                    crate::debug_trace!(
                         "[session] retry group msg {} to contact {} failed: {:?}",
                         msg_id, contact.id, e
                     );
@@ -2362,8 +2655,11 @@ impl SessionManager {
         route: &Route,
     ) -> Result<()> {
         if self.sessions.lock().await.contains_key(&contact.id) { return Ok(()); }
-        if let Some(blob) = self.db.get_session(contact.id)? {
-            self.sessions.lock().await.insert(contact.id, RatchetState::from_bytes(&blob)?);
+        if let Some(state) = self.db.get_session(contact.id)?.map(|blob| {
+            let blob=zeroize::Zeroizing::new(blob);
+            RatchetState::from_bytes(&blob)
+        }).transpose()? {
+            self.sessions.lock().await.insert(contact.id, state);
             return Ok(());
         }
         // No waiting for the other side to go first (that cost every new
@@ -2416,7 +2712,7 @@ impl SessionManager {
         self.session_created_at.lock().await.insert(contact.id, now_ms());
         let blob = bincode::serialize(&EnvelopeBlob::X3dhInit(init))?;
         self.deliver(contact, blob, route, true).await?;
-        eprintln!("[session] x3dh sent to contact {}", contact.id);
+        crate::debug_trace!("[session] x3dh sent to contact {}", contact.id);
         Ok(())
     }
 
@@ -2496,6 +2792,9 @@ impl SessionManager {
         p.notify_sound = sound;
         p.console = console;
         p.files = self.offers_for(msg.id)?;
+        if msg.group_id.is_none() && msg.contact_id.is_some() {
+            p.dm=Some(WireDm {kind:0,reference:self.db.dm_reference(msg.id)?});
+        }
         Ok(p)
     }
 
@@ -2622,7 +2921,7 @@ impl SessionManager {
                     let _ = self.db.dht_seen_forget(&hash);
                 }
                 Err(e) => {
-                    eprintln!("[dht/session] letter did not open: {e:?}");
+                    crate::debug_trace!("[dht/session] letter did not open: {e:?}");
                     let _ = self.db.dht_seen_forget(&hash);
                 }
             }
@@ -2669,7 +2968,7 @@ impl SessionManager {
             if relay.trim().is_empty() || known.as_deref() == Some(relay.as_str()) {
                 return;
             }
-            eprintln!("[dht/session] contact {id} published a new relay address");
+            crate::debug_trace!("[dht/session] contact {id} published a new relay address");
             if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
                 if let Some(old) = known.as_deref() {
                     this.peer_relays.lock().await.remove(old);
@@ -2728,16 +3027,19 @@ fn ensure_group_session(db: &Arc<Db>, identity: &Arc<Identity>, gref: &WireGroup
 }
 
 fn load_or_create_identity(db: &Db) -> Result<Identity> {
-    match (db.get_setting(SETTING_IDENTITY_SIGN)?, db.get_setting(SETTING_IDENTITY_DH)?) {
+    match (db.get_setting(SETTING_IDENTITY_SIGN)?.map(zeroize::Zeroizing::new), db.get_setting(SETTING_IDENTITY_DH)?.map(zeroize::Zeroizing::new)) {
         (Some(s), Some(d)) if s.len() == 32 && d.len() == 32 => {
-            let mut sign = [0u8; 32]; sign.copy_from_slice(&s);
-            let mut dh = [0u8; 32]; dh.copy_from_slice(&d);
-            Ok(Identity::from_bytes(sign, dh))
+            let mut sign=zeroize::Zeroizing::new([0u8;32]); sign.copy_from_slice(&s);
+            let mut dh=zeroize::Zeroizing::new([0u8;32]); dh.copy_from_slice(&d);
+            Ok(Identity::try_from_bytes(*sign,*dh)?)
         }
         _ => {
-            let id = Identity::generate();
-            db.set_setting(SETTING_IDENTITY_SIGN, id.sign_seed())?;
-            db.set_setting(SETTING_IDENTITY_DH, id.dh_secret())?;
+            let id=Identity::try_generate()?;
+            id.with_secret_bytes(|sign,dh| -> crate::db::Result<()> {
+                db.set_setting(SETTING_IDENTITY_SIGN,sign)?;
+                db.set_setting(SETTING_IDENTITY_DH,dh)?;
+                Ok(())
+            })??;
             Ok(id)
         }
     }
@@ -2794,7 +3096,7 @@ impl SessionManager {
     async fn accept_offers(self: &Arc<Self>, contact_id: i64, message_id: i64, offers: &[WireFileOffer]) -> Result<()> {
         for o in offers {
             if o.size > crate::files::MAX_FILE_BYTES || o.chunk_size == 0 || o.chunk_size > crate::files::CHUNK_SIZE {
-                eprintln!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
+                crate::debug_trace!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
                 continue;
             }
             if self.db.file_in(&o.file_id, contact_id)?.is_some() {
@@ -2812,13 +3114,14 @@ impl SessionManager {
             if !self.db.file_in_add(&fin)? {
                 continue;
             }
-            eprintln!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
+            self.db.track_dm_file(contact_id,message_id,&o.file_id)?;
+            crate::debug_trace!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
             let _ = self.events.send(SessionEvent::FileProgress { message_id, contact_id, incoming: true, done: 0, total }).await;
             // Parts that came before this letter.
             let early = self.db.file_early_take(&o.file_id, contact_id)?;
             for (index, data) in early {
                 let chunk = WireFileChunk { file_id: o.file_id, index, data };
-                self.on_file_chunk(contact_id, &chunk, 0).await?;
+                self.on_file_chunk(contact_id, &chunk, 0, None).await?;
             }
         }
         Ok(())
@@ -2826,53 +3129,31 @@ impl SessionManager {
 
     /// `sent_at` is the part's letter's, echoed in the ack (0 for a part set
     /// aside before its offer: no round trip to measure on it).
-    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64) -> Result<()> {
+    async fn on_file_chunk(self: &Arc<Self>, contact_id: i64, chunk: &WireFileChunk, sent_at: i64,
+        reference: Option<&crate::db::DmReference>) -> Result<()> {
         let before = self.part_seen.swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
-        if !collect_lane_holds(before, now_ms()) {
-            self.collect_kick.notify_one();
-        }
-        let Some(fin) = self.db.file_in(&chunk.file_id, contact_id)? else {
-            // Before its offer (resends reorder letters): set aside, a window's
-            // worth at most.
-            if chunk.data.len() <= crate::files::CHUNK_SIZE as usize {
-                self.db.file_early_put(&chunk.file_id, contact_id, chunk.index, &chunk.data)?;
-            }
+        if !collect_lane_holds(before, now_ms()) { self.collect_kick.notify_one(); }
+        let Some(update) = self.db.apply_file_chunk(contact_id, chunk, reference, &self.data_dir.join(ATTACHMENTS_DIR))? else { return Ok(()); };
+        if update.broken {
+            self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(SessionEvent::FileFailed {
+                message_id:update.message_id,contact_id,reason:"came broken".into(),
+            }); })?;
             return Ok(());
-        };
-        let total = crate::files::chunk_count(fin.size, fin.chunk_size);
-        let mut got = crate::files::Received::from_bits(fin.bits.clone(), total);
-        let path = self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path);
-        let cipher = AttachmentCipher::from_key(to_arr32(fin.key.clone())?);
-        let fresh = if got.has(chunk.index) {
-            false
-        } else {
-            crate::files::write_part(&path, &cipher, fin.size, fin.chunk_size, chunk.index, &chunk.data)?;
-            got.mark(chunk.index);
-            self.db.file_in_save(&fin.file_id, contact_id, got.bits(), got.count())?;
-            true
-        };
-        if got.complete() {
-            let sha = crate::files::open_to(&path, &cipher, fin.size, fin.chunk_size, &mut std::io::sink())?;
-            if sha != fin.sha256 {
-                eprintln!("[files] {} from contact {contact_id} came broken (sha256); dropped", fin.name);
-                let _ = std::fs::remove_file(&path);
-                self.db.file_in_delete(&fin.file_id, contact_id)?;
-                let _ = self.events.send(SessionEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "came broken".into() }).await;
-            } else {
-                let attachment_id = self.db.file_in_finish(&fin)?;
-                eprintln!("[files] {} from contact {contact_id} is whole ({} bytes)", fin.name, fin.size);
-                let _ = self.events.send(SessionEvent::FileReceived { message_id: fin.message_id, attachment_id }).await;
-            }
-        } else if fresh {
-            let _ = self.events.send(SessionEvent::FileProgress {
-                message_id: fin.message_id, contact_id, incoming: true, done: got.count(), total,
-            }).await;
         }
-        // A resend means they did not hear our last ack; the whole file, a
-        // hole, or every few parts: say where we are.
-        let hole = !got.missing().is_empty();
-        if !fresh || got.complete() || hole || got.count() % crate::files::ACK_EVERY == 0 {
-            self.send_file_message(contact_id, |p| p.file_ack = Some(WireFileAck { echo_index: chunk.index, echo_sent_at: sent_at, ..got.ack(fin.file_id) })).await;
+        if let Some(attachment_id)=update.attachment_id {
+            self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(SessionEvent::FileReceived {
+                message_id:update.message_id,attachment_id,
+            }); })?;
+        } else if update.fresh {
+            self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(SessionEvent::FileProgress {
+                message_id:update.message_id,contact_id,incoming:true,done:update.received.count(),total:update.total,
+            }); })?;
+        }
+        if !update.fresh || update.received.complete() || !update.received.missing().is_empty()
+            || update.received.count() % crate::files::ACK_EVERY == 0 {
+            self.send_file_message(contact_id, |p|p.file_ack=Some(WireFileAck {
+                echo_index:chunk.index,echo_sent_at:sent_at,..update.received.ack(chunk.file_id)
+            })).await;
         }
         Ok(())
     }
@@ -2885,12 +3166,12 @@ impl SessionManager {
         {
             let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
             let flow = flows.entry(contact_id).or_default();
-            eprintln!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
+            crate::debug_trace!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
                 ack.received_up_to, ack.missing, ack.seen_to);
             s.on_ack(ack, flow, now_ms());
             if s.done(total) {
                 flow.forget(ack.file_id);
-                eprintln!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
+                crate::debug_trace!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
             }
         }
         peer.acked = s.acked;
@@ -2901,7 +3182,7 @@ impl SessionManager {
             message_id: file.message_id, contact_id, incoming: false, done: peer.acked, total,
         }).await;
         if s.done(total) {
-            eprintln!("[files] {} is all at contact {contact_id}", file.attachment.name);
+            crate::debug_trace!("[files] {} is all at contact {contact_id}", file.attachment.name);
         }
         self.send_kick.notify_one();
         Ok(())
@@ -2976,7 +3257,7 @@ impl SessionManager {
                     crate::relay::connect_peer(&this.node, &relay, &this.identity),
                 ).await;
                 if let Ok(Ok(client)) = dial {
-                    eprintln!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
+                    crate::debug_trace!("[files] another lane to relay {}", &relay[..16.min(relay.len())]);
                     this.file_lanes.lock().await.entry(relay.clone()).or_default().push(client.out_tx.clone());
                     this.file_lanes_dialling.lock().unwrap_or_else(|p| p.into_inner()).remove(&relay);
                     this.send_kick.notify_one();
@@ -3040,7 +3321,7 @@ impl SessionManager {
             }
             // One line a part (192 KiB): what went, and why it was its turn.
             let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
-            eprintln!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
+            crate::debug_trace!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
                 a.name, contact.id, due, again);
             let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
@@ -3049,11 +3330,12 @@ impl SessionManager {
                 let data = crate::files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
                 payload.file_chunk = Some(WireFileChunk { file_id: file.file_id, index: *index, data });
+                if let Ok(reference)=self.db.dm_reference(file.message_id) {payload.dm=Some(WireDm {kind:0,reference});}
                 // Round the lanes: each is its own i2p stream.
                 let via = Route::Relay(lanes[lane % lanes.len()].clone());
                 lane += 1;
                 if let Err(e) = self.send_payload_via_relay(contact, &mut payload, &via).await {
-                    eprintln!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
+                    crate::debug_trace!("[files] part {index} of {} to contact {}: {e:?}", a.name, contact.id);
                     // What did not go goes again next time.
                     let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
                     let flow = flows.entry(contact.id).or_default();
@@ -3128,7 +3410,7 @@ fn acknowledge_delivery(db: &Db, contact_id: i64, payload: &WirePayload) -> Resu
     let Some(ack_id) = payload.ack_for else { return Ok(None) };
     let Ok(local_id) = i64::try_from(ack_id) else { return Ok(None) };
     let Some(message) = db.get_message(local_id)? else { return Ok(None) };
-    if !matches!(message.direction, Direction::Out) { return Ok(None); }
+    if message.deleted_at.is_some() || !matches!(message.direction, Direction::Out) { return Ok(None); }
     match (message.contact_id, &message.group_id, &payload.group) {
         (Some(cid), None, None) if cid == contact_id => {
             db.mark_delivered(local_id)?;

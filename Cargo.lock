@@ -120,6 +120,7 @@ dependencies = [
  "blake2",
  "cpufeatures 0.3.1",
  "password-hash",
+ "zeroize",
 ]
 
 [[package]]
@@ -427,6 +428,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+ "zeroize",
 ]
 
 [[package]]
@@ -654,6 +656,7 @@ dependencies = [
  "cipher",
  "cpufeatures 0.3.1",
  "rand_core 0.10.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -666,6 +669,7 @@ dependencies = [
  "chacha20",
  "cipher",
  "poly1305",
+ "zeroize",
 ]
 
 [[package]]
@@ -1119,6 +1123,7 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
+ "zeroize",
 ]
 
 [[package]]
@@ -1862,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "gipny"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "arboard",
  "argon2",
@@ -1904,7 +1909,7 @@ dependencies = [
 
 [[package]]
 name = "gipny-agent"
-version = "0.4.18"
+version = "0.4.19"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2345,7 +2350,10 @@ name = "i2p-embed"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "libc",
  "tokio",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

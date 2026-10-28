@@ -1,0 +1,3 @@
+# Unified patch context must preserve upstream tabs and blank context lines.
+# Source files retain Git's normal whitespace checks.
+i2p-embed/patches/*.patch -whitespace

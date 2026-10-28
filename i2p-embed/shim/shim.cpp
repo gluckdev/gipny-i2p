@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iostream>
+#include <openssl/crypto.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +18,7 @@
 #include "Destination.h"
 #include "FS.h"
 #include "Identity.h"
+#include "Log.h"
 #include "NetDb.hpp"
 #include "RouterContext.h"
 #include "Streaming.h"
@@ -101,6 +104,13 @@ int gipny_router_init(int argc, const char *const *argv) {
 	for (auto &c : copies) args.push_back(c.data());
 	args.push_back(nullptr);
 	try {
+		// Rust normalized this option according to the compiled diagnostics
+		// policy. Apply it before InitI2P can queue info/debug startup traces.
+		std::string level = "warn";
+		for (const auto &arg : copies) {
+			if (arg.compare(0, 11, "--loglevel=") == 0) level = arg.substr(11);
+		}
+		i2p::log::Logger().SetLogLevel(level);
 		i2p::api::InitI2P(static_cast<int>(copies.size()), args.data(), "gipny-i2pd");
 		// api.cpp leaves this to the daemon, which we are not: without it the
 		// reseed and family certificates are looked for under "" and a router
@@ -126,7 +136,9 @@ int gipny_router_init(int argc, const char *const *argv) {
 }
 
 void gipny_router_start(const char *log_path) {
-	std::shared_ptr<std::ostream> log;
+	// A null stream makes api::StartI2P open <datadir>/gipny-i2pd.log.
+	// Always supply a real stream; release Rust callers pass no file path.
+	auto log = std::shared_ptr<std::ostream>(&std::cerr, [](std::ostream *) {});
 	if (log_path && *log_path) {
 		auto f = std::make_shared<std::ofstream>(log_path, std::ios::app);
 		if (f->is_open()) log = f;
@@ -177,7 +189,12 @@ char *gipny_keys_generate(void) {
 	auto keys = i2p::data::PrivateKeys::CreateRandomKeys(
 		i2p::data::SIGNING_KEY_TYPE_EDDSA_SHA512_ED25519,
 		i2p::data::CRYPTO_KEY_TYPE_ECIES_X25519_AEAD, true);
-	return dup_string(keys.ToBase64());
+	// The caller owns the returned allocation and wipes it in string_free.
+	// Wipe the intermediate serialized copy as well, including malloc failure.
+	auto serialized = keys.ToBase64();
+	auto result = dup_string(serialized);
+	OPENSSL_cleanse(serialized.data(), serialized.size());
+	return result;
 }
 
 char *gipny_keys_public(const char *private_b64) {
@@ -291,6 +308,7 @@ void gipny_stream_free(gipny_stream *stream) {
 }
 
 void gipny_string_free(char *s) {
+	if (s) OPENSSL_cleanse(s, std::strlen(s));
 	std::free(s);
 }
 

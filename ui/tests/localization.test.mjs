@@ -21,21 +21,28 @@ win.__TAURI_INTERNALS__ = {};
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
 const { t, setLang, getLang, translations, App, Store, Api } = ui;
 const calls = [];
+let logSettings = { available: true, enabled: false, path: '/tmp/example.log' };
 ui.mockIPC((cmd) => {
   calls.push(cmd);
+  if (cmd === 'log_settings' && logSettings instanceof Error) return Promise.reject(logSettings);
   const responses = {
     get_contact_folders: [], get_avatar_choices: {}, get_chat_prefs: { ttlSecs: null, ttlChosen: true },
-    list_attachments: [], list_group_members: [], list_media_contact: [], list_media_group: [],
+    list_attachments: [], files_progress: [], list_group_members: [], list_media_contact: [], list_media_group: [],
     link_stats: { lane: 'normal', our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: null }, get_relay_info: null, get_relay_address: '', my_b32: '',
     update_configured: false, list_apk_artifacts: { version: '0.4.18', artifacts: [] },
     current_version: '0.4.18', get_attachment_privacy: true, get_clear_on_lock: false,
     get_agent_mode: null, get_router_settings: { transit: 'balanced', yggdrasil: 'off' },
-    log_settings: { enabled: false, path: '/tmp/example.log' },
+    log_settings: logSettings,
     my_bundle: { sign_pk: 'a'.repeat(64), dh_pk: 'b'.repeat(64), signed_prekey: 'c'.repeat(64), signed_prekey_sig: 'd'.repeat(128), one_time_prekey: null },
   };
   return responses[cmd] ?? null;
 });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
 
 test('locale choice respects saved preferences and handles unavailable storage', () => {
@@ -180,4 +187,257 @@ test('all modal families render English and Russian without translating user con
     assert.equal(ui.fmtAgo(Date.now()), lang === 'en' ? 'just now' : 'только что');
   }
   app.destroy();
+});
+
+test('system installer handoff preserves retry and never offers an installed-version restart', async () => {
+  for (const lang of ['en', 'ru']) {
+    setLang(lang);
+    const store = new Store();
+    const app = new App(store); document.body.append(app.el);
+    const info = { version: '0.4.20', notes: 'Release notes', size: 123 };
+    store.handleEvent({ UpdateAvailable: info });
+    const before = calls.length;
+    store.handleEvent({ UpdateInstallerOpened: { version: info.version, path: '/cache/verified.apk' } });
+    const modal = document.querySelector('.update-installer-handoff');
+    assert.ok(modal, 'handoff has a visible status even without an existing update dialog');
+    assert.ok(modal.textContent.includes(t('app.complete_update_in_system', { version: info.version })));
+    assert.equal(store.updateStaged.get(), null);
+    assert.equal(store.updateAvailable.get()?.version, info.version, 'cancelled install can be retried');
+    assert.ok(![...modal.querySelectorAll('button')].some((button) => button.textContent === t('app.restart')));
+    modal.querySelector('button').click(); await tick();
+    assert.ok(!document.querySelector('.update-installer-handoff'));
+    assert.ok(!calls.slice(before).some((cmd) => /dismiss_update|restart_app/.test(cmd)));
+    store.handleEvent({ UpdateStaged: { version: info.version } });
+    const restart = [...document.querySelectorAll('.modal button')].find((button) => button.textContent === t('app.restart'));
+    assert.ok(restart, 'completed preparation still offers restart');
+    [...restart.parentElement.querySelectorAll('button')].find((button) => button !== restart).click();
+    app.destroy();
+  }
+});
+
+test('DM deletion keeps numbered gaps, removes actions and stays silent in both locales', async () => {
+  const previousList = Api.listMessages;
+  const previousUnread = Api.unreadCount;
+  try {
+    for (const lang of ['en', 'ru']) {
+      setLang(lang);
+      const store = chatStore();
+      const message = (id, sequence, outgoing) => ({ id, dm_seq: sequence, contact_id: 1, group_id: null,
+        sender_sign_pk: 'a'.repeat(64), outgoing, body: `private ${id}`, sent_at: Date.now(),
+        sent: true, delivered: true, read: false, expires_at: null, reply_to: null, console: null,
+        deleted_at: null, delete_pending: false });
+      let server = [message(101, 1, true), message(202, 2, false), message(303, 3, true)];
+      Api.listMessages = async () => server.map((item) => ({ ...item })).reverse();
+      Api.unreadCount = async () => 0;
+      store.messages.set(new Map([['contact:1', server.map((item) => ({ ...item }))]]));
+      let sounds = 0, notifications = 0;
+      store.playNotify = () => { sounds++; };
+      store.nativeNotify = () => { notifications++; };
+      store.fileProgress.set(new Map([[202, { done: 1, total: 3, incoming: true }]]));
+      store.pinned.set(new Map([['contact:1', [server[1]]]]));
+      const app = new App(store); document.body.append(app.el); await tick();
+      for (const outgoing of [true, false]) {
+        let invoked = 0;
+        const menu = ui.messageMenuItems(store, { kind: 'contact', id: 1 }, { ...server[0], outgoing },
+          () => {}, () => {}, () => {}, () => { invoked++; });
+        const remove = menu.find((item) => item.label === t('chat.delete_for_both'));
+        assert.ok(remove, 'both participants can delete either authorship');
+        remove.onClick(); assert.equal(invoked, 1);
+      }
+      server = server.map((item) => item.id === 202 ? { ...item, body: '', deleted_at: Date.now(), delete_pending: true } : item);
+      const oldResponse = deferred();
+      const staleRows = [message(303, 3, true), message(202, 2, false), message(101, 1, true)];
+      Api.listMessages = () => oldResponse.promise;
+      const staleLoad = store.loadMessages({ kind: 'contact', id: 1 });
+      Api.listMessages = async () => server.map((item) => ({ ...item })).reverse();
+      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: true } });
+      await tick();
+      oldResponse.resolve(staleRows); await staleLoad;
+      const gap = app.el.querySelector('[data-mid="202"]');
+      assert.ok(gap.classList.contains('msg-deleted'));
+      assert.ok(gap.textContent.includes(t('chat.deleted_number', { number: 2 })));
+      assert.ok(gap.textContent.includes(t('chat.deletion_pending')));
+      assert.ok(!gap.textContent.includes('private'));
+      assert.equal(gap.querySelectorAll('button, img, video, .attachment').length, 0);
+      assert.ok(app.el.querySelector('[data-mid="101"] .msg-number').textContent.includes('#1'));
+      assert.ok(app.el.querySelector('[data-mid="303"] .msg-number').textContent.includes('#3'));
+      assert.equal(ui.messageMenuItems(store, { kind: 'contact', id: 1 }, server[1], () => {}, () => {}, () => {}, () => {}).length, 0);
+      assert.equal(store.fileProgress.get().has(202), false);
+      assert.equal(store.pinned.get().get('contact:1').length, 0);
+      assert.equal(store.unread.get().get('contact:1'), 0);
+      assert.equal(sounds, 0); assert.equal(notifications, 0);
+      store.handleEvent({ MessageEdited: { message_id: 202, body: 'late private edit', buttons: null } });
+      store.handleEvent({ FileProgress: { message_id: 202, contact_id: 1, incoming: true, done: 2, total: 3 } });
+      assert.equal(store.messages.get().get('contact:1').find((item) => item.id === 202).body, '');
+      assert.equal(store.fileProgress.get().has(202), false);
+      server = server.map((item) => item.id === 202 ? { ...item, delete_pending: false } : item);
+      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: false } });
+      await tick();
+      assert.ok(app.el.querySelector('[data-mid="202"]').textContent.includes(t('chat.deletion_confirmed')));
+      assert.equal(store.messages.get().get('contact:1').find((item) => item.id === 202).dm_seq, 2);
+      assert.equal(sounds, 0); assert.equal(notifications, 0);
+      app.destroy();
+    }
+  } finally { Api.listMessages = previousList; Api.unreadCount = previousUnread; }
+});
+
+test('only active chat content is cached and stale list/pinned replies cannot return after switch or lock', async () => {
+  const previous = { list: Api.listMessages, pinned: Api.listPinnedContact, lock: Api.vaultLock };
+  const store = chatStore();
+  const target = { kind: 'contact', id: 1 };
+  try {
+    const oldList = deferred(), oldPins = deferred();
+    let fetches = 0;
+    Api.listMessages = () => { fetches++; return oldList.promise; };
+    Api.listPinnedContact = () => oldPins.promise;
+    const loading = store.loadMessages(target), pinning = store.loadPinned(target);
+    store.selectedChat.set({ kind: 'contact', id: 2 });
+    oldList.resolve([{ id: 7, body: 'old private body' }]);
+    oldPins.resolve([{ id: 7, body: 'old pinned body' }]);
+    await Promise.all([loading, pinning]);
+    assert.equal(store.messages.get().size, 0);
+    assert.equal(store.pinned.get().size, 0);
+    const before = fetches;
+    store.handleEvent({ IncomingMessage: { message_id: 8, contact_id: 1, group_id: null,
+      body: 'background secret', sent_at: Date.now(), sender_sign_pk: null, buttons: null,
+      console_kind: null, notify_sound: null } });
+    assert.equal(fetches, before, 'background event must not fetch message bodies');
+    assert.equal(store.messages.get().has('contact:1'), false);
+    assert.equal(store.unread.get().get('contact:1'), 1);
+
+    store.selectedChat.set(target);
+    const afterLock = deferred(), afterLockPins = deferred(), vault = deferred();
+    Api.listMessages = () => afterLock.promise;
+    Api.listPinnedContact = () => afterLockPins.promise;
+    Api.vaultLock = () => vault.promise;
+    store.cancelToProfileSelect = async () => { store.view.set('profile-select'); };
+    store.beginPrewarm = () => {};
+    const lateList = store.loadMessages(target), latePins = store.loadPinned(target);
+    const locking = store.lock();
+    assert.equal(store.selectedChat.get(), null, 'plaintext view closes before native vault await');
+    afterLock.resolve([{ id: 7, body: 'locked private body' }]);
+    afterLockPins.resolve([{ id: 7, body: 'locked pinned body' }]);
+    await Promise.all([lateList, latePins]);
+    assert.equal(store.messages.get().size, 0); assert.equal(store.pinned.get().size, 0);
+    vault.resolve(); await locking;
+    assert.equal(store.messages.get().size, 0); assert.equal(store.pinned.get().size, 0);
+  } finally { Api.listMessages = previous.list; Api.listPinnedContact = previous.pinned; Api.vaultLock = previous.lock; }
+});
+
+test('destroy and deletion clear chat-owned plaintext/images and reject late attachment replies', async () => {
+  const previous = { load: Api.loadAttachment, list: Api.listAttachments,
+    messages: Api.listMessages, unread: Api.unreadCount,
+    create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+  const created = [], revoked = [];
+  URL.createObjectURL = () => { const url = `blob:test-${created.length}`; created.push(url); return url; };
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const store = chatStore();
+  const app = new App(store); document.body.append(app.el); await tick();
+  const chat = app.current.chat;
+  try {
+    Api.loadAttachment = async () => 'c2VjcmV0';
+    await chat.openImageLazy(9, 'private.png', 7);
+    assert.equal(created.length, 1); assert.ok(document.querySelector('.zoom-img'));
+    chat.input.value = 'private draft';
+    chat.pending = [{ name: 'private file', path: '/private/file', size: 1 }];
+    chat.replyTo = { id: 7, body: 'private reply' };
+    chat.consoleHistory = ['private command']; chat.consoleDraft = 'private console draft';
+    const lateImage = deferred(), lateNames = deferred();
+    Api.loadAttachment = () => lateImage.promise;
+    Api.listAttachments = () => lateNames.promise;
+    const opening = chat.openImageLazy(10, 'late.png', 7);
+    chat.attachmentCache.clear();
+    const listing = chat.loadAttachmentsFor(7, document.createElement('div'));
+    store.selectedChat.set({ kind: 'contact', id: 2 });
+    lateImage.resolve('c2VjcmV0'); lateNames.resolve([{ id: 10, name: 'late private name', size: 2 }]);
+    await Promise.all([opening, listing]);
+    assert.deepEqual(revoked, created);
+    assert.equal(chat.input.value, ''); assert.equal(chat.replyTo, null);
+    assert.deepEqual(chat.pending, []); assert.deepEqual(chat.consoleHistory, []); assert.equal(chat.consoleDraft, '');
+    assert.equal(chat.imageDataCache.size, 0); assert.equal(chat.attachmentCache.size, 0);
+    assert.equal(chat.renderedSignatures.size, 0); assert.equal(chat.el.textContent, '');
+    assert.equal(document.querySelector('.zoom-img'), null);
+    assert.equal(created.length, 1, 'late body must not create a new object URL');
+
+    store.selectedChat.set({ kind: 'contact', id: 1 });
+    store.messages.set(new Map([['contact:1', [{ id: 7, body: 'live', outgoing: true, sent_at: Date.now(), console: null }]]]));
+    const current = app.current.chat;
+    const deletedImage = deferred(); Api.loadAttachment = () => deletedImage.promise;
+    const beforeDelete = current.openImageLazy(11, 'deleted.png', 7);
+    // Keep this test on the event/cache boundary without a native database.
+    Api.listMessages = async () => []; Api.unreadCount = async () => 0;
+    store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 7, deleted_at: Date.now(), pending: true } });
+    deletedImage.resolve('c2VjcmV0'); await beforeDelete; await tick();
+    assert.equal(created.length, 1); assert.equal(current.imageDataCache.size, 0);
+  } finally {
+    app.destroy(); Api.loadAttachment = previous.load; Api.listAttachments = previous.list;
+    Api.listMessages = previous.messages; Api.unreadCount = previous.unread;
+    URL.createObjectURL = previous.create; URL.revokeObjectURL = previous.revoke;
+  }
+});
+
+test('closed search/media modals reject late plaintext and image responses', async () => {
+  const previous = { search: Api.searchMessages, media: Api.listMediaContact, load: Api.loadAttachment };
+  const store = chatStore(), app = new App(store); document.body.append(app.el); await tick();
+  try {
+    const hits = deferred(), items = deferred(), image = deferred();
+    Api.searchMessages = () => hits.promise;
+    Api.listMediaContact = () => items.promise;
+    Api.loadAttachment = () => image.promise;
+    let search, media, searching;
+    app.openModal((close) => {
+      search = new ui.SearchModal(store, close); search.input.value = 'private query';
+      searching = search.runSearch(); return search.el;
+    });
+    app.openModal((close) => { media = new ui.MediaModal(store, { kind: 'contact', id: 1 }, close); return media.el; });
+    const preview = document.createElement('div'); media.grid.appendChild(preview);
+    const filling = media.fillPreview(preview, 9, 'image/png');
+    app.closeModals();
+    hits.resolve([{ message: { id: 7, body: 'late search private body', sent_at: Date.now() }, contact_id: 1 }]);
+    items.resolve([{ id: 9, message_id: 7, name: 'private media.png', size: 1, sent_at: Date.now() }]);
+    image.resolve('c2VjcmV0'); await Promise.all([searching, filling]); await tick();
+    assert.equal(search.input.value, ''); assert.equal(search.results.textContent, '');
+    assert.equal(media.grid.textContent, ''); assert.equal(media.ownedUrls.size, 0);
+    assert.equal(document.querySelector('.modal-backdrop'), null);
+    assert.equal(document.querySelector('.search-snippet, .media-name, .media-preview img'), null);
+  } finally {
+    app.destroy(); Api.searchMessages = previous.search; Api.listMediaContact = previous.media; Api.loadAttachment = previous.load;
+  }
+});
+
+test('release settings expose disabled diagnostics without log controls in either language', async () => {
+  const store = chatStore(); const app = new App(store); document.body.append(app.el);
+  const previous = logSettings;
+  try {
+    logSettings = { available: false, enabled: false, path: '' };
+    for (const lang of ['en', 'ru']) {
+      setLang(lang);
+      const before = calls.length;
+      const modal = new ui.SettingsModal(store, app, () => {});
+      document.body.append(modal.el); await tick();
+      const panel = modal.el.querySelector('.application-log');
+      assert.equal(panel.textContent, t('settings.log_unavailable_release'));
+      assert.equal(panel.querySelectorAll('input, button, pre').length, 0);
+      assert.ok(!calls.slice(before).some((cmd) => /read_.*log|set_log_enabled|clear_debug_log/.test(cmd)));
+      modal.el.remove();
+    }
+    logSettings = { available: true, enabled: false, path: '/tmp/example.log' };
+    const modal = new ui.SettingsModal(store, app, () => {});
+    document.body.append(modal.el); await tick();
+    const checkbox = modal.el.querySelector('.application-log input');
+    assert.equal(checkbox.checked, false);
+    checkbox.checked = true; checkbox.dispatchEvent(new win.Event('change')); await tick();
+    assert.equal(calls.at(-1), 'set_log_enabled');
+    assert.ok(modal.el.querySelector('.application-log').textContent.includes('/tmp/example.log'));
+    modal.el.remove();
+    logSettings = new Error('IPC unavailable');
+    const failed = new ui.SettingsModal(store, app, () => {});
+    document.body.append(failed.el); await tick();
+    assert.equal(failed.el.querySelector('.application-log').textContent, t('settings.log_capability_failed'));
+    assert.equal(failed.el.querySelectorAll('.application-log input, .application-log button').length, 0);
+    failed.el.remove();
+  } finally {
+    logSettings = previous;
+    app.destroy();
+  }
 });

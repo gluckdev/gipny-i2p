@@ -595,13 +595,13 @@ export class SettingsModal {
 
         h('div', { class: 'divider-text' }, tr('settings.application_log')),
         (() => {
+          const panel = h('div', { class: 'application-log' },
+            h('div', { class: 'hint' }, tr('settings.log_capability_loading')));
           const out = h('pre', { class: 'log-view hidden' });
           const pathLine = h('div', { class: 'hint' }, '');
           const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
-          let showing: 'current' | 'previous' = 'current';
 
           const load = (which: 'current' | 'previous') => busy(showBtn, async () => {
-            showing = which;
             try {
               const txt = which === 'current' ? await Api.readDebugLog() : await Api.readPreviousLog();
               out.textContent = logText(txt);
@@ -633,9 +633,25 @@ export class SettingsModal {
           }, tr('settings.clear')) as HTMLButtonElement;
 
           Api.logSettings().then((s) => {
+            if (!s.available) {
+              panel.replaceChildren(h('div', { class: 'hint' }, tr('settings.log_unavailable_release')));
+              return;
+            }
             cb.checked = s.enabled;
             pathLine.textContent = tr('settings.file', { p0: (s.path) });
-          }).catch(() => { cb.checked = true; });
+            panel.replaceChildren(
+              h('label', { class: 'opt', style: { alignItems: 'center' } },
+                cb,
+                h('span', { class: 'opt-text' },
+                  h('span', { class: 'opt-title' }, tr('settings.keep_a_detailed_log')),
+                  h('span', { class: 'opt-blurb' }, tr('settings.enabled_by_default_to_help_diagnose_problems_the')))),
+              pathLine,
+              h('div', { class: 'row', style: { marginTop: '8px', flexWrap: 'wrap' } }, showBtn, prevBtn, copyBtn, clearBtn),
+              out,
+            );
+          }).catch(() => {
+            panel.replaceChildren(h('div', { class: 'hint' }, tr('settings.log_capability_failed')));
+          });
           cb.addEventListener('change', () => {
             Api.setLogEnabled(cb.checked)
               .then(() => store.showToast(cb.checked
@@ -644,18 +660,7 @@ export class SettingsModal {
               .catch((e) => { store.showToast(errorText(e), true); cb.checked = !cb.checked; });
           });
 
-          return h('div', null,
-            h('label', { class: 'opt', style: { alignItems: 'center' } },
-              cb,
-              h('span', { class: 'opt-text' },
-                h('span', { class: 'opt-title' }, tr('settings.keep_a_detailed_log')),
-                h('span', { class: 'opt-blurb' },
-                  tr('settings.enabled_by_default_to_help_diagnose_problems_the'))),
-            ),
-            pathLine,
-            h('div', { class: 'row', style: { marginTop: '8px', flexWrap: 'wrap' } }, showBtn, prevBtn, copyBtn, clearBtn),
-            out,
-          );
+          return panel;
         })(),
 
         h('div', { class: 'divider-text' }, tr('settings.danger_zone')),

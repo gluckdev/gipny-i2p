@@ -19,3 +19,5 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# Loaded through the Activity ClassLoader from Rust JNI, never JS reflection.
+-keep class app.gipny.DeviceKeystore { *; }

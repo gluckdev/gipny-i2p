@@ -13,4 +13,6 @@ export * from '../src/search';
 export * from '../src/forward';
 export * from '../src/media';
 export * from '../src/avatars';
+export * from '../src/chat';
+export * from '../src/actions';
 export * from '@tauri-apps/api/mocks';

@@ -7,10 +7,24 @@
 #   .github/scripts/vcpkg-i2p-deps.sh <root>
 set -euo pipefail
 root_dir=${1:?usage: vcpkg-i2p-deps.sh <install root>}
+ports_commit=5d4a3dc90c0b3773f3bac81bf41297b54328f471 # public vcpkg 2026.10.16
+ports_root="${RUNNER_TEMP:?GitHub runner required}/gipny-vcpkg-ports"
+if [ ! -d "$ports_root/.git" ]; then
+  git init "$ports_root"
+  git -C "$ports_root" remote add origin https://github.com/microsoft/vcpkg.git
+fi
+git -C "$ports_root" fetch --depth 1 origin "$ports_commit"
+git -C "$ports_root" checkout --detach "$ports_commit"
+test "$(git -C "$ports_root" rev-parse HEAD)" = "$ports_commit"
+# The public SDK's vcpkg driver builds these pinned ports from source. Do not
+# consume opaque library packages from an external vcpkg binary registry.
+export VCPKG_BINARY_SOURCES=clear
+echo "GIPNY_VCPKG_COMMIT=$ports_commit" >> "$GITHUB_ENV"
 triplet=x64-windows-static-md
 root="$root_dir/$triplet"
 if [ ! -d "$root/lib" ]; then
   "$VCPKG_INSTALLATION_ROOT/vcpkg" install --triplet "$triplet" \
+    --vcpkg-root="$ports_root" \
     --x-install-root="$root_dir" \
     boost-asio boost-program-options boost-algorithm boost-property-tree \
     boost-system boost-lexical-cast boost-beast boost-atomic boost-smart-ptr \

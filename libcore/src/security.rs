@@ -25,13 +25,16 @@ pub enum SecurityError {
     #[error("integrity")] Integrity,
     #[error("keystore")] Keystore,
     #[error("state")] State,
+    #[error(transparent)] Memory(#[from] crate::memory::MemoryError),
+    #[error(transparent)] DeviceBinding(#[from] crate::device_binding::BindingError),
+    #[error(transparent)] Database(#[from] crate::db::DbError),
 }
 
-const MAGIC: [u8; 8] = *b"GIPNY001";
-const VERSION: u16 = 1;
+const MAGIC: [u8; 8] = *b"GIPNY002";
+const VERSION: u16 = 2;
 const MK_LEN: usize = 32;
 const VAULT_FILE: &str = "vault.bin";
-const INFO_KEK: &[u8] = b"gipny/kek/v1";
+const INFO_KEK: &[u8] = b"gipny/kek/v2";
 const THROTTLE_MS: u64 = 400;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -70,13 +73,12 @@ struct Header {
 #[derive(Serialize, Deserialize)]
 struct VaultFile { header: Header, hmac: [u8; 32] }
 
-pub struct MasterKey(Zeroizing<[u8; MK_LEN]>);
+pub struct MasterKey(crate::memory::Sealed<MK_LEN>);
 impl MasterKey {
-    pub fn as_bytes(&self) -> &[u8; MK_LEN] { &self.0 }
+    pub fn expose(&self) -> crate::memory::Result<crate::memory::SecretGuard<'_, MK_LEN>> { self.0.open() }
     fn from_slice(s: &[u8]) -> Result<Self> {
         if s.len() != MK_LEN { return Err(SecurityError::Crypto); }
-        let mut a = [0u8; MK_LEN]; a.copy_from_slice(s);
-        Ok(Self(Zeroizing::new(a)))
+        Ok(Self(crate::memory::Sealed::from_slice(crate::memory::SecretKind::Master, s)?))
     }
 }
 
@@ -91,6 +93,9 @@ struct VaultState { header: Header, last_try: Option<Instant> }
 pub struct Vault {
     path: PathBuf,
     dir: PathBuf,
+    // Covers throttle, authenticated disk reread and any resulting mutation.
+    // The state mutex alone cannot protect a header read before taking it.
+    operation: Mutex<()>,
     state: Mutex<VaultState>,
 }
 
@@ -121,7 +126,8 @@ impl Vault {
         if pass.is_empty() { return Err(SecurityError::InvalidPassphrase); }
         fs::create_dir_all(dir)?;
         let path = Self::path_of(dir);
-        let device = DeviceBind::ensure(dir)?;
+        if path.exists() { return Err(SecurityError::State); }
+        let device = DeviceBind::enroll(dir)?;
         let (salt_primary, salt_duress) = (random32(), random32());
         let nonce_primary = random24();
 
@@ -148,30 +154,40 @@ impl Vault {
             ct_primary, ct_duress,
             attempts: 0, max_attempts, duress_mode,
         };
-        write_vault(&path, &header, &device)?;
+        write_vault_impl(&path, &header, &device, true)?;
         Ok(Self {
             path, dir: dir.to_path_buf(),
+            operation: Mutex::new(()),
             state: Mutex::new(VaultState { header, last_try: None }),
         })
     }
 
     pub fn open(dir: &Path) -> Result<Self> {
         let path = Self::path_of(dir);
-        let device = DeviceBind::ensure(dir)?;
+        let device = DeviceBind::load(dir)?;
         let header = read_vault(&path, &device)?;
         Ok(Self {
             path, dir: dir.to_path_buf(),
+            operation: Mutex::new(()),
             state: Mutex::new(VaultState { header, last_try: None }),
         })
     }
 
     pub fn unlock(&self, pass: &str) -> Result<UnlockOutcome> {
+        let _operation = self.operation.lock().map_err(|_| SecurityError::State)?;
+        self.unlock_locked(pass)
+    }
+
+    fn unlock_locked(&self, pass: &str) -> Result<UnlockOutcome> {
         self.throttle();
         let device = DeviceBind::ensure(&self.dir)?;
+        let verified = read_vault(&self.path, &device)?;
         let mut st = self.state.lock().map_err(|_| SecurityError::State)?;
+        st.header = verified;
 
-        if let Ok(kek) = derive_kek(pass, &st.header.salt_primary, &st.header.argon, &device) {
-            if let Ok(mk) = open_seal(&kek, &st.header.nonce_primary, &st.header.ct_primary) {
+        {
+            let kek = derive_kek(pass, &st.header.salt_primary, &st.header.argon, &device)?;
+            if let Ok(mk) = open_vault_seal(&kek, &st.header.nonce_primary, &st.header.ct_primary) {
                 st.header.attempts = 0;
                 write_vault(&self.path, &st.header, &device)?;
                 return Ok(UnlockOutcome::Primary(MasterKey::from_slice(&mk)?));
@@ -179,15 +195,16 @@ impl Vault {
         }
 
         if !st.header.ct_duress.is_empty() {
-            if let Ok(kek) = derive_kek(pass, &st.header.salt_duress, &st.header.argon, &device) {
-                if let Ok(mk) = open_seal(&kek, &st.header.nonce_duress, &st.header.ct_duress) {
+            {
+                let kek = derive_kek(pass, &st.header.salt_duress, &st.header.argon, &device)?;
+                if let Ok(mk) = open_vault_seal(&kek, &st.header.nonce_duress, &st.header.ct_duress) {
                     let mode = st.header.duress_mode;
                     st.header.attempts = 0;
                     write_vault(&self.path, &st.header, &device)?;
                     drop(st);
                     return match mode {
                         DuressMode::Decoy => Ok(UnlockOutcome::Decoy(MasterKey::from_slice(&mk)?)),
-                        DuressMode::Wipe => { self.wipe_all()?; Ok(UnlockOutcome::Wiped) }
+                        DuressMode::Wipe => { self.wipe_locked()?; Ok(UnlockOutcome::Wiped) }
                     };
                 }
             }
@@ -197,13 +214,14 @@ impl Vault {
         let over = st.header.max_attempts > 0 && st.header.attempts >= st.header.max_attempts;
         write_vault(&self.path, &st.header, &device)?;
         st.last_try = Some(Instant::now());
-        if over { drop(st); self.wipe_all()?; return Ok(UnlockOutcome::Wiped); }
+        if over { drop(st); self.wipe_locked()?; return Ok(UnlockOutcome::Wiped); }
         Err(SecurityError::InvalidPassphrase)
     }
 
     pub fn change_passphrase(&self, old: &str, new: &str) -> Result<()> {
         if new.is_empty() { return Err(SecurityError::InvalidPassphrase); }
-        let mk = match self.unlock(old)? {
+        let _operation = self.operation.lock().map_err(|_| SecurityError::State)?;
+        let mk = match self.unlock_locked(old)? {
             UnlockOutcome::Primary(k) => k,
             _ => return Err(SecurityError::InvalidPassphrase),
         };
@@ -212,7 +230,7 @@ impl Vault {
         let salt = random32();
         let nonce = random24();
         let kek = derive_kek(new, &salt, &st.header.argon, &device)?;
-        let ct = seal(&kek, &nonce, mk.as_bytes())?;
+        let ct = seal(&kek, &nonce, &*mk.expose()?)?;
         st.header.salt_primary = salt;
         st.header.nonce_primary = nonce;
         st.header.ct_primary = ct;
@@ -220,7 +238,8 @@ impl Vault {
     }
 
     pub fn set_duress(&self, pass: &str, duress_pass: Option<&str>, mode: DuressMode) -> Result<()> {
-        if !matches!(self.unlock(pass)?, UnlockOutcome::Primary(_)) {
+        let _operation = self.operation.lock().map_err(|_| SecurityError::State)?;
+        if !matches!(self.unlock_locked(pass)?, UnlockOutcome::Primary(_)) {
             return Err(SecurityError::InvalidPassphrase);
         }
         let device = DeviceBind::ensure(&self.dir)?;
@@ -245,7 +264,8 @@ impl Vault {
     }
 
     pub fn set_max_attempts(&self, pass: &str, max: u32) -> Result<()> {
-        if !matches!(self.unlock(pass)?, UnlockOutcome::Primary(_)) {
+        let _operation = self.operation.lock().map_err(|_| SecurityError::State)?;
+        if !matches!(self.unlock_locked(pass)?, UnlockOutcome::Primary(_)) {
             return Err(SecurityError::InvalidPassphrase);
         }
         let device = DeviceBind::ensure(&self.dir)?;
@@ -255,8 +275,13 @@ impl Vault {
     }
 
     pub fn wipe_all(&self) -> Result<()> {
+        let _operation = self.operation.lock().map_err(|_| SecurityError::State)?;
+        self.wipe_locked()
+    }
+
+    fn wipe_locked(&self) -> Result<()> {
+        DeviceBind::destroy(&self.dir)?;
         secure_wipe_dir(&self.dir)?;
-        let _ = DeviceBind::destroy(&self.dir);
         Ok(())
     }
 
@@ -273,16 +298,32 @@ impl Vault {
 fn random32() -> [u8; 32] { crate::crypto::random_array() }
 fn random24() -> [u8; 24] { crate::crypto::random_array() }
 
-fn derive_kek(pass: &str, salt: &[u8; 32], p: &ArgonParams, device: &[u8; 32]) -> Result<[u8; 32]> {
+fn derive_kek(pass: &str, salt: &[u8; 32], p: &ArgonParams, device: &[u8; 32]) -> Result<Zeroizing<[u8; 32]>> {
     let params = Params::new(p.m, p.t, p.p, Some(32)).map_err(|_| SecurityError::Crypto)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut raw = Zeroizing::new([0u8; 32]);
-    argon.hash_password_into(pass.as_bytes(), salt, raw.as_mut_slice()).map_err(|_| SecurityError::Crypto)?;
+    hash_password(&argon, pass.as_bytes(), salt, raw.as_mut_slice())?;
     let hk = Hkdf::<Sha256>::new(Some(device), raw.as_slice());
-    let mut kek = [0u8; 32];
-    hk.expand(INFO_KEK, &mut kek).map_err(|_| SecurityError::Crypto)?;
+    let mut kek = Zeroizing::new([0u8; 32]);
+    hk.expand(INFO_KEK, kek.as_mut_slice()).map_err(|_| SecurityError::Crypto)?;
     Ok(kek)
 }
+
+// Argon2 0.6's allocating Blocks::Drop deallocates without wiping its heap.
+// Provide a pre-sized, zeroizing workspace instead. This remains transient
+// ordinary memory; locking the whole 64/256 MiB KDF workspace is not attempted.
+fn hash_password(argon: &Argon2<'_>, pass: &[u8], salt: &[u8], out: &mut [u8]) -> Result<()> {
+    #[cfg(test)]
+    assert!(!KDF_FORBIDDEN.with(std::cell::Cell::get), "untrusted backup cost reached KDF allocation");
+    let count = argon.params().block_count();
+    let mut blocks = Zeroizing::new(Vec::<argon2::Block>::new());
+    blocks.try_reserve_exact(count).map_err(|_| SecurityError::Crypto)?;
+    blocks.resize_with(count, argon2::Block::default);
+    argon.hash_password_into_with_memory(pass, salt, out, &mut *blocks).map_err(|_| SecurityError::Crypto)
+}
+
+#[cfg(test)]
+thread_local! { static KDF_FORBIDDEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 fn seal(key: &[u8; 32], nonce: &[u8; 24], plain: &[u8]) -> Result<Vec<u8>> {
     XChaCha20Poly1305::new(key.into())
@@ -290,8 +331,19 @@ fn seal(key: &[u8; 32], nonce: &[u8; 24], plain: &[u8]) -> Result<Vec<u8>> {
         .map_err(|_| SecurityError::Crypto)
 }
 
+fn open_vault_seal(key: &[u8; 32], nonce: &[u8; 24], ct: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    open_seal(key, nonce, ct).map(Zeroizing::new)
+}
+
 pub const BACKUP_MAGIC: &[u8; 8] = b"GIPNYBAK";
 const BACKUP_VERSION: u8 = 1;
+const BACKUP_MIN_MEMORY_KIB: u32 = 8 * 1024;
+const BACKUP_MAX_MEMORY_KIB: u32 = 262144;
+
+fn validate_backup_memory(m: u32) -> Result<()> {
+    if !(BACKUP_MIN_MEMORY_KIB..=BACKUP_MAX_MEMORY_KIB).contains(&m) { return Err(SecurityError::Crypto); }
+    Ok(())
+}
 
 pub fn backup_seal(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
     let salt = random32();
@@ -300,7 +352,7 @@ pub fn backup_seal(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
     let kparams = Params::new(params.m, params.t, params.p, Some(32)).map_err(|_| SecurityError::Crypto)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, kparams);
     let mut key = Zeroizing::new([0u8; 32]);
-    argon.hash_password_into(passphrase.as_bytes(), &salt, key.as_mut_slice()).map_err(|_| SecurityError::Crypto)?;
+    hash_password(&argon, passphrase.as_bytes(), &salt, key.as_mut_slice())?;
     let ct = seal(key.as_slice().try_into().unwrap(), &nonce, plaintext)?;
     let mut out = Vec::with_capacity(8 + 1 + 4 + 32 + 24 + ct.len());
     out.extend_from_slice(BACKUP_MAGIC);
@@ -312,19 +364,20 @@ pub fn backup_seal(passphrase: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-pub fn backup_open(passphrase: &str, blob: &[u8]) -> Result<Vec<u8>> {
+pub fn backup_open(passphrase: &str, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     if blob.len() < 8 + 1 + 4 + 32 + 24 + 16 { return Err(SecurityError::Crypto); }
     if &blob[..8] != BACKUP_MAGIC { return Err(SecurityError::Crypto); }
     if blob[8] != BACKUP_VERSION { return Err(SecurityError::Crypto); }
     let m = u32::from_be_bytes(blob[9..13].try_into().unwrap());
+    validate_backup_memory(m)?;
     let salt: [u8; 32] = blob[13..45].try_into().unwrap();
     let nonce: [u8; 24] = blob[45..69].try_into().unwrap();
     let ct = &blob[69..];
     let params = Params::new(m, 3, 1, Some(32)).map_err(|_| SecurityError::Crypto)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = Zeroizing::new([0u8; 32]);
-    argon.hash_password_into(passphrase.as_bytes(), &salt, key.as_mut_slice()).map_err(|_| SecurityError::Crypto)?;
-    open_seal(key.as_slice().try_into().unwrap(), &nonce, ct)
+    hash_password(&argon, passphrase.as_bytes(), &salt, key.as_mut_slice())?;
+    open_vault_seal(key.as_slice().try_into().unwrap(), &nonce, ct)
 }
 
 pub const BACKUP_VERSION_3FACTOR: u8 = 3;
@@ -342,11 +395,11 @@ fn derive_3factor_key(
     salt: &[u8; 32],
     m: u32,
 ) -> Result<Zeroizing<[u8; 32]>> {
+    validate_backup_memory(m)?;
     let kparams = Params::new(m, 3, 1, Some(32)).map_err(|_| SecurityError::Crypto)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, kparams);
     let mut k_pass = Zeroizing::new([0u8; 32]);
-    argon.hash_password_into(passphrase.as_bytes(), salt, k_pass.as_mut_slice())
-        .map_err(|_| SecurityError::Crypto)?;
+    hash_password(&argon, passphrase.as_bytes(), salt, k_pass.as_mut_slice())?;
 
     let mut ikm = Zeroizing::new(Vec::with_capacity(64));
     ikm.extend_from_slice(k_pass.as_slice());
@@ -386,7 +439,7 @@ pub fn backup_open_3factor(
     server_key: &[u8; 32],
     client_secret: &[u8; 32],
     blob: &[u8],
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     if blob.len() < 8 + 1 + 4 + 32 + 24 + 16 { return Err(SecurityError::Crypto); }
     if &blob[..8] != BACKUP_MAGIC { return Err(SecurityError::Crypto); }
     if blob[8] != BACKUP_VERSION_3FACTOR { return Err(SecurityError::Crypto); }
@@ -395,7 +448,7 @@ pub fn backup_open_3factor(
     let nonce: [u8; 24] = blob[45..69].try_into().unwrap();
     let ct = &blob[69..];
     let key = derive_3factor_key(passphrase, server_key, client_secret, &salt, m)?;
-    open_seal(key.as_slice().try_into().unwrap(), &nonce, ct)
+    open_vault_seal(key.as_slice().try_into().unwrap(), &nonce, ct)
 }
 
 fn open_seal(key: &[u8; 32], nonce: &[u8; 24], ct: &[u8]) -> Result<Vec<u8>> {
@@ -412,23 +465,35 @@ fn hmac_of(header: &Header, device: &[u8; 32]) -> Result<[u8; 32]> {
 }
 
 fn write_vault(path: &Path, header: &Header, device: &[u8; 32]) -> Result<()> {
+    write_vault_impl(path, header, device, false)
+}
+
+fn write_vault_impl(path: &Path, header: &Header, device: &[u8; 32], create: bool) -> Result<()> {
     let hmac = hmac_of(header, device)?;
     let file = VaultFile { header: header.clone(), hmac };
     let bytes = bincode::serialize(&file)?;
-    let tmp = path.with_extension("tmp");
-    let mut f = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
-    f.write_all(&bytes)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(tmp, path)?;
+    let directory = path.parent().ok_or(SecurityError::State)?;
+    let mut temporary = tempfile::Builder::new().prefix(".vault-").tempfile_in(directory)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
+    if create { temporary.persist_noclobber(path).map_err(|error| error.error)?; }
+    else { temporary.persist(path).map_err(|error| error.error)?; }
+    #[cfg(unix)]
+    File::open(directory)?.sync_all()?;
     Ok(())
 }
 
 fn read_vault(path: &Path, device: &[u8; 32]) -> Result<Header> {
-    let mut f = File::open(path)?;
+    use bincode::Options;
+    let f = File::open(path)?;
     let mut buf = Vec::new();
-    f.read_to_end(&mut buf)?;
-    let file: VaultFile = bincode::deserialize(&buf)?;
+    f.take(65_537).read_to_end(&mut buf)?;
+    if buf.len() > 65_536 { return Err(SecurityError::Integrity); }
+    let file: VaultFile = bincode::DefaultOptions::new().with_fixint_encoding()
+        .reject_trailing_bytes().with_limit(65_536).deserialize(&buf)?;
+    if file.header.magic == *b"GIPNY001" || file.header.version == 1 {
+        return Err(crate::device_binding::BindingError::LegacyUnbound.into());
+    }
     if file.header.magic != MAGIC || file.header.version != VERSION {
         return Err(SecurityError::Integrity);
     }
@@ -471,44 +536,32 @@ fn overwrite_file(path: &Path) -> Result<()> {
 
 pub struct DeviceBind;
 
-const DEVICE_FILE: &str = ".device";
-
 impl DeviceBind {
-    pub fn ensure(dir: &Path) -> Result<[u8; 32]> {
-        let path = dir.join(DEVICE_FILE);
-        if path.exists() {
-            let mut f = File::open(&path)?;
-            let mut s = String::new();
-            f.read_to_string(&mut s)?;
-            let bytes = hex_decode(s.trim()).ok_or(SecurityError::Keystore)?;
-            // Wrong length is a corrupt keystore, not something to pad.
-            <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| SecurityError::Keystore)
-        } else {
-            fs::create_dir_all(dir)?;
-            let s = random32();
-            let tmp = path.with_extension("tmp");
-            let mut f = OpenOptions::new().write(true).create(true).truncate(true).open(&tmp)?;
-            f.write_all(hex_encode(&s).as_bytes())?;
-            f.sync_all()?;
-            drop(f);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
-            }
-            fs::rename(tmp, &path)?;
-            Ok(s)
-        }
-    }
+    pub fn enroll(dir: &Path) -> Result<Zeroizing<[u8; 32]>> { Ok(crate::device_binding::enroll(dir)?) }
+    pub fn load(dir: &Path) -> Result<Zeroizing<[u8; 32]>> { Ok(crate::device_binding::load(dir)?) }
+    /// Existing call sites only load: losing OS custody never creates a new
+    /// secret or turns a provider error into an incorrect-password attempt.
+    pub fn ensure(dir: &Path) -> Result<Zeroizing<[u8; 32]>> { Self::load(dir) }
+    pub fn destroy(dir: &Path) -> Result<()> { Ok(crate::device_binding::destroy(dir)?) }
+}
 
-    pub fn destroy(dir: &Path) -> Result<()> {
-        let path = dir.join(DEVICE_FILE);
-        if path.exists() {
-            let _ = overwrite_file(&path);
-            let _ = fs::remove_file(&path);
+/// Unattended agent/bot storage still needs an enrolled protected OS credential.
+/// No passphrase, hostname, env key or portable 0600 file is a substitute.
+pub fn open_device_bound_database(dir: &Path, path: &Path) -> Result<crate::db::Db> {
+    if path.parent() != Some(dir) { return Err(SecurityError::State); }
+    if path.exists() {
+        let mut prefix = [0u8; 16];
+        if File::open(path)?.read(&mut prefix)? == 16 && &prefix == b"SQLite format 3\0" {
+            return Err(crate::device_binding::BindingError::LegacyPlaintextDatabase.into());
         }
-        Ok(())
     }
+    let device = if path.exists() { DeviceBind::load(dir)? } else { DeviceBind::enroll(dir)? };
+    let name = path.file_name().and_then(|name| name.to_str()).ok_or(SecurityError::State)?;
+    let mut database_key = Zeroizing::new([0u8; 32]);
+    Hkdf::<Sha256>::new(Some(b"gipny/headless-database/v2"), device.as_slice())
+        .expand(name.as_bytes(), database_key.as_mut_slice()).map_err(|_| SecurityError::Crypto)?;
+    let master = MasterKey::from_slice(database_key.as_slice())?;
+    Ok(crate::db::Db::open(path, &master)?)
 }
 
 pub struct ServerBind;
@@ -558,7 +611,7 @@ mod factor3_tests {
 
         // 1. Success with all three correct components
         let opened = backup_open_3factor(pass, &server_key, &client_secret, &sealed).unwrap();
-        assert_eq!(opened, data);
+        assert_eq!(opened.as_slice(), data);
 
         // 2. Fails if passphrase is wrong
         assert!(backup_open_3factor("wrong_passphrase", &server_key, &client_secret, &sealed).is_err());
@@ -588,6 +641,15 @@ mod factor3_tests {
         assert_eq!(key1, key2);
         assert_ne!(key1, [0u8; 32]);
     }
+
+    #[test]
+    fn password_backup_returns_owned_zeroizing_plaintext() {
+        let data = b"private exported identity";
+        let sealed = backup_seal("backup passphrase", data).unwrap();
+        let opened: Zeroizing<Vec<u8>> = backup_open("backup passphrase", &sealed).unwrap();
+        assert_eq!(opened.as_slice(), data);
+        assert!(backup_open("wrong passphrase", &sealed).is_err());
+    }
 }
 
 fn hex_encode(b: &[u8]) -> String {
@@ -613,24 +675,33 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-pub fn harden_process() {
-    #[cfg(target_os = "linux")]
-    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0); }
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::System::Diagnostics::Debug::{
-            SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
-        };
-        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    }
-}
+pub use i2p_embed::process_security::harden_process;
 
-pub fn mlock_region(ptr: *const u8, len: usize) -> bool {
-    #[cfg(unix)]
-    unsafe { libc::mlock(ptr as _, len) == 0 }
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Memory::VirtualLock;
-        VirtualLock(ptr as _, len) != 0
+#[cfg(test)]
+mod backup_resource_tests {
+    use super::*;
+
+    #[test]
+    fn untrusted_backup_cost_is_rejected_before_kdf_or_allocation() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) { KDF_FORBIDDEN.with(|flag| flag.set(false)); }
+        }
+        KDF_FORBIDDEN.with(|flag| flag.set(true));
+        let _reset = Reset;
+        for version in [BACKUP_VERSION, BACKUP_VERSION_3FACTOR] {
+            for m in [0, BACKUP_MIN_MEMORY_KIB - 1, BACKUP_MAX_MEMORY_KIB + 1, u32::MAX] {
+                let mut blob = vec![0; 8 + 1 + 4 + 32 + 24 + 16];
+                blob[..8].copy_from_slice(BACKUP_MAGIC);
+                blob[8] = version;
+                blob[9..13].copy_from_slice(&m.to_be_bytes());
+                let result = if version == BACKUP_VERSION {
+                    backup_open("passphrase", &blob)
+                } else {
+                    backup_open_3factor("passphrase", &[1; 32], &[2; 32], &blob)
+                };
+                assert!(matches!(result, Err(SecurityError::Crypto)));
+            }
+        }
     }
 }

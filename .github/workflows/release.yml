@@ -3,7 +3,8 @@ name: release
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
 # Builds every desktop artifact (Linux AppImage/deb for amd64 and arm64,
 # Windows NSIS, macOS dmg for Apple Silicon and Intel), the relay server and
-# the agent for Linux amd64/arm64, and Android arm64 and armv7. Each runs the
+# the agent for Linux amd64/arm64, static OpenWrt musl agents, and Android
+# arm64 and armv7. Each runs the
 # i2p router inside its own process (i2p-embed; android-router/jni on
 # Android): no i2pd binary ships, nothing listens on a local port.
 #
@@ -36,6 +37,10 @@ permissions:
 # Set it from the destination relay-testnet prints once it runs with `--dht`.
 env:
   GIPNY_DHT_SEEDS: ${{ vars.GIPNY_DHT_SEEDS }}
+  # The shipping pipeline must never accept a check-only or stub router.
+  I2P_EMBED_STUB: '0'
+  I2P_EMBED_SKIP_NATIVE: '0'
+  CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: 'false'
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -77,6 +82,24 @@ jobs:
             echo "v$want: preview only (manual run, or the tag already exists)"
           fi
 
+  source:
+    name: public source archive
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: source-only release gate and full recursive source package
+        run: |
+          python3 .github/scripts/build-provenance.py source source-dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-source
+          path: source-dist/*
+          if-no-files-found: error
+          retention-days: 5
+
   # ---------------------------------------------------------------------------
   # 1. A snapshot of the i2p network database, shipped with every client so a
   #    first start does not have to reseed. The router (i2p-embed at the pin,
@@ -103,10 +126,10 @@ jobs:
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - name: run the router and let it learn the network
         run: |
-          cargo run --release -p i2p-embed --example netdb_snapshot -- "$PWD/seed-dir" 2500 360
+          cargo run --locked --release -p i2p-embed --example netdb_snapshot -- "$PWD/seed-dir" 2500 360
           n=$(find seed-dir/netDb -name 'routerInfo-*.dat' | wc -l)
           tar -czf i2pd-netdb-seed.tar.gz -C seed-dir/netDb .
           ls -lh i2pd-netdb-seed.tar.gz
@@ -136,12 +159,12 @@ jobs:
           # Every one runs the router inside the app (i2p-embed): no i2pd
           # binary, no SAM, no port. boost is linked in; OpenSSL and zlib from
           # the system on Linux, statically elsewhere (Homebrew; vcpkg, MSVC).
-          - { os: ubuntu-22.04,     bundles: 'appimage,deb', artifact: gipny-Linux }
+          - { os: ubuntu-22.04,     bundles: 'appimage,deb', artifact: gipny-Linux, target: x86_64-unknown-linux-gnu }
           # 22.04 like amd64, so the arm64 bundles carry the same glibc floor.
-          - { os: ubuntu-22.04-arm, bundles: 'appimage,deb', artifact: gipny-Linux-arm64 }
-          - { os: windows-latest,   bundles: 'nsis',         artifact: gipny-Windows }
-          - { os: macos-15,         bundles: 'app,dmg',      artifact: gipny-macOS-arm64 }
-          - { os: macos-15-intel,   bundles: 'app,dmg',      artifact: gipny-macOS-x86_64 }
+          - { os: ubuntu-22.04-arm, bundles: 'appimage,deb', artifact: gipny-Linux-arm64, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest,   bundles: 'nsis',         artifact: gipny-Windows, target: x86_64-pc-windows-msvc }
+          - { os: macos-15,         bundles: 'app,dmg',      artifact: gipny-macOS-arm64, target: aarch64-apple-darwin }
+          - { os: macos-15-intel,   bundles: 'app,dmg',      artifact: gipny-macOS-x86_64, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -201,7 +224,14 @@ jobs:
       - name: boost and OpenSSL (macOS, compiled into the app)
         if: runner.os == 'macOS'
         run: |
-          brew install boost openssl@3
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
+          for dependency in boost openssl@3; do
+            if brew list --versions "$dependency" >/dev/null 2>&1; then
+              brew reinstall --build-from-source "$dependency"
+            else
+              brew install --build-from-source "$dependency"
+            fi
+          done
           b="$(brew --prefix boost)"; o="$(brew --prefix openssl@3)"
           {
             echo "I2P_EMBED_INCLUDE_DIRS=$b/include:$o/include"
@@ -209,7 +239,7 @@ jobs:
             echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto"
             echo "MACOSX_DEPLOYMENT_TARGET=15.0"
           } >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -218,7 +248,7 @@ jobs:
           # do not run on 22.04.
           key: ${{ matrix.os }}
       - uses: actions/setup-node@v7
-        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
+        with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
       # Named i2pd-* so the existing resources glob picks it up.
       - name: stage the network database snapshot
         uses: actions/download-artifact@v8
@@ -227,17 +257,17 @@ jobs:
           path: core/resources
       - name: build frontend
         run: cd ui && npm ci && npm run build
-      - name: tauri build
-        uses: tauri-apps/tauri-action@v1
-        with:
-          projectPath: core
-          args: --bundles ${{ matrix.bundles }}
+      - name: build tauri-cli from its public crate source
+        run: cargo install tauri-cli --version '=2.12.2' --locked
+      - name: tauri build from this checkout
+        working-directory: core
+        run: cargo tauri build --bundles ${{ matrix.bundles }}
       # Reuse desktop's static router dependencies for the headless agent.
       - name: build and package agent (macOS / Windows)
         if: runner.os != 'Linux'
         shell: bash
         run: |
-          cargo build --release -p gipny-agent
+          cargo build --locked --release -p gipny-agent
           VERSION="$(node -p "require('./core/tauri.conf.json').version")"
           case "${{ matrix.os }}" in
             windows-*) platform=windows; arch=amd64; executable=gipny-agent.exe ;;
@@ -248,7 +278,7 @@ jobs:
           mkdir -p "agent-dist/$name"
           cp "target/release/$executable" "agent-dist/$name/"
           cp core/resources/i2pd-netdb-seed.tar.gz "agent-dist/$name/"
-          cp scripts/install-agent.sh scripts/install-agent.ps1 "agent-dist/$name/"
+          cp scripts/install-agent.sh scripts/install-agent.ps1 scripts/start-agent.ps1 "agent-dist/$name/"
           printf '%s\n' \
             'GIPNY headless agent: Settings > Agent mode > Connect remote agent.' \
             'Copy the install command for your platform into the target terminal.' \
@@ -263,6 +293,19 @@ jobs:
           "target/release/$executable" --help 2> "$RUNNER_TEMP/agent-help.txt" || test "$?" -eq 1
           grep -F 'Usage: gipny-agent' "$RUNNER_TEMP/agent-help.txt"
           tar -C agent-dist -czf "agent-dist/$name.tar.gz" "$name"
+      - name: record exact built desktop and agent output hashes
+        shell: bash
+        run: |
+          python3 .github/scripts/build-provenance.py record "build-manifest-desktop-${{ matrix.os }}.json" '${{ matrix.target }}' \
+            --artifact 'target/release/bundle/**/*.AppImage' --artifact 'target/release/bundle/**/*.deb' \
+            --artifact 'target/release/bundle/**/*-setup.exe' --artifact 'target/release/bundle/**/*.dmg' \
+            --artifact 'agent-dist/*.tar.gz'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-provenance-desktop-${{ matrix.os }}
+          path: build-manifest-desktop-${{ matrix.os }}.json
+          if-no-files-found: error
+          retention-days: 5
       - name: upload agent (macOS / Windows)
         if: runner.os != 'Linux'
         uses: actions/upload-artifact@v7
@@ -309,11 +352,11 @@ jobs:
         include:
           # 22.04 sets the glibc floor at 2.35: Debian 12, Ubuntu 22.04 and
           # Raspberry Pi OS bookworm all meet it.
-          - { arch: amd64, runs-on: ubuntu-22.04 }
-          - { arch: arm64, runs-on: ubuntu-22.04-arm }
+          - { arch: amd64, runs-on: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { arch: arm64, runs-on: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -340,7 +383,7 @@ jobs:
         run: |
           export I2P_EMBED_STATIC_LIBS=boost_program_options
           export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
-          cargo build --release --manifest-path core/relay/Cargo.toml
+          cargo build --locked --release --manifest-path core/relay/Cargo.toml
           VERSION="$(jq -r .version core/tauri.conf.json)"
           name="gipny-relay_${VERSION}_linux-${{ matrix.arch }}"
           mkdir -p "dist/$name"
@@ -351,6 +394,14 @@ jobs:
           file "dist/$name/gipny-relay"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           ls -lh dist/*.tar.gz
+      - name: record exact source-built relay archive
+        run: python3 .github/scripts/build-provenance.py record build-manifest-relay-${{ matrix.arch }}.json '${{ matrix.target }}' --artifact 'dist/*.tar.gz'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-provenance-relay-${{ matrix.arch }}
+          path: build-manifest-relay-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 5
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-relay-linux-${{ matrix.arch }}
@@ -371,8 +422,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: amd64, runs-on: ubuntu-22.04 }
-          - { arch: arm64, runs-on: ubuntu-22.04-arm }
+          - { arch: amd64, runs-on: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { arch: arm64, runs-on: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@v7
       # The router is compiled into the agent: no i2pd binary, no SAM, no port.
@@ -384,7 +435,7 @@ jobs:
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -399,7 +450,7 @@ jobs:
         run: |
           export I2P_EMBED_STATIC_LIBS=boost_program_options
           export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
-          cargo build --release -p gipny-agent
+          cargo build --locked --release -p gipny-agent
       - name: package
         run: |
           VERSION="$(jq -r .version core/tauri.conf.json)"
@@ -451,7 +502,7 @@ jobs:
           Restart=on-failure the service then stays down until started again.
 
           Options:
-            --name <name>      display name for this agent (default: hostname)
+            --name <name>      display name for this agent (default: saved cat name)
             --relay <dest>     external relay to collect from instead of the agent's own
                                built-in one
             --cwd <dir>        working directory for commands (default: home directory)
@@ -490,6 +541,14 @@ jobs:
             echo "--- router log:"; tail -40 "$smoke"/data/i2p/router/i2pd.log 2>/dev/null || echo "(no router log)"
             exit 1
           fi
+      - name: record exact source-built agent archive
+        run: python3 .github/scripts/build-provenance.py record build-manifest-agent-${{ matrix.arch }}.json '${{ matrix.target }}' --artifact 'dist/*.tar.gz'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-provenance-agent-${{ matrix.arch }}
+          path: build-manifest-agent-${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 5
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-agent-linux-${{ matrix.arch }}
@@ -498,10 +557,20 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Static portable agents: same production router, C++ dependencies and ABI
+  # checks as the PR workflow. All four must succeed before publication.
+  agent-openwrt:
+    name: OpenWrt agents
+    needs: [version, netdb-seed]
+    uses: ./.github/workflows/openwrt.yml
+    with:
+      include-seed: true
+      version: ${{ needs.version.outputs.version }}
+
+  # ---------------------------------------------------------------------------
   # 2d. Android router: i2pd built as the JNI library GipnyService loads, for
-  #     64- and 32-bit ARM. Cached on the i2pd pin + NDK + boost revision,
-  #     because a cold build is ~1h (boost and OpenSSL from source) and the pin
-  #     rarely moves.
+  #     64- and 32-bit ARM. Application/router code is built afresh; only
+  #     source-pinned Boost and OpenSSL dependency archives may be cached.
   # ---------------------------------------------------------------------------
   android-router:
     name: router (i2pd, android ${{ matrix.abi }})
@@ -533,17 +602,7 @@ jobs:
           echo "I2PD_REV=$(git -C third_party/i2pd rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "i2pd_android=$(git -C third_party/i2pd-android rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: restore cached router
-        id: cache
-        uses: actions/cache@v6
-        with:
-          path: staged/libi2pd.so
-          # The jni tree is in the key: changing a compiler flag there must not
-          # restore a library built without it.
-          key: i2pd-android-${{ matrix.abi }}-${{ env.I2PD_REV }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-jni${{ hashFiles('android-router/jni/**', 'i2p-embed/shim/**') }}
-
       - uses: actions/setup-java@v6
-        if: steps.cache.outputs.cache-hit != 'true'
         with: { distribution: temurin, java-version: '17' }
       # packages: the action's default is "tools platform-tools", and the
       # obsolete `tools` package was removed from Google's SDK repository —
@@ -552,18 +611,15 @@ jobs:
       # us off `sdkmanager` directly — Google deprecated that CLI, and every run
       # said so.
       - uses: android-actions/setup-android@v4
-        if: steps.cache.outputs.cache-hit != 'true'
         with: { packages: 'platform-tools ndk;27.3.13750724' }
 
       - name: resolve NDK
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           NDK_DIR="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
           test -d "$NDK_DIR" || { echo "NDK $NDK_VERSION is not installed — is it still the version in `packages:`?"; exit 1; }
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
 
       - name: align the vendored sources
-        if: steps.cache.outputs.cache-hit != 'true'
         working-directory: third_party/i2pd-android/binary/jni
         run: |
           # Build the i2pd revision this repo pins, not the one i2pd-android
@@ -573,6 +629,7 @@ jobs:
           # Failing here costs an hour of boost that already ran.
           git -C i2pd fetch --quiet origin "$I2PD_REV" || git -C i2pd fetch --quiet --tags origin
           git -C i2pd checkout --quiet "$I2PD_REV"
+          bash "$GITHUB_WORKSPACE/scripts/apply-i2pd-memory-patches.sh" "$PWD/i2pd"
           git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
           git -C boost checkout FETCH_HEAD
           # The dependency scripts hardcode API 16, dropped by NDK r26+.
@@ -584,7 +641,6 @@ jobs:
       # used to throw them away with the router cache every time either moved.
       - name: restore cached dependencies (boost, openssl)
         id: deps
-        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -593,7 +649,7 @@ jobs:
           key: android-deps-${{ matrix.abi }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-scripts${{ steps.pins.outputs.i2pd_android }}
 
       - name: build dependencies (boost, openssl)
-        if: steps.cache.outputs.cache-hit != 'true' && steps.deps.outputs.cache-hit != 'true'
+        if: steps.deps.outputs.cache-hit != 'true'
         working-directory: third_party/i2pd-android/binary/jni
         run: |
           ./build_boost.sh ${{ matrix.arch }}
@@ -603,7 +659,6 @@ jobs:
           done
 
       - name: build libi2pd.so
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           "$ANDROID_NDK_HOME/ndk-build" \
             -C android-router/jni \
@@ -629,11 +684,13 @@ jobs:
           mkdir -p staged && cp "$LIB" staged/libi2pd.so
           ls -lh staged/libi2pd.so
 
+      - name: record the router built from source in this job
+        run: python3 .github/scripts/build-provenance.py record staged/build-manifest-router-${{ matrix.abi }}.json '${{ matrix.abi }}' --artifact 'staged/libi2pd.so'
       - uses: actions/upload-artifact@v7
         with:
           name: router-android-${{ matrix.abi }}
           retention-days: 5
-          path: staged/libi2pd.so
+          path: staged/*
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -682,7 +739,7 @@ jobs:
           echo "GIPNY_NETDB_SEED=$GITHUB_WORKSPACE/android-router/netdb-seed-archive/i2pd-netdb-seed.tar.gz" >> "$GITHUB_ENV"
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: ${{ matrix.rust }}
       - uses: actions/setup-java@v6
@@ -709,8 +766,8 @@ jobs:
           done
           echo "$tc" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v7
-        with: { node-version: '20', cache: npm, cache-dependency-path: ui/package-lock.json }
-      - uses: dtolnay/rust-toolchain@stable
+        with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - uses: dtolnay/rust-toolchain@1.93.1
         with: { targets: 'aarch64-linux-android,armv7-linux-androideabi' }
       # The Rust side of the APK is the same workspace the desktop builds, and
       # it was recompiled from zero every release.
@@ -729,10 +786,9 @@ jobs:
           key: gradle-${{ hashFiles('core/gen/android/**/*.gradle*', 'core/gen/android/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-
       # `cargo install tauri-cli` compiles it from source — minutes, every run.
-      # cargo-binstall fetches the release binary and falls back to building.
-      - uses: cargo-bins/cargo-binstall@main
+      # The CLI is compiled from a pinned public crate; no prebuilt CLI fallback.
       - name: install tauri-cli
-        run: cargo binstall -y --locked tauri-cli@^2 || cargo install tauri-cli --version '^2' --locked
+        run: cargo install tauri-cli --version '=2.12.2' --locked
       - name: build frontend
         run: cd ui && npm ci && npm run build
       - name: configure Android signing
@@ -748,6 +804,11 @@ jobs:
           test -n "$ANDROID_KEY_PASSWORD"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/gipny-release.jks"
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/gipny-release.jks" >> "$GITHUB_ENV"
+      - name: verify native router input matches its source build
+        run: |
+          python3 .github/scripts/build-provenance.py record router-input-check.json '${{ matrix.rust }}' \
+            --artifact 'android-router/prebuilt/${{ matrix.abi }}/libi2pd.so' \
+            --input-manifest 'android-router/prebuilt/${{ matrix.abi }}/build-manifest-router-${{ matrix.abi }}.json'
       - name: tauri android build
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -781,6 +842,11 @@ jobs:
             # failure the i2pd migration exists to end, and one nothing
             # downstream would catch.
             unzip -l "$apk" | grep -F "lib/$2/libi2pd.so"
+            # Verify the library actually packed into the APK, not only the
+            # source artifact handed to Gradle. Any unexpected rewrite fails
+            # closed instead of claiming another binary's provenance.
+            unzip -p "$apk" "lib/$2/libi2pd.so" > "$RUNNER_TEMP/apk-libi2pd.so"
+            cmp "$RUNNER_TEMP/apk-libi2pd.so" "android-router/prebuilt/$2/libi2pd.so"
             unzip -l "$apk" | grep -F "lib/$2/libgipny_lib.so"
             # The app must run the router it carries, not look for SAM: the
             # Rust library links libi2pd.so.
@@ -795,6 +861,17 @@ jobs:
             cp "$apk" "dist/gipny-i2p_${VERSION}_android-$3.apk"
           done
           ls -lh dist
+      - name: record APK with the exact native router provenance
+        run: |
+          python3 .github/scripts/build-provenance.py record build-manifest-android-${{ matrix.suffix }}.json '${{ matrix.rust }}' \
+            --artifact 'dist/*.apk' \
+            --input-manifest 'android-router/prebuilt/${{ matrix.abi }}/build-manifest-router-${{ matrix.abi }}.json'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-provenance-android-${{ matrix.suffix }}
+          path: build-manifest-android-${{ matrix.suffix }}.json
+          if-no-files-found: error
+          retention-days: 5
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-android-${{ matrix.suffix }}
@@ -810,7 +887,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: release page
-    needs: [version, desktop, relay, agent, android]
+    needs: [version, source, desktop, relay, agent, agent-openwrt, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release + upload assets
@@ -821,17 +898,10 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v8
         with: { pattern: gipny-*, path: artifacts }
-      - name: collect assets and checksums
+      - name: verify public-source provenance, assets and checksums
         run: |
-          mkdir -p dist
-          # Artifacts keep the bundler's directory layout; the release is flat,
-          # so two files with one name would silently become one.
-          find artifacts -type f -print0 | while IFS= read -r -d '' f; do
-            name="$(basename "$f")"
-            [ ! -e "dist/$name" ] || { echo "two assets named $name"; exit 1; }
-            cp "$f" "dist/$name"
-          done
-          (cd dist && sha256sum -- * > SHA256SUMS.txt)
+          python3 .github/scripts/build-provenance.py collect artifacts dist
+          (cd dist && sha256sum -c SHA256SUMS.txt)
           ls -lh dist
       - name: write the release page
         run: |
@@ -851,7 +921,7 @@ jobs:
           retention-days: 5
           path: |
             notes.md
-            dist/SHA256SUMS.txt
+            dist/*
       # gh rather than softprops/action-gh-release: in 0.4.4 its upload of one
       # 11 MB asset hung until "Headers Timeout Error" on two attempts in a row,
       # and a rerun cannot get past an asset stuck half-uploaded under the same

@@ -98,7 +98,7 @@ pub type BootProgress = Arc<dyn Fn(&str, &str) + Send + Sync>;
 /// Report one step, and keep the log line it replaced.
 pub(crate) fn note(progress: &Option<BootProgress>, stage: &str, detail: impl AsRef<str>) {
     let detail = detail.as_ref();
-    eprintln!("[i2p] {detail}");
+    crate::debug_trace!("[i2p] {detail}");
     if let Some(p) = progress {
         p(stage, detail);
     }

@@ -3,6 +3,7 @@
 //! no file beside it (Android). Unset, the snapshot is looked for at run time.
 
 fn main() {
+    println!("cargo:rustc-env=GIPNY_BUILD_TARGET={}", std::env::var("TARGET").expect("Cargo TARGET"));
     println!("cargo:rustc-check-cfg=cfg(gipny_netdb_seed)");
     println!("cargo:rerun-if-env-changed=GIPNY_NETDB_SEED");
     let Some(seed) = std::env::var_os("GIPNY_NETDB_SEED").filter(|v| !v.is_empty()) else { return };

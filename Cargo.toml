@@ -21,11 +21,11 @@ rand = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 ed25519-dalek = "3"
 x25519-dalek = { version = "3", features = ["static_secrets"] }
-chacha20poly1305 = "0.11"
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 hkdf = "0.13"
-hmac = "0.13"
-sha2 = "0.11"
-argon2 = "0.6"
+hmac = { version = "0.13", features = ["zeroize"] }
+sha2 = { version = "0.11", features = ["zeroize"] }
+argon2 = { version = "0.6", features = ["zeroize"] }
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 futures = "0.3"
 libc = "0.2"
@@ -39,7 +39,17 @@ opt-level = "s"
 lto = "fat"
 codegen-units = 1
 strip = true
+debug = 0
+debug-assertions = false
 panic = "abort"
+
+# Explicit test/investigation build. Never used by the release workflow.
+[profile.diagnostics]
+inherits = "release"
+debug = 1
+debug-assertions = true
+lto = false
+strip = false
 
 [profile.release.package.argon2]
 opt-level = 3

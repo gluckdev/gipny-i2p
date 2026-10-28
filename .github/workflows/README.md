@@ -1,3 +1,7 @@
+> Требование владельца от 2026-10-28: все дальнейшие сборки только в GitHub Actions,
+> из публичных исходников. GitLab относится к AiBlow. Полный контракт source archive,
+> provenance, SDK и границ проверки: [docs/build-release.md](../../docs/build-release.md).
+
 # .github/workflows — CI, релизы, e2e по живой i2p и тестовый релей
 
 Всё собирается только здесь, на раннерах GitHub: локальных сборок у проекта нет. Этот файл описывает и соседей: `.github/scripts/`, `.github/codeql/`, `.github/dependabot.yml`.
@@ -6,6 +10,7 @@
 
 | Файл | Когда запускается | Джобы | Что доказывает / производит |
 |---|---|---|---|
+| `security-fast.yml` | PR/push `main` с изменением Rust/UI и вручную | `unit + callers` на Linux, Windows, macOS arm64/Intel; `Android Rust + JNI types` | Быстрая компиляция callers и unit tests memory/device-binding/vault/card/deletion без C++ роутера (`I2P_EMBED_STUB=1`). Android job проверяет реальные JNI types для arm64. Shipping artifacts не создаёт; не заменяет full native/I2P, hardware Keystore и установку на устройстве. Kotlin instrumentation sources отдельно собирает `build.yml`, без заявления о прохождении TEE на эмуляторе. |
 | `build.yml` | push в `main`, любой PR, вручную | `rust workspace`, `macos (app + libcore tests)`, `rust tests (crypto/vault/kdf)`, `ui typecheck`, `android APK`, `android emulator smoke` | Наш код компилируется и тесты проходят. Роутер вкомпилирован в каждый бинарь (`i2p-embed`), поэтому десктопные и тестовые джобы собирают и libi2pd — против boost из дистрибутива (macOS — Homebrew). APK собираются с заглушкой прослойки (`I2P_EMBED_STUB=1`) и `ORG_GRADLE_PROJECT_skipRouter`: они проверяют сборку, упаковку и запуск, а не связь. Тайминги KDF попадают в summary джобы. |
 | `cleanup.yml` | воскресной ночью и вручную | `delete stale artifacts and caches` | Хранилище Actions не растёт бесконечно: удаляет артефакты старше 7 дней и кеши, к которым не обращались 21 день. К 0.4.6 накопилось 1132 артефакта на 29,6 ГБ, а кеши упёрлись в потолок 10 ГБ и начали вытеснять друг друга — вместе с кешем роутера, ради которого всё и затевалось. |
 | `codeql.yml` | push/PR в `main`, раз в неделю (пн) | `analyze (actions / javascript-typescript / rust)` | Статический анализ, `build-mode: none`. Настройки — `.github/codeql/codeql-config.yml` (тесты не сканируются: в фикстурах ключи зашиты намеренно). |
@@ -49,11 +54,11 @@
 
 - **boost и OpenSSL для Windows (vcpkg) и Android (`android-deps-*`)
   кешируются** — это самая долгая часть холодной сборки; `libi2pd.so` для
-  Android кешируется по пину i2pd, NDK и хэшу `android-router/jni/**` и
-  `i2p-embed/shim/**`.
+  Android в shipping pipeline каждый раз собирается из исходников;
+  его manifest и SHA256 проверяются перед упаковкой APK.
 - **Rust и Gradle кешируются в сборке APK** (`Swatinem/rust-cache`, `~/.gradle`),
-  а `tauri-cli` ставится готовым бинарём через `cargo binstall` вместо
-  компиляции из исходников — и в `release.yml`, и в `build.yml`.
+  `tauri-cli 2.12.2` компилируется из публичного crate через `cargo install --locked`.
+  Fallback на готовый CLI отсутствует. Rust закреплён на `1.93.1`.
 - **APK собирается по одной джобе на ABI** (`arm64-v8a`, `armeabi-v7a`).
   `ORG_GRADLE_PROJECT_routerAbis` содержит только ABI этой джобы.
 - **Артефакты живут 5 дней** (debug-APK из `build.yml` — 3): это передача файлов
@@ -119,3 +124,14 @@ pre-release ассет, который не вытесняет ничто.
 `ui typecheck`): оба языка, буквальные параметры, переключение
 и сохранение черновика в DOM. Она не требует роутера или браузерного бинаря;
 методика и пределы — [локализация](../../docs/localization.md).
+
+## Проверка происхождения релиза
+
+`release.yml` создаёт committed source archive всех рекурсивных сабмодулей,
+`SOURCE-MANIFEST.json` и per-job build manifests. Финальная collection требует
+совпадения workflow Git SHA, SHA256/размера каждого файла и полной матрицы assets;
+создаёт `BUILD-MANIFEST.json` и `SHA256SUMS.txt`. Tauri не может молча изменить
+reviewed Cargo/npm lockfiles. `I2P_EMBED_STUB`, `I2P_EMBED_SKIP_NATIVE` и release
+assertions блокируются shipping gate. Debug stub APK из `build.yml` не являются
+релизами. Проверки manifest на синтетических данных выполняет
+`.github/scripts/test-build-provenance.py`; они не компилируют приложение.

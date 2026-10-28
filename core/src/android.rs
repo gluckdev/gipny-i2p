@@ -7,7 +7,10 @@ mod android {
 
     static APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
 
-    pub fn configure(app: tauri::AppHandle) { let _ = APP.set(app); }
+    pub fn configure(app: tauri::AppHandle) {
+        crate::android_keystore::configure(&app);
+        let _ = APP.set(app);
+    }
 
     /// Run JNI on the live Tauri webview thread. Tauri does not initialize the
     /// unrelated ndk-context crate, and borrowed JNI references never leave this

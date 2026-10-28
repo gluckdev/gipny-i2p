@@ -9,7 +9,7 @@ import { icon } from './icons';
 import { onAvatarsChanged } from './avatars';
 import { View, h, avatar, fmtTime, fmtDate, fmtAgo, fmtMs, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
-import { PinnedBanner, EditInline, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
+import { PinnedBanner, EditInline, ContextMenu, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
 import { ContactModal } from './contact';
 import { GroupModal } from './group';
 import { SearchModal } from './search';
@@ -61,6 +61,13 @@ export class ChatView extends View {
   private peerNote: HTMLElement;
   private attachmentCache = new Map<number, Array<{ id: number; name: string; size: number }>>();
   private imageDataCache = new Map<number, string>();
+  private imageMessages = new Map<number, number>();
+  private imageClosers = new Map<number, () => void>();
+  private ownedBlobUrls = new Set<string>();
+  private disposed = false;
+  private draftEpoch = 0;
+  private filePickers = new Set<HTMLInputElement>();
+  private deletedSeen = new Set<number>();
   private pinnedBanner: PinnedBanner;
   private editingId: number | null = null;
   private replyTo: Message | null = null;
@@ -305,6 +312,11 @@ export class ChatView extends View {
             searchBtn,
             mediaBtn,
             detailsBtn,
+            h('button', { class: 'icon-btn chat-more', title: tr('chat.more_actions'), onClick: (event: Event) => {
+              const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+              ContextMenu.open(rect.left, rect.bottom, [{ label: tr('chat.clear_for_both'), danger: true,
+                onClick: () => { void this.clearDialog(); } }]);
+            } }, icon('more')),
           );
         })();
 
@@ -408,7 +420,29 @@ export class ChatView extends View {
       ),
     );
 
-    this.sub(store.messages, () => this.renderLog());
+    this.sub(store.messages, () => {
+      const messages = store.messages.get().get(targetKey(this.target)) ?? [];
+      for (const message of messages) if (message.deleted_at != null) {
+        if (!this.deletedSeen.has(message.id)) {
+          this.deletedSeen.add(message.id);
+          this.draftEpoch++;
+          this.app.closeModals();
+          this.input.value = '';
+          this.pending = [];
+          this.consoleHistory.fill('');
+          this.consoleHistory = [];
+          this.consoleDraft = '';
+          for (const picker of this.filePickers) { picker.value = ''; picker.remove(); }
+          this.filePickers.clear();
+          this.renderFileChips();
+        }
+        for (const [attachmentId, messageId] of this.imageMessages) if (messageId === message.id) this.releaseImage(attachmentId);
+        this.attachmentCache.delete(message.id);
+        if (this.editingId === message.id) this.editingId = null;
+        if (this.replyTo?.id === message.id) this.cancelReply();
+      }
+      this.renderLog();
+    });
     // A file in parts moved on: repaint its bar where it is on screen.
     this.sub(store.fileProgress, (m) => {
       for (const [mid, p] of m) {
@@ -445,6 +479,7 @@ export class ChatView extends View {
 
     if (isGroup && !store.groupMembers.get().has(target.id)) {
       Api.listGroupMembers(target.id as string).then((members) => {
+        if (this.disposed) return;
         store.groupMembers.update((m) => { const n = new Map(m); n.set(target.id as string, members); return n; });
       }).catch(() => {});
     }
@@ -510,6 +545,10 @@ export class ChatView extends View {
   }
 
   destroy(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.draftEpoch++;
+    ContextMenu.close();
     if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
     document.removeEventListener('paste', this.pasteHandler);
     if (this.typingStopTimer != null) window.clearTimeout(this.typingStopTimer);
@@ -520,7 +559,47 @@ export class ChatView extends View {
       this.typingActive = false;
     }
     this.pinnedBanner.destroy();
+    for (const id of [...this.imageMessages.keys()]) this.releaseImage(id);
+    for (const url of this.ownedBlobUrls) URL.revokeObjectURL(url);
+    this.ownedBlobUrls.clear();
+    this.imageDataCache.clear();
+    this.imageMessages.clear();
+    this.imageClosers.clear();
+    this.deletedSeen.clear();
+    this.attachmentCache.clear();
+    this.renderedSignatures.clear();
+    this.renderedIds = [];
+    this.renderedKey = '';
+    this.replyTo = null;
+    this.editingId = null;
+    this.input.value = '';
+    this.consoleHistory.fill('');
+    this.consoleHistory = [];
+    this.consoleDraft = '';
+    this.consoleSending = 0;
+    this.prependCompensation = null;
+    this.pending = [];
+    for (const picker of this.filePickers) { picker.value = ''; picker.remove(); }
+    this.filePickers.clear();
+    this.el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea').forEach((input) => { input.value = ''; });
+    this.el.querySelectorAll<HTMLMediaElement>('audio, video').forEach((media) => { media.pause(); media.removeAttribute('src'); media.load(); });
+    this.el.querySelectorAll('img').forEach((image) => image.removeAttribute('src'));
+    this.el.replaceChildren();
     super.destroy();
+  }
+
+  private isMessageLive(messageId: number): boolean {
+    return !this.disposed && sameTarget(this.store.selectedChat.get(), this.target)
+      && (this.store.messages.get().get(targetKey(this.target)) ?? []).some((message) => message.id === messageId && message.deleted_at == null);
+  }
+
+  private releaseImage(attachmentId: number): void {
+    this.imageClosers.get(attachmentId)?.();
+    this.imageClosers.delete(attachmentId);
+    const url = this.imageDataCache.get(attachmentId);
+    if (url && this.ownedBlobUrls.delete(url)) URL.revokeObjectURL(url);
+    this.imageDataCache.delete(attachmentId);
+    this.imageMessages.delete(attachmentId);
   }
 
   private bumpTyping(): void {
@@ -566,17 +645,23 @@ export class ChatView extends View {
    * into the app's cache, as a drop or a paste already is.
    */
   private pickFilesAndroid(): void {
+    if (this.disposed) return;
+    const epoch = this.draftEpoch;
     const input = h('input', { type: 'file', multiple: true, style: 'display:none' }) as HTMLInputElement;
+    this.filePickers.add(input);
     input.addEventListener('change', async () => {
       try {
         for (const f of Array.from(input.files ?? [])) {
           const path = await pasteFileToTempPath(f);
+          if (this.disposed || epoch !== this.draftEpoch) return;
           this.pending.push({ name: f.name, path, size: f.size });
         }
         this.renderFileChips();
       } catch (e) {
         this.store.showToast(tr('chat.attach_failed', { error: errorText(e) }), true);
       } finally {
+        input.value = '';
+        this.filePickers.delete(input);
         input.remove();
       }
     });
@@ -585,12 +670,15 @@ export class ChatView extends View {
   }
 
   private async pickFiles(): Promise<void> {
+    if (this.disposed) return;
+    const epoch = this.draftEpoch;
     if (/Android/.test(navigator.userAgent)) {
       this.pickFilesAndroid();
       return;
     }
     try {
       const sel = await open({ multiple: true });
+      if (this.disposed || epoch !== this.draftEpoch) return;
       if (!sel) return;
       const arr = Array.isArray(sel) ? sel : [sel];
       for (const p of arr) {
@@ -606,6 +694,8 @@ export class ChatView extends View {
   }
 
   private async handlePaste(e: ClipboardEvent): Promise<void> {
+    if (this.disposed) return;
+    const epoch = this.draftEpoch;
     if (this.app.isModalActive()) return;
     const items = e.clipboardData?.items;
     const itemsArr = items ? Array.from(items) : [];
@@ -627,6 +717,7 @@ export class ChatView extends View {
     if (collected.length === 0) {
       let path: string | null = null;
       try { path = await Api.pasteClipboardImage(); } catch { path = null; }
+      if (this.disposed || epoch !== this.draftEpoch) return;
       if (!path) return;
       e.preventDefault();
       const name = path.replace(/\\/g, '/').split('/').pop() ?? 'clipboard.png';
@@ -638,6 +729,7 @@ export class ChatView extends View {
     for (const f of collected) {
       try {
         const path = await pasteFileToTempPath(f);
+        if (this.disposed || epoch !== this.draftEpoch) return;
         this.pending.push({ name: f.name, path, size: f.size });
       } catch (err) {
         this.store.showToast(tr('chat.paste_failed') + String(err), true);
@@ -654,10 +746,11 @@ export class ChatView extends View {
     const pinned = this.isPinned(m) ? '1' : '0';
     const btns = m.buttons ? JSON.stringify(m.buttons) : '';
     const consoleFrame = m.console ? JSON.stringify(m.console) : '';
-    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${this.editingId === m.id ? 'e' : ''}`;
+    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${m.delete_pending}|${this.editingId === m.id ? 'e' : ''}`;
   }
 
   private renderLog(): void {
+    if (this.disposed) return;
     const consoleMode = this.store.isConsoleMode(this.target);
     const key = targetKey(this.target) + (consoleMode ? ':console' : ':chat');
     const all = this.store.messages.get().get(targetKey(this.target)) ?? [];
@@ -769,6 +862,7 @@ export class ChatView extends View {
     this.loadingMore = true;
     this.prependCompensation = { prevHeight: this.log.scrollHeight, prevTop: this.log.scrollTop };
     this.store.loadMoreMessages(this.target).then((more) => {
+      if (this.disposed) return;
       if (!more) {
         this.noMoreOlder = true;
         this.prependCompensation = null;
@@ -781,10 +875,12 @@ export class ChatView extends View {
   }
 
   private async scrollToMessage(messageId: number): Promise<void> {
+    if (this.disposed) return;
     const present = this.renderedIds.includes(messageId);
     if (!present) {
       try {
         const ok = await this.store.loadUntilMessage(this.target, messageId);
+        if (this.disposed) return;
         if (!ok) {
           this.store.showToast(tr('chat.message_not_found_in_this_chat'), true);
           return;
@@ -797,6 +893,7 @@ export class ChatView extends View {
     this.stickyBottom = false;
     let frames = 0;
     const tryScroll = (): void => {
+      if (this.disposed) return;
       const el = this.log.querySelector(`[data-mid="${messageId}"]`);
       if (el) {
         scrollLogToMessage(this.log, messageId);
@@ -844,6 +941,11 @@ export class ChatView extends View {
   }
 
   private renderMessage(m: Message): HTMLElement {
+    if (m.deleted_at != null) {
+      return h('div', { class: 'divider-text msg-deleted', 'data-mid': String(m.id), role: 'note' },
+        tr('chat.deleted_number', { number: m.dm_seq ?? '?' }),
+        ' · ', tr(m.delete_pending ? 'chat.deletion_pending' : 'chat.deletion_confirmed'));
+    }
     if (m.console) return this.renderConsoleMessage(m);
     if (this.editingId === m.id) return this.renderEditing(m);
     const meta = m.outgoing
@@ -863,6 +965,7 @@ export class ChatView extends View {
       h('div', { class: 'msg-row' },
         h('div', { class: 'msg-body' }, m.body,
           h('span', { class: 'msg-foot' },
+            m.dm_seq != null && h('span', { class: 'msg-number', title: tr('chat.local_message_number') }, `#${m.dm_seq} `),
             pinned && h('span', { class: 'msg-pin-indicator', title: tr('chat.pinned') }, '📌'),
             h('span', { class: 'msg-ts' }, fmtTime(m.sent_at)),
             meta && h('span', { class: 'msg-meta' + (m.delivered ? ' delivered' : ''), title: metaTitle }, meta),
@@ -875,6 +978,7 @@ export class ChatView extends View {
       () => this.startEdit(m),
       () => this.startReply(m),
       () => this.openForward(m),
+      () => { void this.deleteForBoth(m); },
     ));
     this.loadAttachmentsFor(m.id, wrap);
     if (m.buttons && m.buttons.length > 0 && !m.outgoing) {
@@ -903,6 +1007,26 @@ export class ChatView extends View {
       wrap.appendChild(btns);
     }
     return wrap;
+  }
+
+  private async deleteForBoth(message: Message): Promise<void> {
+    if (this.target.kind !== 'contact' || message.deleted_at != null) return;
+    if (!await this.app.confirm(tr('chat.delete_for_both'), tr('chat.delete_for_both_confirm'), true)) return;
+    try {
+      await Api.deleteMessage(message.id);
+      await this.store.loadMessages(this.target);
+    } catch (error) {
+      this.store.showToast(errorText(error), true);
+    }
+  }
+
+  private async clearDialog(): Promise<void> {
+    if (this.target.kind !== 'contact') return;
+    if (!await this.app.confirm(tr('chat.clear_for_both'), tr('chat.clear_for_both_confirm'), true)) return;
+    try {
+      await Api.clearDmChat(this.target.id as number);
+      await this.store.loadMessages(this.target);
+    } catch (error) { this.store.showToast(errorText(error), true); }
   }
 
   /**
@@ -969,12 +1093,13 @@ export class ChatView extends View {
   }
 
   private startEdit(m: Message): void {
-    if (!m.outgoing) return;
+    if (!m.outgoing || !this.isMessageLive(m.id)) return;
     this.editingId = m.id;
     this.renderLog();
   }
 
   private startReply(m: Message): void {
+    if (!this.isMessageLive(m.id)) return;
     this.replyTo = m;
     this.renderReplyChip();
     this.input.focus();
@@ -986,6 +1111,7 @@ export class ChatView extends View {
   }
 
   private renderReplyChip(): void {
+    if (this.disposed) return;
     this.replyChip.replaceChildren();
     if (!this.replyTo) {
       this.replyChip.style.display = 'none';
@@ -1026,7 +1152,7 @@ export class ChatView extends View {
     const senderLabel = orig.outgoing
       ? tr('chat.you')
       : (this.senderNameFor(orig) || tr('auth.unknown'));
-    const preview = orig.body
+    const preview = orig.deleted_at != null ? tr('chat.deleted_number', { number: orig.dm_seq ?? '?' }) : orig.body
       ? (orig.body.length > 100 ? orig.body.slice(0, 100) + '…' : orig.body)
       : tr('chat.attachment');
     return h('div', {
@@ -1045,9 +1171,11 @@ export class ChatView extends View {
   }
 
   private async loadAttachmentsFor(msgId: number, container: HTMLElement): Promise<void> {
+    if (!this.isMessageLive(msgId)) return;
     let list = this.attachmentCache.get(msgId);
     if (!list) {
       list = await Api.listAttachments(msgId);
+      if (!this.isMessageLive(msgId)) return;
       this.attachmentCache.set(msgId, list);
     }
     // Files still moving in parts: a bar each, and a cancel for ours.
@@ -1055,6 +1183,7 @@ export class ChatView extends View {
     const moving = this.store.fileProgress.get().has(msgId)
       ? await Api.filesProgress(msgId).catch(() => [])
       : [];
+    if (!this.isMessageLive(msgId)) return;
     if (moving.length > 0) {
       const box = h('div', { class: 'msg-files-moving', 'data-files-mid': String(msgId) });
       for (const f of moving) {
@@ -1082,7 +1211,7 @@ export class ChatView extends View {
       if (isImageName(a.name)) {
         bar.appendChild(h('div', {
           class: 'attachment image-stub',
-          onClick: () => this.openImageLazy(a.id, a.name),
+          onClick: () => this.openImageLazy(a.id, a.name, msgId),
         }, tr('chat.open', { p0: (a.name), p1: (humanSize(a.size)) })));
       } else {
         bar.appendChild(h('div', {
@@ -1094,23 +1223,32 @@ export class ChatView extends View {
     container.appendChild(bar);
   }
 
-  private async openImageLazy(attId: number, name: string): Promise<void> {
+  private async openImageLazy(attId: number, name: string, messageId: number): Promise<void> {
+    if (!this.isMessageLive(messageId)) return;
     let url = this.imageDataCache.get(attId);
     if (!url) {
       try {
         const b64 = await Api.loadAttachment(attId);
-        url = `data:${mimeFromName(name)};base64,${b64}`;
+        if (!this.isMessageLive(messageId)) return;
+        const bytes = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
+        const blob = new Blob([bytes], { type: mimeFromName(name) });
+        bytes.fill(0);
+        url = URL.createObjectURL(blob);
+        this.ownedBlobUrls.add(url);
         this.imageDataCache.set(attId, url);
+        this.imageMessages.set(attId, messageId);
       } catch (e) {
-        this.store.showToast(tr('chat.load_failed_2') + errorText(e), true);
+        if (!this.disposed) this.store.showToast(tr('chat.load_failed_2') + errorText(e), true);
         return;
       }
     }
-    this.openImage(url, name);
+    this.openImage(url, name, attId);
   }
 
-  private openImage(src: string, name: string): void {
-    this.app.openModal((close) => {
+  private openImage(src: string, name: string, attachmentId: number): void {
+    this.imageClosers.get(attachmentId)?.();
+    let cleanup = (): void => {};
+    const dismiss = this.app.openModal((close) => {
       const stage = h('div', { class: 'zoom-stage' });
       const img = h('img', { src, class: 'zoom-img' }) as HTMLImageElement;
       stage.appendChild(img);
@@ -1149,10 +1287,11 @@ export class ChatView extends View {
       });
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
-      const wrappedClose = (): void => {
+      cleanup = (): void => {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
-        close();
+        img.removeAttribute('src');
+        this.imageClosers.delete(attachmentId);
       };
       const resetBtn = h('button', {
         class: 'btn btn-ghost',
@@ -1169,17 +1308,18 @@ export class ChatView extends View {
             tr('chat.wheel_zoom_drag_pan')),
           resetBtn,
           h('div', { class: 'grow' }),
-          h('button', { class: 'icon-btn', onClick: wrappedClose }, 'x'),
+          h('button', { class: 'icon-btn', onClick: close }, 'x'),
         ),
         stage,
       );
-    });
+    }, () => cleanup());
+    this.imageClosers.set(attachmentId, dismiss);
   }
 
   private async downloadAttachment(id: number, name: string): Promise<void> {
     try {
       const dest = await save({ defaultPath: name });
-      if (!dest) return;
+      if (!dest || this.disposed) return;
       await Api.saveAttachment(id, dest);
       this.store.showToast(tr('chat.saved'));
     } catch (e) {
@@ -1188,6 +1328,7 @@ export class ChatView extends View {
   }
 
   private renderFileChips(): void {
+    if (this.disposed) return;
     this.fileChips.replaceChildren();
     this.pending.forEach((f, i) => {
       this.fileChips.appendChild(h('div', {
@@ -1246,6 +1387,7 @@ export class ChatView extends View {
    * new default does rather than quietly starting to delete messages. */
   private async loadTtl(): Promise<void> {
     const prefs = await Api.getChatPrefs();
+    if (this.disposed) return;
     // null is a choice, not an absence: picking "off" stores null, and testing
     // ttlSecs on its own cannot tell that from a profile that never chose.
     // It would leave the default sitting in this.ttlSecs and put the timer back
@@ -1327,6 +1469,7 @@ export class ChatView extends View {
     let stats: LinkStats;
     try {
       stats = await Api.linkStats(this.target.id as number);
+      if (this.disposed) return;
     } catch {
       this.linkStrip.classList.add('hidden');
       return;

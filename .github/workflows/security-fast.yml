@@ -1,0 +1,125 @@
+name: security fast
+
+# This workflow produces no downloadable application. The router shim is a
+# compile/unit-test fixture; native builds and release gates remain separate.
+on:
+  push:
+    branches: [main]
+    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml']
+  pull_request:
+    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-fast-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  I2P_EMBED_STUB: '1'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  desktop:
+    name: unit + callers (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2025, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: actions/setup-node@v7
+        with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - name: Linux app development headers (no router build)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libunwind-dev libsoup-3.0-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: security-fast-stub-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build checked-in frontend and resource fixture
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+          mkdir -p core/resources
+          printf 'security-fast compile fixture; no router or release artifact\n' > core/resources/i2pd
+      - name: Check every libcore caller and its test targets
+        run: cargo check --locked -p gipny-libcore -p gipny-agent -p gipny-bot -p e2e-harness --all-targets
+      - name: Check native app commands and test targets
+        run: cargo check --locked -p gipny --all-targets
+      - name: Memory, device-copy, vault, card and deletion regressions
+        run: cargo test --locked -p gipny-libcore --lib
+      - name: Vault lifecycle and historical format rejection
+        # Expensive KDF timing is measured by the existing release-profile
+        # native test job; this checks lifecycle with its small-cost fixtures.
+        run: cargo test --locked -p gipny-libcore --test first_run --test compat -- --skip kdf_timing_report
+      - name: Agent lifecycle and persistent default identity
+        run: cargo test --locked -p gipny-agent
+      - name: App storage, sanitization and installer regressions
+        run: cargo test --locked -p gipny --lib
+      - name: Native boundary Rust unit tests (stub, no transport claims)
+        run: cargo test --locked -p i2p-embed --lib
+
+  android-rust:
+    name: Android Rust + JNI types (arm64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    env:
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
+      CC_aarch64_linux_android: aarch64-linux-android24-clang
+      CXX_aarch64_linux_android: aarch64-linux-android24-clang++
+      AR_aarch64_linux_android: llvm-ar
+      RANLIB_aarch64_linux_android: llvm-ranlib
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v6
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v4
+        with: { packages: 'platform-tools ndk;27.3.13750724' }
+      - name: Configure source-build Android compiler tools
+        run: |
+          ndk="$ANDROID_SDK_ROOT/ndk/27.3.13750724"
+          tc="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "$tc" >> "$GITHUB_PATH"
+          # openssl-src expects the binutils-prefixed names in NDK r27.
+          ln -sf "$tc/llvm-ranlib" "$tc/aarch64-linux-android-ranlib"
+          ln -sf "$tc/llvm-ar" "$tc/aarch64-linux-android-ar"
+      - uses: actions/setup-node@v7
+        with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: security-fast-android-stub
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Frontend and resource fixture
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+          mkdir -p core/resources
+          printf 'security-fast Android compile fixture; not an APK\n' > core/resources/i2pd
+      - name: Android memory, device provider and test source compile check
+        run: cargo check --locked -p gipny-libcore --all-targets --target aarch64-linux-android
+      - name: Type-check actual Tauri/JNI bridge and Android app callers
+        run: cargo check --locked -p gipny --lib --target aarch64-linux-android
+      # Kotlin and instrumentation sources are assembled by build.yml's
+      # Android job after cargo-tauri generates its Gradle plugin bindings.
+      # A Rust check cannot prove a real Keystore, TEE or Android lifecycle.

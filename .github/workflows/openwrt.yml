@@ -1,0 +1,112 @@
+name: OpenWrt static agent
+
+on:
+  workflow_call:
+    inputs:
+      include-seed:
+        type: boolean
+        default: false
+      version:
+        type: string
+        default: ''
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'agent/**'
+      - 'libcore/**'
+      - 'i2p-embed/**'
+      - 'dht/**'
+      - 'third_party/**'
+      - '.github/scripts/openwrt-*'
+      - '.github/scripts/check-openwrt-*'
+      - '.github/workflows/openwrt.yml'
+      - 'scripts/install-agent-openwrt.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    name: native router + static agent (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-musl
+          - armv7-unknown-linux-musleabi
+          - x86_64-unknown-linux-musl
+          - i686-unknown-linux-musl
+    env:
+      GIPNY_DHT_SEEDS: ${{ vars.GIPNY_DHT_SEEDS }}
+      GIPNY_OPENWRT_JOBS: 2
+      OPENWRT_WORK: ${{ github.workspace }}/.openwrt-cross/${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: pinned native router and cross build tools
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          bash .github/scripts/assert-i2pd-pin.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential perl curl xz-utils zstd python3 qemu-user busybox
+      # All targets use musl 1.2.5. Pin Rust too; changing either is an ABI
+      # review, especially for 32-bit time_t and prebuilt C++ runtime archives.
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: ${{ matrix.target }}
+      - name: release diagnostics policy
+        run: |
+          bash scripts/check-release-diagnostics.sh
+          busybox sh -n scripts/install-agent-openwrt.sh
+          python3 .github/scripts/test-openwrt.py
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.OPENWRT_WORK }}
+          key: openwrt-24.10.4-${{ matrix.target }}-${{ hashFiles('.github/scripts/openwrt-*', 'Cargo.lock') }}
+      - name: static Boost / OpenSSL / zlib with the same musl toolchain
+        run: bash .github/scripts/openwrt-prepare.sh '${{ matrix.target }}' "$OPENWRT_WORK"
+      - name: current reseed certificates
+        run: bash scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - name: release agent, ELF gates and target CPU smoke tests
+        run: bash .github/scripts/openwrt-build.sh '${{ matrix.target }}' "$OPENWRT_WORK"
+      - name: fetch the release network snapshot
+        if: inputs.include-seed == true
+        uses: actions/download-artifact@v8
+        with:
+          name: netdb-seed
+          path: seed
+      - name: package the static agent
+        env:
+          VERSION: ${{ inputs.version }}
+          INCLUDE_SEED: ${{ inputs.include-seed }}
+        run: |
+          VERSION="${VERSION:-$(python3 -c 'import json; print(json.load(open("core/tauri.conf.json"))["version"])')}"
+          name="gipny-agent_${VERSION}_${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          install -m 0755 "$OPENWRT_WORK/target/${{ matrix.target }}/release/gipny-agent" "dist/$name/"
+          install -m 0755 scripts/install-agent-openwrt.sh "dist/$name/"
+          install -m 0644 docs/openwrt.md "dist/$name/README.md"
+          if [ "$INCLUDE_SEED" = true ]; then
+            install -m 0644 seed/i2pd-netdb-seed.tar.gz "dist/$name/"
+          fi
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          sha256sum "dist/$name.tar.gz"
+      - name: record source, toolchain downloads and exact archive hash
+        run: |
+          python3 .github/scripts/build-provenance.py record build-manifest-openwrt-${{ matrix.target }}.json '${{ matrix.target }}' \
+            --artifact 'dist/*.tar.gz' --inputs "$OPENWRT_WORK/downloads"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-provenance-openwrt-${{ matrix.target }}
+          path: build-manifest-openwrt-${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 5
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gipny-agent-openwrt-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 5

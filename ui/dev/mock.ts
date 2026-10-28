@@ -187,7 +187,7 @@ mockIPC(async (cmd, payload) => {
     case 'update_installs_itself': return false;
     case 'update_asks_for_root': return false;
     case 'read_previous_log': return '12:01:02 [i2p] embedded router ready\n12:01:40 [relay-hosted] built-in relay ready\n12:09:55 [relay-client] peer relay 5AyDtq unreachable: Io';
-    case 'log_settings': return { enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
+    case 'log_settings': return { available: true, enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
     case 'set_log_enabled': return null;
     case 'clear_debug_log': return null;
     case 'verify_passphrase': return String((payload as Record<string, unknown>)?.pass ?? '') === 'preview' ? 'ok' : Promise.reject('invalid passphrase');

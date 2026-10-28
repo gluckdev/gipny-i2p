@@ -84,7 +84,9 @@ export function messageMenuItems(
   onEdit: () => void,
   onReply: () => void,
   onForward: () => void,
+  onDelete?: () => void,
 ): MenuItem[] {
+  if (m.deleted_at != null) return [];
   const pinnedList = store.pinned.get().get(targetKey(target)) ?? [];
   const isPinned = pinnedList.some((p) => p.id === m.id);
   const items: MenuItem[] = [];
@@ -111,6 +113,10 @@ export function messageMenuItems(
         navigator.clipboard.writeText(m.body).catch(() => store.showToast(tr('actions.copy_failed'), true));
       },
     });
+  }
+
+  if (target.kind === 'contact' && onDelete) {
+    items.push({ label: tr('chat.delete_for_both'), danger: true, onClick: onDelete });
   }
 
   return items;
@@ -146,6 +152,8 @@ export class PinnedBanner {
   destroy(): void {
     this.unsub?.();
     this.unsub = null;
+    this.items = [];
+    this.el.replaceChildren();
     this.el.remove();
   }
 
@@ -153,6 +161,7 @@ export class PinnedBanner {
     const key = targetKey(this.target);
     this.items = this.store.pinned.get().get(key) ?? [];
     if (this.items.length === 0) {
+      this.listEl.replaceChildren();
       this.el.style.display = 'none';
       return;
     }

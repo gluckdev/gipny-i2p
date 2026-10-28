@@ -895,6 +895,7 @@ async fn run_update_check_mode() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    gipny_libcore::security::harden_process()?;
     if let Some(bin) = std::env::var_os("E2E_AGENT_BIN") {
         return run_agent_mode(PathBuf::from(bin)).await;
     }

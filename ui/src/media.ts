@@ -13,6 +13,8 @@ export class MediaModal {
   private target: ChatTarget;
   private grid: HTMLElement;
   private status: HTMLElement;
+  private closed = false;
+  private ownedUrls = new Set<string>();
 
   constructor(store: Store, target: ChatTarget, close: () => void) {
     this.store = store;
@@ -33,6 +35,12 @@ export class MediaModal {
       ),
     );
 
+    this.el.addEventListener('gipny-modal-close', () => {
+      this.closed = true;
+      for (const url of this.ownedUrls) URL.revokeObjectURL(url);
+      this.ownedUrls.clear();
+      this.grid.replaceChildren(); this.status.textContent = '';
+    }, { once: true });
     void this.load();
   }
 
@@ -41,8 +49,10 @@ export class MediaModal {
       const items = this.target.kind === 'contact'
         ? await Api.listMediaContact(this.target.id as number, 500)
         : await Api.listMediaGroup(this.target.id as string, 500);
+      if (this.closed) return;
       this.render(items);
     } catch (e) {
+      if (this.closed) return;
       this.status.textContent = tr('chat.load_failed_2') + errorText(e);
     }
   }
@@ -72,7 +82,7 @@ export class MediaModal {
           ev.stopPropagation();
           try {
             const dest = await save({ defaultPath: it.name });
-            if (!dest) return;
+            if (!dest || this.closed) return;
             await Api.saveAttachment(it.id, dest as string);
             this.store.showToast(tr('contact.saved'));
           } catch (e) {
@@ -89,21 +99,20 @@ export class MediaModal {
   private async fillPreview(into: HTMLElement, attId: number, mime: string): Promise<void> {
     try {
       const b64 = await Api.loadAttachment(attId);
-      // The MIME in a data: URL is authoritative in WebKitGTK — served as
-      // application/octet-stream the image simply does not decode, and the tile
-      // fell through to the error glyph below. The chat bubble always passed the
-      // real type (chat.ts), which is why the same file opened fine from there.
-      const img = h('img', { src: `data:${mime};base64,${b64}` });
+      if (this.closed || !into.isConnected) return;
+      const bytes = Uint8Array.from(atob(b64), (character) => character.charCodeAt(0));
+      const blob = new Blob([bytes], { type: mime }); bytes.fill(0);
+      const url = URL.createObjectURL(blob); this.ownedUrls.add(url);
+      const img = h('img', { src: url });
       into.replaceChildren(img);
     } catch {
+      if (this.closed) return;
       into.textContent = '⨯';
     }
   }
 
   private openInChat(it: MediaItem): void {
-    setTimeout(() => {
-      this.store.scrollToMessage.set({ target: this.target, messageId: it.message_id, nonce: Date.now() });
-    }, 50);
     this.close();
+    this.store.requestScrollTo(this.target, it.message_id);
   }
 }

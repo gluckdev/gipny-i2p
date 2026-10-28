@@ -11,6 +11,8 @@ export class SearchModal {
   private results: HTMLElement;
   private status: HTMLElement;
   private timer: number | null = null;
+  private closed = false;
+  private generation = 0;
   private store: Store;
   private close: () => void;
   private scope: { contactId: number | null; groupId: string | null } = { contactId: null, groupId: null };
@@ -50,7 +52,12 @@ export class SearchModal {
       ),
     );
 
-    setTimeout(() => this.input.focus(), 50);
+    this.el.addEventListener('gipny-modal-close', () => {
+      this.closed = true; this.generation++;
+      if (this.timer != null) window.clearTimeout(this.timer);
+      this.input.value = ''; this.results.replaceChildren(); this.status.textContent = '';
+    }, { once: true });
+    setTimeout(() => { if (!this.closed) this.input.focus(); }, 50);
   }
 
   private scheduleSearch(): void {
@@ -59,6 +66,8 @@ export class SearchModal {
   }
 
   private async runSearch(): Promise<void> {
+    if (this.closed) return;
+    const generation = ++this.generation;
     const q = this.input.value.trim();
     if (q.length < 2) {
       this.results.replaceChildren();
@@ -66,8 +75,10 @@ export class SearchModal {
     }
     try {
       const hits = await Api.searchMessages(q, this.scope.contactId, this.scope.groupId, 100);
+      if (this.closed || generation !== this.generation) return;
       this.renderResults(hits, q);
     } catch (e) {
+      if (this.closed || generation !== this.generation) return;
       this.results.replaceChildren(h('div', { class: 'hint' }, tr('search.search_failed') + errorText(e)));
     }
   }
@@ -111,10 +122,13 @@ export class SearchModal {
     if (hit.contact_id != null) target = { kind: 'contact', id: hit.contact_id };
     else if (hit.group_id != null) target = { kind: 'group', id: hit.group_id };
     if (!target) return;
-    this.store.selectedChat.set(target);
-    setTimeout(() => {
-      this.store.scrollToMessage.set({ target: target!, messageId: hit.message.id, nonce: Date.now() });
-    }, 100);
+    const messageId = hit.message.id;
+    const selecting = this.store.selectChat(target);
+    const version = this.store.contentVersion;
+    void selecting.then(() => {
+      if (version !== this.store.contentVersion || this.store.view.get() !== 'main') return;
+      this.store.requestScrollTo(target!, messageId);
+    }).catch(() => {});
     this.close();
   }
 }
