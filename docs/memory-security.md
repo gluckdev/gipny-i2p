@@ -153,6 +153,10 @@ deletion-before-image-response. На checkpoint
 [GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40757759828/job/123061162378).
 Это результат UI-границы данного SHA, не подтверждение всех memory/native
 tests или более поздних изменений рабочего дерева.
+После этого checkpoint дополнительно исправлен lifecycle `ContextMenu`:
+закрытие снимает принадлежащие меню document handlers и отменяет delayed
+registration; long-press удалённого DOM не открывает меню заново. Новый
+отдельный regression source ожидает следующего GitHub CI.
 
 ## Native libi2pd и JNI: принадлежащие нам копии
 

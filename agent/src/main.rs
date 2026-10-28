@@ -56,7 +56,8 @@ mod bootstrap;
 fn usage() -> ! {
     eprintln!(
         "Usage: gipny-agent --data <dir> [--master <card>] [--name <name>] \
-        [--relay <dest>] [--cwd <dir>] [--timeout <secs>]"
+        [--relay <dest>] [--cwd <dir>] [--timeout <secs>]\n\
+        Validation only: gipny-agent --check-master-card <card>"
     );
     std::process::exit(1);
 }
@@ -65,6 +66,7 @@ fn usage() -> ! {
 struct Args {
     data: Option<PathBuf>,
     master_card: Option<String>,
+    check_master_card: Option<String>,
     name: Option<String>,
     relay: Option<String>,
     cwd: Option<PathBuf>,
@@ -78,6 +80,7 @@ fn parse_args() -> Args {
         match flag.as_str() {
             "--data"    => a.data        = it.next().map(PathBuf::from),
             "--master"  => a.master_card = it.next(),
+            "--check-master-card" => a.check_master_card = Some(it.next().unwrap_or_else(|| usage())),
             "--name"    => a.name        = it.next(),
             "--relay"   => a.relay       = it.next(),
             "--cwd"     => a.cwd         = it.next().map(PathBuf::from),
@@ -122,6 +125,13 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_master_card(raw: &str) -> Result<ContactCard> {
+    // The card may be sensitive contact metadata: errors never echo its fields.
+    let card = ContactCard::parse(raw).map_err(|_| anyhow::anyhow!("invalid GIPNY master contact card"))?;
+    if card.relay.is_none() { bail!("the master contact card must contain a relay"); }
+    Ok(card)
+}
+
 /// The master's card: from `--master`, which is then remembered, or from the
 /// copy an earlier run left behind. A new `--master` replaces the old one.
 fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
@@ -129,7 +139,7 @@ fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
     let raw = match &args.master_card {
         Some(raw) => {
             let raw = raw.trim().to_string();
-            ContactCard::parse(&raw).context("invalid --master card")?;
+            validate_master_card(&raw).context("invalid --master card")?;
             write_private(&path, &raw)?;
             raw
         }
@@ -138,7 +148,7 @@ fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
             path.display()
         ))?,
     };
-    ContactCard::parse(&raw).with_context(|| format!("invalid master card in {}", path.display()))
+    validate_master_card(&raw).with_context(|| format!("invalid master card in {}", path.display()))
 }
 
 /// `--relay` is remembered like `--master`: given once, read back afterwards.
@@ -218,22 +228,26 @@ struct Job {
 
 fn main() -> Result<()> {
     gipny_libcore::security::harden_process()?;
+    let args = parse_args();
+    if let Some(card) = args.check_master_card.as_deref() {
+        validate_master_card(card)?;
+        return Ok(());
+    }
     let readiness = bootstrap::Readiness::take_environment()?;
     tokio::runtime::Builder::new_multi_thread().enable_all().build()
-        .context("start agent runtime")?.block_on(run(readiness))
+        .context("start agent runtime")?.block_on(run(args, readiness))
 }
 
-async fn run(readiness: Option<bootstrap::Readiness>) -> Result<()> {
-    let args = parse_args();
+async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> {
     let data_dir = data_dir(&args)?;
     let master_card = load_master(&args, &data_dir)?;
     // The agent's own relay is separate from the master's: this is only about
-    // reaching the master to deliver a message, which needs a v2 card either
+    // reaching the master to deliver a message, which needs a relay-bearing card
     // way.
     if master_card.relay.is_none() {
         bail!(
             "the master's card is a v1 card without a relay, and the agent has no way to \
-            reach the master until it gets a v2 card (Settings → my card)"
+            reach the master until it gets a relay-bearing v3/v2 card (Settings → my card)"
         );
     }
     let relay_override = load_relay(&args, &data_dir)?;
@@ -298,7 +312,7 @@ async fn run(readiness: Option<bootstrap::Readiness>) -> Result<()> {
         dh_pk: me.dh_pk,
         relay: Some(relay_onion.clone()),
         name: Some(display_name.clone()),
-    }.encode();
+    }.encode()?;
     write_private(&data_dir.join(OWN_CARD_FILE), &own_card)?;
     println!("agent card: {own_card}");
     gipny_libcore::debug_trace!("[agent] master sign_pk: {}…", agent::hex8(&master_card.sign_pk));

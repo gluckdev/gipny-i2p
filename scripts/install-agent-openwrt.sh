@@ -39,7 +39,12 @@ validate_master() {
       sub(/==?$/, "", a)
       return length(a)>=516 && a ~ /^[a-zA-Z0-9~-]+$/
     }
-    { valid=($1=="gipny" && ($2=="v1" || $2=="v2") && $3!="" &&
+    /^gipny:v3:/ {
+      payload=substr($0,10)
+      if (length(payload)<135 || length(payload)>307 || payload !~ /^[A-Za-z0-9_-]+$/) exit 1
+      next
+    }
+    { valid=($1=="gipny" && $2=="v2" && $3!="" &&
         length($4)==64 && $4 ~ /^[0-9a-fA-F]+$/ &&
         length($5)==64 && $5 ~ /^[0-9a-fA-F]+$/)
       if ($2=="v2") valid=valid && address($6)
@@ -154,6 +159,9 @@ chmod 0755 "$binary"
 status=0
 "$binary" --help > "$stage/help.txt" 2>&1 || status=$?
 { [ "$status" = 0 ] || [ "$status" = 1 ]; } && grep -qF 'Usage: gipny-agent' "$stage/help.txt" || fail 'бинарник не запускается на этом CPU/ядре'
+case "$master" in
+  gipny:v3:*) "$binary" --check-master-card "$master" >/dev/null 2>&1 || fail 'карточка повреждена или версия агента не поддерживает v3; нужны 0.4.19 или новее' ;;
+esac
 [ ! -d "$prefix/gipny-agent" ] && [ ! -d "$data/master.card" ] || fail 'путь бинарника или master.card занят каталогом'
 
 # Network, checksum, archive and executable checks have finished. Do not stop

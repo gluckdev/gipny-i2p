@@ -9,6 +9,7 @@
     "test": "node tests/localization.test.mjs"
   },
   "dependencies": {
+    "@noble/hashes": "2.4.0",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.3",
     "@tauri-apps/plugin-notification": "^2.4.0",

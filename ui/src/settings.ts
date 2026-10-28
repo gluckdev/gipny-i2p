@@ -722,7 +722,9 @@ function remoteAgentModal(store: Store, close: () => void): HTMLElement {
       ? (info.hosted.state === 'ready' ? info.hosted.address.trim() : '')
       : (relayLoaded ? relay : '');
     command = '';
+    let cardError = false;
     if (id && currentRelay) {
+      try {
       const card = encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk,
         store.displayName.get() || undefined, currentRelay);
       if (selected === 'windows') {
@@ -733,8 +735,9 @@ function remoteAgentModal(store: Store, close: () => void): HTMLElement {
         const quoted = card.replace(/[\\$`"\r\n]/g, (char) => '\\' + char);
         command = `curl -fsSL ${base}install-agent.sh | ${selected === 'root' ? 'sudo ' : ''}bash -s -- --master "${quoted}"`;
       }
+      } catch { cardError = true; }
     }
-    output.value = command || tr('settings.waiting_for_the_master_s_card_and_relay');
+    output.value = command || tr(cardError ? 'card.encode_error' : 'settings.waiting_for_the_master_s_card_and_relay');
     copy.disabled = !command;
     tabs.forEach((tab, index) => {
       const active = platforms[index]!.script === selected;

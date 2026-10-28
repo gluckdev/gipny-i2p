@@ -12,6 +12,8 @@ export interface MenuItem {
 
 export class ContextMenu {
   private static current: HTMLElement | null = null;
+  private static listenerTimer: number | null = null;
+  private static removeListeners: (() => void) | null = null;
 
   static open(x: number, y: number, items: MenuItem[]): void {
     this.close();
@@ -29,17 +31,26 @@ export class ContextMenu {
     menu.style.left = px + 'px';
     menu.style.top = py + 'px';
     this.current = menu;
-    setTimeout(() => {
+    this.listenerTimer = window.setTimeout(() => {
+      this.listenerTimer = null;
+      if (this.current !== menu) return;
       const onDown = (ev: Event) => {
         if (!menu.contains(ev.target as Node)) this.close();
       };
       const onEsc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') this.close(); };
-      document.addEventListener('pointerdown', onDown, { once: true });
-      document.addEventListener('keydown', onEsc, { once: true });
+      document.addEventListener('pointerdown', onDown);
+      document.addEventListener('keydown', onEsc);
+      this.removeListeners = () => {
+        document.removeEventListener('pointerdown', onDown);
+        document.removeEventListener('keydown', onEsc);
+      };
     }, 0);
   }
 
   static close(): void {
+    if (this.listenerTimer != null) { window.clearTimeout(this.listenerTimer); this.listenerTimer = null; }
+    this.removeListeners?.(); this.removeListeners = null;
+    this.current?.replaceChildren();
     this.current?.remove();
     this.current = null;
   }
@@ -63,6 +74,7 @@ export function attachContextMenu(el: HTMLElement, build: (x: number, y: number)
     cancel();
     pressTimer = window.setTimeout(() => {
       pressTimer = null;
+      if (!el.isConnected) return;
       const items = build(startX, startY);
       if (!items || items.length === 0) return;
       try { (navigator as Navigator & { vibrate?: (p: number) => boolean }).vibrate?.(15); } catch {}

@@ -4,6 +4,20 @@ set -euo pipefail
 umask 077
 
 # Also sourced by regressions; verification finishes before any install writes.
+master_card_shape() {
+  case $1 in
+    gipny:v2:*) return 0 ;;
+    gipny:v3:*) [[ $1 =~ ^gipny:v3:[A-Za-z0-9_-]{135,307}$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+verify_staged_master() {
+  master_card_shape "$2" || return 1
+  case $2 in
+    gipny:v3:*) "$1" --check-master-card "$2" >/dev/null 2>&1 ;;
+  esac
+}
+
 verify_agent_archive() {
   local archive=$1 manifest=$2 asset_name=$3 expected actual
   [[ $(wc -c < "$manifest") -le 1048576 ]] || { echo 'Oversized checksum manifest' >&2; return 1; }
@@ -144,7 +158,7 @@ if [[ -z $MASTER ]]; then
   IFS= read -r MASTER < /dev/tty || fail 'передайте --master <card>'
 fi
 [[ $MASTER != *$'\n'* && $MASTER != *$'\r'* ]] || fail 'переводы строк в карточке не поддерживаются'
-[[ $MASTER == gipny:v2:* ]] || fail 'нужна карточка gipny:v2 с релеем из настроек мастера'
+master_card_shape "$MASTER" || fail 'нужна карточка gipny:v3 (или v2) с релеем из настроек мастера'
 if [[ -z $NAME && -f $CONFIG/agent-name ]]; then IFS= read -r NAME < "$CONFIG/agent-name"; fi
 if [[ -z $NAME ]]; then
   cat_names=(Murka Barsik Matroskin Felix Luna Nala Simba Tigra Tom Bagheera)
@@ -185,6 +199,8 @@ mkdir "$TMP/unpack"; tar -xzf "$TMP/agent.tar.gz" -C "$TMP/unpack"
 EXE=$(find "$TMP/unpack" -type f -name gipny-agent | head -n 1)
 SEED=$(find "$TMP/unpack" -type f -name i2pd-netdb-seed.tar.gz | head -n 1)
 [[ -n $EXE && -n $SEED ]] || fail 'в архиве отсутствует агент или снимок сети'
+chmod 0755 "$EXE"
+verify_staged_master "$EXE" "$MASTER" || fail 'карточка повреждена или эта версия агента не поддерживает v3; нужны 0.4.19 или новее'
 [[ ! -f $CONFIG/backend ]] || stop
 mkdir -p "$BIN" "$CONFIG" "$DATA"; chmod 700 "$CONFIG" "$DATA"
 install -m 0755 "$EXE" "$BIN/gipny-agent"; install -m 0644 "$SEED" "$BIN/i2pd-netdb-seed.tar.gz"

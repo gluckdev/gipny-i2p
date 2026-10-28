@@ -1,5 +1,6 @@
 /** Russian UI messages. Keep keys and placeholders aligned with en.ts. */
 export const ru = {
+  "card.encode_error": "Не удалось создать карточку. Проверьте адреса и сократите имя.",
   "common.close": "Закрыть",
   "common.cancel": "Отмена",
   "common.save": "Сохранить",
@@ -330,7 +331,7 @@ export const ru = {
   "contact.delete_for_both": "Удалить у обоих",
   "contact.delete_and_your_conversation_and_ask_their_app": "Удалить «{p0}» и переписку у вас, и попросить приложение собеседника удалить переписку и вас у себя? У вас всё удалится сразу. У собеседника — когда запрос до него дойдёт (если он не в сети — когда появится). Это просьба к его приложению: то, что он уже прочитал, скопировал или снял с экрана, не вернуть.",
   "contact.saved": "Сохранено",
-  "contact.paste_a_contact_card_gipny_v2": "вставьте карточку контакта\n(gipny:v2:…)",
+  "contact.paste_a_contact_card_gipny_v2": "вставьте карточку контакта\n(gipny:v3:…; v1/v2 тоже поддерживаются)",
   "contact.destination_base64_or_abc_xyz_b32_i2p": "destination (b64) или abc…xyz.b32.i2p",
   "contact.leave_empty_to_use_yours": "пусто — будет использован ваш",
   "contact.scan_qr": "Сканировать QR",

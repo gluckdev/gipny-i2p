@@ -2037,13 +2037,13 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, Strin
 }
 
 /// A contact card as a QR picture, so two people can exchange cards by
-/// pointing one phone at another instead of copying 500 characters. Rendered
+/// pointing one phone at another instead of copying a card. Rendered
 /// here (pure Rust) rather than in the interface: one small dependency instead
 /// of a JavaScript one. Returns an SVG that scales to whatever box it is put in.
 #[tauri::command]
 fn qr_svg(text: String) -> Result<String, String> {
-    // A v2 card is ~600 characters, comfortably inside QR's limits at the
-    // lowest correction level; anything much larger is not a card.
+    // v3 is 187 ASCII characters without a name (at most316 with one).
+    // Keep the existing larger bound for legacy v1/v2 cards.
     if text.is_empty() || text.len() > 2000 {
         return Err("nothing to encode".into());
     }

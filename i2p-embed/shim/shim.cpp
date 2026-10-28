@@ -2,6 +2,10 @@
 
 #include "shim.h"
 
+// Boost 1.74 Asio uses std::exchange without including <utility> itself.
+// Keep this before router/Boost headers for GCC 13 and older OpenWrt SDKs.
+#include <utility>
+
 #include <atomic>
 #include <cstdlib>
 #include <cstring>

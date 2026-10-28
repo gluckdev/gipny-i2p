@@ -717,7 +717,7 @@ impl Core {
             loop {
                 let still_ours = matches!(
                     &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()),
-                    HostedRelayState::Ready { address: a } if *a == address
+                    HostedRelayState::Ready { address: a } if relay::same_destination(a, &address)
                 );
                 if !still_ours {
                     this.note_relay_reach(None);
@@ -2261,7 +2261,7 @@ impl Core {
                 let onion = this.relay_onion();
                 let external = !onion.is_empty()
                     && this.relay_out.read().await.is_some()
-                    && !this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| r.address() == onion);
+                    && !this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref().is_some_and(|r| relay::same_destination(r.address(), &onion));
                 if !collect_lane_wanted(external, this.part_seen.load(Relaxed), now_ms(), this.collect_lanes.load(Relaxed)) {
                     continue;
                 }
@@ -2280,7 +2280,7 @@ impl Core {
                     let quiet = {
                         let lane = lane.clone();
                         let onion = onion.clone();
-                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || lane.relay_onion() != onion
+                        move || !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms()) || !relay::same_destination(&lane.relay_onion(), &onion)
                     };
                     lane.clone().run_recv_loop(client, Some(onion.clone()), Some(&quiet)).await;
                     lane.collect_lanes.fetch_sub(1, Relaxed);
@@ -2310,7 +2310,7 @@ impl Core {
                 // Our own built-in relay is in this process: talk to it over a
                 // pipe, not out through i2p and back in.
                 let local = this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
-                    .filter(|r| r.address() == onion)
+                    .filter(|r| relay::same_destination(r.address(), &onion))
                     .map(|r| r.connect_local());
                 // Bounded: nothing below has a timeout of its own, and a dial
                 // i2p leaves hanging would otherwise keep us off our own mail
@@ -2439,7 +2439,7 @@ impl Core {
         let Some(theirs) = theirs else {
             return self.relay_out.read().await.clone();
         };
-        if theirs == self.relay_onion() {
+        if relay::same_destination(theirs, &self.relay_onion()) {
             return self.relay_out.read().await.clone();
         }
 
@@ -2554,7 +2554,7 @@ impl Core {
                     // half-handled when the connection went could have moved the
                     // ratchet on and not be saved.
                     if done.is_some_and(|d| d()) { break; }
-                    if own.as_ref().is_some_and(|o| *o != self.relay_onion()) {
+                    if own.as_deref().is_some_and(|o| !relay::same_destination(o, &self.relay_onion())) {
                         gipny_libcore::debug_trace!("[relay-client] our relay changed, reconnecting");
                         break;
                     }
@@ -2960,7 +2960,7 @@ impl Core {
             let trimmed = relay.trim();
             if !trimmed.is_empty() && gipny_libcore::card::is_valid_i2p_address(trimmed) {
                 if let Ok(current) = self.db.contact_relay(contact_id) {
-                    if current.as_deref() != Some(trimmed) {
+                    if !current.as_deref().is_some_and(|known| relay::same_destination(known, trimmed)) {
                         gipny_libcore::debug_trace!("[relay-discovery] updated relay for contact {} to {}", contact_id, &trimmed[..trimmed.len().min(16)]);
                         let _ = self.db.set_contact_relay(contact_id, Some(trimmed));
                         self.warm_relay_of(contact_id);
@@ -3929,7 +3929,7 @@ impl Core {
             let Some((relay, _issued)) = dht_client::find_address(&this.dht, &this.identity, &their_sign, &their_dh).await else {
                 return;
             };
-            if known.as_deref() == Some(relay.as_str()) || relay.trim().is_empty() {
+            if known.as_deref().is_some_and(|known| relay::same_destination(known, &relay)) || relay.trim().is_empty() {
                 return;
             }
             gipny_libcore::debug_trace!("[dht] contact {id} moved to a new relay; taking the address from the network");

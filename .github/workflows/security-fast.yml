@@ -5,9 +5,9 @@ name: security fast
 on:
   push:
     branches: [main]
-    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml']
+    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml', '.github/scripts/windows-source-tools.ps1']
   pull_request:
-    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml']
+    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml', '.github/scripts/windows-source-tools.ps1']
   workflow_dispatch:
 
 permissions:
@@ -35,6 +35,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with: { arch: x64 }
+      - name: Native Windows source-build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/windows-source-tools.ps1
       - name: Pinned certificate source for the stub fixture
         # The Rust shim needs its embedded certificate fixture. Recursive
         # Android Boost/OpenSSL test repositories are unrelated to this check;

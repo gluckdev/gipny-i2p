@@ -6,6 +6,10 @@ param(
     [switch]$Uninstall
 )
 
+function Test-GipnyMasterCardShape([string]$Card) {
+    return $Card -cmatch '^gipny:v2:' -or $Card -cmatch '^gipny:v3:[A-Za-z0-9_-]{135,307}$'
+}
+
 function Get-GipnyReleaseChecksum {
     param([string]$Manifest, [string]$AssetName)
     $found = @()
@@ -62,7 +66,7 @@ function Install-GipnyAgent {
         return
     }
     if (-not $Master) { $Master = Read-Host 'Your GIPNY contact card (the agent will contact you)' }
-    if ($Master -notlike 'gipny:v2:*') { throw 'Use a gipny:v2 master card containing its relay address.' }
+    if (-not (Test-GipnyMasterCardShape $Master)) { throw 'Use a gipny:v3 (or v2) master card containing its relay address.' }
     if (-not $Name -and (Test-Path -LiteralPath $configPath)) {
         $saved = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
         if ($saved.Name) { $Name = [string]$saved.Name }
@@ -107,6 +111,10 @@ function Install-GipnyAgent {
         $seed = @(Get-ChildItem $temp -Recurse -File -Filter 'i2pd-netdb-seed.tar.gz')
         $bootstrap = @(Get-ChildItem $temp -Recurse -File -Filter 'start-agent.ps1')
         if ($exe.Count -ne 1 -or $seed.Count -ne 1 -or $bootstrap.Count -ne 1) { throw 'Archive must contain an executable, network seed and startup bootstrap.' }
+        if ($Master.StartsWith('gipny:v3:')) {
+            & $exe[0].FullName '--check-master-card' $Master *> $null
+            if ($LASTEXITCODE -ne 0) { throw 'Invalid card or this agent does not support v3; version 0.4.19 or newer is required.' }
+        }
         if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
             Stop-ScheduledTask -TaskName $taskName
             Start-Sleep -Seconds 2

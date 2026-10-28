@@ -37,6 +37,12 @@ Rust закреплён на `1.93.1`, Android NDK — `27.3.13750724`. `tauri-c
 macOS запрашивает source build Boost/OpenSSL через Homebrew. OpenWrt проверяет
 SHA256 официального toolchain, Boost, OpenSSL source crate и zlib до сборки.
 
+Windows jobs явно включают MSVC x64 environment и native Strawberry Perl
+через `windows-source-tools.ps1`. Vendored OpenSSL использует абсолютный
+`OPENSSL_SRC_PERL`, чтобы Git Bash не подменил его MSYS Perl с несовместимыми
+путями/неполным набором модулей. Это выбор публичного инструмента сборки,
+а не загрузка готовой библиотеки приложения.
+
 Официальные Rust/Node/NDK, MSVC, Xcode, Android SDK/JDK, операционная система и
 инструменты упаковки являются **инструментами сборки**. Они могут поставляться
 издателем готовыми; MSVC/Xcode/platform SDK не обещаются свободными или

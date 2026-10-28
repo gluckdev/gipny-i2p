@@ -2,6 +2,7 @@ import type { ru } from './ru.ts';
 
 /** English UI messages. Technical payloads and user content are never translated. */
 export const en = {
+  "card.encode_error": "Could not create a contact card. Check the addresses and shorten the name.",
   "common.close": "Close",
   "common.cancel": "Cancel",
   "common.save": "Save",
@@ -332,7 +333,7 @@ export const en = {
   "contact.delete_for_both": "Delete for both",
   "contact.delete_and_your_conversation_and_ask_their_app": "Delete “{p0}” and your conversation, and ask their app to delete the conversation and your contact entry too? Your data is deleted immediately. Their app acts when it receives the request, once they return online. This is a request to their app: messages already read, copied or captured cannot be recalled.",
   "contact.saved": "Saved",
-  "contact.paste_a_contact_card_gipny_v2": "paste a contact card\n(gipny:v2:…)",
+  "contact.paste_a_contact_card_gipny_v2": "paste a contact card\n(gipny:v3:…; v1/v2 also accepted)",
   "contact.destination_base64_or_abc_xyz_b32_i2p": "destination (base64) or abc…xyz.b32.i2p",
   "contact.leave_empty_to_use_yours": "leave empty to use yours",
   "contact.scan_qr": "Scan QR",

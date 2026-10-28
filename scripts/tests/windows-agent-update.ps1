@@ -11,6 +11,12 @@ function Assert-Throws([scriptblock]$Action) {
     Assert-True $threw 'Expected failure did not occur.'
 }
 
+$cardFixtures = Get-Content (Join-Path $PSScriptRoot '..\..\tests\fixtures\contact-cards-v3.json') -Raw | ConvertFrom-Json
+Assert-True (Test-GipnyMasterCardShape $cardFixtures.valid[0].encoded) 'Compact master card was rejected.'
+foreach ($invalidShape in @('gipny:v1:no-relay', 'gipny:v3:short', ($cardFixtures.valid[0].encoded + '='), 'not-a-card')) {
+    Assert-True (-not (Test-GipnyMasterCardShape $invalidShape)) 'Invalid compact-card shape was accepted.'
+}
+
 $hash = 'a' * 64
 Assert-True ((Get-GipnyReleaseChecksum "$hash  agent.tar.gz`n" 'agent.tar.gz') -ceq $hash) 'Valid manifest rejected.'
 Assert-True ((Get-GipnyReleaseChecksum "$($hash.ToUpperInvariant()) *./agent.tar.gz" 'agent.tar.gz') -ceq $hash) 'Binary/uppercase checksum rejected.'

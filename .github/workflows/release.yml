@@ -168,6 +168,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with: { arch: x64 }
+      - name: Native Windows source-build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/windows-source-tools.ps1
       - name: check out i2pd (compiled into the app)
         shell: bash
         run: |

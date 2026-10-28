@@ -18,7 +18,7 @@
 import { t, setLang } from '../src/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AgentMaster, Attachment, Contact, Group, GroupMember, Message } from '../src/api';
-import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT } from '../src/api';
+import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT, encodeCard } from '../src/api';
 
 const params = new URLSearchParams(location.search);
 const requestedLang = params.get('lang');
@@ -30,8 +30,12 @@ const theme = params.get('theme');
 // and vault_unlock takes as long as it does in life instead of resolving at once.
 const relayStarting = params.get('relay') === 'starting' || scene === 'boot';
 
-const DEST = 'q7Hk2-~Lm9XzRt'.repeat(37).slice(0, 516) + 'AAAA';
-const RELAY = 'Vb8~nP3-sQw1YeUi'.repeat(33).slice(0, 516) + 'AAAA';
+function publicDestination(seed: number): string {
+  const bytes = Uint8Array.from({ length: 387 }, (_, i) => i < 384 ? (i * 37 + seed) & 255 : 0);
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '~');
+}
+const DEST = publicDestination(11);
+const RELAY = publicDestination(29);
 const B32 = 'zqeubwvvtm5f3cto5s3r6ftj36j4x4nsvvh3znux7uruhxjgk5za.b32.i2p';
 const hex = (seed: string): string => seed.repeat(64).slice(0, 64);
 const now = Date.now();
@@ -114,7 +118,7 @@ const byContact: Record<number, Message[]> = {
   ],
   2: [
     msg({ contact_id: 2, body: 'привет! карточку релея пришлю ниже', sent_at: now - 50 * min }),
-    msg({ contact_id: 2, body: `gipny:v2:${DEST}:${hex('c3')}:${hex('d4')}:${RELAY}`, sent_at: now - 49 * min }),
+    msg({ contact_id: 2, body: encodeCard(DEST, hex('c3'), hex('d4'), undefined, RELAY), sent_at: now - 49 * min }),
     msg({ contact_id: 2, outgoing: true, body: 'получил. контрольная сумма образа:\n' + LONG_TOKEN, sent_at: now - 45 * min }),
     msg({ contact_id: 2, body: 'ок, вот ссылка на инструкцию http://' + B32 + '/docs/installation/linux/systemd-unit-with-a-very-long-path-segment-that-never-ends.html', sent_at: now - 44 * min }),
     msg({ contact_id: 2, outgoing: true, body: 'фото со стенда', sent_at: now - 10 * min }),

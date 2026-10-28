@@ -2,8 +2,8 @@
 
 Состояние на **2026-10-28**: изменение подготовлено в рабочем дереве
 `feat/today-integration-20261028` для кандидата `0.4.19`. Это ещё не
-опубликованный релиз. Новые regression tests написаны; их сборка и исполнение
-должны пройти **GitHub Actions**. Старые результаты updater/group outbox
+опубликованный релиз. UI regression прошёл в **GitHub Actions** на `d907307`;
+новые DB/wire tests ещё ожидают результата CI. Старые результаты updater/group outbox
 не являются проверкой этого изменения.
 
 ## Поведение
@@ -124,7 +124,11 @@ SQLCipher/SQLite и файловая система не объединены в
 ## Проверки исходников
 
 Новые тесты предназначены для CI, локально после требования владельца о
-GitHub-only builds не запускались:
+GitHub-only builds не запускались. **2026-10-28**, checkpoint
+`d907307e5b03a4c6301890d21689835f224a09a7`: TypeScript/Vite и 13/13 UI tests,
+включая DM/WebView cases ниже, прошли в
+[GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40757759828/job/123061162378).
+DB/wire результаты этого checkpoint ещё ожидаются; это не live I2P/device proof.
 
 - `db::dm::tests`: разные локальные IDs, удаление сообщения собеседника,
   wrong-contact ACK, duplicate/reopen, delete-before-content, replay/edit,

@@ -150,7 +150,17 @@ Unit-тесты проверяют выбор asset, неоднозначнос�
 launcher не выполняют NSIS или Scheduled Task.
 
 Новые readiness/journal regressions подготовлены **после** этих исторических
-прогонов и ещё не исполнялись. `scripts/tests/windows-agent-update.ps1`
+прогонов. Первый Windows run checkpoint `d907307` **2026-10-28**
+[обнаружил ошибку](https://github.com/gluckdev/gipny-i2p/actions/runs/40757760043/job/123061162221):
+PowerShell передал `$null` backup в `File.Replace` как недопустимый пустой path.
+Исходник исправлен на уникальный принадлежащий bootstrap временный backup
+журнала. Повторный Windows run **2026-10-28**, source
+`5d3500d388e2985d90c17cbf92fb1db7ed23172b`,
+[прошёл](https://github.com/gluckdev/gipny-i2p/actions/runs/40758501807/job/123063747261)
+все checksum/replacement/readiness/rollback/recovery fixtures. Это проверка
+bootstrap на настоящем Windows runner с тестовыми дочерними executables,
+не установка службы и не запуск настоящего I2P-агента.
+`scripts/tests/windows-agent-update.ps1`
 компилирует C# fixtures из исходников непосредственно в Windows GitHub Actions:
 успешная readiness, отказ native loader, early exit, timeout, неверные nonce/PID,
 непричастный процесс с тем же basename, interrupted journal recovery и отказ

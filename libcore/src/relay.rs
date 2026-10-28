@@ -56,6 +56,16 @@ pub fn destination_hash(address: &str) -> Option<[u8; 32]> {
     Some(sha2::Sha256::digest(&raw).into())
 }
 
+/// Same I2P destination across full base64 and compact b32 spellings. Invalid
+/// addresses (including two empty strings) never compare equal. Base64 case is
+/// significant; only decoded destination hashes are compared.
+pub fn same_destination(a: &str, b: &str) -> bool {
+    match (crate::card::address_hash(a), crate::card::address_hash(b)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn i2p_base64_decode(s: &str) -> Option<Vec<u8>> {
     let body = s.trim_end_matches('=');
     let mut out = Vec::with_capacity(body.len() * 3 / 4);
@@ -510,6 +520,10 @@ mod destination {
     fn garbage_is_not_a_destination() {
         assert!(destination_hash("not/base64").is_none());
         assert!(destination_hash("abc.b32.i2p").is_none());
+        assert!(!same_destination("", ""));
+        assert!(!same_destination("not-an-address", "not-an-address"));
+        assert!(!same_destination(B32, "abc.b32.i2p"));
+        assert!(same_destination(B32, &B32.to_uppercase()));
     }
 
     #[test]

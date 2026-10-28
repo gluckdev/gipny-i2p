@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,7 +19,9 @@ for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'H
 }
 win.__TAURI_INTERNALS__ = {};
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
+const cardFixtures = JSON.parse(await readFile(new URL('../../tests/fixtures/contact-cards-v3.json', import.meta.url), 'utf8'));
 const { t, setLang, getLang, translations, App, Store, Api } = ui;
+
 const calls = [];
 let logSettings = { available: true, enabled: false, path: '/tmp/example.log' };
 ui.mockIPC((cmd) => {
@@ -44,6 +46,85 @@ const deferred = () => {
   return { promise, resolve };
 };
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
+
+test('v3 cards match Rust and Python vectors and reject malformed canonical encodings', () => {
+  for (const vector of cardFixtures.valid) {
+    const source = vector.input;
+    const encoded = ui.encodeCard(source.onion, source.sign_pk, source.dh_pk, source.name, source.relay);
+    assert.equal(encoded, vector.encoded, vector.id);
+    const decoded = ui.decodeCard(encoded);
+    assert.deepEqual(decoded, {
+      onion: vector.decoded.onion, signPk: source.sign_pk, dhPk: source.dh_pk,
+      ...(source.relay ? { relay: vector.decoded.relay } : {}),
+      ...(source.name ? { name: source.name } : {}),
+    }, vector.id);
+    assert.equal(ui.encodeCard(decoded.onion, decoded.signPk, decoded.dhPk, decoded.name, decoded.relay), encoded);
+  }
+  for (const vector of cardFixtures.invalid) assert.equal(ui.decodeCard(vector.encoded), null, vector.id);
+  const sample = cardFixtures.valid[0].input;
+  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk, 'я'.repeat(49), sample.relay));
+  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk, '\ud800', sample.relay));
+  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk, undefined, ''));
+  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk.slice(1), sample.dh_pk));
+  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk + '00'));
+  assert.throws(() => ui.encodeCard('a'.repeat(51) + 'b.b32.i2p', sample.sign_pk, sample.dh_pk));
+});
+
+test('valid legacy v1/v2 cards still import and exports migrate to v3', () => {
+  const input = cardFixtures.valid[0].input;
+  const v1 = `gipny:v1:${input.onion}:${input.sign_pk}:${input.dh_pk}:Мурка`;
+  const v2 = `gipny:v2:${input.onion}:${input.sign_pk}:${input.dh_pk}:${input.relay}:${encodeURIComponent('Мурка:1')}`;
+  assert.equal(ui.decodeCard(v1).name, 'Мурка');
+  const decoded = ui.decodeCard(v2);
+  assert.equal(decoded.name, 'Мурка:1');
+  assert.match(ui.encodeCard(decoded.onion, decoded.signPk, decoded.dhPk, decoded.name, decoded.relay), /^gipny:v3:/);
+  assert.equal(ui.decodeCard(v2.replace(encodeURIComponent('Мурка:1'), '%FF')), null);
+});
+
+test('card export keeps copying disabled until ready and never copies an encoding error', async () => {
+  const previousLang = getLang();
+  const previous = { address: Api.getRelayAddress, info: Api.getRelayInfo, qr: Api.qrSvg,
+    clipboard: Object.getOwnPropertyDescriptor(navigator, 'clipboard') };
+  const source = cardFixtures.valid[0].input;
+  const copied = [], qr = [];
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
+  try {
+    Api.qrSvg = async (card) => { qr.push(card); return '<svg></svg>'; };
+    for (const lang of ['en', 'ru']) {
+      setLang(lang);
+      const relay = deferred();
+      Api.getRelayAddress = () => relay.promise;
+      Api.getRelayInfo = async () => null;
+      const store = new Store();
+      store.identity.set({ onion: source.onion, card: { sign_pk: source.sign_pk, dh_pk: source.dh_pk }, fingerprint: 'a'.repeat(64) });
+      store.displayName.set('я'.repeat(49));
+      const modal = new ui.IdentityModal(store, () => {});
+      document.body.append(modal.el);
+      const copy = [...modal.el.querySelectorAll('button')].find((button) => button.textContent === t('identity.copy_card'));
+      assert.equal(copy.disabled, true, 'relay has not become available');
+      const before = copied.length;
+      copy.click(); await tick();
+      assert.equal(copied.length, before);
+      relay.resolve(source.relay); await tick();
+      assert.equal(copy.disabled, true, 'overlong UTF-8 name cannot produce a card');
+      assert.ok(modal.el.textContent.includes(t('card.encode_error')));
+      copy.click(); await tick(); assert.equal(copied.length, before);
+      const name = modal.el.querySelector('input.input');
+      name.value = 'Мурка'; name.dispatchEvent(new win.Event('input'));
+      assert.equal(copy.disabled, false);
+      copy.click(); await tick();
+      assert.equal(copied.length, before + 1);
+      assert.equal(ui.decodeCard(copied.at(-1)).name, 'Мурка');
+      assert.ok(qr.includes(copied.at(-1)), 'QR and clipboard carry the same valid card');
+      modal.el.remove();
+    }
+  } finally {
+    setLang(previousLang);
+    Api.getRelayAddress = previous.address; Api.getRelayInfo = previous.info; Api.qrSvg = previous.qr;
+    if (previous.clipboard) Object.defineProperty(navigator, 'clipboard', previous.clipboard);
+    else delete navigator.clipboard;
+  }
+});
 
 test('locale choice respects saved preferences and handles unavailable storage', () => {
   assert.equal(ui.detectLang('ru', ['en-US']), 'ru');
@@ -402,6 +483,35 @@ test('closed search/media modals reject late plaintext and image responses', asy
     assert.equal(document.querySelector('.search-snippet, .media-name, .media-preview img'), null);
   } finally {
     app.destroy(); Api.searchMessages = previous.search; Api.listMediaContact = previous.media; Api.loadAttachment = previous.load;
+  }
+});
+
+test('closed context menus release document handlers and do not attach them after a delayed open', async () => {
+  const add = document.addEventListener, remove = document.removeEventListener;
+  const owned = new Map();
+  document.addEventListener = function (type, listener, options) {
+    if (type === 'pointerdown' || type === 'keydown') owned.set(listener, type);
+    return add.call(this, type, listener, options);
+  };
+  document.removeEventListener = function (type, listener, options) {
+    owned.delete(listener); return remove.call(this, type, listener, options);
+  };
+  try {
+    ui.ContextMenu.open(0, 0, [{ label: 'private action', onClick: () => {} }]);
+    await tick(); assert.equal(owned.size, 2);
+    ui.ContextMenu.close(); assert.equal(owned.size, 0);
+    assert.equal(document.querySelector('.ctx-menu'), null);
+    ui.ContextMenu.open(0, 0, [{ label: 'private delayed action', onClick: () => {} }]);
+    ui.ContextMenu.close(); await tick(); assert.equal(owned.size, 0);
+    assert.equal(document.querySelector('.ctx-menu'), null);
+    let built = 0;
+    const row = document.createElement('div'); document.body.append(row);
+    ui.attachContextMenu(row, () => { built++; return [{ label: 'detached secret', onClick: () => {} }]; });
+    row.dispatchEvent(new win.PointerEvent('pointerdown', { pointerType: 'touch' })); row.remove();
+    await new Promise((resolve) => setTimeout(resolve, 510));
+    assert.equal(built, 0); assert.equal(document.querySelector('.ctx-menu'), null);
+  } finally {
+    ui.ContextMenu.close(); document.addEventListener = add; document.removeEventListener = remove;
   }
 });
 

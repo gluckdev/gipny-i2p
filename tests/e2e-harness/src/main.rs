@@ -357,7 +357,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
         relay: Some(relay_dest.clone()),
         name: Some("bot-a".into()),
     }
-    .encode();
+    .encode()?;
 
     // The agent's data dir is fresh, so this is a first run: --master given,
     // remembered in master.card. Its stdout/stderr are inherited so its own

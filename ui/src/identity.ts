@@ -35,18 +35,19 @@ export class IdentityModal {
     let myRelay = '';
     // Built-in relay not up yet: a card without a relay is one nobody can
     // write to, so it is not shown and cannot be copied until there is one.
-    let waiting = false;
+    let waiting = true;
+    let sharedCard = '';
     const copyBtn = h('button', {
       class: 'btn btn-amber',
       onClick: async () => {
-        if (waiting) return;
-        await navigator.clipboard.writeText(cardBlock.textContent ?? '');
+        if (waiting || !sharedCard) return;
+        await navigator.clipboard.writeText(sharedCard);
         store.showToast(tr('identity.card_copied'));
       },
     }, tr('identity.copy_card')) as HTMLButtonElement;
     const cardNote = h('div', { class: 'hint', style: { marginTop: '6px' } });
-    // The card is ~600 characters; nobody dictates that. A QR on screen is how
-    // two people standing next to each other exchange cards.
+    // v3 is 187 ASCII characters without a name. QR carries the exact same
+    // canonical card as the clipboard.
     const qrSlot = h('div', { class: 'card-qr' });
     let qrFor = '';
     const paintQr = (card: string): void => {
@@ -65,20 +66,30 @@ export class IdentityModal {
       const name = nameI.value.trim();
       copyBtn.disabled = waiting;
       if (waiting) {
+        sharedCard = '';
         cardBlock.textContent = tr('identity.built_in_relay_is_starting_your_card_will');
         paintQr('');
         return;
       }
-      const card = id
-        ? encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay)
-        : '';
+      let card = '';
+      try {
+        if (id) card = encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay);
+      } catch {
+        sharedCard = '';
+        copyBtn.disabled = true;
+        cardBlock.textContent = tr('card.encode_error');
+        paintQr('');
+        return;
+      }
+      sharedCard = card;
+      copyBtn.disabled = !card;
       cardBlock.textContent = card;
       paintQr(card);
     };
     const paintRelay = (info: RelayInfo | null): void => {
       const builtin = info?.mode === 'builtin';
       if (builtin) myRelay = info.hosted.state === 'ready' ? info.hosted.address.trim() : '';
-      waiting = builtin && !myRelay;
+      waiting = !myRelay;
       cardNote.textContent = builtin && myRelay
         ? tr('identity.the_relay_address_in_this_card_is_valid')
         : '';
