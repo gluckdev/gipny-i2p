@@ -196,7 +196,14 @@ Source archive проверен по checksum `Cargo.lock`; новый Windows i
 Dedicated SQLCipher quota test после этого был skipped; успешный runtime
 результат ему ещё не приписывается. Подготовлен ограниченный Windows quota retry
 и отдельный child test восстановления/исчерпания общего бюджета, см.
-[memory-security.md](memory-security.md); они ожидают следующего GitHub CI.
+[memory-security.md](memory-security.md).
+На [Windows `bd73d8b`](https://github.com/gluckdev/gipny-i2p/actions/runs/40781835097/job/123145643890)
+protected-key recovery/budget test уже PASS. SQLCipher child также exit0 после
+SQL assertions, но parent test ожидал старое `VirtualLock()` вместо реального
+`VirtualLock(ADDR,SIZE)`: шаг FAILED, следующий полный suite skipped.
+Oracle исправлен по actual pinned 4.19 source: real call и точный LastError1453
+должны присутствовать на одной строке; child success и включённая memory security
+обязательны. Повторный общий Windows результат пока требуется.
 SQLCipher memory locking остаётся best effort при отказе OS quota; это отличается
 от наших обязательных locked pages для ключей и не даёт гарантии полного
 закрепления SQL workspace в RAM.

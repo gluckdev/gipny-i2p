@@ -17,21 +17,21 @@ relay discovery, offline delivery and I2P reliability. The
 [migration history](MIGRATION-i2p.md) describes earlier designs; its SAM commands
 are historical, not setup instructions for this tree.
 
-## Branch status and getting started
+## Version and getting started
 
-The manifests use **0.4.19**, a candidate for the next release;
-the last published release is **0.4.18**. The combined branch
-`feat/today-integration-20261028` contains **unreleased** work: complete EN/RU
-localization, required updater checksums, an atomic group outbox, the Pages
-project website, Android JNI/APK staging fixes, deletion for both DM participants
-and the new diagnostics policy. RAM secret protection and new release targets
-are also being prepared in this branch. This is not a new release.
-Build/CodeQL badges in the Russian README show the latest run on `main`;
-they do not reflect the changes in open [PR #121](https://github.com/gluckdev/gipny-i2p/pull/121).
-Component checks have passed for the candidate, but the full CI matrix and
-release preview do not yet have a complete PASS. The earlier “5/5 delivered”
-result covered one e2e scenario and revision, not the whole build matrix.
-See the [2026-10-28 integration record](docs/today-2026-10-28.md).
+The source version is **0.4.19**. It includes complete EN/RU localization,
+required updater checksums, an atomic group outbox, the Pages project website,
+Android JNI/APK staging fixes, deletion for both DM participants, RAM secret
+protection, new release targets and the diagnostics policy. See
+[GitHub Releases](https://github.com/gluckdev/gipny-i2p/releases) for available
+packages, publication dates and status; check the downloaded package's version
+against its release notes.
+
+Build/CodeQL badges in the Russian README show the latest run on `main`.
+Each check covers its recorded SHA and scenario, rather than every platform
+and device. Integration history, [PR #121](https://github.com/gluckdev/gipny-i2p/pull/121),
+CI results and their limits are kept in the
+[dated integration record](docs/today-2026-10-28.md).
 
 1. Download the installer for your platform from the [releases page](https://github.com/gluckdev/gipny-i2p/releases).
 2. Create a local profile and choose a passphrase. No registration server is involved.
@@ -39,7 +39,7 @@ See the [2026-10-28 integration record](docs/today-2026-10-28.md).
 4. Share your contact card or QR from **My card** through a channel you trust.
 5. Add the other person's card, accept their request, and compare key fingerprints through a separate authenticated channel.
 
-The candidate exports `gipny:v3:<payload>` cards: **187 ASCII characters**
+Version 0.4.19 exports `gipny:v3:<payload>` cards: **187 ASCII characters**
 with a relay and without a name. Both public keys remain complete; full
 256-bit b32 hashes replace the long I2P Destinations. Connecting requires
 standard I2P lookup/LeaseSet resolution. The checksum detects copying errors
@@ -52,14 +52,14 @@ Existing contacts receive authenticated address updates through the protocol.
 
 ## Features
 
-The following describes the source tree. Changes marked **unreleased** are not
-promises about a downloaded 0.4.18 build. Historical release notes remain in
+The following describes the 0.4.19 source tree. Check each downloaded package's
+version for its feature set. Release notes and change history remain in
 [docs/releases](docs/releases/) and on [GitHub Releases](https://github.com/gluckdev/gipny-i2p/releases).
 
 ### Conversations and files
 
 - Direct conversations and groups, group membership and separate unread counts.
-- **Unreleased:** each queued group recipient remains pending until their E2E
+- **In 0.4.19:** each queued group recipient remains pending until their E2E
   acknowledgement, for up to seven days. Only the last expected ACK completes
   delivery. The message, reply/settings, attachment metadata, file offers and
   complete recipient snapshot commit in one transaction before network awaits.
@@ -70,7 +70,7 @@ promises about a downloaded 0.4.18 build. Historical release notes remain in
   Application memory processing and streamed files have different size limits;
   see [core](core/README.md) and [libcore](libcore/README.md).
 - Replies, edits, deletion, forwarding, pinned messages and pinned chats.
-- **Unreleased:** either DM participant can delete their own or the other
+- **In 0.4.19:** either DM participant can delete their own or the other
   person's message and attachments for both endpoints. Immutable local numbers
   and permanent placeholders preserve gaps; deletion retries until E2E ACK.
   Clear history and explicit timers use the same protocol, including pinned DMs.
@@ -99,7 +99,7 @@ promises about a downloaded 0.4.18 build. Historical release notes remain in
 
 ### English and Russian
 
-The unreleased localization covers profile setup, chats, contacts, groups,
+The 0.4.19 localization covers profile setup, chats, contacts, groups,
 QR, security, backup, updates, notifications and the agent console. Choose
 **English** or **Русский** before unlocking or in **Settings → Language**.
 The saved choice is local to the device. Without one, Russian, Belarusian and
@@ -121,10 +121,10 @@ preserved. OS permission and picker dialogs use the OS language. See
   4 MiB. Large attachments use the chunked-file protocol instead.
 - SQLCipher and Argon2id protect application profiles. Multiple profiles,
   encrypted backup/import, a separate decoy and duress/wipe policies are
-  supported. In the candidate, OS device binding also protects profile keys
+  supported. In 0.4.19, OS device binding also protects profile keys
   and headless SQLCipher databases; an unavailable provider causes an explicit
   refusal. [Provider limits](docs/device-bound-storage.md).
-- **Unreleased:** guarded encrypted containers protect idle secrets. WebView
+- **In 0.4.19:** guarded encrypted containers protect idle secrets. WebView
   caches history only for the active chat and cleans its known copies on
   switch/lock/delete. This does not guarantee all-RAM or GC wiping:
   [memory boundaries](docs/memory-security.md).
@@ -137,14 +137,14 @@ preserved. OS permission and picker dialogs use the OS language. See
   The application, headless agent and bots use this delivery path.
 - Router settings include transit contribution and Yggdrasil off/automatic/on.
   Tunnels can start building while you enter the profile passphrase.
-- Updates use HTTPS through an I2P outproxy with `rustls`/webpki. **Unreleased:**
+- Updates use HTTPS through an I2P outproxy with `rustls`/webpki. **In 0.4.19:**
   every asset requires a validated SHA256 from the same release, including the
   APK picker and agent. Missing/broken manifests fail closed; the previous
   destination is replaced only after verification. See [update verification](docs/update-verification.md).
-- Android JNI and installation changes in this branch use a verified copy
+- Android JNI and installation in 0.4.19 use a verified copy
   under private `cache/updates`, a restricted FileProvider and the system
   installer. User permission and real-device validation remain necessary.
-- New diagnostics policy: detailed DEBUG logs are for tests/diagnostic builds;
+- Diagnostics in 0.4.19: detailed DEBUG logs are for tests/diagnostic builds;
   release builds emit warnings/errors and write no `debug.log`. This supersedes
   the old always-on file-log description. See [release diagnostics](docs/release-diagnostics.md).
 
@@ -224,7 +224,7 @@ router pin changes need the corresponding CI evidence.
 
 Use stable Rust, a C++ compiler, Boost/program_options, OpenSSL, zlib and Tauri's
 platform dependencies. Node.js 24+ is recommended for both the UI and site;
-UI CI uses a current Node 20 patch compatible with Vite 8. Check the
+UI CI uses Node 24. Check the
 [workflow guide](.github/workflows/README.md) for actual platform build steps.
 
 Linux development setup, following the CI inputs:
@@ -271,11 +271,11 @@ build real `libi2pd.so`. JNI cross-checks do not establish device functionality.
 For UI-only inspection use `npm run dev` in `ui/` and
 `/dev/preview.html?scene=chat&lang=en` or `lang=ru`.
 
-Separate static musl agent builds are being prepared for OpenWrt: AArch64,
+Version 0.4.19 defines separate static musl agent builds for OpenWrt: AArch64,
 ARMv7 soft-float, x86_64 and i686/SSE2. CPU architecture, instruction set, memory
 and storage must match the device; this is not support for every router.
 MIPS/ARMv6 are not claimed. See the [matrix and installer](docs/openwrt.md).
-The new runtime requires a protected OS credential provider and refuses to
+The 0.4.19 runtime requires a protected OS credential provider and refuses to
 start without one, including headless/OpenWrt environments. A build target
 does not bypass device binding.
 
@@ -325,12 +325,12 @@ See the live [e2e workflow](.github/workflows/e2e-i2pd.yml) and
 | Boundary | Mechanism | Limit |
 |---|---|---|
 | Content | X3DH, Double Ratchet, XChaCha20-Poly1305 before relays | Custom integration; no complete independent audit |
-| Application profile | SQLCipher, Argon2id, separate decoy, encrypted backup; candidate binds the key to an OS credential provider | A compromised unlocked endpoint/RAM exposes live data; Linux Secret Service does not protect a full OS clone |
-| Headless storage | Candidate uses SQLCipher and a protected OS provider for agent/bot | Startup refuses without a provider; directory permissions or a raw key file do not replace it |
-| Memory/WebView | Candidate uses guarded encrypted key containers, active-chat-only UI cache and cleanup | IPC/DOM still need plaintext; immediate wiping of JS strings/GC or all RAM is not guaranteed. [Limits](docs/memory-security.md) |
+| Application profile | SQLCipher, Argon2id, separate decoy, encrypted backup; 0.4.19 binds the key to an OS credential provider | A compromised unlocked endpoint/RAM exposes live data; Linux Secret Service does not protect a full OS clone |
+| Headless storage | Version 0.4.19 uses SQLCipher and a protected OS provider for agent/bot | Startup refuses without a provider; directory permissions or a raw key file do not replace it |
+| Memory/WebView | Version 0.4.19 uses guarded encrypted key containers, active-chat-only UI cache and cleanup | IPC/DOM still need plaintext; immediate wiping of JS strings/GC or all RAM is not guaranteed. [Limits](docs/memory-security.md) |
 | Relay/DHT | Ciphertext, sealed `from`, TTL and quotas | Authentication metadata, timing, size classes, drop/eviction and Sybil remain |
 | Network | I2P application transport; no local bridge/proxy | Router IP transports and the application's shared crash boundary remain |
-| Updates | TLS/webpki and required SHA256 in this branch | A hash and asset from one release are not an independent publisher signature |
+| Updates | TLS/webpki and required SHA256 in 0.4.19 | A hash and asset from one release are not an independent publisher signature |
 
 [OS binding and migration limits](docs/device-bound-storage.md): Android
 requires a TEE/StrongBox provider, Windows binds the key to user and machine,
@@ -352,9 +352,9 @@ changes, permissions and installation need real-device testing.
 Updates reach GitHub through the I2P outproxy `exit.stormycloud.i2p`, without a
 direct fallback. Outproxy availability and shared GitHub API rate limits affect
 checks. Installation is platform-specific: `.deb` requires a person, Android
-requires permission for that source and the system installer. The current work
-has not established live I2P, complete native packaging or device installation
-merely by passing host/stub tests.
+requires permission for that source and the system installer. Host/stub tests
+alone do not establish live I2P, complete native packaging or device installation.
+See the [dated CI evidence](docs/today-2026-10-28.md) for individual results.
 
 ## Backups and another device
 
@@ -369,7 +369,7 @@ A lost backup passphrase cannot be recovered.
 [site/](site/README.md) is an EN/RU static project landing page with native
 application downloads. [pages.yml](.github/workflows/pages.yml) checks PRs and
 allows deployment only from `main`. The owner must separately enable GitHub
-Actions in Settings → Pages. Deployment has not been performed. The page creates
+Actions in Settings → Pages; check the workflow for deployment status. The page creates
 no profiles and receives no messages, contact lists or keys. Visiting Pages
 still makes an ordinary web request to the hosting provider.
 
@@ -409,7 +409,7 @@ netDb seed, systemd unit and `README.txt`. Keep seed data next to the binary.
 Put the master's fresh contact card in `master.card` before this first command.
 `--master` is remembered in the data directory, as is optional `--relay`.
 `GIPNY_AGENT_DATA` can supply `--data`; `card.txt` contains the agent's card,
-the candidate encrypts `agent.db` with SQLCipher and an OS-provider-bound key,
+version 0.4.19 encrypts `agent.db` with SQLCipher and an OS-provider-bound key,
 without an interactive service password prompt. The Unix data directory is
 private (`0700`); an unavailable provider makes startup fail without a plaintext
 fallback. The
@@ -440,14 +440,15 @@ same transport and cryptography; this does not grant them the agent's shell powe
 
 ## Release history and maintenance
 
-The manifest version is **0.4.19**, a release candidate; **0.4.18** remains the
-last published release. The new integrated changes need review,
-CI and a separately prepared release. Existing notes explain earlier versions:
+These sources use version **0.4.19**. Available packages and publication status
+are listed on [GitHub Releases](https://github.com/gluckdev/gipny-i2p/releases).
+The [integration record](docs/today-2026-10-28.md) preserves CI/PR history;
+version-specific notes explain the changes:
 
 | Version | Historical focus | Notes |
 |---|---|---|
-| 0.4.19 candidate | Integrated work, not a published release | [Status and scope](docs/today-2026-10-28.md) |
-| 0.4.18 | Last published release | [0.4.18](docs/releases/0.4.18.md) |
+| 0.4.19 | Changes in these sources; see Releases for available packages | [Release notes](docs/releases/0.4.19.md), [verification history](docs/today-2026-10-28.md) |
+| 0.4.18 | Previous version | [0.4.18](docs/releases/0.4.18.md) |
 | 0.4.17 | Router revision checks and documentation build filters | [0.4.17](docs/releases/0.4.17.md) |
 | 0.4.16 | QR image/camera, expiration and contact cleanup | [0.4.16](docs/releases/0.4.16.md) |
 | 0.4.13 | Confirmed DHT deposits and relay recovery | [0.4.13](docs/releases/0.4.13.md) |

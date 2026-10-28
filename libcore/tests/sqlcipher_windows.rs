@@ -113,8 +113,12 @@ fn memory_security_survives_windows_lock_failure() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "isolated SQLCipher lock-quota child failed: {}\n{}\n{}",
             output.status, String::from_utf8_lossy(&output.stdout), stderr);
-        assert!(stderr.contains("sqlcipher_mlock: VirtualLock() returned 0"),
+        // SQLCipher 4.19 reports this at INFO with the allocation's pointer and
+        // size. Require the actual API failure and quota code on one line.
+        assert!(stderr.lines().any(|line| line.contains("MEMORY sqlcipher_mlock: VirtualLock(")
+                && line.ends_with(") returned 0 LastError=1453")),
             "regression never reached SQLCipher's failing-lock log path: {stderr}");
+        println!("Observed SQLCipher VirtualLock ERROR_WORKING_SET_QUOTA; protected SQL allocations and free completed");
         return;
     }
 
