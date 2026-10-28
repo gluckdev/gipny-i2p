@@ -149,3 +149,24 @@ reviewed Cargo/npm lockfiles. `I2P_EMBED_STUB`, `I2P_EMBED_SKIP_NATIVE` и relea
 assertions блокируются shipping gate. Debug stub APK из `build.yml` не являются
 релизами. Проверки manifest на синтетических данных выполняет
 `.github/scripts/test-build-provenance.py`; они не компилируют приложение.
+
+Windows preview выявил exact-byte drift `Cargo.lock` после успешной сборки
+приложения и агента. Теперь все три reviewed lockfiles имеют `text eol=lf`
+в `.gitattributes`; Windows `core.autocrlf` не должен менять их байты.
+`build-provenance.py locks` проверяет каждый файл сразу после checkout,
+а `record` повторяет строгую проверку после build. Отсутствующий файл, CRLF
+и содержательное изменение — ошибки; нормализация при приёмке не разрешена.
+Диагностика различает CRLF и content drift, не объявляя причиной старого
+прогона гипотезу без его checkout snapshot. Tauri получает Cargo `--locked`
+после разделителя: `cargo tauri build --ci --bundles … -- --locked`.
+Synthetic regressions и реальные checkout bytes проверяются в installer CI
+на Linux и Windows; локальной сборкой приложения это не заменяют.
+
+Windows source builds вызывают `.github/scripts/windows-source-tools.ps1`:
+установленный Microsoft `vswhere` выбирает VC x64, затем штатный
+`Launch-VsDevShell.ps1` с явными host/target amd64. Helper проверяет compiler
+и linker, переносит только allowlist build-tool переменных и добавленные
+PATH entries, сохраняет native Strawberry Perl. Полный process environment
+не экспортируется. Это заменяет `ilammy/msvc-dev-cmd@v1`, чей опубликованный
+action ещё использует deprecated Node 20; совместимость нового helper
+подтверждается следующими Windows CI builds, не чтением PowerShell source.

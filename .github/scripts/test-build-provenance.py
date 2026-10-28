@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Data-only integrity regressions. Never compiles or runs an application."""
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -80,6 +81,48 @@ class ArtifactIntegrity(unittest.TestCase):
                     provenance.guard()
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}, clear=True):
             provenance.guard()
+
+
+class ReviewedLockfiles(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.names = ('Cargo.lock', 'core/relay/Cargo.lock', 'ui/package-lock.json')
+        self.committed = {name: f'synthetic reviewed input: {name}\n'.encode() for name in self.names}
+        for name, content in self.committed.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        for target in (patch.object(provenance, 'ROOT', self.root),
+                       patch.object(provenance, 'git', side_effect=self.git_blob)):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def git_blob(self, *args):
+        self.assertEqual(args[0], 'show')
+        self.assertTrue(args[1].startswith('HEAD:'))
+        return self.committed[args[1][5:]]
+
+    def test_all_reviewed_lockfiles_have_the_exact_committed_digest(self):
+        self.assertEqual(provenance.reviewed_lockfiles(), {
+            name: hashlib.sha256(content).hexdigest() for name, content in self.committed.items()
+        })
+
+    def test_crlf_checkout_is_diagnosed_and_rejected_instead_of_normalized(self):
+        (self.root / self.names[0]).write_bytes(self.committed[self.names[0]].replace(b'\n', b'\r\n'))
+        with self.assertRaisesRegex(ValueError, 'CRLF checkout'):
+            provenance.reviewed_lockfiles()
+
+    def test_content_drift_is_rejected_even_when_it_is_valid_text(self):
+        (self.root / self.names[1]).write_bytes(b'different synthetic dependency\n')
+        with self.assertRaisesRegex(ValueError, 'dependency content differs'):
+            provenance.reviewed_lockfiles()
+
+    def test_missing_lockfile_is_not_omitted_from_the_manifest(self):
+        (self.root / self.names[2]).unlink()
+        with self.assertRaisesRegex(ValueError, 'lockfile is missing'):
+            provenance.reviewed_lockfiles()
 
 
 if __name__ == '__main__':

@@ -30,6 +30,24 @@ def digest(path):
         return checksum.hexdigest()
 
 
+def reviewed_lockfiles():
+    """Require exact source bytes before and after a build, without normalization."""
+    locks = {}
+    for name in ('Cargo.lock', 'core/relay/Cargo.lock', 'ui/package-lock.json'):
+        path = ROOT / name
+        if not path.is_file():
+            raise ValueError(f'reviewed dependency lockfile is missing: {name}')
+        expected = git('show', f'HEAD:{name}')
+        actual = path.read_bytes()
+        if actual != expected:
+            reason = ('CRLF checkout differs from committed LF bytes'
+                      if actual.replace(b'\r\n', b'\n') == expected
+                      else 'dependency content differs from the source commit')
+            raise ValueError(f'build input differs from reviewed dependency lockfile: {name}: {reason}')
+        locks[name] = hashlib.sha256(actual).hexdigest()
+    return locks
+
+
 def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,13 +170,7 @@ def record(output, target, patterns, input_manifests, inputs):
         for path in sorted(Path(directory).rglob('*')):
             if path.is_file() and not path.is_symlink():
                 inputs_list.append({'name': str(path.relative_to(directory)), 'sha256': digest(path), 'size': path.stat().st_size})
-    locks = {}
-    for path in map(Path, ('Cargo.lock', 'core/relay/Cargo.lock', 'ui/package-lock.json')):
-        if (ROOT / path).is_file():
-            checksum = digest(ROOT / path)
-            if checksum != hashlib.sha256(git('show', f'HEAD:{path.as_posix()}')).hexdigest():
-                raise ValueError(f'build changed the reviewed dependency lockfile: {path}')
-            locks[path.as_posix()] = checksum
+    locks = reviewed_lockfiles()
     write_json(output, {
         'schema': 1, 'source': source_identity(), 'target': target,
         'builder': {'service': 'GitHub Actions', 'workflow': os.environ.get('GITHUB_WORKFLOW_REF'),
@@ -228,6 +240,7 @@ def collect(directory, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('locks', help='check exact committed dependency bytes before a build')
     source = sub.add_parser('source'); source.add_argument('output', type=Path)
     build = sub.add_parser('record'); build.add_argument('output', type=Path); build.add_argument('target')
     build.add_argument('--artifact', action='append', required=True)
@@ -235,7 +248,10 @@ def main():
     build.add_argument('--inputs', action='append', default=[])
     release = sub.add_parser('collect'); release.add_argument('directory', type=Path); release.add_argument('output', type=Path)
     args = parser.parse_args()
-    if args.command == 'source': source_archive(args.output)
+    if args.command == 'locks':
+        guard()
+        print(json.dumps(reviewed_lockfiles(), sort_keys=True))
+    elif args.command == 'source': source_archive(args.output)
     elif args.command == 'record': record(args.output, args.target, args.artifact, args.input_manifest, args.inputs)
     else: collect(args.directory, args.output)
 

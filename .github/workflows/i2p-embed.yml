@@ -120,8 +120,6 @@ jobs:
       VCPKG_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
-        with: { arch: x64 }
       - name: Native Windows source-build tools
         shell: pwsh
         run: .github/scripts/windows-source-tools.ps1

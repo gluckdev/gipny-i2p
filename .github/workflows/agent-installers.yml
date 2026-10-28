@@ -1,10 +1,10 @@
 name: agent installers
 on:
   pull_request:
-    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/workflows/agent-installers.yml']
+    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/workflows/agent-installers.yml', '.gitattributes']
   push:
     branches: [main]
-    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/workflows/agent-installers.yml']
+    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/workflows/agent-installers.yml', '.gitattributes']
   workflow_dispatch:
 permissions:
   contents: read
@@ -17,11 +17,17 @@ jobs:
         run: |
           bash -n scripts/install-agent.sh scripts/tests/agent-installer-integrity.sh
           bash scripts/tests/agent-installer-integrity.sh
+          python3 .github/scripts/build-provenance.py locks
           python3 .github/scripts/test-build-provenance.py
   windows-bootstrap:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Exact reviewed lockfile bytes and provenance regressions on Windows
+        shell: bash
+        run: |
+          python3 .github/scripts/build-provenance.py locks
+          python3 .github/scripts/test-build-provenance.py
       - name: Checksum, interrupted staging and real Windows file replacement
         shell: powershell
         run: scripts/tests/windows-agent-update.ps1

@@ -1,3 +1,9 @@
 # Unified patch context must preserve upstream tabs and blank context lines.
 # Source files retain Git's normal whitespace checks.
 i2p-embed/patches/*.patch -whitespace
+
+# Release provenance compares exact committed lockfile bytes on every OS.
+# Do not let a Windows core.autocrlf setting rewrite reviewed build inputs.
+/Cargo.lock text eol=lf
+/core/relay/Cargo.lock text eol=lf
+/ui/package-lock.json text eol=lf

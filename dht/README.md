@@ -88,5 +88,8 @@ cargo test --locked -p gipny-dht
 
 На `93295f1` [живой сценарий ухода участников по очереди](https://github.com/gluckdev/gipny-i2p/actions/runs/40772462191/job/123113082570)
 прошёл. Но native simulation на этом SHA выявила intermittent discovery failure;
-новые routing source changes и regressions требуют следующего GitHub run.
+новые routing changes на
+[`0fd14f2`](https://github.com/gluckdev/gipny-i2p/actions/runs/40779842463/job/123138418399)
+прошли 19 unit и 10 simulation tests, включая три новые regressions и
+16 churn placements. Linux security job на этом SHA также прошёл DHT suite.
 In-memory tests не заменяют проверку новых изменений по живой I2P.

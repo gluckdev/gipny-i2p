@@ -10,11 +10,13 @@ HTTP-прокси, это история.
 агенту. Заменяет бриф от 2026-07-19, который описывал роутер go-i2p, которого в
 этом дереве больше нет.
 
-СОСТОЯНИЕ ОБЪЕДИНЁННОЙ ВЕТКИ (2026-10-28)
+СОСТОЯНИЕ ОБЪЕДИНЁННОЙ ВЕТКИ (2026-10-29)
 
 Текущий вход — [снимок интеграции](today-2026-10-28.md). Ветка
 `feat/today-integration-20261028`, версия manifests `0.4.19` — кандидат;
-последний опубликованный релиз `0.4.18`. Текущий CI checkpoint — `a66d223`;
+последний опубликованный релиз `0.4.18`. Последний подтверждённый native Rust
+и agent e2e checkpoint — `0fd14f2`; новые Windows/provenance source fixes
+требуют следующих GitHub результатов;
 подтверждённые компонентные результаты не обозначают готовый новый релиз.
 На историческом `d907307` TypeScript/Vite и 13/13 UI tests прошли; первый Windows bootstrap
 job нашёл ошибку `$null` path binding; fix `5d3500d` и реальные Windows
@@ -32,6 +34,12 @@ emulator smoke, все четыре OpenWrt targets. OpenWrt повторно PA
 Позднее на `93295f1` оба native Keychain test прошли; Linux packaged agent
 smoke тоже PASS. Полный preview и общая матрица пока не зелёные: последующие
 fixes Windows quota, Intel bundle и DHT discovery описаны в текущем снимке.
+На `0fd14f2` DHT уже прошёл 19 unit + 10 sim, включая 16 churn placements;
+native agent e2e — observer 7/7 и команды/ответы 7/7, no-loopback, script,
+REVOKE/exit0. Windows затем собрал native app и agent на `93295f1`, но
+provenance отказал на несовпадении bytes `Cargo.lock`: новый LF/early/locked
+gate сохраняет strict source guard. Новый MSVC helper использует штатный
+Microsoft DevShell вместо deprecated Node 20 action.
 Ссылки и точные границы —
 в [текущем снимке](today-2026-10-28.md#github-ci-checkpoint).
 Новые сборки и исполнение тестов — только GitHub Actions по требованию

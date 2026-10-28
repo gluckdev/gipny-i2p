@@ -168,9 +168,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
-        with: { arch: x64 }
+      - name: Verify exact reviewed lockfile bytes before native builds
+        shell: bash
+        run: python3 .github/scripts/build-provenance.py locks
       - name: Native Windows source-build tools
         if: runner.os == 'Windows'
         shell: pwsh
@@ -268,7 +268,7 @@ jobs:
         run: cargo install tauri-cli --version '=2.12.2' --locked
       - name: tauri build from this checkout
         working-directory: core
-        run: cargo tauri build --bundles ${{ matrix.bundles }}
+        run: cargo tauri build --ci --bundles ${{ matrix.bundles }} -- --locked
       - name: Verify native macOS app composition and ad-hoc signature
         if: runner.os == 'macOS'
         shell: bash
