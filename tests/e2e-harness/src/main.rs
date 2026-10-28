@@ -872,12 +872,13 @@ async fn run_update_check_mode() -> Result<()> {
         Ok(other) => eprintln!("[e2e] check from 0.0.0: {other:?}"),
         Err(e) => bail!("check_detailed: {e}"),
     }
-    let Some(asset) = release.assets.iter().filter(|a| a.size > 0).min_by_key(|a| a.size) else {
-        bail!("the latest release has no files");
+    let Some(asset) = release.assets.iter().filter(|a| a.size > 0 && a.name != "SHA256SUMS.txt").min_by_key(|a| a.size) else {
+        bail!("the latest release has no artifacts with a release checksum");
     };
     let t2 = Instant::now();
     let dest = data_dir.join("download").join(&asset.name);
-    updater.download_asset_to(asset, None, &dest, |_, _| {}).await.with_context(|| format!("download {}", asset.name))?;
+    let sha256 = updater.asset_sha256(&release, &asset.name).await.context("release checksum")?;
+    updater.download_asset_to(asset, &sha256, &dest, |_, _| {}).await.with_context(|| format!("download {}", asset.name))?;
     let got = std::fs::metadata(&dest)?.len();
     if got != asset.size {
         bail!("{}: {got} bytes, the release says {}", asset.name, asset.size);

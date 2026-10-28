@@ -24,4 +24,4 @@ pub use security::{MasterKey, Vault, DuressMode, UnlockOutcome};
 pub use session::{SessionManager, SessionError, SessionEvent, WirePayload, WireAttachment, WireButton, WireGroupRef, WireMember, WirePin, WireConsole};
 pub use session::{CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF};
 pub use card::{ContactCard, CardError, is_valid_i2p_address};
-pub use update::{Updater, UpdateError, UpdateInfo, ReleaseAsset, ReleaseInfo, InstallOutcome, Component as UpdateComponent};
+pub use update::{Updater, UpdateError, UpdateInfo, ReleaseAsset, ReleaseInfo, Sha256Digest, InstallOutcome, Component as UpdateComponent};

@@ -48,7 +48,8 @@ bytes = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 flate2 = "1"
 tar = "0.4"
-[dev-dependencies]
+# An owned, same-directory staging file: cleanup on errors/cancellation and
+# atomic replacement only after the updater verifies the complete artifact.
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

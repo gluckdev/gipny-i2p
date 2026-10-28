@@ -1903,7 +1903,14 @@ impl Core {
         let ev = self.events.clone();
         let ev_dl = ev.clone();
         let dest = std::path::PathBuf::from(dest_path);
-        match self.updater.download_asset_to(&asset, None, &dest, move |done, t| {
+        let sha256 = match self.updater.asset_sha256(&release, &asset.name).await {
+            Ok(sha256) => sha256,
+            Err(e) => {
+                let _ = ev.send(CoreEvent::UpdateFailed { reason: e.to_string() }).await;
+                return Err(e.into());
+            }
+        };
+        match self.updater.download_asset_to(&asset, &sha256, &dest, move |done, t| {
             let pct = if t > 0 { ((done * 100) / t).min(100) as u8 } else { 0 };
             let _ = ev_dl.try_send(CoreEvent::UpdateProgress { downloaded: done, total: t, pct });
         }).await {
