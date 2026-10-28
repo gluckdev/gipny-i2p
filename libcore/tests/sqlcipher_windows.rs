@@ -86,7 +86,7 @@ fn protected_keys_recover_from_lock_quota_but_stop_at_the_process_budget() {
                 assert!(after.0 > before.0 && after.1 >= before.1);
                 total_increase += after.0 - before.0;
                 assert!(total_increase <= 16 * 1024 * 1024, "quota increased beyond the process budget");
-                assert_eq!(&*secret.open().unwrap(), b"synthetic protected-key regression");
+                assert_eq!(&*secret.expose().unwrap(), b"synthetic protected-key regression");
                 let capabilities = memory::capabilities().unwrap();
                 assert!(capabilities.locked && capabilities.idle_no_access);
                 drop(secret);
