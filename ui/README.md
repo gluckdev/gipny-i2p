@@ -6,12 +6,15 @@
 
 | Файл | За что отвечает |
 |---|---|
+| `src/i18n.ts`, `src/locales/en.ts`, `src/locales/ru.ts` | Язык устройства, типизированные ключи и полные словари; [правила поддержки](../docs/localization.md) |
+| `src/language-picker.ts`, `src/error-text.ts` | Выбор языка до входа и отображение известных ошибок backend |
+| `tests/localization.test.mjs` | DOM-проверки языков, черновика, подписок и вывода недоверенного текста |
 | `src/main.ts` | Точка входа |
 | `src/api.ts` | Все вызовы бэкенда (`Api.*`) и типы данных (`Contact`, `Message`, `UpdateInfo`, union `CoreEvent`…), карточка `encodeCard`/`decodeCard`/`isValidI2pAddress` |
 | `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
 | `src/view.ts` | Основа: `View` (подписки `sub`), `h()` для создания элементов, `avatar()` (инициалы и цвет от ключа), форматтеры (`fmtTime`, `fmtAgo`, `short`, `humanSize`, `trustLabel`…), `logo` |
 | `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal` |
-| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `BOOT_LABELS` — подписи, `bootSteps`/`bootLog`/`bootCanEnter` в `state.ts` — данные |
+| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootLog`/`bootCanEnter` в `state.ts` — данные |
 | `src/profile.ts` | Выбор профиля `ProfileSelect` |
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
@@ -22,7 +25,7 @@
 | `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
 | `src/settings.ts` | `SettingsModal`: релей, роутер, приватность вложений, автообновление, агент, бэкап, отладочный лог |
 | `src/about.ts` | `AboutModal` — «О gipny и безопасности». Каждое утверждение должно совпадать с кодом (ссылки в комментарии к классу) |
-| `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `AVATARS` |
+| `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `avatarNames()` |
 | `src/icons.ts` | SVG-иконки `icon(name)` и иллюстрации (`emptyChatArt`, `networkArt`) |
 | `src/search.ts`, `src/media.ts`, `src/forward.ts` | Поиск, галерея вложений, пересылка |
 | `src/theme.ts` | Тема: `getTheme`, `setTheme`, `applyTheme` |
@@ -50,7 +53,7 @@
 | Раскладка на телефоне | `styles.css` + проверка в `dev/preview.html` |
 | Модалка обновления | `app.ts` (`openUpdateModal`) + обработка `Update*` в `state.ts` |
 | Экраны входа | `auth.ts`, `profile.ts` |
-| Новый этап при запуске | `BOOT_STEPS` и `BootStep` в `state.ts` + `BOOT_LABELS` в `auth.ts` + `boot_status` в `core/src/lib.rs` |
+| Новый этап при запуске | `BOOT_STEPS` и `BootStep` в `state.ts` + `bootLabels()` в `auth.ts` + `boot_status` в `core/src/lib.rs` |
 
 ## Что менять вместе
 
@@ -62,15 +65,22 @@
 ## Инварианты и грабли
 
 - **Фреймворка нет.** Компонент — наследник абстрактного `View` (`view.ts`) с полем `el`; подписки делаются через `this.sub(signal, fn)` и снимаются в `destroy()`.
-- **Подписи в интерфейсе смешанные:** в основном английские строчные, часть на русском. Держитесь стиля соседних элементов.
+- **Весь интерфейс имеет английскую и русскую локаль.** Новая подпись, ошибка, placeholder, tooltip и aria-label добавляются в оба словаря. Не переводите данные пользователя и протокольные ключи. См. [локализацию](../docs/localization.md).
 - **`localStorage` — только для удобств отдельного устройства;** всё важное хранится в бэкенде.
 - **Длинные адреса i2p (516+ символов без пробелов) ломают раскладку.** Фикстуры в `dev/mock.ts` это ловят, проверяйте в превью.
 
 ## Как проверить
 
 ```
-cd ui && npx tsc --noEmit
-cd ui && npm run dev    # затем http://127.0.0.1:5173/dev/preview.html, кнопка «check horizontal overflow»
+cd ui
+npm ci
+npm run build
+npm test
+npm run dev    # затем http://127.0.0.1:5173/dev/preview.html, кнопка «check horizontal overflow»
 ```
 
 В CI интерфейс проверяет джоба `ui typecheck` в `build.yml`. Сборка приложения с интерфейсом — только на GitHub.
+
+Превью принимает `lang=en` или `lang=ru`, например
+`/dev/preview.html?scene=chat&lang=en`. Меняйте язык также в самом приложении.
+Документация и оба словаря обновляются вместе с изменением поведения.

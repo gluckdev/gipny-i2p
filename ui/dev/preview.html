@@ -30,6 +30,7 @@
       <label>theme
         <select id="theme"><option>light</option><option>dark</option></select>
       </label>
+      <label>language <select id="language"><option>en</option><option>ru</option></select></label>
       <button id="check">check horizontal overflow</button>
     </header>
     <pre id="report">frames are loading…</pre>
@@ -53,6 +54,8 @@
       for (const s of SIZES) s.h = Math.min(s.h, capH);
       const sceneSel = document.getElementById('scene');
       const themeSel = document.getElementById('theme');
+      const langSel = document.getElementById('language');
+      langSel.value = q.get('lang') ?? 'en';
       sceneSel.value = q.get('scene') ?? 'list';
       themeSel.value = q.get('theme') ?? 'light';
       const frames = document.getElementById('frames');
@@ -66,7 +69,7 @@
           cap.textContent = s.label;
           const f = document.createElement('iframe');
           f.width = s.w; f.height = s.h; f.dataset.label = s.label;
-          f.src = `/dev/frame.html?${new URLSearchParams({ scene: sceneSel.value, theme: themeSel.value })}`;
+          f.src = `/dev/frame.html?${new URLSearchParams({ scene: sceneSel.value, theme: themeSel.value, lang: langSel.value })}`;
           fig.append(cap, f);
           frames.append(fig);
         }
@@ -119,8 +122,8 @@
       }
       window.checkOverflow = check;
 
-      sceneSel.onchange = themeSel.onchange = () => {
-        q.set('scene', sceneSel.value); q.set('theme', themeSel.value);
+      sceneSel.onchange = themeSel.onchange = langSel.onchange = () => {
+        q.set('scene', sceneSel.value); q.set('theme', themeSel.value); q.set('lang', langSel.value);
         history.replaceState(null, '', '?' + q.toString());
         render();
       };

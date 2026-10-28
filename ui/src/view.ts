@@ -1,3 +1,4 @@
+import { t as tr } from './i18n';
 import type { Signal } from './state';
 import { avatarIndex, paintAvatar } from './avatars';
 
@@ -78,9 +79,9 @@ export function fmtDate(ts: number): string {
  * Milliseconds while they stay small enough to mean something, then seconds:
  * «4200 мс» reads as a number, «4.2 с» reads as a wait. */
 export function fmtMs(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} мс`;
-  if (ms < 10_000) return `${(ms / 1000).toFixed(1)} с`;
-  return `${Math.round(ms / 1000)} с`;
+  if (ms < 1000) return tr('view.ms', { p0: (Math.round(ms)) });
+  if (ms < 10_000) return tr('view.s', { p0: ((ms / 1000).toFixed(1)) });
+  return tr('view.s', { p0: (Math.round(ms / 1000)) });
 }
 
 export function fmtFp(hex: string): string {
@@ -88,7 +89,7 @@ export function fmtFp(hex: string): string {
 }
 
 export function trustLabel(t: number): string {
-  return ['Не проверен', 'Проверен', 'Заблокирован'][t] ?? 'Неизвестно';
+  return [tr('view.unverified'), tr('view.verified'), tr('view.blocked')][t] ?? tr('view.unknown');
 }
 
 export async function busy(btn: HTMLButtonElement, fn: () => Promise<void>): Promise<void> {
@@ -110,13 +111,13 @@ export function short(s: string, n = 22): string {
 
 export function fmtAgo(ts: number): string {
   const d = Math.max(0, Date.now() - ts);
-  if (d < 60_000) return 'только что';
+  if (d < 60_000) return tr('view.just_now');
   const m = Math.floor(d / 60_000);
-  if (m < 60) return `${m} мин назад`;
+  if (m < 60) return tr('view.min_ago', { p0: (m) });
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h} ч назад`;
+  if (h < 24) return tr('view.h_ago', { p0: (h) });
   const days = Math.floor(h / 24);
-  if (days < 30) return `${days} дн назад`;
+  if (days < 30) return tr('view.d_ago', { p0: (days) });
   return new Date(ts).toISOString().slice(0, 10);
 }
 

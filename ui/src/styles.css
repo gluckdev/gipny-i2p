@@ -2718,3 +2718,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
    * vanishes in landscape would leave no way to turn it off. */
   .chat-input-meta .chat-e2e { display: none; }
 }
+
+/* The language choice is available before the vault is opened. */
+.auth-language { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 12px 0; font-size: 12px; }
+.auth-language select { width: auto; min-width: 110px; }

@@ -1,18 +1,19 @@
+import { t as tr } from './i18n';
 import { h } from './view';
-import { AVATARS, avatarIndex, isPicked, onAvatarsChanged, paintAvatar, setAvatar } from './avatars';
+import { avatarNames, avatarIndex, isPicked, onAvatarsChanged, paintAvatar, setAvatar } from './avatars';
 
 /** A grid of all avatars for one key; the current one is marked. `note` says
  * who sees the choice. Modals have no teardown hook, so it lets go of its
  * listener once it has been on screen and is gone again. */
 export function avatarPicker(seed: string, note: string, onError: (e: unknown) => void): HTMLElement {
   const grid = h('div', { class: 'avatar-grid', role: 'listbox' });
-  const reset = h('button', { class: 'btn btn-sm btn-ghost' }, 'Случайная');
+  const reset = h('button', { class: 'btn btn-sm btn-ghost' }, tr('avatar_picker.random'));
   let shown = false;
   const paint = () => {
     if (grid.isConnected) shown = true;
     else if (shown) { dispose(); return; }
     const current = avatarIndex(seed);
-    grid.replaceChildren(...AVATARS.map((title, i) => {
+    grid.replaceChildren(...avatarNames().map((title, i) => {
       const tile = h('button', {
         class: 'avatar avatar-choice' + (i === current ? ' selected' : ''),
         title, 'aria-label': title, role: 'option', 'aria-selected': String(i === current),

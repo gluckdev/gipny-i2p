@@ -1,3 +1,4 @@
+import { t as tr } from './i18n';
 import type { Message } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey } from './state';
@@ -88,26 +89,26 @@ export function messageMenuItems(
   const isPinned = pinnedList.some((p) => p.id === m.id);
   const items: MenuItem[] = [];
 
-  items.push({ label: 'Ответить', onClick: onReply });
-  items.push({ label: 'Переслать', onClick: onForward });
+  items.push({ label: tr('chat.reply'), onClick: onReply });
+  items.push({ label: tr('chat.forward'), onClick: onForward });
 
   items.push({
-    label: isPinned ? 'Открепить' : 'Закрепить',
+    label: isPinned ? tr('chat.unpin') : tr('chat.pin'),
     onClick: () => {
-      if (isPinned) store.unpinMessage(target, m.id).catch((e) => store.showToast('unpin failed: ' + e, true));
-      else store.pinMessage(target, m.id).catch((e) => store.showToast('pin failed: ' + e, true));
+      if (isPinned) store.unpinMessage(target, m.id).catch((e) => store.showToast(tr('actions.unpin_failed') + e, true));
+      else store.pinMessage(target, m.id).catch((e) => store.showToast(tr('actions.pin_failed') + e, true));
     },
   });
 
   if (m.outgoing) {
-    items.push({ label: 'Изменить', onClick: onEdit });
+    items.push({ label: tr('actions.change'), onClick: onEdit });
   }
 
   if (m.body) {
     items.push({
-      label: 'Копировать',
+      label: tr('common.copy'),
       onClick: () => {
-        navigator.clipboard.writeText(m.body).catch(() => store.showToast('copy failed', true));
+        navigator.clipboard.writeText(m.body).catch(() => store.showToast(tr('actions.copy_failed'), true));
       },
     });
   }
@@ -128,12 +129,12 @@ export class PinnedBanner {
     this.toggleBtn = h('button', {
       class: 'pinned-toggle',
       onClick: () => this.toggle(),
-      title: 'show all pinned',
+      title: tr('actions.show_all_pinned'),
     }, '▾') as HTMLButtonElement;
 
     this.el = h('div', { class: 'pinned-banner', style: { display: 'none' } },
       h('div', { class: 'pinned-header' },
-        h('span', { class: 'pinned-label' }, 'Закреплённые'),
+        h('span', { class: 'pinned-label' }, tr('actions.pinned_messages')),
         this.toggleBtn,
       ),
       this.listEl,
@@ -174,7 +175,7 @@ export class PinnedBanner {
   }
 
   private renderItem(m: Message): HTMLElement {
-    const preview = m.body.length > 100 ? m.body.slice(0, 100) + '…' : (m.body || '(attachment)');
+    const preview = m.body.length > 100 ? m.body.slice(0, 100) + '…' : (m.body || tr('chat.attachment'));
     return h('div', {
       class: 'pin-item',
       onClick: () => this.store.requestScrollTo(this.target, m.id),
@@ -182,7 +183,7 @@ export class PinnedBanner {
       h('div', { class: 'pin-item-body' }, preview),
       h('button', {
         class: 'pin-item-unpin',
-        title: 'unpin',
+        title: tr('chat.unpin'),
         onClick: (e: Event) => {
           e.stopPropagation();
           this.store.unpinMessage(this.target, m.id).catch((err) => this.store.showToast('unpin failed: ' + err, true));
@@ -224,10 +225,10 @@ export class EditInline {
     this.el = h('div', { class: 'edit-inline' },
       this.textarea,
       h('div', { class: 'edit-inline-actions' },
-        h('button', { class: 'btn btn-ghost', onClick: () => this.onCancel() }, 'Отмена'),
-        h('button', { class: 'btn', onClick: () => this.save() }, 'Сохранить'),
+        h('button', { class: 'btn btn-ghost', onClick: () => this.onCancel() }, tr('common.cancel')),
+        h('button', { class: 'btn', onClick: () => this.save() }, tr('common.save')),
       ),
-      h('div', { class: 'edit-inline-hint' }, 'enter = save · esc = cancel'),
+      h('div', { class: 'edit-inline-hint' }, tr('actions.enter_to_save_esc_to_cancel')),
     );
     setTimeout(() => {
       this.textarea.focus();

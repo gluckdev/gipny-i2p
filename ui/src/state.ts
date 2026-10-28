@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus, Lane } from './api';
 import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 
@@ -306,8 +308,8 @@ export class Store {
         try {
           await createChannel({
             id: 'gipny_messages',
-            name: 'messages',
-            description: 'incoming chat messages',
+            name: tr('state.messages'),
+            description: tr('state.incoming_chat_messages'),
             importance: Importance.High,
             visibility: Visibility.Private,
             lights: true,
@@ -1186,12 +1188,12 @@ export class Store {
         && !isConsoleEvent(m.console_kind);
       if (shouldNotify) {
         const label = target.kind === 'contact'
-          ? (this.contacts.get().find((c) => c.id === target.id)?.name ?? 'unknown')
-          : (this.groups.get().find((g) => g.id === target.id)?.name ?? 'group');
+          ? (this.contacts.get().find((c) => c.id === target.id)?.name ?? tr('auth.unknown'))
+          : (this.groups.get().find((g) => g.id === target.id)?.name ?? tr('sidebar.group'));
         const senderName = target.kind === 'group' && m.sender_sign_pk
           ? (this.groupMembers.get().get(target.id)?.find((mm) => mm.sign_pk === m.sender_sign_pk)?.name
             ?? this.contacts.get().find((c) => c.sign_pk === m.sender_sign_pk)?.name
-            ?? 'someone')
+            ?? tr('chat.someone'))
           : label;
         const preview = m.body.length > 60 ? m.body.slice(0, 60) + '…' : m.body;
         const prefix = target.kind === 'group' ? `[${label}] ${senderName}` : label;
@@ -1229,9 +1231,9 @@ export class Store {
     } else if ('FileFailed' in e) {
       const { message_id, reason } = e.FileFailed;
       this.fileProgress.update((m) => { const n = new Map(m); n.delete(message_id); return n; });
-      const why = reason === 'not taken' ? 'у собеседника версия без передачи частями'
-        : reason === 'cancelled' ? 'отправка отменена' : 'файл пришёл повреждённым';
-      this.showToast(`Файл не передан: ${why}`, true);
+      const why = reason === 'not taken' ? tr('state.the_recipient_s_version_does_not_support_chunked')
+        : reason === 'cancelled' ? tr('state.transfer_cancelled') : tr('state.the_received_file_was_corrupted');
+      this.showToast(tr('state.file_not_transferred', { p0: (why) }), true);
     } else if ('MessageDelivered' in e) {
       const id = e.MessageDelivered.message_id;
       this.messages.update((m) => {
@@ -1319,14 +1321,14 @@ export class Store {
       const sel = this.selectedChat.get();
       if (sel?.kind === 'contact' && sel.id === contact_id) this.selectedChat.set(null);
       void this.refreshContacts();
-      const who = name || 'Контакт';
-      this.showToast(`${who} удалил(а) переписку с вами — она удалена и здесь`);
+      const who = name || tr('contact.contact');
+      this.showToast(tr('state.deleted_the_conversation_with_you_it_has_been', { p0: (who) }));
     } else if ('ContactRequest' in e) {
       const id = e.ContactRequest.contact_id;
       void this.refreshContacts().then(() => {
-        const name = this.contacts.get().find((c) => c.id === id)?.name ?? 'someone';
-        this.showToast(`${name} wants to add you`);
-        if (this.settled) this.nativeNotify('contact request', `${name} wants to add you`);
+        const name = this.contacts.get().find((c) => c.id === id)?.name ?? tr('chat.someone');
+        this.showToast(tr('state.wants_to_add_you', { p0: (name) }));
+        if (this.settled) this.nativeNotify(tr('state.contact_request'), tr('state.wants_to_add_you', { p0: (name) }));
       });
     } else if ('RelayInfoChanged' in e) {
       const info = e.RelayInfoChanged.info;
@@ -1384,11 +1386,11 @@ export class Store {
     } else if ('UpdateReady' in e) {
       this.updateReadyPath.set(e.UpdateReady.path);
       this.updateProgress.set(null);
-      this.showToast(`update downloaded to ${e.UpdateReady.path}`);
+      this.showToast(tr('state.update_downloaded_to', { p0: (e.UpdateReady.path) }));
     } else if ('UpdateFailed' in e) {
       this.updateError.set(e.UpdateFailed.reason);
       this.updateProgress.set(null);
-      this.showToast(`update failed: ${e.UpdateFailed.reason}`, true);
+      this.showToast(tr('state.update_failed', { p0: errorText(e.UpdateFailed.reason) }), true);
     }
   }
 

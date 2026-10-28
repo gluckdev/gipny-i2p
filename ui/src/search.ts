@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import { Api, type SearchHit } from './api';
 import type { Store, ChatTarget } from './state';
 import { h, fmtTime, fmtDate } from './view';
@@ -23,23 +25,23 @@ export class SearchModal {
 
     this.input = h('input', {
       class: 'input',
-      placeholder: 'type to search…',
+      placeholder: tr('search.type_to_search'),
       onInput: () => this.scheduleSearch(),
     }) as HTMLInputElement;
 
     const scopeLabel = this.scope.contactId != null
-      ? `in this contact`
+      ? tr('search.in_this_contact')
       : this.scope.groupId != null
-        ? `in this group`
-        : `global (all chats)`;
+        ? tr('search.in_this_group')
+        : tr('search.global_all_chats');
 
     this.status = h('div', { class: 'hint' }, scopeLabel);
     this.results = h('div', { class: 'search-results' });
 
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, 'Поиск по сообщениям'),
-        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
+        h('div', { class: 'modal-title' }, tr('sidebar.search_messages')),
+        h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'field' }, this.input),
@@ -66,18 +68,18 @@ export class SearchModal {
       const hits = await Api.searchMessages(q, this.scope.contactId, this.scope.groupId, 100);
       this.renderResults(hits, q);
     } catch (e) {
-      this.results.replaceChildren(h('div', { class: 'hint' }, 'search failed: ' + String(e)));
+      this.results.replaceChildren(h('div', { class: 'hint' }, tr('search.search_failed') + errorText(e)));
     }
   }
 
   private renderResults(hits: SearchHit[], needle: string): void {
     this.results.replaceChildren();
     if (hits.length === 0) {
-      this.results.appendChild(h('div', { class: 'hint' }, 'no matches'));
+      this.results.appendChild(h('div', { class: 'hint' }, tr('sidebar.nothing_found')));
       return;
     }
     for (const hit of hits) {
-      const where = hit.group_name ? `group: ${hit.group_name}` : (hit.contact_name ? `dm: ${hit.contact_name}` : 'unknown');
+      const where = hit.group_name ? `group: ${hit.group_name}` : (hit.contact_name ? `dm: ${hit.contact_name}` : tr('auth.unknown'));
       const row = h('div', {
         class: 'search-row',
         onClick: () => this.openHit(hit),
