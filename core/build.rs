@@ -147,7 +147,7 @@ fn ensure_ui_built() {
     let dist = ui.join("dist").join("index.html");
     let rebuild = !dist.exists() || stale(&dist, ui);
     if rebuild {
-        println!("cargo:warning=building ui...");
+        eprintln!("building ui...");
         let status = Command::new(npm())
             .args(["run", "build"])
             .current_dir(ui)

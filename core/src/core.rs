@@ -17,7 +17,9 @@ use gipny_libcore::crypto::{
 use gipny_libcore::db::{Attachment, Db, Direction, GroupMember, NewAttachment, NewOutgoingGroup, PreKeyKind, RequestState, TrustLevel};
 use gipny_libcore::net::{NetError, TorNode};
 use gipny_libcore::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY};
-use gipny_libcore::update::{Component as UpdateComponent, InstallOutcome, UpdateError, UpdateInfo, Updater};
+use gipny_libcore::update::{Component as UpdateComponent, UpdateError, UpdateInfo, Updater};
+#[cfg(not(target_os = "android"))]
+use gipny_libcore::update::InstallOutcome;
 #[cfg(target_os = "android")]
 use super::android::install_apk;
 
@@ -1830,20 +1832,32 @@ impl Core {
 
         #[cfg(target_os = "android")]
         {
-            let cache_dir = self.data_dir.join("cache");
-            std::fs::create_dir_all(&cache_dir).ok();
-            let apk_name = format!("gipny-{}-android.apk", info.version);
-            let apk_path = cache_dir.join(&apk_name);
-            let _ = std::fs::copy(&path, &apk_path);
-            let _ = std::fs::remove_dir_all(&dl_dir);
-
-            match install_apk(apk_path.to_str().unwrap_or("")) {
+            let staged = info.sha256.as_deref().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "APK checksum is required")
+            }).and_then(|expected| crate::update_staging::stage_for_install(&path, expected));
+            let apk_path = match staged {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = ev.send(CoreEvent::UpdateFailed { reason: error.to_string() }).await;
+                    return Err(error.into());
+                }
+            };
+            let install_result = match apk_path.to_str() {
+                Some(path) => install_apk(path).await,
+                None => Err("APK cache path is not valid UTF-8".into()),
+            };
+            match install_result {
                 Ok(_) => {
+                    // Android still needs the cache copy after startActivity.
+                    // Leave the verified download available for another caller
+                    // already staging the same release. The updater replaces it
+                    // atomically on the next download; the URI uses its own copy.
                     self.dismiss_update(info.version.clone()).await?;
                     let _ = ev.send(CoreEvent::UpdateStaged { version: info.version }).await;
                     return Ok(());
                 }
                 Err(e) => {
+                    let _ = std::fs::remove_file(&apk_path);
                     eprintln!("[update] Android APK install failed: {e}");
                     let _ = ev.send(CoreEvent::UpdateFailed { reason: format!("APK install failed: {e}") }).await;
                     return Err(CoreError::Update(gipny_libcore::update::UpdateError::Unsupported(e)));
@@ -1870,8 +1884,8 @@ impl Core {
                     let _ = ev.send(CoreEvent::UpdateReady { path: msg }).await;
                 }
             }
+            Ok(())
         }
-        Ok(())
     }
 
     pub async fn dismiss_update(&self, version: String) -> Result<()> {

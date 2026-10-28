@@ -2,6 +2,8 @@ pub mod core;
 pub mod web_server;
 mod notify;
 mod sanitizer;
+#[cfg(any(target_os = "android", test))]
+mod update_staging;
 mod tray;
 #[cfg(target_os = "android")]
 mod android;
@@ -285,11 +287,15 @@ pub fn run() {
 
     let builder = builder
         .setup(|app| {
+            #[cfg(target_os = "android")]
+            android::configure(app.handle().clone());
             // Where pasted, dropped and (on Android) picked files are copied
             // before they are read. std::env::temp_dir() is /data/local/tmp on
             // Android, which an app cannot write to.
             use tauri::Manager;
             if let Ok(dir) = app.path().app_cache_dir() {
+                #[cfg(target_os = "android")]
+                update_staging::configure_cache(dir.clone());
                 let _ = PASTE_DIR.set(dir.join("gipny-i2p-paste"));
             }
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
