@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import jsQR from 'jsqr';
 import { h } from './view';
 
@@ -78,13 +80,13 @@ export class QrScanner {
     this.el = h('div', { class: 'qr-scan' },
       this.video,
       h('div', { class: 'qr-frame' }),
-      h('div', { class: 'qr-hint' }, 'наведите камеру на QR собеседника'),
+      h('div', { class: 'qr-hint' }, tr('qr_scan.point_the_camera_at_your_contact_s_qr')),
     );
   }
 
   async start(): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) {
-      this.onError('камера недоступна в этом окне');
+      this.onError(tr('qr_scan.camera_is_unavailable_in_this_window'));
       return;
     }
     // `focusMode` is Chromium's continuous autofocus and is not in the DOM
@@ -106,8 +108,8 @@ export class QrScanner {
     } catch (e) {
       const name = (e as { name?: string }).name ?? '';
       this.onError(name === 'NotAllowedError'
-        ? 'доступ к камере не разрешён'
-        : name === 'NotFoundError' ? 'камера не найдена' : `камера: ${String(e)}`);
+        ? tr('qr_scan.camera_permission_denied')
+        : name === 'NotFoundError' ? tr('qr_scan.camera_not_found') : tr('qr_scan.camera', { p0: (errorText(e)) }));
       return;
     }
     this.video.srcObject = this.stream;
@@ -181,11 +183,11 @@ export function scanQrInFile(
       width = loaded.width;
       height = loaded.height;
     } catch {
-      onError('изображение не открылось — поддерживаются png, jpeg и webp');
+      onError(tr('qr_scan.could_not_open_the_image_png_jpeg_and'));
       return;
     }
     if (width === 0 || height === 0) {
-      onError('изображение пустое');
+      onError(tr('qr_scan.the_image_is_empty'));
       return;
     }
     const long = Math.max(width, height);
@@ -199,7 +201,7 @@ export function scanQrInFile(
         return;
       }
     }
-    onError('в этом изображении не нашлось QR-кода');
+    onError(tr('qr_scan.no_qr_code_found_in_this_image'));
   })();
 }
 
@@ -224,7 +226,7 @@ async function loadBitmap(
     const img = new Image();
     await new Promise<void>((resolve, reject) => {
       img.onload = () => resolve();
-      img.onerror = () => reject(new Error('decode failed'));
+      img.onerror = () => reject(new Error(tr('qr_scan.could_not_decode_image')));
       img.src = url;
     });
     return { source: img, width: img.naturalWidth, height: img.naturalHeight };

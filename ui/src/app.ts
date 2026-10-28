@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr, onLangChange } from './i18n';
 import { Api, type UpdateInfo } from './api';
 import { emptyChatArt, icon } from './icons';
 import type { Store, UpdateProgress, ChatTarget } from './state';
@@ -25,6 +27,30 @@ export class App extends View {
     this.sub(store.updateReadyPath, (path) => this.onUpdateReady(path));
     this.sub(store.updateError, (err) => this.onUpdateError(err));
     this.sub(store.updateStaged, (version) => this.onUpdateStaged(version));
+    this.subs.push(onLangChange(() => this.refreshLanguage()));
+  }
+
+  private refreshLanguage(): void {
+    const draft = this.current instanceof MainView ? this.current.captureDraft() : null;
+    // Form values stay in memory only; never copy credentials into the Store.
+    const values = Array.from(this.current?.el.querySelectorAll('input, textarea') ?? [])
+      .map((el) => ({ value: (el as HTMLInputElement).value, checked: (el as HTMLInputElement).checked }));
+    this.render(this.store.view.get());
+    if (this.current instanceof MainView) this.current.restoreDraft(draft);
+    this.current?.el.querySelectorAll('input, textarea').forEach((el, i) => {
+      const saved = values[i];
+      if (!saved) return;
+      (el as HTMLInputElement).value = saved.value;
+      (el as HTMLInputElement).checked = saved.checked;
+      if (el.classList.contains('sidebar-search')) el.dispatchEvent(new Event('input'));
+    });
+  }
+
+  override destroy(): void {
+    this.current?.destroy();
+    this.current = null;
+    this.closeUpdateModal();
+    super.destroy();
   }
 
   private render(view: string): void {
@@ -61,7 +87,7 @@ export class App extends View {
   }
 
   /** Ask for one line of text; resolves null when cancelled. */
-  prompt(title: string, label: string, initial = '', action = 'Сохранить', password = false): Promise<string | null> {
+  prompt(title: string, label: string, initial = '', action = tr('common.save'), password = false): Promise<string | null> {
     return new Promise((resolve) => {
       this.openModal((close) => {
         const input = h('input', {
@@ -78,13 +104,13 @@ export class App extends View {
         return h('div', { class: 'modal modal-sm' },
           h('div', { class: 'modal-header' },
             h('div', { class: 'modal-title' }, title),
-            h('button', { class: 'icon-btn', title: 'Закрыть', onClick: () => done(null) }, icon('close')),
+            h('button', { class: 'icon-btn', title: tr('common.close'), onClick: () => done(null) }, icon('close')),
           ),
           h('div', { class: 'modal-body' },
             h('div', { class: 'field' }, h('label', null, label), input),
           ),
           h('div', { class: 'modal-footer' },
-            h('button', { class: 'btn btn-ghost', onClick: () => done(null) }, 'Отмена'),
+            h('button', { class: 'btn btn-ghost', onClick: () => done(null) }, tr('common.cancel')),
             h('button', { class: 'btn', onClick: submit }, action),
           ),
         );
@@ -101,15 +127,15 @@ export class App extends View {
       this.openModal((close) => h('div', { class: 'modal' },
         h('div', { class: 'modal-header' },
           h('div', { class: 'modal-title' }, title),
-          h('button', { class: 'icon-btn', title: 'Закрыть', onClick: () => { close(); resolve(false); } }, icon('close')),
+          h('button', { class: 'icon-btn', title: tr('common.close'), onClick: () => { close(); resolve(false); } }, icon('close')),
         ),
         h('div', { class: 'modal-body' }, h('div', { class: 'fp' }, body)),
         h('div', { class: 'modal-footer' },
-          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, 'Отмена'),
+          h('button', { class: 'btn btn-ghost', onClick: () => { close(); resolve(false); } }, tr('common.cancel')),
           h('button', {
             class: danger ? 'btn btn-danger' : 'btn',
             onClick: () => { close(); resolve(true); },
-          }, 'Подтвердить'),
+          }, tr('app.confirm')),
         ),
       ));
     });
@@ -126,22 +152,22 @@ export class App extends View {
     const bar = this.updateProgressEl.querySelector('.update-bar') as HTMLElement | null;
     if (bar) bar.style.width = `${p.pct}%`;
     this.updateStatusEl.textContent = p.total > 0
-      ? `downloading ${humanSize(p.downloaded)} / ${humanSize(p.total)} (${p.pct}%)`
-      : `downloading ${humanSize(p.downloaded)}`;
+      ? tr('app.downloading', { p0: (humanSize(p.downloaded)), p1: (humanSize(p.total)), p2: (p.pct) })
+      : tr('app.downloading_2', { p0: (humanSize(p.downloaded)) });
     this.updateActionsEl.replaceChildren(
-      h('div', { class: 'hint' }, 'do not close the window — install will start automatically'),
+      h('div', { class: 'hint' }, tr('app.do_not_close_the_window_install_will_start')),
     );
   }
 
   private onUpdateReady(path: string | null): void {
     if (!path || !this.updateStatusEl || !this.updateActionsEl) return;
-    this.updateStatusEl.textContent = `Скачано: ${path}`;
+    this.updateStatusEl.textContent = tr('app.downloaded', { p0: (path) });
     this.updateActionsEl.replaceChildren(
-      h('div', { class: 'hint' }, 'Установите файл сами, затем перезапустите gipny'),
+      h('div', { class: 'hint' }, tr('app.install_the_file_then_restart_gipny')),
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateReadyPath.set(null); },
-      }, 'Закрыть'),
+      }, tr('common.close')),
     );
   }
 
@@ -154,34 +180,33 @@ export class App extends View {
     this.store.updateAvailable.set(null);
     this.openModal((close) => h('div', { class: 'modal modal-sm' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, 'Обновление готово'),
+        h('div', { class: 'modal-title' }, tr('app.update_ready')),
       ),
       h('div', { class: 'modal-body' },
         h('div', { class: 'about-p' },
-          `Версия ${version} установлена и заработает после перезапуска. `
-          + 'Можно перезапустить сейчас или продолжить — тогда она включится при следующем запуске.'),
+          tr('app.version_is_installed_and_will_take_effect_after', { p0: (version) })),
       ),
       h('div', { class: 'modal-footer' },
         h('button', {
           class: 'btn btn-ghost',
           onClick: () => { this.store.updateStaged.set(null); close(); },
-        }, 'Позже'),
+        }, tr('app.later')),
         h('button', {
           class: 'btn',
           onClick: () => { this.store.updateStaged.set(null); Api.restartApp().catch(() => close()); },
-        }, 'Перезапустить'),
+        }, tr('app.restart')),
       ),
     ));
   }
 
   private onUpdateError(errMsg: string | null): void {
     if (!errMsg || !this.updateStatusEl || !this.updateActionsEl) return;
-    this.updateStatusEl.textContent = `error: ${errMsg}`;
+    this.updateStatusEl.textContent = tr('app.error', { p0: errorText(errMsg) });
     this.updateActionsEl.replaceChildren(
       h('button', {
         class: 'btn btn-ghost',
         onClick: () => { this.closeUpdateModal(); this.store.updateError.set(null); },
-      }, 'Закрыть'),
+      }, tr('common.close')),
     );
   }
 
@@ -190,7 +215,7 @@ export class App extends View {
     this.updateStatusEl = h('div', {
       class: 'fp',
       style: { marginTop: '8px', wordBreak: 'break-all' },
-    }, `version ${info.version} · ${humanSize(info.size)}`);
+    }, tr('app.version', { p0: (info.version), p1: (humanSize(info.size)) }));
 
     this.updateProgressEl = h('div', {
       class: 'update-progress',
@@ -216,7 +241,7 @@ export class App extends View {
           await this.store.dismissUpdate();
           this.closeUpdateModal();
         },
-      }, 'Позже'),
+      }, tr('app.later')),
       (() => {
         const b = h('button', {
           class: 'btn',
@@ -224,7 +249,7 @@ export class App extends View {
             (this.updateProgressEl as HTMLElement).style.display = 'block';
             await this.store.installUpdate();
           }),
-        }, 'Обновить сейчас') as HTMLButtonElement;
+        }, tr('app.update_now')) as HTMLButtonElement;
         // Android and unmanaged packages cannot install themselves; offering
         // the button would download into a directory nobody can reach.
         Api.updateInstallsItself().then((can: boolean) => {
@@ -232,7 +257,7 @@ export class App extends View {
             b.remove();
             if (this.updateStatusEl) {
               this.updateStatusEl.textContent +=
-                ' · установка вручную: Настройки → Android-приложение (или страница релизов)';
+                tr('app.manual_installation_settings_android_app_or_the_releases');
             }
             return;
           }
@@ -240,7 +265,7 @@ export class App extends View {
           // administrator password — say so before the dialog appears.
           void Api.updateAsksForRoot().then((asks: boolean) => {
             if (asks && this.updateStatusEl) {
-              this.updateStatusEl.textContent += ' · потребуется пароль администратора';
+              this.updateStatusEl.textContent += tr('app.administrator_password_required');
             }
           }).catch(() => {});
         }).catch(() => {});
@@ -250,14 +275,14 @@ export class App extends View {
 
     const modal = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, 'Доступна новая версия'),
+        h('div', { class: 'modal-title' }, tr('app.a_new_version_is_available')),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'card-label' }, 'release notes'),
+        h('div', { class: 'card-label' }, tr('app.release_notes')),
         h('div', {
           class: 'card-block',
           style: { whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' },
-        }, info.notes || '(no notes)'),
+        }, info.notes || tr('app.no_notes')),
         this.updateStatusEl,
         this.updateProgressEl,
       ),
@@ -280,14 +305,20 @@ export class App extends View {
 
 class MainView extends View {
   el: HTMLElement;
+  private chat: ChatView | null = null;
+  captureDraft(): ReturnType<ChatView['captureDraft']> | null { return this.chat?.captureDraft() ?? null; }
+  restoreDraft(draft: ReturnType<ChatView['captureDraft']> | null): void {
+    if (draft) this.chat?.restoreDraft(draft);
+  }
+
   constructor(store: Store, app: App) {
     super();
     const sidebar = new Sidebar(store, app);
     const chatSlot = h('div', { class: 'stack grow', style: { minHeight: '0' } });
     const empty = h('div', { class: 'empty empty-chat' },
       emptyChatArt(),
-      h('div', { class: 'empty-title' }, 'Выберите чат'),
-      h('div', { class: 'empty-sub' }, 'Сообщения шифруются на вашем устройстве и идут через сеть i2p.'),
+      h('div', { class: 'empty-title' }, tr('app.select_a_chat')),
+      h('div', { class: 'empty-sub' }, tr('app.messages_are_encrypted_on_your_device_and_travel')),
     );
     chatSlot.appendChild(empty);
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
@@ -320,14 +351,13 @@ class MainView extends View {
           const peers = store.dhtPeers.get();
           banner.replaceChildren(
             peers > 0
-              ? 'релей поднят, но в сети i2p нас пока не видно нигде — ждём, пока ответят узлы'
-              : 'релей поднят, но в сеть i2p мы ещё не вошли: ни один узел не ответил. Сообщения уйдут, как только найдём сеть'
+              ? tr('app.your_relay_is_running_but_no_i2p_network')
+              : tr('app.your_relay_is_running_but_we_have_not')
           );
         } else if (unreachable) {
           const why = info?.dial?.unreachable_error ? ` (${info.dial.unreachable_error.slice(0, 120)})` : '';
           banner.replaceChildren(
-            `до вас сейчас не достучаться: встроенный релей не виден из сети i2p, проверка ${info?.dial?.unreachable_checks} раза подряд${why}. ` +
-              'Если телефон сменил сеть или просыпался — обычно проходит за пару минут. Ваши сообщения уходят как обычно'
+            tr('app.your_relay_cannot_currently_be_reached_from_i2p', { p0: (info?.dial?.unreachable_checks ?? 0), p1: (why) })
           );
         }
         return;
@@ -343,17 +373,15 @@ class MainView extends View {
       const attempts = dial?.attempts ?? 0;
       const why = dial?.last_error ? ` (${dial.last_error.slice(0, 120)})` : '';
       const stuck = attempts > 0
-        ? `нет связи со своим релеем: попытка ${attempts}${why}. Сообщения ждут в очереди`
-        : 'нет связи с релеем — сообщения уйдут, когда связь восстановится';
+        ? tr('app.cannot_connect_to_your_relay_attempt_messages_are', { p0: (attempts), p1: (why) })
+        : tr('app.no_relay_connection_messages_will_be_sent_when');
       banner.replaceChildren(
         unconfigured
-          ? 'внешний релей выбран, но адрес не задан — отправка недоступна. Настройки → relay'
+          ? tr('app.external_relay_selected_without_an_address_sending_is')
           : builtin && info?.hosted.state === 'failed'
-            ? `встроенный релей не поднялся, пробую снова${
-                info.hosted.reason ? ` (${info.hosted.reason.slice(0, 120)})` : ''
-              } — сообщения пока ждут в очереди`
+            ? tr('app.built_in_relay_failed_to_start_retrying_messages', { p0: (info.hosted.reason ? ` (${info.hosted.reason.slice(0, 120)})` : '') })
             : builtin && info?.hosted.state !== 'ready'
-              ? 'встроенный релей запускается — обычно 1–2 минуты. Сообщения уйдут, как только он будет готов'
+              ? tr('app.built_in_relay_is_starting_usually_1_2')
               : stuck
       );
     };
@@ -378,12 +406,12 @@ class MainView extends View {
           try {
             await store.setAgentMode(null);
           } catch (e) {
-            store.showToast('agent mode: ' + String(e), true);
+            store.showToast(tr('app.agent_mode') + errorText(e), true);
           }
         }),
-      }, 'disable') as HTMLButtonElement;
+      }, tr('app.disable')) as HTMLButtonElement;
       agentBanner.replaceChildren(
-        h('span', null, `AGENT MODE · master: ${master.name || 'unnamed'}`),
+        h('span', null, tr('app.agent_mode_master', { p0: (master.name || 'unnamed') })),
         off,
       );
     };
@@ -393,16 +421,19 @@ class MainView extends View {
       main.classList.toggle('sidebar-collapsed', c);
     }));
     this.subs.push(store.selectedChat.subscribe((target: ChatTarget | null) => {
+      this.chat?.destroy();
+      this.chat = null;
       chatSlot.replaceChildren();
       if (!target) {
         main.classList.remove('has-chat');
         chatSlot.appendChild(empty);
       } else {
         main.classList.add('has-chat');
-        chatSlot.appendChild(new ChatView(store, app, target).el);
+        this.chat = new ChatView(store, app, target);
+        chatSlot.appendChild(this.chat.el);
       }
     }));
-    this.subs.push(() => sidebar.destroy());
+    this.subs.push(() => { sidebar.destroy(); this.chat?.destroy(); });
     this.el = main;
   }
 }

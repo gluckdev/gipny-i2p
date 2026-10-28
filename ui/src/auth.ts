@@ -1,7 +1,9 @@
+import { errorText } from './error-text';
+import { languagePicker } from './language-picker';
+import { t as tr } from './i18n';
 import { Api } from './api';
 import type { Store, BootStep, BootStepId } from './state';
 import { View, h, busy, logo } from './view';
-import { t } from './i18n';
 
 export class AuthCreate extends View {
   el: HTMLElement;
@@ -17,14 +19,14 @@ export class AuthCreate extends View {
   constructor(private store: Store) {
     super();
     this.nameI = h('input', {
-      class: 'input', placeholder: 'e.g., alice', autofocus: true, maxlength: '32',
+      class: 'input', placeholder: tr('auth.e_g_alice'), autofocus: true, maxlength: '32',
     });
     this.displayI = h('input', {
-      class: 'input', placeholder: 'visible to contacts', maxlength: '64',
+      class: 'input', placeholder: tr('auth.visible_to_contacts'), maxlength: '64',
     });
-    this.passI = h('input', { class: 'input', type: 'password', placeholder: 'passphrase' });
-    this.confirmI = h('input', { class: 'input', type: 'password', placeholder: 'confirm passphrase' });
-    this.duressI = h('input', { class: 'input', type: 'password', placeholder: 'duress passphrase (optional)' });
+    this.passI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.passphrase') });
+    this.confirmI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.confirm_passphrase') });
+    this.duressI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.duress_passphrase_optional') });
     this.wipeC = h('input', { type: 'checkbox', checked: true });
     this.attemptsI = h('input', { class: 'input', type: 'number', value: '10', min: '0', max: '100' });
     this.err = h('div', { class: 'err' });
@@ -34,37 +36,38 @@ export class AuthCreate extends View {
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
-        h('div', { class: 'auth-title' }, t('auth.new_profile_title')),
-        h('div', { class: 'auth-sub' }, t('auth.new_profile_sub')),
+        languagePicker(),
+        h('div', { class: 'auth-title' }, tr('auth.new_profile_title')),
+        h('div', { class: 'auth-sub' }, tr('auth.new_profile_sub')),
         h('div', { class: 'field' },
-          h('label', null, t('auth.profile_name')), this.nameI,
-          h('div', { class: 'hint' }, t('auth.profile_name_hint')),
+          h('label', null, tr('auth.profile_name')), this.nameI,
+          h('div', { class: 'hint' }, tr('auth.profile_name_hint')),
         ),
         h('div', { class: 'field' },
-          h('label', null, t('auth.display_name')), this.displayI,
-          h('div', { class: 'hint' }, t('auth.display_name_hint')),
+          h('label', null, tr('auth.display_name')), this.displayI,
+          h('div', { class: 'hint' }, tr('auth.display_name_hint')),
         ),
-        h('div', { class: 'field' }, h('label', null, t('auth.passphrase')), this.passI),
-        h('div', { class: 'field' }, h('label', null, t('auth.confirm_pass')), this.confirmI),
-        h('div', { class: 'divider-text' }, t('auth.duress_title')),
-        h('div', { class: 'field' }, h('label', null, t('auth.duress_pass')), this.duressI,
-          h('div', { class: 'hint' }, t('auth.duress_pass_hint'))),
+        h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
+        h('div', { class: 'field' }, h('label', null, tr('auth.confirm_pass')), this.confirmI),
+        h('div', { class: 'divider-text' }, tr('auth.duress_title')),
+        h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
+          h('div', { class: 'hint' }, tr('auth.duress_pass_hint'))),
         h('label', { class: 'chk', style: { marginBottom: '14px' } },
           this.wipeC, h('span', { class: 'box' }),
-          h('span', null, t('auth.duress_wipe'))),
-        h('div', { class: 'field' }, h('label', null, t('auth.max_attempts')), this.attemptsI),
+          h('span', null, tr('auth.duress_wipe'))),
+        h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
         this.err,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           hasProfiles && h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, t('common.back')),
+          }, tr('common.back')),
           (() => {
             const b = h('button', {
               class: 'btn',
               style: { flex: '1' },
               onClick: () => busy(b, () => this.create()),
-            }, t('auth.create_btn')) as HTMLButtonElement;
+            }, tr('auth.create_btn')) as HTMLButtonElement;
             this.confirmI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.create());
             });
@@ -86,16 +89,16 @@ export class AuthCreate extends View {
     const wipe = this.wipeC.checked;
     const max = parseInt(this.attemptsI.value) || 0;
 
-    if (!profile) { this.err.textContent = 'profile name required'; return; }
+    if (!profile) { this.err.textContent = tr('auth.profile_name_required'); return; }
     if (!/^[A-Za-z0-9_-]{1,32}$/.test(profile)) {
-      this.err.textContent = 'profile: alphanumeric + - _ (max 32)';
+      this.err.textContent = tr('auth.profile_name_letters_digits_and_up_to_32');
       return;
     }
-    if (!display) { this.err.textContent = 'display name required (your contacts will see this)'; return; }
-    if (display.length > 64) { this.err.textContent = 'display name too long (max 64)'; return; }
-    if (pass.length < 8) { this.err.textContent = 'passphrase too short (min 8)'; return; }
-    if (pass !== conf) { this.err.textContent = 'passphrases do not match'; return; }
-    if (duress && duress === pass) { this.err.textContent = 'duress must differ from primary'; return; }
+    if (!display) { this.err.textContent = tr('auth.display_name_required_your_contacts_will_see_this'); return; }
+    if (display.length > 64) { this.err.textContent = tr('auth.display_name_too_long_max_64'); return; }
+    if (pass.length < 8) { this.err.textContent = tr('auth.passphrase_too_short_min_8'); return; }
+    if (pass !== conf) { this.err.textContent = tr('auth.passphrases_do_not_match'); return; }
+    if (duress && duress === pass) { this.err.textContent = tr('auth.duress_must_differ_from_primary'); return; }
 
     this.err.textContent = '';
     await this.store.beginBoot(profile);
@@ -105,7 +108,7 @@ export class AuthCreate extends View {
     } catch (e) {
       this.store.endBoot();
       this.store.view.set('auth-create');
-      this.err.textContent = `Не удалось создать профиль: ${String(e)}`;
+      this.err.textContent = tr('auth.could_not_create_profile', { p0: (errorText(e)) });
     }
   }
 }
@@ -120,28 +123,29 @@ export class AuthUnlock extends View {
 
   constructor(private store: Store) {
     super();
-    const profile = store.currentProfile.get() ?? 'unknown';
-    this.passI = h('input', { class: 'input', type: 'password', placeholder: t('auth.passphrase'), autofocus: true });
+    const profile = store.currentProfile.get() ?? tr('auth.unknown');
+    this.passI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.passphrase'), autofocus: true });
     this.err = h('div', { class: 'err' });
     this.net = h('div', { class: 'auth-net' });
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
+        languagePicker(),
         h('div', { class: 'auth-title' }, profile),
-        h('div', { class: 'auth-sub' }, t('auth.unlock_sub')),
-        h('div', { class: 'field' }, h('label', null, t('auth.passphrase')), this.passI),
+        h('div', { class: 'auth-sub' }, tr('auth.unlock_sub')),
+        h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
         this.err,
         this.net,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
-          }, t('common.back')),
+          }, tr('common.back')),
           (() => {
             const b = h('button', {
               class: 'btn', style: { flex: '1' },
               onClick: () => busy(b, () => this.unlock()),
-            }, t('auth.open_btn')) as HTMLButtonElement;
+            }, tr('auth.open_btn')) as HTMLButtonElement;
             this.passI.addEventListener('keydown', (e) => {
               if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.unlock());
             });
@@ -152,8 +156,8 @@ export class AuthUnlock extends View {
     );
     this.sub(store.prewarm, (s) => {
       this.net.textContent = s === 'building'
-        ? t('auth.net_building')
-        : s === 'ready' ? t('auth.net_ready') : '';
+        ? tr('auth.net_building')
+        : s === 'ready' ? tr('auth.net_ready') : '';
       this.net.className = 'auth-net' + (s === 'ready' ? ' ok' : '');
     });
   }
@@ -161,9 +165,9 @@ export class AuthUnlock extends View {
   private async unlock(): Promise<void> {
     this.err.textContent = '';
     const profile = this.store.currentProfile.get();
-    if (!profile) { this.err.textContent = t('auth.profile_not_selected'); return; }
+    if (!profile) { this.err.textContent = tr('auth.profile_not_selected'); return; }
     const pass = this.passI.value;
-    if (!pass) { this.err.textContent = t('auth.pass_required'); return; }
+    if (!pass) { this.err.textContent = tr('auth.pass_required'); return; }
     // The loading screen goes up *before* the call: everything slow (argon2id,
     // the router, tunnels) happens inside it, and this used to be a disabled
     // button and nothing else for up to three minutes.
@@ -176,9 +180,9 @@ export class AuthUnlock extends View {
       const msg = String(e);
       this.store.endBoot();
       this.store.view.set('auth-unlock');
-      if (msg.includes('wiped')) this.store.showToast(t('auth.profile_wiped'), true);
-      else if (msg.includes('invalid passphrase')) this.store.showToast(t('auth.wrong_pass'), true);
-      else this.store.showToast(msg, true);
+      if (msg.includes('wiped')) this.store.showToast(tr('auth.profile_wiped'), true);
+      else if (msg.includes('invalid passphrase')) this.store.showToast(tr('auth.wrong_pass'), true);
+      else this.store.showToast(errorText(msg), true);
     }
   }
 }
@@ -204,28 +208,28 @@ export class AuthBooting extends View {
     super();
 
     const list = h('div', { class: 'boot-steps' });
-    for (const [id, label, hint] of BOOT_LABELS) {
+    for (const [id, label, hint] of bootLabels()) {
       const row = this.makeRow(label, hint);
       this.rows.set(id, row);
       list.appendChild(row);
     }
 
-    this.elapsedEl = h('span', { class: 'boot-elapsed' }, 'UPTIME: 0.0s');
+    this.elapsedEl = h('span', { class: 'boot-elapsed' }, tr('auth.elapsed_0_0_s'));
     this.progressFill = h('div', { class: 'boot-progress-fill' });
     this.progressEl = h('div', {
       class: 'boot-progress-bar', role: 'progressbar',
-      'aria-label': t('boot.title'), 'aria-valuemin': '0', 'aria-valuemax': '100',
+      'aria-label': tr('boot.title'), 'aria-valuemin': '0', 'aria-valuemax': '100',
       'aria-valuenow': '0',
     }, this.progressFill);
     this.progressText = h('span', { class: 'boot-progress-text' }, '0%');
     this.logEl = h('div', {
       id: 'boot-live-output', class: 'boot-log', role: 'log',
-      'aria-label': 'LIVE SYSTEM LOG', 'aria-live': 'off', tabindex: '0',
+      'aria-label': tr('auth.live_system_log'), 'aria-live': 'off', tabindex: '0',
     });
     this.logToggle = h('button', {
       class: 'boot-log-toggle', type: 'button',
       'aria-expanded': 'false', 'aria-controls': 'boot-live-output',
-      'aria-label': t('boot.details'), title: t('boot.details'),
+      'aria-label': tr('boot.details'), title: tr('boot.details'),
       onClick: () => {
         this.logExpanded = !this.logExpanded;
         this.logPanel.classList.toggle('is-expanded', this.logExpanded);
@@ -236,7 +240,7 @@ export class AuthBooting extends View {
     }, '[ + ]');
     this.logPanel = h('section', { class: 'boot-live-log' },
       h('div', { class: 'boot-log-head' },
-        h('span', null, h('span', { class: 'boot-live-dot', 'aria-hidden': 'true' }), 'LIVE SYSTEM LOG'),
+        h('span', null, h('span', { class: 'boot-live-dot', 'aria-hidden': 'true' }), tr('auth.live_system_log')),
         this.logToggle,
       ),
       this.logEl,
@@ -244,26 +248,27 @@ export class AuthBooting extends View {
     this.enterBtn = h('button', {
       class: 'boot-button boot-enter hidden', type: 'button',
       onClick: () => store.enterMain(),
-    }, '[ ВХОД В СИСТЕМУ ↵ ]');
+    }, tr('auth.enter'));
     this.backBtn = h('button', {
       class: 'boot-button boot-back hidden', type: 'button',
       onClick: () => {
         store.endBoot();
         void store.cancelToProfileSelect();
       },
-    }, '[ ✕ НАЗАД ]');
+    }, tr('auth.back'));
 
     this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
+        languagePicker(),
         h('header', { class: 'boot-header' },
-          h('h1', { class: 'boot-title' }, 'GIPNY // SYSTEM INITIALIZATION'),
+          h('h1', { class: 'boot-title' }, tr('auth.gipny_system_initialization')),
           h('div', { class: 'boot-meta' },
-            h('span', { class: 'boot-node' }, `NODE: ${store.currentProfile.get() ?? 'unknown'}`),
+            h('span', { class: 'boot-node' }, tr('auth.profile', { p0: (store.currentProfile.get() ?? 'unknown') })),
             this.elapsedEl,
           ),
         ),
         h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
-        h('p', { class: 'boot-sub' }, t('boot.sub')),
+        h('p', { class: 'boot-sub' }, tr('boot.sub')),
         list,
         this.logPanel,
         h('div', { class: 'boot-foot' }, this.backBtn, this.enterBtn),
@@ -290,8 +295,8 @@ export class AuthBooting extends View {
 
   private paint(steps: BootStep[]): void {
     const marks: Record<BootStep['state'], string> = {
-      done: '[  OK  ]', active: '[ RUN  ]', idle: '[  --  ]',
-      failed: '[ FAIL ]', skipped: '[ SKIP ]',
+      done: tr('auth.ok'), active: tr('auth.run'), idle: '[  --  ]',
+      failed: tr('auth.fail'), skipped: tr('auth.skip'),
     };
     for (const step of steps) {
       const row = this.rows.get(step.id);
@@ -305,8 +310,8 @@ export class AuthBooting extends View {
         ? fmtBootMs(Date.now() - step.startedAt)
         : step.state === 'done' ? `· ${fmtBootMs(step.ms)}` : '';
       hint.textContent = step.state === 'failed'
-        ? `— ${step.detail || t('boot.back')}`
-        : BOOT_LABELS.find(([id]) => id === step.id)?.[2] ?? '';
+        ? `— ${step.detail || tr('boot.back')}`
+        : bootLabels().find(([id]) => id === step.id)?.[2] ?? '';
     }
     const done = steps.filter((step) => step.state === 'done').length;
     const percent = steps.length ? Math.round(done / steps.length * 100) : 0;
@@ -333,7 +338,7 @@ export class AuthBooting extends View {
   }
 
   private tick(): void {
-    this.elapsedEl.textContent = `UPTIME: ${fmtSecs(Date.now() - this.startedAt)}`;
+    this.elapsedEl.textContent = tr('auth.elapsed', { p0: (fmtSecs(Date.now() - this.startedAt)) });
     for (const active of this.store.bootSteps.get().filter((step) => step.state === 'active')) {
       if (!active.startedAt) continue;
       const ms = this.rows.get(active.id)?.querySelector('.boot-step-ms') as HTMLElement | null;
@@ -349,24 +354,24 @@ export class AuthBooting extends View {
 }
 
 function fmtBootMs(ms: number): string {
-  return `${Math.max(0, Math.round(ms))} ms`;
+  return tr('view.ms', { p0: Math.max(0, Math.round(ms)) });
 }
 
 /** What each backend stage is called on screen, and what it is doing. */
-const BOOT_LABELS: [BootStepId, string, string][] = [
-  ['vault', t('boot.step.vault'), t('boot.step.vault_hint')],
-  ['router', t('boot.step.router'), t('boot.step.router_hint')],
+const bootLabels = (): [BootStepId, string, string][] => [
+  ['vault', tr('boot.step.vault'), tr('boot.step.vault_hint')],
+  ['router', tr('boot.step.router'), tr('boot.step.router_hint')],
   // Address before tunnels: the address is what the tunnels get built for, so
   // this is the order the work happens in. The rows are built from this list,
   // and the back-fill in the store counts on the same order.
-  ['session', t('boot.step.session'), t('boot.step.session_hint')],
-  ['tunnels', t('boot.step.tunnels'), t('boot.step.tunnels_hint')],
-  ['core', t('boot.step.core'), t('boot.step.core_hint')],
-  ['relay', t('boot.step.relay'), t('boot.step.relay_hint')],
-  ['dht', t('boot.step.dht'), t('boot.step.dht_hint')],
+  ['session', tr('boot.step.session'), tr('boot.step.session_hint')],
+  ['tunnels', tr('boot.step.tunnels'), tr('boot.step.tunnels_hint')],
+  ['core', tr('boot.step.core'), tr('boot.step.core_hint')],
+  ['relay', tr('boot.step.relay'), tr('boot.step.relay_hint')],
+  ['dht', tr('boot.step.dht'), tr('boot.step.dht_hint')],
 ];
 
 function fmtSecs(ms: number): string {
   const s = Math.max(0, ms) / 1000;
-  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+  return tr('view.s', { p0: s < 10 ? s.toFixed(1) : Math.round(s) });
 }

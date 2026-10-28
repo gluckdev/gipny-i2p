@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import { save } from '@tauri-apps/plugin-dialog';
 import { Api, type MediaItem } from './api';
 import type { Store, ChatTarget } from './state';
@@ -17,13 +19,13 @@ export class MediaModal {
     this.close = close;
     this.target = target;
 
-    this.status = h('div', { class: 'hint' }, 'loading…');
+    this.status = h('div', { class: 'hint' }, tr('media.loading'));
     this.grid = h('div', { class: 'media-grid' });
 
     this.el = h('div', { class: 'modal modal-wide' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, 'Медиа и файлы'),
-        h('button', { class: 'icon-btn', title: 'Закрыть', onClick: close }, icon('close')),
+        h('div', { class: 'modal-title' }, tr('chat.media_and_files')),
+        h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
         this.status,
@@ -41,14 +43,14 @@ export class MediaModal {
         : await Api.listMediaGroup(this.target.id as string, 500);
       this.render(items);
     } catch (e) {
-      this.status.textContent = 'load failed: ' + String(e);
+      this.status.textContent = tr('chat.load_failed_2') + errorText(e);
     }
   }
 
   private render(items: MediaItem[]): void {
     this.status.textContent = items.length === 0
-      ? 'no files in this chat'
-      : `${items.length} file${items.length === 1 ? '' : 's'}`;
+      ? tr('media.no_files_in_this_chat')
+      : tr('media.file_count', { n: items.length });
     this.grid.replaceChildren();
     for (const it of items) {
       const mime = mimeFromName(it.name);
@@ -72,12 +74,12 @@ export class MediaModal {
             const dest = await save({ defaultPath: it.name });
             if (!dest) return;
             await Api.saveAttachment(it.id, dest as string);
-            this.store.showToast('saved');
+            this.store.showToast(tr('contact.saved'));
           } catch (e) {
-            this.store.showToast('save failed: ' + String(e), true);
+            this.store.showToast(tr('media.save_failed') + errorText(e), true);
           }
         },
-      }, 'Сохранить'));
+      }, tr('common.save')));
       tile.addEventListener('click', () => this.openInChat(it));
       if (isImage) void this.fillPreview(preview, it.id, mime);
       this.grid.appendChild(tile);

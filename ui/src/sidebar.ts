@@ -1,3 +1,5 @@
+import { errorText } from './error-text';
+import { t as tr } from './i18n';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget } from './state';
 import { View, h, avatar, fmtTime } from './view';
@@ -12,7 +14,7 @@ import { AboutModal } from './about';
 import { SearchModal } from './search';
 import { icon } from './icons';
 import { loadAvatarChoices, onAvatarsChanged } from './avatars';
-import { t } from './i18n';
+import { getLocale } from './i18n';
 
 /** Built-in sections that can be folded, remembered per device. */
 type Section = 'groups' | 'requests' | 'contacts';
@@ -33,8 +35,8 @@ function fmtWhen(ts: number | null): string {
   const d = new Date(ts);
   const now = new Date();
   if (d.toDateString() === now.toDateString()) return fmtTime(ts);
-  if (now.getTime() - ts < 6 * 24 * 3600 * 1000) return d.toLocaleDateString('ru-RU', { weekday: 'short' });
-  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  if (now.getTime() - ts < 6 * 24 * 3600 * 1000) return d.toLocaleDateString(getLocale(), { weekday: 'short' });
+  return d.toLocaleDateString(getLocale(), { day: '2-digit', month: '2-digit' });
 }
 
 export class Sidebar extends View {
@@ -48,7 +50,7 @@ export class Sidebar extends View {
     super();
     this.listEl = h('div', { class: 'contact-list' });
 
-    const me = h('button', { class: 'sidebar-me', title: 'Моя карточка', onClick: () => this.myIdentity() });
+    const me = h('button', { class: 'sidebar-me', title: tr('identity.my_card'), onClick: () => this.myIdentity() });
     const renderMe = () => {
       const name = store.displayName.get() || store.currentProfile.get() || 'gipny';
       me.replaceChildren(
@@ -62,22 +64,22 @@ export class Sidebar extends View {
 
     const collapseBtn = h('button', {
       class: 'icon-btn sidebar-collapse',
-      title: t('sidebar.collapse'),
+      title: tr('sidebar.collapse'),
       onClick: () => this.store.toggleSidebar(),
     }, icon(store.sidebarCollapsed.get() ? 'chevronRight' : 'chevronLeft'));
     this.sub(store.sidebarCollapsed, (c) => { collapseBtn.replaceChildren(icon(c ? 'chevronRight' : 'chevronLeft')); }, false);
 
-    const newBtn = h('button', { class: 'icon-btn icon-btn-accent', title: t('sidebar.new_chat') }, icon('plus'));
+    const newBtn = h('button', { class: 'icon-btn icon-btn-accent', title: tr('sidebar.new_chat') }, icon('plus'));
     newBtn.addEventListener('click', () => {
       const r = newBtn.getBoundingClientRect();
       ContextMenu.open(r.left, r.bottom + 4, [
-        { label: t('sidebar.new_contact'), onClick: () => this.addContact() },
-        { label: t('sidebar.new_group'), onClick: () => this.newGroup() },
-        { label: t('sidebar.new_folder'), onClick: () => void this.newFolder() },
+        { label: tr('sidebar.new_contact'), onClick: () => this.addContact() },
+        { label: tr('sidebar.new_group'), onClick: () => this.newGroup() },
+        { label: tr('sidebar.new_folder'), onClick: () => void this.newFolder() },
       ]);
     });
 
-    const search = h('input', { class: 'sidebar-search', type: 'search', placeholder: t('sidebar.search_placeholder') });
+    const search = h('input', { class: 'sidebar-search', type: 'search', placeholder: tr('sidebar.search_placeholder') });
     search.addEventListener('input', () => { this.filter = search.value.trim().toLowerCase(); this.renderList(); });
 
     this.el = h('div', { class: 'sidebar' },
@@ -85,16 +87,16 @@ export class Sidebar extends View {
         me,
         h('div', { class: 'row sidebar-actions' },
           newBtn,
-          h('button', { class: 'icon-btn', title: t('sidebar.search_messages'), onClick: () => this.search() }, icon('search')),
-          h('button', { class: 'icon-btn', title: t('sidebar.settings'), onClick: () => this.settings() }, icon('settings')),
+          h('button', { class: 'icon-btn', title: tr('sidebar.search_messages'), onClick: () => this.search() }, icon('search')),
+          h('button', { class: 'icon-btn', title: tr('sidebar.settings'), onClick: () => this.settings() }, icon('settings')),
           collapseBtn,
         ),
       ),
       h('div', { class: 'sidebar-search-wrap' }, search),
       this.listEl,
       h('div', { class: 'sidebar-footer' },
-        h('button', { class: 'sidebar-link', onClick: () => this.about() }, icon('shield', 16), t('sidebar.about')),
-        h('button', { class: 'icon-btn', title: t('sidebar.lock'), onClick: () => this.store.lock() }, icon('lock', 18)),
+        h('button', { class: 'sidebar-link', onClick: () => this.about() }, icon('shield', 16), tr('sidebar.about')),
+        h('button', { class: 'icon-btn', title: tr('sidebar.lock'), onClick: () => this.store.lock() }, icon('lock', 18)),
       ),
     );
     this.sub(store.contacts, () => this.renderList());
@@ -119,12 +121,12 @@ export class Sidebar extends View {
     const groups = this.store.groups.get().filter((g) => this.matches(g.name));
 
     if (groups.length > 0) {
-      this.section('groups', 'Группы', groups.length, groups.map((g) => this.groupRow(g)));
+      this.section('groups', tr('forward.groups'), groups.length, groups.map((g) => this.groupRow(g)));
     }
 
     const requests = contacts.filter((c) => c.request === 'incoming' && c.trust !== 2 && this.matches(c.name));
     if (requests.length > 0) {
-      this.section('requests', 'Запросы', requests.length, requests.map((c) => this.requestRow(c)));
+      this.section('requests', tr('sidebar.requests'), requests.length, requests.map((c) => this.requestRow(c)));
     }
 
     const known = contacts.filter((c) => c.request !== 'incoming');
@@ -141,16 +143,16 @@ export class Sidebar extends View {
     const rest = known.filter((c) => !inFolder.has(c.id) && this.matches(c.name));
     if (known.length === 0) {
       this.listEl.appendChild(h('div', { class: 'list-empty' },
-        h('div', { class: 'list-empty-title' }, 'Пока нет контактов'),
-        h('div', { class: 'list-empty-sub' }, 'Попросите карточку у собеседника и добавьте её — у него появится ваш запрос.'),
-        h('button', { class: 'btn btn-sm', onClick: () => this.addContact() }, 'Добавить контакт'),
+        h('div', { class: 'list-empty-title' }, tr('sidebar.no_contacts_yet')),
+        h('div', { class: 'list-empty-sub' }, tr('sidebar.ask_for_someone_s_contact_card_and_add')),
+        h('button', { class: 'btn btn-sm', onClick: () => this.addContact() }, tr('contact.add_contact')),
       ));
     } else if (rest.length > 0 || !this.filter) {
-      const title = this.folders.length > 0 ? 'Без папки' : 'Контакты';
+      const title = this.folders.length > 0 ? tr('sidebar.unfiled') : tr('forward.contacts');
       this.section('contacts', title, rest.length, rest.map((c) => this.contactRow(c)));
     }
     if (this.filter && this.listEl.childElementCount === 0) {
-      this.listEl.appendChild(h('div', { class: 'list-empty' }, h('div', { class: 'list-empty-sub' }, 'Ничего не найдено')));
+      this.listEl.appendChild(h('div', { class: 'list-empty' }, h('div', { class: 'list-empty-sub' }, tr('sidebar.nothing_found'))));
     }
   }
 
@@ -161,7 +163,7 @@ export class Sidebar extends View {
       h('span', { class: 'section-count' }, String(count)),
     );
     if (menu) {
-      const more = h('button', { class: 'icon-btn section-more', title: 'Действия с папкой' }, icon('more', 16));
+      const more = h('button', { class: 'icon-btn section-more', title: tr('sidebar.folder_actions') }, icon('more', 16));
       more.addEventListener('click', (e) => {
         e.stopPropagation();
         const r = more.getBoundingClientRect();
@@ -190,12 +192,12 @@ export class Sidebar extends View {
       f.collapsed = !f.collapsed;
       this.saveFolders();
     }, () => [
-      { label: 'Переименовать', onClick: () => void this.renameFolder(f) },
-      { label: 'Удалить папку', danger: true, onClick: () => void this.deleteFolder(f) },
+      { label: tr('sidebar.rename'), onClick: () => void this.renameFolder(f) },
+      { label: tr('sidebar.delete_folder'), danger: true, onClick: () => void this.deleteFolder(f) },
     ]));
     if (folded) return;
     if (members.length === 0) {
-      this.listEl.appendChild(h('div', { class: 'folder-empty' }, 'Пусто — перенесите сюда контакт через его меню'));
+      this.listEl.appendChild(h('div', { class: 'folder-empty' }, tr('sidebar.empty_move_a_contact_here_using_their_menu')));
     }
     members.forEach((c) => this.listEl.appendChild(this.contactRow(c)));
   }
@@ -214,7 +216,7 @@ export class Sidebar extends View {
         ),
         h('div', { class: 'contact-bottom' },
           h('div', { class: 'contact-sub' }, sub),
-          pinned && h('div', { class: 'contact-pin', title: 'Закреплён' }, '📌'),
+          pinned && h('div', { class: 'contact-pin', title: tr('sidebar.pinned') }, '📌'),
           u > 0 && h('div', { class: 'contact-badge' }, u > 99 ? '99+' : String(u)),
         ),
       ),
@@ -224,7 +226,7 @@ export class Sidebar extends View {
   private groupRow(g: Group): HTMLElement {
     const target: ChatTarget = { kind: 'group', id: g.id };
     const pinned = g.pinned_at != null;
-    const row = this.rowShell(target, pinned, avatar(g.name, g.id, 'avatar-group', false), g.name, 'Группа', g.last_message_at ?? null);
+    const row = this.rowShell(target, pinned, avatar(g.name, g.id, 'avatar-group', false), g.name, tr('sidebar.group'), g.last_message_at ?? null);
     attachContextMenu(row, () => this.chatMenu(target, pinned));
     return row;
   }
@@ -234,12 +236,12 @@ export class Sidebar extends View {
     const pinned = c.pinned_at != null;
     const online = this.store.peerOnline.get().has(c.id);
     const lost = this.store.lostForDays(c);
-    const sub = c.request === 'outgoing' ? 'Ждёт подтверждения'
-      : online ? 'В сети'
-      : lost != null ? `Нет связи ${lost} дн.`
-      : c.is_bot ? 'Бот'
-      : c.trust === 1 ? 'Проверенный контакт'
-      : 'Не в сети';
+    const sub = c.request === 'outgoing' ? tr('sidebar.awaiting_approval')
+      : online ? tr('sidebar.online')
+      : lost != null ? tr('sidebar.unreachable_for_days', { p0: (lost) })
+      : c.is_bot ? tr('sidebar.bot')
+      : c.trust === 1 ? tr('sidebar.verified_contact')
+      : tr('sidebar.offline');
     const pic = h('div', { class: 'avatar-wrap' }, avatar(c.name, c.sign_pk), online && h('span', { class: 'presence' }));
     const row = this.rowShell(target, pinned, pic, c.name, sub, c.last_message_at);
     if (online) row.querySelector('.contact-sub')?.classList.add('online');
@@ -253,19 +255,19 @@ export class Sidebar extends View {
       op().then(() => {
         this.store.showToast(done);
         return this.store.refreshContacts();
-      }).catch((e: unknown) => this.store.showToast(String(e), true));
+      }).catch((e: unknown) => this.store.showToast(errorText(e), true));
     };
     return h('div', { class: 'contact request' },
       avatar(c.name, c.sign_pk),
       h('div', { class: 'contact-info' },
         h('div', { class: 'contact-name' }, c.name),
-        h('div', { class: 'contact-sub' }, 'Хочет добавить вас в контакты'),
+        h('div', { class: 'contact-sub' }, tr('sidebar.wants_to_add_you_as_a_contact')),
         h('div', { class: 'request-actions' },
-          h('button', { class: 'btn btn-sm', onClick: act(() => Api.acceptContactRequest(c.id), `${c.name} добавлен`) }, 'Принять'),
-          h('button', { class: 'btn btn-sm btn-ghost', onClick: act(() => Api.declineContactRequest(c.id), 'Запрос отклонён') }, 'Отклонить'),
+          h('button', { class: 'btn btn-sm', onClick: act(() => Api.acceptContactRequest(c.id), tr('sidebar.added', { p0: (c.name) })) }, tr('sidebar.accept')),
+          h('button', { class: 'btn btn-sm btn-ghost', onClick: act(() => Api.declineContactRequest(c.id), tr('sidebar.request_declined')) }, tr('sidebar.decline')),
           h('button', {
-            class: 'icon-btn', title: 'Заблокировать',
-            onClick: act(() => Api.updateContact(c.id, c.name, 2), `${c.name} заблокирован`),
+            class: 'icon-btn', title: tr('sidebar.lock'),
+            onClick: act(() => Api.updateContact(c.id, c.name, 2), tr('sidebar.blocked', { p0: (c.name) })),
           }, icon('block', 16)),
         ),
       ),
@@ -274,10 +276,10 @@ export class Sidebar extends View {
 
   private chatMenu(target: ChatTarget, pinned: boolean): MenuItem[] {
     return [{
-      label: pinned ? 'Открепить' : 'Закрепить наверху',
+      label: pinned ? tr('chat.unpin') : tr('sidebar.pin_to_top'),
       onClick: () => {
         const op = pinned ? this.store.unpinChat(target) : this.store.pinChat(target);
-        op.catch((e: unknown) => this.store.showToast(String(e), true));
+        op.catch((e: unknown) => this.store.showToast(errorText(e), true));
       },
     }];
   }
@@ -288,9 +290,9 @@ export class Sidebar extends View {
     const current = this.folders.find((f) => f.contacts.includes(c.id));
     const items: MenuItem[] = this.folders
       .filter((f) => f !== current)
-      .map((f) => ({ label: `В папку «${f.name}»`, onClick: () => this.moveTo(c.id, f) }));
-    items.push({ label: 'В новую папку…', onClick: () => void this.newFolder(c.id) });
-    if (current) items.push({ label: `Убрать из «${current.name}»`, onClick: () => this.moveTo(c.id, null) });
+      .map((f) => ({ label: tr('sidebar.move_to', { p0: (f.name) }), onClick: () => this.moveTo(c.id, f) }));
+    items.push({ label: tr('sidebar.new_folder_2'), onClick: () => void this.newFolder(c.id) });
+    if (current) items.push({ label: tr('sidebar.remove_from', { p0: (current.name) }), onClick: () => this.moveTo(c.id, null) });
     return items;
   }
 
@@ -304,7 +306,7 @@ export class Sidebar extends View {
   }
 
   private async newFolder(withContact?: number): Promise<void> {
-    const name = await this.app.prompt('Новая папка', 'Название', '', 'Создать');
+    const name = await this.app.prompt(tr('sidebar.new_folder'), tr('sidebar.name'), '', tr('group.create'));
     if (!name) return;
     const folder: ContactFolder = { id: `f-${Date.now().toString(36)}`, name, collapsed: false, contacts: [] };
     this.folders.push(folder);
@@ -312,21 +314,21 @@ export class Sidebar extends View {
   }
 
   private async renameFolder(f: ContactFolder): Promise<void> {
-    const name = await this.app.prompt('Переименовать папку', 'Название', f.name);
+    const name = await this.app.prompt(tr('sidebar.rename_folder'), tr('sidebar.name'), f.name);
     if (!name) return;
     f.name = name;
     this.saveFolders();
   }
 
   private async deleteFolder(f: ContactFolder): Promise<void> {
-    if (!await this.app.confirm('Удалить папку', `Папка «${f.name}» исчезнет, контакты останутся в списке.`, true)) return;
+    if (!await this.app.confirm(tr('sidebar.delete_folder'), tr('sidebar.folder_will_be_removed_contacts_stay_in_your', { p0: (f.name) }), true)) return;
     this.folders = this.folders.filter((x) => x !== f);
     this.saveFolders();
   }
 
   private saveFolders(): void {
     this.renderList();
-    Api.setContactFolders(this.folders).catch((e: unknown) => this.store.showToast(String(e), true));
+    Api.setContactFolders(this.folders).catch((e: unknown) => this.store.showToast(errorText(e), true));
   }
 
   // ── modals ──────────────────────────────────────────────────────────────
@@ -337,7 +339,7 @@ export class Sidebar extends View {
 
   private newGroup(): void {
     if (this.store.contacts.get().length === 0) {
-      this.store.showToast('Сначала добавьте хотя бы один контакт', true);
+      this.store.showToast(tr('sidebar.need_contact_for_folder'), true);
       return;
     }
     this.app.openModal((close) => new CreateGroupModal(this.store, close).el);

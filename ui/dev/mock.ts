@@ -13,12 +13,16 @@
  * Query parameters of /dev/frame.html:
  *   scene = list | chat | console | settings | identity | add-contact | agent | auth | boot
  *   theme = light | dark
+ *   lang = en | ru
  */
+import { t, setLang } from '../src/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AgentMaster, Attachment, Contact, Group, GroupMember, Message } from '../src/api';
 import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT } from '../src/api';
 
 const params = new URLSearchParams(location.search);
+const requestedLang = params.get('lang');
+if (requestedLang === 'en' || requestedLang === 'ru') setLang(requestedLang);
 const scene = params.get('scene') ?? 'list';
 const theme = params.get('theme');
 // ?relay=starting shows the app before its built-in relay has an address.
@@ -182,7 +186,7 @@ mockIPC(async (cmd, payload) => {
     case 'check_update': return null;
     case 'update_installs_itself': return false;
     case 'update_asks_for_root': return false;
-    case 'read_previous_log': return '12:01:02 [i2p] router ready (SAM up on 7656)\n12:01:40 [relay-hosted] built-in relay ready\n12:09:55 [relay-client] peer relay 5AyDtq unreachable: Io';
+    case 'read_previous_log': return '12:01:02 [i2p] embedded router ready\n12:01:40 [relay-hosted] built-in relay ready\n12:09:55 [relay-client] peer relay 5AyDtq unreachable: Io';
     case 'log_settings': return { enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
     case 'set_log_enabled': return null;
     case 'clear_debug_log': return null;
@@ -257,7 +261,7 @@ async function drive(): Promise<void> {
   const pass = await waitFor(() => document.querySelector<HTMLInputElement>('input[placeholder="пароль"]'));
   if (pass) {
     (pass as HTMLInputElement).value = 'preview';
-    byText('.auth-card button', 'Открыть')?.click();
+    byText('.auth-card button', t('auth.open_btn'))?.click();
   }
   const { emit: emitBoot } = await import('@tauri-apps/api/event');
   // The boot screen is driven by `boot_status`; replay a plausible sequence so
@@ -265,12 +269,12 @@ async function drive(): Promise<void> {
   const script: [string, string, string, number][] = [
     ['vault', 'active', 'unlocking the vault (argon2id)', 0],
     ['vault', 'done', 'profile opened (data.db)', 900],
-    ['router', 'active', 'launching router /usr/lib/gipny-i2p/resources/i2pd (SAM 127.0.0.1:7656)', 200],
-    ['tunnels', 'active', 'waiting for SAM: 1s of 180s', 1200],
-    ['tunnels', 'active', 'waiting for SAM: 6s of 180s', 1500],
-    ['tunnels', 'done', 'router ready (SAM up on 7656)', 1500],
+    ['router', 'active', 'starting in-process libi2pd', 200],
+    ['tunnels', 'active', 'building tunnels: 1s of 180s', 1200],
+    ['tunnels', 'active', 'building tunnels: 6s of 180s', 1500],
+    ['tunnels', 'done', 'embedded router ready', 1500],
     ['session', 'active', 'generating ephemeral destination for this session...', 300],
-    ['session', 'done', 'SAM session open', 1200],
+    ['session', 'done', 'embedded destination ready', 1200],
     ['core', 'active', 'starting the messenger core', 200],
     ['core', 'done', 'core running', 700],
     ['relay', 'active', 'building the relay\'s tunnels', 200],
@@ -302,13 +306,13 @@ async function drive(): Promise<void> {
   if (scene === 'chat') await openContact('Анна');
   if (scene === 'console' || scene === 'agent') {
     await openContact('gpu-worker-17');
-    if (scene === 'console') (await waitFor(() => byText('.agent-controls button', 'console')))?.click();
+    if (scene === 'console') (await waitFor(() => byText('.agent-controls button', t('chat.mode_console'))))?.click();
   }
-  if (scene === 'settings') document.querySelector<HTMLElement>('.icon-btn[title="Настройки"]')?.click();
+  if (scene === 'settings') document.querySelector<HTMLElement>(`.icon-btn[title="${t('sidebar.settings')}"]`)?.click();
   if (scene === 'identity') document.querySelector<HTMLElement>('.sidebar-me')?.click();
   if (scene === 'add-contact') {
     document.querySelector<HTMLElement>('.icon-btn-accent')?.click();
-    (await waitFor(() => byText('.ctx-menu-item', 'Добавить контакт')))?.click();
+    (await waitFor(() => byText('.ctx-menu-item', t('sidebar.new_contact'))))?.click();
   }
 }
 

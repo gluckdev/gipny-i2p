@@ -113,3 +113,9 @@ pre-release ассет, который не вытесняет ничто.
 - Страницу релиза без публикации даёт ручной запуск `release` (артефакт `release-page-preview`).
 - Синтаксис YAML локально: `python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" .github/workflows/<файл>.yml`.
 - **Скрипт `android emulator smoke` — в файле `.github/scripts/android-smoke.sh`, а не в `script:`.** `reactivecircus/android-emulator-runner` выполняет каждую строку `script` отдельной `sh -c`, и переменные между строками теряются (так `adb install` получал пустой путь). Поэтому в `script:` — одна команда, а джобе нужен `actions/checkout`.
+
+
+Проверка UI включает `npm run build` и `npm test` (джоба
+`ui typecheck`): оба языка, буквальные параметры, переключение
+и сохранение черновика в DOM. Она не требует роутера или браузерного бинаря;
+методика и пределы — [локализация](../../docs/localization.md).
