@@ -2,7 +2,8 @@ name: build
 
 # Compile check for the i2p fork: the Rust workspace, the frontend and the
 # Android APK on GitHub-hosted runners. Full release artifacts (installers) are
-# produced by release.yml on a tag. All builds are CI-only.
+# produced by release.yml on a main version bump or a manual preview.
+# Only the main version-bump path publishes a release. All builds are CI-only.
 #
 # Every binary compiles the i2p router in (i2p-embed), so the desktop and
 # test jobs build libi2pd too, against the distro's boost. The Android APKs
@@ -54,6 +55,10 @@ on:
 # Least privilege: this workflow only reads the repo.
 permissions:
   contents: read
+
+concurrency:
+  group: build-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   # ---------------------------------------------------------------------------

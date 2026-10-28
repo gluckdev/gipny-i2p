@@ -26,7 +26,9 @@ hkdf = "0.13"
 hmac = { version = "0.13", features = ["zeroize"] }
 sha2 = { version = "0.11", features = ["zeroize"] }
 argon2 = { version = "0.6", features = ["zeroize"] }
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
+# SQLCipher >=4.18 fixes Windows logger recursion after VirtualLock failure
+# while cipher_memory_security is enabled (sqlcipher/sqlcipher#619).
+rusqlite = { version = "0.41", features = ["bundled-sqlcipher-vendored-openssl"] }
 futures = "0.3"
 libc = "0.2"
 

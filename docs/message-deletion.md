@@ -3,7 +3,7 @@
 Состояние на **2026-10-28**: изменение подготовлено в рабочем дереве
 `feat/today-integration-20261028` для кандидата `0.4.19`. Это ещё не
 опубликованный релиз. Новые DB/wire и UI regression tests прошли в
-**GitHub Actions** на `38892f6`. Старые результаты updater/group outbox
+**GitHub Actions** на `38892f6` и повторно на `a66d223`. Старые результаты updater/group outbox
 не являются проверкой этого изменения.
 
 ## Поведение
@@ -123,15 +123,19 @@ SQLCipher/SQLite и файловая система не объединены в
 
 ## Проверки исходников
 
-Новые тесты предназначены для CI, локально после требования владельца о
+Тесты выполняются в GitHub CI; локально после требования владельца о
 GitHub-only builds не запускались. **2026-10-28**, checkpoint
 `38892f6691b81a98f4deb55a27e3874fe1358f2e`: все восемь новых DB tests и два
 wire tests ниже прошли в составе 173/173 libcore unit tests
 [Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066772990).
-TypeScript/Vite и 17/17 UI tests, включая DM/WebView cases, прошли в
-[UI job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066773196).
-Это проверка указанного SHA, не live I2P/device proof и не результат более
-поздних изменений рабочего дерева, включая новый independent-vault lock.
+На checkpoint `a66d2239186c38ff5be73a4647b0fe5c1d8587c9` эти же 8 DB + 2 wire
+cases повторно прошли в составе 175/175 libcore tests;
+[Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901381)
+также подтвердил first_run 9/9 с новым independent-vault lock.
+TypeScript/Vite и 18/18 UI tests, включая DM/WebView cases, прошли в
+[UI job на a66d223](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901884).
+Это проверка указанных SHA, без live I2P/device proof и без автоматического
+распространения результата на более поздние изменения рабочего дерева.
 
 - `db::dm::tests`: разные локальные IDs, удаление сообщения собеседника,
   wrong-contact ACK, duplicate/reopen, delete-before-content, replay/edit,

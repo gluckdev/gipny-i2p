@@ -14,7 +14,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5"
 bincode = { version = "2", features = ["serde"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # The i2p router inside the process: no SAM, no router beside the relay, no
 # local port (needs boost, OpenSSL and zlib to build).
 i2p-embed = { path = "../../i2p-embed" }

@@ -26,9 +26,12 @@ localization, required updater checksums, an atomic group outbox, the Pages
 project website, Android JNI/APK staging fixes, deletion for both DM participants
 and the new diagnostics policy. RAM secret protection and new release targets
 are also being prepared in this branch. This is not a new release.
-CI for the final working tree had not completed
-when this snapshot was written; `main` badges and older e2e results do not
-validate it. See the [2026-10-28 integration record](docs/today-2026-10-28.md).
+Build/CodeQL badges in the Russian README show the latest run on `main`;
+they do not reflect the changes in open [PR #121](https://github.com/gluckdev/gipny-i2p/pull/121).
+Component checks have passed for the candidate, but the full CI matrix and
+release preview do not yet have a complete PASS. The earlier “5/5 delivered”
+result covered one e2e scenario and revision, not the whole build matrix.
+See the [2026-10-28 integration record](docs/today-2026-10-28.md).
 
 1. Download the installer for your platform from the [releases page](https://github.com/gluckdev/gipny-i2p/releases).
 2. Create a local profile and choose a passphrase. No registration server is involved.

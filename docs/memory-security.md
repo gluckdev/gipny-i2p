@@ -3,9 +3,10 @@
 Состояние на 28 октября 2026: реализация в неопубликованной ветке
 `feat/today-integration-20261028` поверх `b32b135`. Требование владельца —
 усилить защиту памяти во всех компонентах, включая headless/OpenWrt.
-Описанные ниже изменения требуют проверки в GitHub CI; локальная компиляция
-после этого требования не выполнялась. Это ограниченная защита ключевого
-материала, а не обещание шифрования всей памяти приложения.
+На checkpoint `a66d223` описанные Linux memory/vault и UI regressions прошли
+GitHub CI; результаты и платформенные границы приведены ниже. Локальная
+компиляция после требования GitHub-only builds не выполнялась. Это ограниченная
+защита ключевого материала, а не обещание шифрования всей памяти приложения.
 
 ## Что хранится запечатанным
 
@@ -149,14 +150,17 @@ list/pinned responses, фоновых событий без body fetch, stale re
 tombstone, destroy с незавершённой загрузкой вложений, image URL cleanup и
 deletion-before-image-response. На checkpoint
 `38892f6691b81a98f4deb55a27e3874fe1358f2e` **2026-10-28** TypeScript/Vite и
-17/17 UI tests, включая эти cases и locale draft invariants, прошли в
+17/17 UI tests прошли в
 [GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066773196).
-Это результат UI-границы данного SHA, не подтверждение всех memory/native
-tests или более поздних изменений рабочего дерева.
+На `a66d2239186c38ff5be73a4647b0fe5c1d8587c9` TypeScript/Vite и
+[18/18 UI tests](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901884)
+повторно подтвердили эти cases и locale draft invariants. Это результат
+UI-границы указанных SHA, без гарантии стирания GC и без автоматического
+подтверждения более поздних изменений рабочего дерева.
 На том же checkpoint проверен lifecycle `ContextMenu`:
 закрытие снимает принадлежащие меню document handlers и отменяет delayed
 registration; long-press удалённого DOM не открывает меню заново. Отдельный
-regression этого поведения входит в 17 PASS.
+regression этого поведения входит в оба успешных прогона.
 
 ## Native libi2pd и JNI: принадлежащие нам копии
 
@@ -189,9 +193,11 @@ key не экспортируется, краткий binding secret возвр�
 выявлен и закрыт разрыв между независимыми `Vault::open` из параллельных IPC:
 weak registry разделяет gate и throttle timestamp между живыми handles,
 не удерживая историю закрытых путей. Create/open и auth mutations используют
-эту границу; разные профили имеют разные gates. Новые independent-open tests
-ещё требуют CI; межпроцессная блокировка и persistent throttle после закрытия
-всех handles этим не заявлены. Предположение
+эту границу; разные профили имеют разные gates. Два registry tests и два
+independent-open tests прошли на `a66d223` в
+[Linux CI](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901381).
+Межпроцессная блокировка и persistent throttle после закрытия всех handles
+этим не заявлены. Предположение
 отзыва о shared signer проверено по pinned `PrivateKeys::operator=`: signer
 сбрасывается и пересоздаётся, а не заимствует private storage исходного объекта.
 Замечание об отсутствии backup KDF bounds относилось к более раннему snapshot;
@@ -202,12 +208,17 @@ weak registry разделяет gate и throttle timestamp между живы�
 **2026-10-28**, checkpoint `38892f6`,
 [Linux Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066772990):
 173/173 libcore unit tests, 14 crypto, 4 compat (1 fixture generator ignored),
-7 first-run tests и compile-fail doctest прошли. Новый общий lock независимых
-`Vault::open` и его дополнительные tests появились после этого SHA и ещё
-требуют отдельного CI. Эти результаты не доказывают native/runtime поведение
-всех платформ или гарантированное уничтожение ключей при UI lock.
+7 first-run tests и compile-fail doctest прошли. На checkpoint
+`a66d2239186c38ff5be73a4647b0fe5c1d8587c9`
+[Linux Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901381)
+прошёл 175/175 libcore, 14/14 crypto, 4 compat + 1 ignored generator,
+9/9 first_run и compile-fail doctest. Новые tests проверили canonical aliases,
+разделение живых профилей и очистку Weak registry, сохранение счётчика/задержки
+между независимыми `Vault::open` и конкурирующую смену старого пароля.
+Эти результаты не доказывают native/runtime поведение всех платформ или
+гарантированное уничтожение ключей при UI lock.
 
-Написаны проверки свежих nonce, отказа при повреждённом tag и очистки scratch;
+Успешный Linux suite включает проверки свежих nonce, отказа при повреждённом tag и очистки scratch;
 жизненного цикла последнего владельца; ограниченного blob; вложенного доступа;
 недоступности idle-страницы в отдельном процессе; реального отказа `mlock` при
 нулевом лимите; очистки при panic и уничтожения владельца при poisoned mutex;
@@ -228,12 +239,20 @@ cargo test --locked -p gipny-libcore --doc
 cargo test --locked -p i2p-embed --lib process_security::tests
 ```
 
-Нужны также Linux/macOS/Windows runs и Android/OpenWrt target checks.
+Остальные платформенные результаты привязаны к своим jobs. На `a66d223`
+[macOS Intel security job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085162/job/123080655273)
+прошёл целиком, включая 175 libcore tests и отдельный положительный native
+Keychain test под ad-hoc подписью. Apple Silicon пока ожидается; Mac provider
+и границы software tier описаны в [device-bound-storage.md](device-bound-storage.md).
+Сборки всех четырёх OpenWrt targets на `38892f6` и повторно `a66d223`
+подтверждены в [отдельной таблице](openwrt.md#как-собирается-и-что-проверено),
+без доказательства runtime на физическом роутере.
 Compile-fail doctest подтверждает `!Send`; тест `PROT_NONE` намеренно завершает
 изолированный дочерний процесс сигналом без core dump. Тест отказа `mlock`
 снижает привилегии только дочернего процесса, если runner запущен от root.
-До результатов CI эти проверки нельзя считать пройденными. Ни native/network
-доказательство, ни успешную сборку платформ этот документ не подменяет.
+Успешный Linux run нельзя распространять на все ОС, native/network delivery
+или более поздний SHA. Проверки на реальных устройствах и общий release gate
+этот документ не подменяет.
 
 ## Первоисточники
 

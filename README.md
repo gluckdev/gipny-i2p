@@ -6,9 +6,9 @@
 
 <br/>
 
-[![CI Build](https://img.shields.io/github/actions/workflow/status/gluckdev/gipny-i2p/build.yml?branch=main&label=CI%20Build&logo=github&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/build.yml)
+[![Build main](https://img.shields.io/github/actions/workflow/status/gluckdev/gipny-i2p/build.yml?branch=main&label=Build%20main&logo=github&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/build.yml?query=branch%3Amain)
 [![Live I2P e2e](https://img.shields.io/badge/I2P%20e2e-workflow-blue?logo=i2p&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/e2e-i2pd.yml)
-[![Security CodeQL](https://img.shields.io/github/actions/workflow/status/gluckdev/gipny-i2p/codeql.yml?branch=main&label=CodeQL&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/codeql.yml)
+[![CodeQL main](https://img.shields.io/github/actions/workflow/status/gluckdev/gipny-i2p/codeql.yml?branch=main&label=CodeQL%20main&style=flat-square)](https://github.com/gluckdev/gipny-i2p/actions/workflows/codeql.yml?query=branch%3Amain)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Stable-orange?logo=rust&style=flat-square)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](https://www.gnu.org/licenses/gpl-3.0.html)
 
@@ -46,8 +46,12 @@
 сайт для Pages, исправления Android JNI/APK staging, удаление DM у обоих
 и новую политику диагностики. Защита секретов в RAM и новые release targets
 также готовятся в этой ветке.
-Это ещё не новый релиз. CI конечного рабочего дерева на момент записи не выполнен;
-бейджи выше относятся к `main`, исторические e2e — к указанным ниже ревизиям.
+Это ещё не новый релиз. Бейджи Build/CodeQL выше показывают последний run
+ветки `main`; они не отражают изменения открытого
+[PR #121](https://github.com/gluckdev/gipny-i2p/pull/121).
+У кандидата есть успешные компонентные прогоны, но общий CI и пробная упаковка
+релиза пока не имеют полного PASS. Старый результат «5/5 delivered» подтверждал
+конкретный e2e-сценарий и ревизию, а не всю сборочную матрицу.
 [Состав, проверки и ограничения на 2026-10-28](docs/today-2026-10-28.md).
 
 1. Возьмите сборку своей платформы со [страницы релизов](https://github.com/gluckdev/gipny-i2p/releases).

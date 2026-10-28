@@ -7,13 +7,17 @@
 #   .github/scripts/vcpkg-i2p-deps.sh <root>
 set -euo pipefail
 root_dir=${1:?usage: vcpkg-i2p-deps.sh <install root>}
-ports_commit=5d4a3dc90c0b3773f3bac81bf41297b54328f471 # public vcpkg 2026.10.16
+ports_commit=9eec002df1cd109f8f104cd966a763daf9751489 # peeled commit of public vcpkg 2026.10.16
 ports_root="${RUNNER_TEMP:?GitHub runner required}/gipny-vcpkg-ports"
 if [ ! -d "$ports_root/.git" ]; then
   git init "$ports_root"
   git -C "$ports_root" remote add origin https://github.com/microsoft/vcpkg.git
 fi
 git -C "$ports_root" fetch --depth 1 origin "$ports_commit"
+if [ "$(git -C "$ports_root" cat-file -t "$ports_commit")" != commit ]; then
+  echo "vcpkg ports pin must be a commit object, not an annotated tag" >&2
+  exit 1
+fi
 git -C "$ports_root" checkout --detach "$ports_commit"
 test "$(git -C "$ports_root" rev-parse HEAD)" = "$ports_commit"
 # The public SDK's vcpkg driver builds these pinned ports from source. Do not

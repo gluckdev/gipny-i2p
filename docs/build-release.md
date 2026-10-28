@@ -33,7 +33,18 @@ Rust закреплён на `1.93.1`, Android NDK — `27.3.13750724`. `tauri-c
 компилируется через `cargo install --locked` из публичного crate; fallback на
 готовый CLI удалён. Прямые shipping Cargo builds используют `--locked`, UI —
 `npm ci`; итоговый gate отклоняет изменения reviewed lockfiles при Tauri build. Windows ports закреплены на публичном vcpkg commit
-`5d4a3dc90c0b3773f3bac81bf41297b54328f471`, внешний vcpkg binary registry отключён.
+`9eec002df1cd109f8f104cd966a763daf9751489` (peeled commit тега `2026.10.16`),
+внешний vcpkg binary registry отключён. SHA объекта annotated tag отличается
+от SHA commit: guard проверяет тип объекта до checkout и точный `HEAD` после.
+Первый preview на `a66d223` выявил такую ошибку pin и остановил Windows job
+до сборки зависимостей; следующий preview должен подтвердить исправление.
+
+Windows memory-security CI также выявил upstream SQLCipher logger recursion
+при `VirtualLock` quota failure. Workspace и отдельный relay manifest/lock
+обновлены на rusqlite 0.41.1 / libsqlite3-sys 0.39.1; SQLCipher 4.19.0 приходит
+как публичный source crate `sqlcipher-src`, не готовая DLL. Обе lockfile должны
+оставаться согласованными. Отдельный Windows child-process regression
+форсирует lock failure при включённом `cipher_memory_security`.
 macOS запрашивает source build Boost/OpenSSL через Homebrew. OpenWrt проверяет
 SHA256 официального toolchain, Boost, OpenSSL source crate и zlib до сборки.
 

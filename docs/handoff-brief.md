@@ -14,15 +14,22 @@ HTTP-прокси, это история.
 
 Текущий вход — [снимок интеграции](today-2026-10-28.md). Ветка
 `feat/today-integration-20261028`, версия manifests `0.4.19` — кандидат;
-последний опубликованный релиз `0.4.18`. CI checkpoint `d907307` запущен,
-поэтому старые зелёные runs и локальные компонентные проверки не обозначают
-готовый новый релиз.
-На этом SHA TypeScript/Vite и 13/13 UI tests прошли; первый Windows bootstrap
+последний опубликованный релиз `0.4.18`. Текущий CI checkpoint — `a66d223`;
+подтверждённые компонентные результаты не обозначают готовый новый релиз.
+На историческом `d907307` TypeScript/Vite и 13/13 UI tests прошли; первый Windows bootstrap
 job нашёл ошибку `$null` path binding; fix `5d3500d` и реальные Windows
 readiness/rollback/recovery fixtures прошли повторный GitHub run.
 Позднее `38892f6` прошёл 17/17 UI, 173 libcore unit, 14 crypto, 4 compat,
-7 first-run и doctest; все новые DM DB/wire cases включены. Общий lock для
-независимых `Vault::open` добавлен после этого SHA, его CI ещё требуется.
+7 first-run и doctest; все новые DM DB/wire cases включены. На `a66d223`
+прошли libcore 175/175, crypto 14/14, compat 4 PASS + 1 ignored generator,
+first_run 9/9, doctest и UI 18/18. Новые registry tests и два теста независимых
+`Vault::open` вошли в этот успешный прогон; Windows bootstrap тоже повторно PASS.
+На `38892f6` отдельно подтверждены Core 29/29, agent 4 main unit + 1 card
+integration, embed 10/10, Android APK и
+emulator smoke, все четыре OpenWrt targets. OpenWrt повторно PASS на `a66d223`.
+На этом же SHA whole macOS Intel security job PASS, включая ровно один
+положительный native local Keychain test под бесплатной ad-hoc подписью;
+Apple Silicon и preview run `40763730801` ещё ожидаются.
 Ссылки и точные границы —
 в [текущем снимке](today-2026-10-28.md#github-ci-checkpoint).
 Новые сборки и исполнение тестов — только GitHub Actions по требованию
@@ -43,8 +50,9 @@ readiness/rollback/recovery fixtures прошли повторный GitHub run.
   живой контекст Tauri, проверенная копия в private `cache/updates`, ограниченный
   FileProvider и dispatch installer. Изолированный cross-check
   `aarch64-linux-android` с Rust `1.93.1`, NDK r27d и stub router прошёл;
-  6 host tests staging/dispatch прошли. APK/native router и устройство не
-  проверены. Исходные 14 JNI compile errors воспроизводились на baseline
+  6 host tests staging/dispatch прошли. На `38892f6` затем прошли сборка APK
+  и emulator smoke; физическое устройство и живая доставка этим не проверены.
+  Исходные 14 JNI compile errors воспроизводились на baseline
   `main` `26487a5`, отдельно от изменения групповой доставки.
 - Новая политика владельца: подробная диагностика только в тестовых и
   диагностических сборках; release — предупреждения/ошибки без `debug.log`,
@@ -63,12 +71,13 @@ readiness/rollback/recovery fixtures прошли повторный GitHub run.
 - Удаление DM в текущих исходниках охватывает сообщения обоих авторов,
   attachments/chunks, очистку диалога/истории и явные таймеры, включая pinned.
   Stable author/origin references, durable tombstones и запрос до E2E ACK
-  сохраняют локальные номера без перенумерации. На `38892f6` прошли все новые
-  DB/wire и UI cases;
+  сохраняют локальные номера без перенумерации. На `38892f6` и `a66d223`
+  прошли 8 DB + 2 wire cases и соответствующие UI regressions;
   legacy backup без incoming origin даёт честный отказ. Контракт —
   [message-deletion.md](message-deletion.md).
-- Защита app-owned секретов в RAM и очистка WebView copies реализованы в
-  исходниках той же ветки; новый CI ещё нужен. Guarded/encrypted containers,
+- Защита app-owned секретов в RAM и очистка WebView copies прошли Linux
+  libcore/crypto/first_run и UI checks на `a66d223`; платформенные границы
+  фиксируются отдельно. Guarded/encrypted containers,
   короткие zeroizing exposures, active-chat-only history/pinned и stale IPC
   guards не являются гарантией шифрования всей RAM или стирания JS/GC.
   [Контракт и ограничения](memory-security.md).
@@ -76,13 +85,14 @@ readiness/rollback/recovery fixtures прошли повторный GitHub run.
   требуется до открытия vault/SQLCipher, в том числе агенту/боту. Старые
   unbound профили автоматически не мигрируются, недоступный provider даёт
   явный отказ; OpenWrt binary target сам по себе не гарантирует runtime.
-- Платформенные updater paths, Windows bootstrap и предварительные OpenWrt
+- Платформенные updater paths, Windows bootstrap и выбранные OpenWrt
   targets описаны в [platform-updates.md](platform-updates.md) и
   [openwrt.md](openwrt.md); наличие кода не доказывает установку на устройстве.
 - Default contact-card export `38892f6` использует короткий `gipny:v3:`:
   187 ASCII chars с релеем без имени, целые public keys и b32 hashes обоих
   destinations. Старые v1/v2 читаются; checksum не заменяет fingerprint check.
-  Rust/UI `38892f6` PASS, native lookup отдельно ещё требует проверки;
+  7 Rust card tests и UI cases PASS на `38892f6` и `a66d223`;
+  живой lookup отдельно ещё требует проверки;
   data-only golden vectors также проверены. [Формат и ограничения](contact-cards.md).
 
 Исторические компонентные результаты на 2026-10-28 до GitHub-only требования

@@ -3,8 +3,9 @@
 Требование владельца от 2026-10-28: выпускать `gipny-agent` для максимально
 широкого реального набора устройств OpenWrt 2019–2026. Поддержка определяется
 CPU, ABI, ядром и ресурсами конкретной прошивки, а не годом выпуска роутера.
-Изменение подготовлено для следующего релиза `0.4.19` в интеграционной ветке;
-наличие workflow ещё не означает, что все четыре сборки уже прошли CI.
+Изменение подготовлено для следующего релиза `0.4.19` в интеграционной ветке.
+Все четыре target jobs на `38892f6` прошли GitHub CI; ссылки и границы
+этой проверки приведены ниже. Это не подтверждение запуска на любом роутере.
 
 ## Матрица
 
@@ -160,13 +161,39 @@ floating-point ABI, атомики, Boost, SHA256 OpenSSL и round-trip zlib; з
 бинарник агента исполняет `--help` под QEMU соответствующего CPU (x86_64 —
 на runner). Это не живой I2P-тест и не замер памяти на роутере.
 
-Локально 2026-10-28 прошли offline regression tests парсера manifest/master card
-и отрицательные проверки на настоящих ELF; BusyBox ash syntax и YAML/run blocks
-проверены. Подробный результат локального ARM cross-прогона и CI следует сверять
-с отчётом конкретной сборки; до полного завершения её нельзя называть
-подтверждённым релизом для устройств.
+На **2026-10-28**, SHA `38892f6691b81a98f4deb55a27e3874fe1358f2e`,
+[GitHub run 40759359675](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359675)
+завершился успешно для всех четырёх targets:
 
-Команды быстрого воспроизведения:
+| Rust target | Результат GitHub CI |
+|---|---|
+| `i686-unknown-linux-musl` | [PASS](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359675/job/123066773934) |
+| `armv7-unknown-linux-musleabi` | [PASS](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359675/job/123066773941) |
+| `aarch64-unknown-linux-musl` | [PASS](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359675/job/123066773966) |
+| `x86_64-unknown-linux-musl` | [PASS](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359675/job/123066774182) |
+
+Это реальные сборки встроенного роутера и static agent с gates и probes,
+описанными выше, включая запуск `--help`. Они не проверяют OS credential
+provider, открытие рабочего профиля, живую I2P или память на физическом
+устройстве. Для runtime по-прежнему требуется поддерживаемый OS provider;
+его отсутствие означает fail-closed, а не raw-key fallback.
+Результат `38892f6` не распространяется автоматически на более поздний SHA;
+новый опубликованный релиз и аппаратная совместимость им не заявлены.
+
+Повторная проверка `a66d2239186c38ff5be73a4647b0fe5c1d8587c9` также завершилась
+успешно для [AArch64](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085172/job/123079901132),
+[i686](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085172/job/123079901665),
+[ARMv7 soft-float](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085172/job/123079901734)
+и [x86_64](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085172/job/123079902088).
+Границы runtime/provider/kernel этой проверкой не расширены.
+
+Исторически, до требования GitHub-only builds, локально 2026-10-28 прошли
+offline regression tests парсера manifest/master card и отрицательные проверки
+на ELF; BusyBox ash syntax и YAML/run blocks также проверялись. Эти результаты
+не заменяют приведённые jobs для конкретного SHA.
+
+Команды для воспроизведения шагов в GitHub Actions
+([правило сборок](build-release.md)):
 
 ```bash
 python3 .github/scripts/test-openwrt.py

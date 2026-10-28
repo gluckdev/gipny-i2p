@@ -73,6 +73,14 @@ jobs:
         run: cargo check --locked -p gipny --all-targets
       - name: Memory, device-copy, vault, card and deletion regressions
         run: cargo test --locked -p gipny-libcore --lib
+      - name: SQLCipher logging survives a real Windows lock-quota failure
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p gipny-libcore --test sqlcipher_windows -- --test-threads=1
+      - name: Observe a real hardened child without relaxing process security
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked -p e2e-harness
+          E2E_OBSERVER_BIN="$PWD/target/debug/e2e-harness" cargo test --locked -p e2e-harness
       - name: Native macOS Keychain enrollment under a free ad-hoc signature
         if: runner.os == 'macOS'
         run: |

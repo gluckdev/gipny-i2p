@@ -33,6 +33,37 @@
 
 Каждый сценарий, пока роутеры живы, проверяет, что процесс не слушает ни одного порта на loopback (Linux, `/proc`): у роутера нет ни SAM, ни HTTP-прокси, ни консоли. Слушать можно только наружу, как транспорт NTCP2.
 
+Агент вызывает `PR_SET_DUMPABLE=0`: обычный соседний процесс того же пользователя
+не может читать его `/proc/<pid>/fd`. Поэтому при `PermissionDenied` harness
+запускает через `sudo -n` metadata-only режим своего же executable:
+`--inspect-process-listeners <PID> <START_TICKS>`. Он выполняется до Tokio,
+профилей и роутера, принимает только два положительных десятичных числа и читает
+фиксированные `/proc/<pid>/stat`, `fd`, `net/tcp{,6}`. Он не открывает произвольные
+пути, не выполняет команды и не пишет файлы. Ответ ограничен 64 KiB и связан с
+PID/starttime; живой owned child проверяется до и после снимка. Ошибки доступа,
+sudo, timeout, parse или смена identity остаются ошибками теста. Hardening
+производственного агента сохраняется.
+[Linux `proc_pid_fd`](https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html)
+описывает ptrace access check для fd links, а
+[`PR_SET_DUMPABLE`](https://man7.org/linux/man-pages/man2/PR_SET_DUMPABLE.2const.html)
+— влияние non-dumpable режима на доступ к `/proc/<pid>`.
+
+В checkpoint `a66d223` agent e2e выполнил 7/7 команд и OFF → REVOKE → exit 0,
+но [job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085219/job/123080056599)
+завершился ошибкой именно на прежнем cross-process `/proc` чтении. Это не общий
+PASS agent e2e. Исправление observer и его новые tests требуют следующего GHA run.
+Отдельный шаг после сборки задаёт `E2E_OBSERVER_BIN=./target/release/e2e-harness`
+и выполняет `cargo test --locked --release -p e2e-harness`: настоящий hardened
+child с loopback должен быть недоступен обычному reader и обнаружен privileged
+observer; loopback и неверный starttime должны отвергаться. Отсутствие binary/env
+не превращается в пропуск проверки. Это разрешение sudo только для тестовой
+среды, без запуска агента или пользовательских команд от root.
+
+`security-fast.yml` повторяет observer regressions на Linux с debug/stub
+бинарником: `cargo build --locked -p e2e-harness`, затем
+`E2E_OBSERVER_BIN="$PWD/target/debug/e2e-harness" cargo test --locked -p e2e-harness`.
+Это реальная проверка `/proc` и hardening, но не native router или I2P transport.
+
 ## Куда вносить правки
 
 | Задача | Где |

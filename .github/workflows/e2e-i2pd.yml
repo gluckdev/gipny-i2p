@@ -40,6 +40,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: e2e-i2pd-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   # ------------------------------------------------------------------
   # Which revision is under test: the tracked branch's head, resolved once so
@@ -368,7 +372,11 @@ jobs:
             . -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: build e2e harness and gipny-agent
-        run: cargo build --release -p e2e-harness -p gipny-agent
+        run: cargo build --locked --release -p e2e-harness -p gipny-agent
+      - name: Hardened-child port observer regressions
+        env:
+          E2E_OBSERVER_BIN: ./target/release/e2e-harness
+        run: cargo test --locked --release -p e2e-harness
       - name: run e2e harness against the agent binary
         env:
           E2E_AGENT_BIN: ./target/release/gipny-agent

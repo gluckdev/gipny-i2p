@@ -95,3 +95,14 @@ Android Rust/JNI compile check со stub-роутером
 роутером также [прошёл](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066772990):
 libcore 173/173, в том числе все 7 тестов карточек. Живое I2P-соединение через
 карточку v3 требует отдельного результата CI, а не вывода из fixtures.
+
+На checkpoint `a66d2239186c38ff5be73a4647b0fe5c1d8587c9` **2026-10-28**
+[Linux Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901381)
+повторно прошёл 175/175 libcore tests, включая все 7 card tests.
+[UI job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901884)
+подтвердил TypeScript/Vite и 18/18 tests; три card cases — общие vectors,
+legacy import/export и запрет копирования ошибки — снова PASS.
+[Windows bootstrap](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085195/job/123079901120)
+и [Unix integrity](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085195/job/123079901367)
+также повторно PASS. Эти результаты не подтверждают новый опубликованный
+релиз или успешное соединение по v3 во всех I2P-сценариях.

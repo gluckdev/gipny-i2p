@@ -19,10 +19,24 @@
 | `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `network database snapshot`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует (один раз на версию: если тег уже есть — только превью). При ручном запуске — только превью (артефакт `release-page-preview`). Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
 | `relay-testnet.yml` | push в `main`, меняющий `core/relay/**`, `libcore/**`, `third_party/i2pd`, `scripts/**` или сам workflow; по расписанию каждые 5 ч; вручную | `relay` | **Временный** публичный `gipny-relay --dht` на раннере GitHub (~5,5 ч на запуск): и тестовый релей, и **сид сети релеев**. Идентичность, очередь, узел сети и роутер переносятся между запусками через `actions/cache` (`dht-seed-state-*`) **только зашифрованными `age`** (секрет `DHT_SEED_AGE_KEY`; без него сервис работает, но ничего не сохраняет, и адрес меняется каждый запуск). Адрес — в summary и в артефакте `relay-destination`; его вписывают в переменную `GIPNY_DHT_SEEDS`. |
 
+`security-fast.yml` дополнительно выполняет реальный macOS local Keychain
+enrollment/read/copy-isolation/delete под бесплатной ad-hoc подписью в двух
+временных OS Keychain. На Linux отдельная регрессия создаёт настоящий
+non-dumpable child с loopback listener и проверяет узкий metadata observer;
+это не native I2P transport test. Fixtures не являются fallback приложения:
+они не публикуют OS credentials и не запускают production agent от root.
+
+Build/CodeQL badges README явно обозначают `main`; статус открытого PR смотрят
+по его checks. Успех отдельного e2e «5/5» не заменяет полный build/release matrix.
+Недоступный hosted runner или отменённая очередь не являются выполненным тестом.
+`build.yml`, `e2e-i2pd.yml` и `codeql.yml` отменяют устаревший прогон той же ветки,
+сохраняя ресурсы для последнего изменения. Release preview остаётся отдельным
+ручным запуском без публикации тега.
+
 **Скрипты и настройки рядом:**
 
 - `.github/scripts/release-notes.sh <tag> <assets-dir> <owner/repo> [<git-ref>]` пишет текст страницы релиза. Сверху кладёт `docs/releases/<version>.md`, если файл есть, затем таблицу загрузок и changelog от предыдущего тега. Падает, если какого-то платформенного файла нет или среди файлов есть лишний.
-- `.github/scripts/vcpkg-i2p-deps.sh` ставит boost и OpenSSL из vcpkg для Windows (MSVC) одинаково в `i2p-embed.yml` и `release.yml`.
+- `.github/scripts/vcpkg-i2p-deps.sh` собирает boost и OpenSSL из pinned public vcpkg ports для Windows (MSVC) одинаково в `i2p-embed.yml` и `release.yml`; проверяет commit object/HEAD, binary registry отключён.
 - `.github/scripts/boost-po-pic.sh` собирает `boost_program_options` 1.74 статически с `-fPIC` для Linux-десктопа в `release.yml` (и проверки в `i2p-embed.yml` → `jammy`): крейт приложения — ещё и cdylib, а статическая boost из Ubuntu 22.04 на x86_64 собрана без `-fPIC` и в разделяемый объект не линкуется. Ключ `rust-cache` в релизных джобах — образ раннера: build-скрипты, собранные на 24.04 (`relay-testnet.yml`), на 22.04 не запускаются (GLIBC_2.39).
 - `.github/scripts/i2pd-under-test.sh <sha>` ставит сабмодуль на проверяемую ревизию для всех джоб `e2e-i2pd.yml`.
 - `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e, `relay-testnet.yml`), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.

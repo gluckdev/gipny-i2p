@@ -417,8 +417,8 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 2c. Headless agent: gipny-agent (the i2p router compiled in, no SAM, no
-  #     port), the network snapshot beside it and a systemd unit, as a tar.gz
+  # 2c. Headless agent: gipny-agent (the i2p router compiled in, no SAM/proxy
+  #     service; IP transport remains), the network snapshot and a systemd unit, as a tar.gz
   #     for Linux amd64 and arm64.
   # ---------------------------------------------------------------------------
   agent:
@@ -433,13 +433,13 @@ jobs:
           - { arch: arm64, runs-on: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@v7
-      # The router is compiled into the agent: no i2pd binary, no SAM, no port.
+      # The router is compiled into the agent; no external i2pd or SAM service.
       - name: check out i2pd and install what it builds against
         run: |
           git submodule update --init --depth 1 third_party/i2pd
           .github/scripts/assert-i2pd-pin.sh
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev dbus-daemon gnome-keyring libsecret-tools
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: dtolnay/rust-toolchain@1.93.1
@@ -471,19 +471,23 @@ jobs:
           gipny-agent — headless console agent for gipny-i2p
 
           What is in this archive:
-            gipny-agent             the agent, with the i2p router built in (no ports)
+            gipny-agent             the agent, with the i2p router built in (no external SAM/proxy service)
             i2pd-netdb-seed.tar.gz  known i2p routers for a quick first start (keep it next to gipny-agent)
             gipny-agent.service   systemd unit
 
           The agent hosts a personal relay for itself at every start, the same
           way the desktop app does for its own inbox — no relay to set up.
+          The router still uses IP transports. The agent database is SQLCipher
+          bound to protected OS credentials. Linux requires an unlocked Secret
+          Service session; unattended services need explicit provider/session
+          provisioning before startup. No raw-key or plaintext fallback exists.
           It needs a minute or two to come up before the agent prints its own
           card. --relay is only for pointing the agent at an external relay
           instead (the gipny-relay archive from the same release page), for
           anyone who wants mail held while the agent is stopped.
 
           Run by hand:
-            ./gipny-agent --data <dir> --master <gipny:v2:... card of the master>
+            ./gipny-agent --data <dir> --master <gipny:v3:... card of the master>
           --master is needed once: it is kept in <dir>/master.card and later
           runs read it from there (pass it again to change it). Same for the
           optional --relay, in <dir>/relay.txt.
@@ -493,12 +497,12 @@ jobs:
           address by itself.
           --data can also come from the GIPNY_AGENT_DATA environment variable.
 
-          Install as a service (Linux, as root):
+          Install as a service (Linux, as root; provision OS credentials first):
             install -m 0755 gipny-agent /usr/local/bin/
             install -m 0644 i2pd-netdb-seed.tar.gz /usr/local/bin/
             install -m 0644 gipny-agent.service /etc/systemd/system/
             mkdir -p /var/lib/gipny-agent
-            printf 'GIPNY_AGENT_ARGS=--master %s\n' 'gipny:v2:...' > /etc/gipny-agent.env
+            printf 'GIPNY_AGENT_ARGS=--master %s\n' 'gipny:v3:...' > /etc/gipny-agent.env
             chmod 0600 /etc/gipny-agent.env
             systemctl daemon-reload && systemctl enable --now gipny-agent
             journalctl -u gipny-agent -f      # prints "agent card: ..." once the router is up
@@ -526,6 +530,11 @@ jobs:
       # router runs *and* its own built-in relay has tunnels.
       - name: smoke test — the tarball starts with no i2pd anywhere
         run: |
+          # Keep the real OS-bound SQLCipher path. The shared CI-only fixture
+          # provides an ephemeral unlocked Secret Service and verifies its
+          # store/lookup/delete operations before starting this packaged agent.
+          cat > "$RUNNER_TEMP/gipny-agent-smoke.sh" <<'SMOKE'
+          set -euo pipefail
           if command -v i2pd >/dev/null; then echo "an i2pd on PATH would mask this test"; exit 1; fi
           smoke="$(mktemp -d)"
           tar -C "$smoke" -xzf dist/*.tar.gz
@@ -548,6 +557,10 @@ jobs:
             echo "--- router log:"; tail -40 "$smoke"/data/i2p/router/i2pd.log 2>/dev/null || echo "(no router log)"
             exit 1
           fi
+          SMOKE
+          # A smoke test must run this archive, never a self-updated binary.
+          GIPNY_NO_AUTO_UPDATE=1 bash .github/scripts/with-test-secret-service.sh \
+            bash "$RUNNER_TEMP/gipny-agent-smoke.sh"
       - name: record exact source-built agent archive
         run: python3 .github/scripts/build-provenance.py record build-manifest-agent-${{ matrix.arch }}.json '${{ matrix.target }}' --artifact 'dist/*.tar.gz'
       - uses: actions/upload-artifact@v7

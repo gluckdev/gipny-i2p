@@ -48,9 +48,10 @@ Registry хранит слабые ссылки, удаляет закрытые
 Последний throttle timestamp разделяется живыми handles; после закрытия
 последнего handle он не хранится постоянно. Счётчик попыток остаётся на диске.
 Межпроцессная filesystem lock не добавлена: параллельные процессы одного
-профиля по-прежнему требуют отдельного контракта. Новые independent-open
-counter/password-change и registry/alias/prune tests написаны и ожидают GitHub CI;
-прежняя проверка одного `Arc<Vault>` сама по себе эту границу не доказывала.
+профиля по-прежнему требуют отдельного контракта. Independent-open
+counter/password-change и registry/alias/prune tests прошли GitHub CI на
+`a66d223` (2026-10-28), см. подтверждение ниже; прежняя проверка одного
+`Arc<Vault>` сама по себе эту границу не доказывала.
 
 Legacy `.device`/vault v1 и legacy plaintext headless DB отклоняются явно.
 Автоматическое удаление или «исправление» старых данных отсутствует. Ранее
@@ -151,8 +152,44 @@ legacy rejection, enrollment interruption, одновременная публи
 проверяет реальный DPAPI roundtrip, чужой ID/AAD и tampering.
 
 После уточнения владельца новые Rust/JNI/SDK сборки и тесты запускаются **только
-в GitHub Actions**, см. [build-release.md](build-release.md). Эти новые тесты
-ещё не объявлены PASS. Mock provider не доказывает работу TEE/TPM/SEP; требуются
+в GitHub Actions**, см. [build-release.md](build-release.md).
+
+Проверено **2026-10-28**, commit `a66d223`: [native Linux job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901381)
+прошёл 175 libcore unit tests и 9 `first_run` tests, включая оба independent-open
+сценария, canonical aliases и очистку registry. [Android arm64 Rust/JNI job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085162/job/123080654685)
+прошёл cross-check libcore all-targets и настоящего Core/JNI bridge.
+
+На том же commit [Mac Intel job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085162/job/123080655273)
+прошёл полностью: 175 libcore unit tests, 8 `first_run` (KDF timing отдельно
+исключён), 4 compat, 4 agent `main.rs` unit + 1 card integration, 29 Core и 10 i2p-embed.
+Отдельный ad-hoc signed test binary действительно выполнил
+`native_macos_local_keychain_enrollment_copy_isolation_and_delete`:
+**1 passed, 0 failed, 0 ignored**, а не пустой фильтр. Проверены native enrollment,
+повторный unlock, отказ копии профиля при выборе второго реального Keychain
+и удаление credential. Это software Keychain test, не SEP/аппаратная аттестация;
+[Apple Silicon job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085162/job/123080655067)
+не получил hosted runner: annotation сообщает `The job was not acquired by
+Runner of type hosted even after multiple attempts`, с notice о capacity
+constraints macOS arm64. Он отменён до исполнения; native positive на arm64
+на момент записи не проверен, это ограничение ёмкости CI, а не source failure.
+
+На `a66d223` [Windows unit job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085162/job/123080655160)
+прошёл compile checks всех callers, но завершился `STATUS_STACK_OVERFLOW`
+после `sqlcipher_mlock: VirtualLock() returned 0 LastError=1453`.
+Исходник pinned SQLCipher 4.14 и [upstream issue #619](https://github.com/sqlcipher/sqlcipher/issues/619)
+подтвердили рекурсию Windows logger через собственный защищённый allocator.
+Подготовлен переход на `rusqlite 0.41.1` / `libsqlite3-sys 0.39.1` /
+публичный `sqlcipher-src 419.0.6` (SQLCipher 4.19): logger использует исправление
+upstream `afbb132`, без отключения `cipher_memory_security` и увеличения стека.
+Source archive проверен по checksum `Cargo.lock`; новый Windows integration
+`sqlcipher_windows` исчерпывает lock quota отдельного child process и требует
+успешного SQL запроса и настоящего предупреждения отказа `VirtualLock`.
+Результат этого исправления должен подтвердить следующий GitHub CI.
+SQLCipher memory locking остаётся best effort при отказе OS quota; это отличается
+от наших обязательных locked pages для ключей и не даёт гарантии полного
+закрепления SQL workspace в RAM.
+
+Mock provider не доказывает работу TEE/TPM/SEP; требуются
 отдельные hardware/device проверки, Android reinstall/backup-transfer negative
 cases и native OS credential lifecycle. Software emulator не считается
 успешным аппаратным Android provider.
