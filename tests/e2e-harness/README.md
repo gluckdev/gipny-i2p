@@ -25,11 +25,35 @@
 
 | Джоба | Переменные | Что доказывает |
 |---|---|---|
-| `e2e (relay + two bots)` | `E2E_RELAY_DEST_A`/`_B` (два `gipny-relay`) | Письмо кладётся на релей **получателя**; по результату двигается пин i2pd |
+| `e2e (relay + two bots)` | `E2E_RELAY_DEST_A`/`_B` (два `gipny-relay`) | Письмо кладётся на релей **получателя**; один из четырёх live gates |
 | `e2e (relays inside the bots)` | `E2E_IN_PROCESS_RELAYS=1` | Встроенный релей `libcore` работает по живой i2p |
 | `e2e (agent binary)` | `E2E_AGENT_BIN`, `E2E_IN_PROCESS_RELAYS=1` | Агент: GRANT, команды по очереди, загрузка файла, OFF → REVOKE |
 | `e2e (relay network, each side away in turn)` | `E2E_DHT_OFFLINE=1`, `E2E_DHT_SEED_DEST` | B уходит → A пишет и уходит → B возвращается на новом адресе, читает, отвечает, уходит → A возвращается, читает и знает новый адрес B |
 | `updater through the outproxy (live)` в `i2p-embed.yml` | `E2E_UPDATE_CHECK=1` | Обновлятор достаёт список релизов и файл с GitHub через аутпрокси i2p |
+
+### Какая ревизия роутера проверяется
+
+PR и обычный ручной запуск `e2e-i2pd.yml` используют **точный gitlink**
+`HEAD:third_party/i2pd` проверяемого application commit. Job `head` публикует
+полные `pinned_sha`, `sha` и `mode=pinned`; все четыре сценария компилируют
+один и тот же immutable SHA. Обычная проверка релиза не меняет pin.
+
+Ночной `schedule` сохраняет probing tracked upstream branch. Для такого же
+явного ручного probe есть boolean input `test_upstream`, по умолчанию `false`.
+Только schedule или ручной `test_upstream=true` получают `mode=upstream`;
+ветка разрешается в полный SHA один раз до запуска сценариев.
+Job `bump` доступен только в upstream-mode на branch ref и требует успеха
+**всех четырёх** jobs: `e2e`, `e2e-in-process`, `e2e-dht`, `e2e-agent`, а также
+`delivered=true` основного сценария. Коммит начинается от проверенного
+application SHA; push без force не перезаписывает продвинувшуюся ветку.
+PR, tag и обычный ручной pinned-check pin не изменяют.
+
+Это исправляет обнаруженный release verification gap: на `bd73d8b` все четыре
+сценария прошли, но [head job](https://github.com/gluckdev/gipny-i2p/actions/runs/40781835085/job/123145580713)
+показывает pin `7761d85409bd508909f130f95815d575aa18b9f2` и фактически выбранный
+upstream `6ba5fd5c`. Эти PASS относятся к upstream router, а не доказывают
+доставку shipping pin. Изменённый выбор ревизии требует нового GHA run с
+`mode=pinned` и равными полными `sha`/`pinned_sha`; старый результат не переносится.
 
 Каждый сценарий, пока роутеры живы, проверяет, что процесс не слушает ни одного порта на loopback (Linux, `/proc`): у роутера нет ни SAM, ни HTTP-прокси, ни консоли. Слушать можно только наружу, как транспорт NTCP2.
 

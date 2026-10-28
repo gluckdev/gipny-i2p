@@ -14,13 +14,20 @@ name: release
 # reads caches only from its own ref and main, and writes only to its own: a
 # tag run's caches could never be read again, so every tagged release used to
 # start cold (and a manual "seed the cache on main first" step kept being
-# skipped). A manual run builds a preview and publishes nothing.
+# skipped). Manual runs default to a preview. Explicit publish=true may resume
+# an unpublished version from the current main SHA through the same full gates.
 
 on:
   push:
     branches: [ main ]
     paths: [ 'core/tauri.conf.json' ]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish an unpublished version from main after the full release matrix'
+        type: boolean
+        required: false
+        default: false
 
 # One release build at a time; a second version bump waits for the first.
 concurrency:
@@ -57,9 +64,14 @@ jobs:
       publish: ${{ steps.compare.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
+      - name: Release eligibility and draft integrity regressions
+        run: python3 .github/scripts/test-release-guard.py
       - name: compare
         id: compare
+        env:
+          MANUAL_PUBLISH: ${{ inputs.publish && 'true' || 'false' }}
         run: |
+          set -euo pipefail
           want="$(jq -r .version core/tauri.conf.json)"
           ok=true
           for pair in \
@@ -72,15 +84,10 @@ jobs:
           done
           $ok
           echo "version=$want" >> "$GITHUB_OUTPUT"
-          # Publish on a push to main, once per version: a rerun, or a later
-          # push that touches the file without bumping, must not republish.
-          if [ "$GITHUB_EVENT_NAME" = push ] && ! git ls-remote --exit-code --tags origin "refs/tags/v$want" >/dev/null; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "v$want: will be published"
-          else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "v$want: preview only (manual run, or the tag already exists)"
-          fi
+          # An ordinary manual run remains a preview. Explicit publishing is
+          # main-only; API/auth/network errors never mean that a tag is absent.
+          python3 .github/scripts/release-guard.py eligibility --tag "v$want" \
+            --manual-publish "$MANUAL_PUBLISH" >> "$GITHUB_OUTPUT"
 
   source:
     name: public source archive
@@ -904,9 +911,9 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 4. The release page. On a tag it publishes; on a manual run it builds the
-  #    same page and checksums and stops there, so the page can be read before
-  #    anything goes public. .github/scripts/release-notes.sh refuses to write
+  # 4. The release page. Eligible main pushes and explicit main publishing use
+  #    the same complete matrix. Other manual runs stop at a preview of the page
+  #    and checksums. .github/scripts/release-notes.sh refuses to write
   #    notes if any platform's file is missing or an unexpected file is present.
   # ---------------------------------------------------------------------------
   publish:
@@ -961,8 +968,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          receipt="$RUNNER_TEMP/release-guard.json"
+          draft_state="$(python3 .github/scripts/release-guard.py prepare --tag "$TAG" --receipt "$receipt")"
+          if [ "$draft_state" = absent ]; then
             gh release create "$TAG" --target "$GITHUB_SHA" --draft --title "gipny-i2p $TAG" --notes-file notes.md
+          elif [ "$draft_state" != existing-draft ]; then
+            echo 'unexpected draft eligibility result' >&2
+            exit 1
           fi
           for f in dist/*; do
             ok=
@@ -973,9 +985,11 @@ jobs:
             done
             [ -n "$ok" ] || { echo "could not upload $f"; exit 1; }
           done
-          # v1.2.3-rc1 and the like are pre-releases and never "Latest".
-          if [[ "$TAG" == *-* ]]; then
-            gh release edit "$TAG" --draft=false --prerelease --latest=false --title "gipny-i2p $TAG" --notes-file notes.md
-          else
-            gh release edit "$TAG" --draft=false --latest --title "gipny-i2p $TAG" --notes-file notes.md
-          fi
+          # Recheck main/tag/draft after uploads and require exactly the local
+          # names, sizes and mandatory API SHA256 digests before publication.
+          payload="$RUNNER_TEMP/release-publish.json"
+          release_id="$(python3 .github/scripts/release-guard.py finalize --tag "$TAG" --dist dist \
+            --receipt "$receipt" --notes notes.md --payload "$payload")"
+          # Publish exactly the verified draft ID. Notes remain JSON data;
+          # a replacement draft under the same tag is never looked up here.
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input "$payload" >/dev/null

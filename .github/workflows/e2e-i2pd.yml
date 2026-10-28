@@ -2,8 +2,8 @@ name: e2e-i2pd
 
 # End-to-end messaging test: relays + two headless bot clients, latency report.
 #
-# This is the only job in the repo that answers the question the product turns
-# on: do messages arrive over live i2p. It proves the full
+# These jobs answer the question the product turns on: do messages arrive
+# over live i2p. They prove the full
 # "boot → link → deliver → measure" path end to end.
 #
 # Every binary here compiles the i2p router in (i2p-embed): the relays, the
@@ -11,12 +11,10 @@ name: e2e-i2pd
 # their own, in their own process. There is no i2pd beside them, no SAM and no
 # local port — the way the app ships.
 #
-# The router under test is upstream's branch head, not the pin: every job
-# compiles that revision in, and when the relay job delivers, `bump` moves the
-# pin to it. That is how the pin earns its way forward — by delivering, not by
-# compiling.
-#
-# Runs nightly + on demand rather than on every push/PR.
+# PR and ordinary manual checks compile the immutable router pin from the
+# checked-out application commit. Nightly runs and explicit test_upstream=true
+# manual probes resolve upstream once. Only an upstream probe with all four
+# delivery scenarios passing may record a new pin; release checks never do.
 #
 # It is NOT continue-on-error. It was, on the argument that reseed and tunnel
 # building are flaky — but that made a green check meaningless, and meaningless
@@ -27,6 +25,11 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      test_upstream:
+        description: 'Probe upstream instead of the committed pin; allow a bump only after all four live scenarios pass'
+        type: boolean
+        default: false
   # Any change to the vendored router — dependabot's weekly submodule bump, or
   # ours — has to prove it still delivers before it can be merged. Compiling is
   # not the bar; carrying messages over live i2p is.
@@ -46,8 +49,8 @@ concurrency:
 
 jobs:
   # ------------------------------------------------------------------
-  # Which revision is under test: the tracked branch's head, resolved once so
-  # every job below compiles the same one even if upstream pushes meanwhile.
+  # Resolve one immutable SHA for every job: the committed pin by default,
+  # or the tracked upstream head only for schedule/explicit manual probes.
   # ------------------------------------------------------------------
   head:
     name: i2pd revision under test
@@ -56,30 +59,42 @@ jobs:
     outputs:
       revision: ${{ steps.head.outputs.revision }}
       sha: ${{ steps.head.outputs.sha }}
+      pinned_sha: ${{ steps.head.outputs.pinned_sha }}
+      mode: ${{ steps.head.outputs.mode }}
     steps:
       - uses: actions/checkout@v7
-      - name: resolve the upstream head
+      - name: resolve the committed pin or explicit upstream probe
         id: head
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TEST_UPSTREAM: ${{ inputs.test_upstream == true }}
         run: |
-          # Unshallow for `git describe`: actions/checkout clones shallow with
-          # no tags, and describe dies with "No tags can describe <sha>".
-          git submodule update --init -- third_party/i2pd
-          PINNED="$(git -C third_party/i2pd rev-parse --short HEAD)"
-          git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
-            git -C third_party/i2pd fetch --quiet --tags origin
-          # Fetch the tracked branch by name: `git submodule update --remote`
-          # cannot, as checkout pins the submodule's refspec to a single SHA.
-          BRANCH="$(git config -f .gitmodules submodule.third_party/i2pd.branch)"
-          git -C third_party/i2pd fetch --quiet origin "$BRANCH"
-          git -C third_party/i2pd checkout --quiet FETCH_HEAD
-          SHA="$(git -C third_party/i2pd rev-parse HEAD)"
-          REV="$(git -C third_party/i2pd describe --tags)"
-          echo "branch:     $BRANCH"
-          echo "pinned:     $PINNED"
-          echo "under test: $REV  $(git -C third_party/i2pd log --oneline -1 | cut -d' ' -f2-)"
-          if [ "$PINNED" = "${SHA:0:${#PINNED}}" ]; then
-            echo "note: branch head equals the pin — this run re-proves the pinned router"
+          set -euo pipefail
+          PINNED="$(git rev-parse HEAD:third_party/i2pd)"
+          [[ "$PINNED" =~ ^[0-9a-f]{40}$ ]] || { echo 'invalid committed i2pd pin'; exit 1; }
+          git submodule update --init --recursive -- third_party/i2pd
+          test "$(git -C third_party/i2pd rev-parse HEAD)" = "$PINNED"
+          MODE=pinned
+          if [ "$EVENT_NAME" = schedule ] || \
+             { [ "$EVENT_NAME" = workflow_dispatch ] && [ "$TEST_UPSTREAM" = true ]; }; then
+            MODE=upstream
+            # The branch may move while the four scenarios run; resolve once.
+            BRANCH="$(git config -f .gitmodules submodule.third_party/i2pd.branch)"
+            git check-ref-format --branch "$BRANCH" >/dev/null
+            git -C third_party/i2pd fetch --quiet --unshallow --tags origin || \
+              git -C third_party/i2pd fetch --quiet --tags origin
+            git -C third_party/i2pd fetch --quiet origin "$BRANCH"
+            git -C third_party/i2pd checkout --quiet --detach FETCH_HEAD
           fi
+          SHA="$(git -C third_party/i2pd rev-parse HEAD)"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'invalid i2pd test SHA'; exit 1; }
+          if [ "$MODE" = pinned ]; then test "$SHA" = "$PINNED"; fi
+          REV="$(git -C third_party/i2pd describe --tags --always)"
+          echo "mode:       $MODE"
+          echo "pinned:     $PINNED"
+          echo "under test: $SHA ($REV)"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "pinned_sha=$PINNED" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "revision=$REV" >> "$GITHUB_OUTPUT"
 
@@ -230,8 +245,8 @@ jobs:
   # The same delivery test with no standalone relay: each bot's relay is an
   # EphemeralRelay running inside the harness process. Proves libcore's relay
   # server works over live i2p, not just over the in-memory pipe its unit
-  # tests use. Not in bump's needs: it tests our relay code, so its failure
-  # must not hold back a router revision the relay job proved.
+  # tests use. This is one of the four delivery gates required by an upstream
+  # probe before its router revision can be recorded.
   # ------------------------------------------------------------------
   e2e-in-process:
     name: e2e (relays inside the bots)
@@ -276,8 +291,8 @@ jobs:
   # leaves, A writes; A leaves, B comes back on a new address, reads and
   # answers; B leaves, A comes back elsewhere and reads the answers. The seed
   # is a `gipny-relay --dht` started here, so the run needs neither the
-  # long-running relay-testnet seed nor its age key. Not in bump's needs: it
-  # tests our code, not the router.
+  # long-running relay-testnet seed nor its age key. This must also pass before
+  # an upstream probe may record a new router pin.
   # ------------------------------------------------------------------
   e2e-dht:
     name: e2e (relay network, each side away in turn)
@@ -349,8 +364,8 @@ jobs:
   # way a server would be. Proves over live i2p: the agent's first message
   # creates the contact on the master and carries GRANT; commands run one at a
   # time in arrival order; a file sent with a command is saved before it runs;
-  # OFF is answered with REVOKE and exit 0. Not in bump's needs: it tests our
-  # agent code, not the router.
+  # OFF is answered with REVOKE and exit 0. This must also pass before an
+  # upstream probe may record a new router pin.
   # ------------------------------------------------------------------
   e2e-agent:
     name: e2e (agent binary)
@@ -400,24 +415,24 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
-  # Record the revision that actually delivered.
-  #
-  # The submodule follows upstream's branch, so a build alone proves only that
-  # the code compiles. This moves the pin in the repository to the revision
-  # that just carried five messages over live i2p, giving us a "last known
-  # good router" rather than "whatever upstream had that night".
-  #
-  # It only ever moves the pin forward on success. A failed run leaves the
-  # previous proven revision in place: e2e is network-bound and genuinely
-  # flaky, so one bad night says nothing about the revision and must not
-  # revert anything.
+  # Only upstream-mode probes may record a revision, after all four live
+  # scenarios pass. PR and ordinary manual shipping-pin checks never mutate it.
+  # Start from the tested application commit; if the branch advanced meanwhile,
+  # a normal non-forced push fails instead of assigning proof to another base.
   # ------------------------------------------------------------------
   bump:
     name: record the proven revision
-    needs: [head, e2e]
+    needs: [head, e2e, e2e-in-process, e2e-dht, e2e-agent]
     if: >-
       github.repository == 'gluckdev/gipny-i2p' &&
-      github.event_name != 'pull_request' &&
+      github.ref_type == 'branch' &&
+      needs.head.outputs.mode == 'upstream' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.test_upstream == true)) &&
+      needs.e2e.result == 'success' &&
+      needs['e2e-in-process'].result == 'success' &&
+      needs['e2e-dht'].result == 'success' &&
+      needs['e2e-agent'].result == 'success' &&
       needs.e2e.outputs.delivered == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -426,7 +441,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.sha }}
 
       - name: move the pin to the proven revision
         env:
@@ -445,8 +460,8 @@ jobs:
           git -c user.name=gluckdev -c user.email=dep_it@spbsot.kz commit -m \
             "build(i2pd): pin the revision that delivered end to end
 
-          $PROVEN_REV ($PROVEN_SHA) built and carried five messages over live
-          i2p in run ${{ github.run_id }}. Recorded automatically so the
+          $PROVEN_REV ($PROVEN_SHA) passed all four live delivery scenarios
+          in upstream-mode run ${{ github.run_id }}. Recorded automatically so the
           repository holds a router proven to deliver rather than whatever
           upstream happened to have at build time."
           git push origin "HEAD:${{ github.ref_name }}"
