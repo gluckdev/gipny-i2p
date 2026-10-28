@@ -121,9 +121,13 @@ function Install-GipnyAgent {
         Copy-Item $exe[0].FullName (Join-Path $installDir 'gipny-agent.exe') -Force
         Copy-Item $seed[0].FullName (Join-Path $installDir 'i2pd-netdb-seed.tar.gz') -Force
         Copy-Item $bootstrap[0].FullName (Join-Path $installDir 'start-agent.ps1') -Force
+        # A manual reinstall already selected/verified latest. Do not let an
+        # older queued automatic update roll it back at the next task start.
+        $pendingAgent = Join-Path $DataDir 'pending_agent'
+        if (Test-Path -LiteralPath $pendingAgent) { Remove-Item -LiteralPath $pendingAgent -Recurse -Force }
         New-Item $marker -ItemType File -Force | Out-Null
         $agentArgs = @('--data', $DataDir, '--master', $Master, '--name', $Name)
-        @{ DataDir = $DataDir; Name = $Name; AgentArgs = $agentArgs } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
+        @{ DataDir = $DataDir; Name = $Name; Version = $version; AgentArgs = $agentArgs } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
         $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
             (Quote-AgentArgument (Join-Path $installDir 'start-agent.ps1')) + ' -ConfigPath ' + (Quote-AgentArgument $configPath)
         $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument $arguments -WorkingDirectory $DataDir

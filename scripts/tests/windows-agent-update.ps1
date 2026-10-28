@@ -55,5 +55,17 @@ try {
     Assert-True (-not (Test-Path $source)) 'Applied staging executable was not removed.'
     Assert-True (-not (Update-GipnyAgentImage $install $data)) 'Applied update ran twice.'
     Assert-True (@(Get-ChildItem $install -Filter '.gipny-agent-update-*').Count -eq 0) 'Owned temporary files leaked.'
+    # Exercise the actual native launch failure and bootstrap rollback, not
+    # merely a synthetic File.Replace. where.exe is a harmless system fixture.
+    Copy-Item (Join-Path $env:SystemRoot 'System32\where.exe') $current -Force
+    $oldDigest = (Get-FileHash $current -Algorithm SHA256).Hash
+    [IO.File]::WriteAllText($source, 'not a loadable Windows executable')
+    Stage ((Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant())
+    $config = Join-Path $install 'install.json'
+    @{DataDir = $data; AgentArgs = @('/q', 'cmd.exe')} | ConvertTo-Json | Set-Content $config -Encoding UTF8
+    $code = Start-GipnyAgent -Configuration $config
+    Assert-True ($code -eq 0) 'Restored executable did not start successfully.'
+    Assert-True ((Get-FileHash $current -Algorithm SHA256).Hash -ceq $oldDigest) 'Launch failure did not restore the old executable.'
+    Assert-True (@(Get-ChildItem $install -Filter '.gipny-agent-failed-*').Count -eq 0) 'Failed replacement image leaked.'
     Write-Host 'Windows agent checksum/staging/atomic replacement/locked image regressions: PASS'
 } finally { Remove-Item $root -Recurse -Force }
