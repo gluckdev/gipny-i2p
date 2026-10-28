@@ -1,0 +1,26 @@
+name: agent installers
+on:
+  pull_request:
+    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/workflows/agent-installers.yml']
+  push:
+    branches: [main]
+    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/workflows/agent-installers.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unix-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Installer shell syntax and archive integrity
+        run: |
+          bash -n scripts/install-agent.sh scripts/tests/agent-installer-integrity.sh
+          bash scripts/tests/agent-installer-integrity.sh
+  windows-bootstrap:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checksum, interrupted staging and real Windows file replacement
+        shell: powershell
+        run: scripts/tests/windows-agent-update.ps1
