@@ -6,7 +6,7 @@
 //! CONSOLE_COMMAND messages, replies go back as CONSOLE_OUTPUT messages.
 //!
 //! Usage:
-//!   gipny-agent --data <dir> --master <gipny:v2:…card…>
+//!   gipny-agent --data <dir> --master <gipny:v3:…card…>
 //!
 //! `--master` is needed once: the card is kept in `<data>/master.card` and
 //! later runs read it from there. `--data` can also come from the

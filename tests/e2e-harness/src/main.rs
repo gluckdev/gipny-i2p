@@ -19,7 +19,7 @@
 //!   — the app's built-in relay, in the order the app does it.
 //! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
 //!   far side is the real `gipny-agent` binary at that path, started with
-//!   bot-a's v2 card, on its own router in its own process, with no
+//!   bot-a's v3 card, on its own router in its own process, with no
 //!   `--relay` — proving the agent hosts a personal relay for itself, the
 //!   same as the app does. The master gets its own in-process relay too.
 //!   `E2E_N_MESSAGES` is the number of commands.

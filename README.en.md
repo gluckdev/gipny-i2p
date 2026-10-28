@@ -36,6 +36,13 @@ validate it. See the [2026-10-28 integration record](docs/today-2026-10-28.md).
 4. Share your contact card or QR from **My card** through a channel you trust.
 5. Add the other person's card, accept their request, and compare key fingerprints through a separate authenticated channel.
 
+The candidate exports `gipny:v3:<payload>` cards: **187 ASCII characters**
+with a relay and without a name. Both public keys remain complete; full
+256-bit b32 hashes replace the long I2P Destinations. Connecting requires
+standard I2P lookup/LeaseSet resolution. The checksum detects copying errors
+and does not authenticate the owner. Legacy v1/v2 cards are still imported:
+[format and limits](docs/contact-cards.md).
+
 No separately installed i2pd, SAM service or local proxy is required. For a new
 introduction after restarting, share a fresh card for your built-in relay.
 Existing contacts receive authenticated address updates through the protocol.
@@ -324,8 +331,10 @@ See the live [e2e workflow](.github/workflows/e2e-i2pd.yml) and
 
 [OS binding and migration limits](docs/device-bound-storage.md): Android
 requires a TEE/StrongBox provider, Windows binds the key to user and machine,
-macOS uses ThisDeviceOnly Keychain, and Linux uses Secret Service. A full OS
-image clone is outside the Linux provider guarantee. Legacy unbound profiles
+macOS uses the native local Keychain outside the profile, and Linux uses Secret
+Service. Free ad-hoc macOS builds need no Apple subscription; Keychain may request
+user consent, including after an update. A complete Keychain/OS clone is outside
+these software providers' guarantee. Legacy unbound profiles
 are preserved and refused, rather than silently rewritten; transfer requires
 an explicit encrypted export/import.
 

@@ -35,6 +35,7 @@ on:
       - 'third_party/**'
       - '.github/workflows/e2e-i2pd.yml'
       - '.github/scripts/i2pd-under-test.sh'
+      - '.github/scripts/with-test-secret-service.sh'
 
 permissions:
   contents: read
@@ -356,6 +357,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: i2pd under test and its build deps
         run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
+      - name: Native OS credential service for the encrypted agent database
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dbus-daemon gnome-keyring libsecret-tools
       - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
@@ -373,7 +378,7 @@ jobs:
           E2E_WORK_DIR: e2e-state
         run: |
           set -o pipefail
-          ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
+          bash .github/scripts/with-test-secret-service.sh ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
       # Always: a green run can still be slow, and the router's log is where
       # the time went.
       - name: upload logs

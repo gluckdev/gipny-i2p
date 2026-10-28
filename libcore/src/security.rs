@@ -1,7 +1,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -88,14 +89,62 @@ pub enum UnlockOutcome {
     Wiped,
 }
 
-struct VaultState { header: Header, last_try: Option<Instant> }
+struct VaultState { header: Header }
+
+#[derive(Clone)]
+struct VaultLocks {
+    operation: Arc<Mutex<()>>,
+    last_try: Arc<Mutex<Option<Instant>>>,
+}
+
+struct WeakVaultLocks {
+    operation: Weak<Mutex<()>>,
+    last_try: Weak<Mutex<Option<Instant>>>,
+}
+
+#[derive(Default)]
+struct VaultLockRegistry { entries: HashMap<PathBuf, WeakVaultLocks> }
+
+impl VaultLockRegistry {
+    fn for_path(&mut self, path: PathBuf) -> VaultLocks {
+        // Keep only paths with live Vault handles. Repeatedly opening new
+        // profiles must not accumulate their names or a permanent bucket array.
+        self.entries.retain(|_, locks| locks.operation.strong_count() > 0 && locks.last_try.strong_count() > 0);
+        let bound = self.entries.len().saturating_mul(4).max(32);
+        if self.entries.capacity() > bound { self.entries.shrink_to(bound); }
+        if let Some(locks) = self.entries.get(&path) {
+            if let (Some(operation), Some(last_try)) = (locks.operation.upgrade(), locks.last_try.upgrade()) {
+                return VaultLocks { operation, last_try };
+            }
+        }
+        let locks = VaultLocks { operation: Arc::new(Mutex::new(())), last_try: Arc::new(Mutex::new(None)) };
+        self.entries.insert(path, WeakVaultLocks {
+            operation: Arc::downgrade(&locks.operation), last_try: Arc::downgrade(&locks.last_try),
+        });
+        locks
+    }
+}
+
+fn vault_locks(dir: &Path) -> Result<(PathBuf, VaultLocks)> {
+    // create may create its requested directory before this call; open never
+    // creates a missing profile just to obtain a registry key.
+    let dir = dir.canonicalize()?;
+    let path = Vault::path_of(&dir);
+    static REGISTRY: OnceLock<Mutex<VaultLockRegistry>> = OnceLock::new();
+    let locks = REGISTRY.get_or_init(|| Mutex::new(VaultLockRegistry::default()))
+        .lock().map_err(|_| SecurityError::State)?.for_path(path);
+    Ok((dir, locks))
+}
 
 pub struct Vault {
     path: PathBuf,
     dir: PathBuf,
     // Covers throttle, authenticated disk reread and any resulting mutation.
     // The state mutex alone cannot protect a header read before taking it.
-    operation: Mutex<()>,
+    // Shared by independently opened handles for this canonical vault path.
+    // This is process-local; it is not an interprocess filesystem lock.
+    operation: Arc<Mutex<()>>,
+    last_try: Arc<Mutex<Option<Instant>>>,
     state: Mutex<VaultState>,
 }
 
@@ -125,9 +174,11 @@ impl Vault {
     ) -> Result<Self> {
         if pass.is_empty() { return Err(SecurityError::InvalidPassphrase); }
         fs::create_dir_all(dir)?;
-        let path = Self::path_of(dir);
+        let (dir, locks) = vault_locks(dir)?;
+        let _operation = locks.operation.lock().map_err(|_| SecurityError::State)?;
+        let path = Self::path_of(&dir);
         if path.exists() { return Err(SecurityError::State); }
-        let device = DeviceBind::enroll(dir)?;
+        let device = DeviceBind::enroll(&dir)?;
         let (salt_primary, salt_duress) = (random32(), random32());
         let nonce_primary = random24();
 
@@ -156,20 +207,22 @@ impl Vault {
         };
         write_vault_impl(&path, &header, &device, true)?;
         Ok(Self {
-            path, dir: dir.to_path_buf(),
-            operation: Mutex::new(()),
-            state: Mutex::new(VaultState { header, last_try: None }),
+            path, dir,
+            operation: locks.operation.clone(), last_try: locks.last_try.clone(),
+            state: Mutex::new(VaultState { header }),
         })
     }
 
     pub fn open(dir: &Path) -> Result<Self> {
-        let path = Self::path_of(dir);
-        let device = DeviceBind::load(dir)?;
+        let (dir, locks) = vault_locks(dir)?;
+        let _operation = locks.operation.lock().map_err(|_| SecurityError::State)?;
+        let path = Self::path_of(&dir);
+        let device = DeviceBind::load(&dir)?;
         let header = read_vault(&path, &device)?;
         Ok(Self {
-            path, dir: dir.to_path_buf(),
-            operation: Mutex::new(()),
-            state: Mutex::new(VaultState { header, last_try: None }),
+            path, dir,
+            operation: locks.operation.clone(), last_try: locks.last_try.clone(),
+            state: Mutex::new(VaultState { header }),
         })
     }
 
@@ -213,7 +266,7 @@ impl Vault {
         st.header.attempts = st.header.attempts.saturating_add(1);
         let over = st.header.max_attempts > 0 && st.header.attempts >= st.header.max_attempts;
         write_vault(&self.path, &st.header, &device)?;
-        st.last_try = Some(Instant::now());
+        *self.last_try.lock().map_err(|_| SecurityError::State)? = Some(Instant::now());
         if over { drop(st); self.wipe_locked()?; return Ok(UnlockOutcome::Wiped); }
         Err(SecurityError::InvalidPassphrase)
     }
@@ -286,8 +339,8 @@ impl Vault {
     }
 
     fn throttle(&self) {
-        let guard = match self.state.lock() { Ok(g) => g, Err(_) => return };
-        if let Some(t) = guard.last_try {
+        let guard = match self.last_try.lock() { Ok(g) => g, Err(_) => return };
+        if let Some(t) = *guard {
             let elapsed = t.elapsed();
             let wait = Duration::from_millis(THROTTLE_MS);
             if elapsed < wait { drop(guard); std::thread::sleep(wait - elapsed); }
@@ -676,6 +729,57 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 }
 
 pub use i2p_embed::process_security::harden_process;
+
+#[cfg(test)]
+mod vault_lock_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_profile_aliases_share_gate_without_creating_missing_profiles() {
+        let directory = tempfile::tempdir().unwrap();
+        let (canonical, first) = vault_locks(directory.path()).unwrap();
+        let (_, alias) = vault_locks(&directory.path().join(".")).unwrap();
+        assert_eq!(canonical, directory.path().canonicalize().unwrap());
+        assert!(Arc::ptr_eq(&first.operation, &alias.operation));
+        assert!(Arc::ptr_eq(&first.last_try, &alias.last_try));
+        #[cfg(unix)] {
+            let links = tempfile::tempdir().unwrap();
+            let link = links.path().join("profile-alias");
+            std::os::unix::fs::symlink(directory.path(), &link).unwrap();
+            let (_, linked) = vault_locks(&link).unwrap();
+            assert!(Arc::ptr_eq(&first.operation, &linked.operation));
+        }
+        let missing = directory.path().join("missing");
+        assert!(Vault::open(&missing).is_err());
+        assert!(!missing.exists(), "opening a missing profile must not create registry-key directories");
+    }
+
+    #[test]
+    fn registry_separates_live_profiles_and_reclaims_closed_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut registry = VaultLockRegistry::default();
+        let first = registry.for_path(directory.path().join("first/vault.bin"));
+        let second = registry.for_path(directory.path().join("second/vault.bin"));
+        let gate = first.operation.lock().unwrap();
+        assert!(second.operation.try_lock().is_ok(), "unrelated profiles must not share one global operation mutex");
+        drop(gate); drop(second);
+        for number in 0..512 {
+            let ephemeral = registry.for_path(directory.path().join(format!("closed-{number}/vault.bin")));
+            assert!(registry.entries.len() <= 2);
+            drop(ephemeral);
+        }
+        let peak: Vec<_> = (0..256).map(|number|
+            registry.for_path(directory.path().join(format!("live-{number}/vault.bin")))).collect();
+        assert_eq!(registry.entries.len(), 257);
+        drop(peak);
+        let old = Arc::downgrade(&first.operation);
+        drop(first);
+        let _last = registry.for_path(directory.path().join("last/vault.bin"));
+        assert!(old.upgrade().is_none());
+        assert_eq!(registry.entries.len(), 1);
+        assert!(registry.entries.capacity() <= 64, "closed profile paths must not leave an unbounded registry allocation");
+    }
+}
 
 #[cfg(test)]
 mod backup_resource_tests {

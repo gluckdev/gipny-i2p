@@ -10,6 +10,16 @@ if (-not (Test-Path -LiteralPath $perl -PathType Leaf)) {
 }
 & $perl -MIPC::Cmd -MLocale::Maketext::Simple -e 'exit($^O eq q(MSWin32) ? 0 : 1)'
 if ($LASTEXITCODE -ne 0) { throw 'Native Perl or required OpenSSL Configure modules are unavailable.' }
+if (-not $env:VCToolsInstallDir) {
+    throw 'Initialize the x64 MSVC developer environment before source builds.'
+}
+$nativeLink = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
+if (-not (Test-Path -LiteralPath $nativeLink -PathType Leaf)) {
+    throw 'The initialized MSVC toolchain does not provide its native x64 linker.'
+}
+# Git Bash also ships an unrelated link.exe. Cargo must use the actual MSVC
+# executable even when a login shell puts Git utilities first on PATH.
+"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$nativeLink" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 "PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 (Split-Path -Parent $perl) | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8

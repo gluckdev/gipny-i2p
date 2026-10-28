@@ -5,9 +5,9 @@ name: security fast
 on:
   push:
     branches: [main]
-    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml', '.github/scripts/windows-source-tools.ps1']
+    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml', '.github/scripts/windows-source-tools.ps1', '.github/scripts/with-test-macos-keychain.sh']
   pull_request:
-    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml', '.github/scripts/windows-source-tools.ps1']
+    paths: ['agent/**', 'bot-sdk/**', 'core/**', 'libcore/**', 'i2p-embed/**', 'dht/**', 'tests/**', 'ui/**', 'third_party/**', '.cargo/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/security-fast.yml', '.github/scripts/windows-source-tools.ps1', '.github/scripts/with-test-macos-keychain.sh']
   workflow_dispatch:
 
 permissions:
@@ -73,6 +73,13 @@ jobs:
         run: cargo check --locked -p gipny --all-targets
       - name: Memory, device-copy, vault, card and deletion regressions
         run: cargo test --locked -p gipny-libcore --lib
+      - name: Native macOS Keychain enrollment under a free ad-hoc signature
+        if: runner.os == 'macOS'
+        run: |
+          cargo test --locked -p gipny-libcore --lib --no-run --message-format=json > "$RUNNER_TEMP/gipny-macos-test-binaries.jsonl"
+          test_binary=$(python3 -c 'import json,sys; values=[json.loads(line) for line in open(sys.argv[1])]; binaries=[value["executable"] for value in values if value.get("reason")=="compiler-artifact" and value.get("executable") and value.get("target",{}).get("name")=="gipny_libcore"]; assert len(binaries)==1,binaries; print(binaries[0])' "$RUNNER_TEMP/gipny-macos-test-binaries.jsonl")
+          codesign --force --sign - "$test_binary"
+          bash .github/scripts/with-test-macos-keychain.sh "$test_binary" --ignored --exact device_binding::macos::tests::native_macos_local_keychain_enrollment_copy_isolation_and_delete --test-threads=1
       - name: Vault lifecycle and historical format rejection
         # Expensive KDF timing is measured by the existing release-profile
         # native test job; this checks lifecycle with its small-cost fixtures.

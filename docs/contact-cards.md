@@ -83,6 +83,15 @@ python3 scripts/check-contact-card-fixtures.py
 
 Эта data-only проверка выполнена: 8 положительных и 13 отрицательных
 примеров, размеры 187/144/316 подтверждены. Она не выполняет Rust/TS-код.
-Компиляция и исполнение тестов Rust/UI разрешены только в GitHub CI;
-их результаты для новой реализации ещё ожидаются. Живое I2P-соединение через
-карточку v3 также требует отдельного результата CI, а не вывода из fixtures.
+Компиляция и исполнение тестов Rust/UI разрешены только в GitHub CI.
+На 2026-10-28 для SHA `38892f6` подтверждены frontend build и 17/17 UI-тестов,
+включая общие vectors, legacy import и запрет копирования ошибки экспорта:
+[GitHub job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066773196).
+Проверки установщиков Unix/Windows также
+[прошли](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359392).
+Android Rust/JNI compile check со stub-роутером
+[прошёл](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359494/job/123067407448);
+он не подтверждает рабочий транспорт. Native job с настоящим встроенным
+роутером также [прошёл](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066772990):
+libcore 173/173, в том числе все 7 тестов карточек. Живое I2P-соединение через
+карточку v3 требует отдельного результата CI, а не вывода из fixtures.

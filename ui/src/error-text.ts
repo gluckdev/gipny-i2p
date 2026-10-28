@@ -6,6 +6,30 @@ export function errorText(error: unknown): string {
   if (raw.endsWith('This legacy message has no original sender ID; deletion for both sides cannot be verified')) {
     return t('chat.legacy_delete_unverifiable');
   }
+  // Stable native markers only. Keep platform diagnostics and IPC values out
+  // of the translated message, and leave unknown technical errors intact.
+  const marker = raw.startsWith('Error: ') ? raw.slice(7) : raw;
+  if ((marker.startsWith('OS credential provider unavailable: ') &&
+      marker.endsWith('; unlock or provision protected OS credentials before opening GIPNY')) ||
+      marker === 'Android protected credential provider could not initialize' ||
+      marker === 'Android credential initialization closed' ||
+      marker === 'Android protected credential provider is not ready') {
+    return t('auth.os_credentials_unavailable');
+  }
+  if (marker === 'device credential missing or inaccessible; raw profile copies cannot be opened; use an explicitly encrypted export/import') {
+    return t('auth.device_credentials_missing');
+  }
+  if (marker === 'profile belongs to another OS credential provider; use an explicitly encrypted export/import') {
+    return t('auth.profile_other_device');
+  }
+  if (marker === 'legacy unbound profile is unsupported; data was not deleted' ||
+      marker === 'legacy plaintext headless database is unsupported; data was not deleted') {
+    return t('auth.profile_legacy_unsupported');
+  }
+  if (marker === 'invalid device-binding metadata' ||
+      marker === 'device credential does not authenticate this profile; data and password attempt counter were not changed') {
+    return t('auth.profile_binding_invalid');
+  }
   if (getLang() === 'ru') return raw;
   const detail: Record<string, string> = {
     'содержимое не соответствует расширению': 'contents do not match the extension',

@@ -1,15 +1,15 @@
 //! Compact v3 contact cards. v1/v2 remain import formats.
 //!
-//! Mirrors `encodeCard`/`decodeCard` in `ui/src/api.ts`, which stay the
-//! reference for the app; this exists for headless binaries that take a card
-//! on the command line and print their own. Any change to the format lands in
-//! both places.
+//! Mirrors `encodeCard`/`decodeCard` in `ui/src/contact-card.ts`, re-exported
+//! by `ui/src/api.ts`. Headless binaries use this codec for command-line
+//! imports and their own exports. Both codecs share golden fixtures.
 //!
+//! * v3: `gipny:v3:<canonical unpadded Base64URL payload>`
 //! * v1: `gipny:v1:<onion>:<sign_pk hex>:<dh_pk hex>[:<name>]`
 //! * v2: `gipny:v2:<onion>:<sign_pk hex>:<dh_pk hex>:<relay>[:<name>]`
 //!
-//! `<name>` is percent-encoded the way `encodeURIComponent` does it, so it can
-//! never contain a bare `:`.
+//! Legacy `<name>` is percent-encoded the way `encodeURIComponent` does it.
+//! v3 carries bounded UTF-8 bytes inside its payload.
 
 use std::fmt;
 use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine};
@@ -28,7 +28,7 @@ pub struct ContactCard {
     pub onion: String,
     pub sign_pk: [u8; 32],
     pub dh_pk: [u8; 32],
-    /// Relay the holder collects from. `None` on a v1 card.
+    /// Relay the holder collects from. `None` on v1 or a relay-free v3 card.
     pub relay: Option<String>,
     pub name: Option<String>,
 }

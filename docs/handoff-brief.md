@@ -20,7 +20,10 @@ HTTP-прокси, это история.
 На этом SHA TypeScript/Vite и 13/13 UI tests прошли; первый Windows bootstrap
 job нашёл ошибку `$null` path binding; fix `5d3500d` и реальные Windows
 readiness/rollback/recovery fixtures прошли повторный GitHub run.
-Rust/DM/native jobs пока без финального результата. Ссылки и точные границы —
+Позднее `38892f6` прошёл 17/17 UI, 173 libcore unit, 14 crypto, 4 compat,
+7 first-run и doctest; все новые DM DB/wire cases включены. Общий lock для
+независимых `Vault::open` добавлен после этого SHA, его CI ещё требуется.
+Ссылки и точные границы —
 в [текущем снимке](today-2026-10-28.md#github-ci-checkpoint).
 Новые сборки и исполнение тестов — только GitHub Actions по требованию
 владельца; локальные команды ниже в исторических разделах не обозначают
@@ -60,8 +63,8 @@ Rust/DM/native jobs пока без финального результата. �
 - Удаление DM в текущих исходниках охватывает сообщения обоих авторов,
   attachments/chunks, очистку диалога/истории и явные таймеры, включая pinned.
   Stable author/origin references, durable tombstones и запрос до E2E ACK
-  сохраняют локальные номера без перенумерации. UI `d907307` PASS, новые Rust
-  tests ещё ожидают результата CI;
+  сохраняют локальные номера без перенумерации. На `38892f6` прошли все новые
+  DB/wire и UI cases;
   legacy backup без incoming origin даёт честный отказ. Контракт —
   [message-deletion.md](message-deletion.md).
 - Защита app-owned секретов в RAM и очистка WebView copies реализованы в
@@ -76,6 +79,11 @@ Rust/DM/native jobs пока без финального результата. �
 - Платформенные updater paths, Windows bootstrap и предварительные OpenWrt
   targets описаны в [platform-updates.md](platform-updates.md) и
   [openwrt.md](openwrt.md); наличие кода не доказывает установку на устройстве.
+- Default contact-card export `38892f6` использует короткий `gipny:v3:`:
+  187 ASCII chars с релеем без имени, целые public keys и b32 hashes обоих
+  destinations. Старые v1/v2 читаются; checksum не заменяет fingerprint check.
+  Rust/UI `38892f6` PASS, native lookup отдельно ещё требует проверки;
+  data-only golden vectors также проверены. [Формат и ограничения](contact-cards.md).
 
 Исторические компонентные результаты на 2026-10-28 до GitHub-only требования
 и финальных DM/memory изменений: atomic outbox — 125 libcore + 23 Core

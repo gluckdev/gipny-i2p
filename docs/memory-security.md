@@ -148,15 +148,15 @@ DOM regressions проверяют switch/lock с задержанными
 list/pinned responses, фоновых событий без body fetch, stale response после
 tombstone, destroy с незавершённой загрузкой вложений, image URL cleanup и
 deletion-before-image-response. На checkpoint
-`d907307e5b03a4c6301890d21689835f224a09a7` **2026-10-28** TypeScript/Vite и
-13/13 UI tests, включая эти cases и locale draft invariants, прошли в
-[GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40757759828/job/123061162378).
+`38892f6691b81a98f4deb55a27e3874fe1358f2e` **2026-10-28** TypeScript/Vite и
+17/17 UI tests, включая эти cases и locale draft invariants, прошли в
+[GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066773196).
 Это результат UI-границы данного SHA, не подтверждение всех memory/native
 tests или более поздних изменений рабочего дерева.
-После этого checkpoint дополнительно исправлен lifecycle `ContextMenu`:
+На том же checkpoint проверен lifecycle `ContextMenu`:
 закрытие снимает принадлежащие меню document handlers и отменяет delayed
-registration; long-press удалённого DOM не открывает меню заново. Новый
-отдельный regression source ожидает следующего GitHub CI.
+registration; long-press удалённого DOM не открывает меню заново. Отдельный
+regression этого поведения входит в 17 PASS.
 
 ## Native libi2pd и JNI: принадлежащие нам копии
 
@@ -185,14 +185,27 @@ key не экспортируется, краткий binding secret возвр�
 Отдельный actual-code отзыв Claude получен 2026-10-28. Подтверждённые замечания
 привели к `Zeroizing<Vec<u8>>` в возвращаемых типах backup plaintext и
 `RatchetState::to_bytes`, а также к сериализации vault authentication/mutations
-одним operation mutex. Он закрывает конкурентное чтение stale attempt counter
-в одном объекте Vault; межпроцессная блокировка этим не заявлена. Предположение
+общим operation mutex одного canonical vault path. После отдельного code review
+выявлен и закрыт разрыв между независимыми `Vault::open` из параллельных IPC:
+weak registry разделяет gate и throttle timestamp между живыми handles,
+не удерживая историю закрытых путей. Create/open и auth mutations используют
+эту границу; разные профили имеют разные gates. Новые independent-open tests
+ещё требуют CI; межпроцессная блокировка и persistent throttle после закрытия
+всех handles этим не заявлены. Предположение
 отзыва о shared signer проверено по pinned `PrivateKeys::operator=`: signer
 сбрасывается и пересоздаётся, а не заимствует private storage исходного объекта.
 Замечание об отсутствии backup KDF bounds относилось к более раннему snapshot;
 лимит был добавлен до получения отзыва. Ответ модели не заменяет GitHub CI.
 
 ## Проверки перед выпуском
+
+**2026-10-28**, checkpoint `38892f6`,
+[Linux Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066772990):
+173/173 libcore unit tests, 14 crypto, 4 compat (1 fixture generator ignored),
+7 first-run tests и compile-fail doctest прошли. Новый общий lock независимых
+`Vault::open` и его дополнительные tests появились после этого SHA и ещё
+требуют отдельного CI. Эти результаты не доказывают native/runtime поведение
+всех платформ или гарантированное уничтожение ключей при UI lock.
 
 Написаны проверки свежих nonce, отказа при повреждённом tag и очистки scratch;
 жизненного цикла последнего владельца; ограниченного blob; вложенного доступа;

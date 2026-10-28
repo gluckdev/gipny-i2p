@@ -2,8 +2,8 @@
 
 Состояние на **2026-10-28**: изменение подготовлено в рабочем дереве
 `feat/today-integration-20261028` для кандидата `0.4.19`. Это ещё не
-опубликованный релиз. UI regression прошёл в **GitHub Actions** на `d907307`;
-новые DB/wire tests ещё ожидают результата CI. Старые результаты updater/group outbox
+опубликованный релиз. Новые DB/wire и UI regression tests прошли в
+**GitHub Actions** на `38892f6`. Старые результаты updater/group outbox
 не являются проверкой этого изменения.
 
 ## Поведение
@@ -125,10 +125,13 @@ SQLCipher/SQLite и файловая система не объединены в
 
 Новые тесты предназначены для CI, локально после требования владельца о
 GitHub-only builds не запускались. **2026-10-28**, checkpoint
-`d907307e5b03a4c6301890d21689835f224a09a7`: TypeScript/Vite и 13/13 UI tests,
-включая DM/WebView cases ниже, прошли в
-[GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40757759828/job/123061162378).
-DB/wire результаты этого checkpoint ещё ожидаются; это не live I2P/device proof.
+`38892f6691b81a98f4deb55a27e3874fe1358f2e`: все восемь новых DB tests и два
+wire tests ниже прошли в составе 173/173 libcore unit tests
+[Rust job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066772990).
+TypeScript/Vite и 17/17 UI tests, включая DM/WebView cases, прошли в
+[UI job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066773196).
+Это проверка указанного SHA, не live I2P/device proof и не результат более
+поздних изменений рабочего дерева, включая новый independent-vault lock.
 
 - `db::dm::tests`: разные локальные IDs, удаление сообщения собеседника,
   wrong-contact ACK, duplicate/reopen, delete-before-content, replay/edit,

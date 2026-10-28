@@ -40,6 +40,11 @@
     "category": "SocialNetworking",
     "shortDescription": "Private messenger",
     "longDescription": "Anonymous messenger over i2p with E2E encryption.",
+    "linux": {
+      "deb": {
+        "depends": ["libsecret-tools"]
+      }
+    },
     "macOS": {
       "signingIdentity": "-",
       "minimumSystemVersion": "15.0"

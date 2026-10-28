@@ -177,6 +177,35 @@ test('error presentation translates known native errors without changing filenam
   assert.equal(ui.errorText(error), error);
 });
 
+test('device access errors have actionable EN/RU text without changing unknown errors or password markers', () => {
+  const cases = [
+    ['OS credential provider unavailable: hardware Android Keystore operation failed; unlock or provision protected OS credentials before opening GIPNY', 'auth.os_credentials_unavailable'],
+    ['OS credential provider unavailable: Linux Secret Service is locked or did not respond; unlock or provision protected OS credentials before opening GIPNY', 'auth.os_credentials_unavailable'],
+    ['Android protected credential provider could not initialize', 'auth.os_credentials_unavailable'],
+    ['Android credential initialization closed', 'auth.os_credentials_unavailable'],
+    ['Android protected credential provider is not ready', 'auth.os_credentials_unavailable'],
+    ['device credential missing or inaccessible; raw profile copies cannot be opened; use an explicitly encrypted export/import', 'auth.device_credentials_missing'],
+    ['profile belongs to another OS credential provider; use an explicitly encrypted export/import', 'auth.profile_other_device'],
+    ['legacy unbound profile is unsupported; data was not deleted', 'auth.profile_legacy_unsupported'],
+    ['legacy plaintext headless database is unsupported; data was not deleted', 'auth.profile_legacy_unsupported'],
+    ['invalid device-binding metadata', 'auth.profile_binding_invalid'],
+    ['device credential does not authenticate this profile; data and password attempt counter were not changed', 'auth.profile_binding_invalid'],
+  ];
+  for (const lang of ['en', 'ru']) {
+    setLang(lang);
+    for (const [marker, key] of cases) {
+      assert.equal(ui.errorText(marker), t(key), `${lang}: ${marker}`);
+      assert.equal(ui.errorText(new Error(marker)), t(key), `${lang}: Error wrapper`);
+    }
+    const unavailable = ui.errorText(cases[0][0]);
+    assert.match(unavailable, lang === 'en' ? /protected key store/ : /хранилищу ключей/);
+    assert.doesNotMatch(unavailable, /hardware|JNI|Secret Service/);
+    assert.equal(ui.errorText('invalid passphrase'), 'invalid passphrase');
+    assert.equal(ui.errorText('unexpected diagnostic: vault.bin'), 'unexpected diagnostic: vault.bin');
+    assert.equal(ui.errorText('OS credential provider unavailable: unexpected diagnostic'), 'OS credential provider unavailable: unexpected diagnostic');
+  }
+});
+
 test('language is available before login and preserves values while changing forms', () => {
   const store = new Store();
   store.view.set('auth-create');

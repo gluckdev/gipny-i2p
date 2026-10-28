@@ -35,11 +35,22 @@ hex в `.device` рядом с `vault.bin`. Файл переносился вм
    Только неверный пароль после успешных предыдущих этапов меняет счётчик.
    Ошибка выделения KDF workspace не считается неверным паролем.
 
-Операции одного объекта `Vault` сериализуют throttle, чтение проверенного
-заголовка, аутентификацию и запись результата. Конкурентные неудачные попытки
+Операции всех живых объектов `Vault` одного canonical profile/vault path
+используют общий `Arc<Mutex<()>>`: throttle, чтение проверенного заголовка,
+аутентификация и запись результата сериализованы и для отдельных Tauri IPC,
+каждый из которых вызывает новый `Vault::open`. Конкурентные неудачные попытки
 не сбрасывают счётчик устаревшей копией, а изменение пароля не использует
-аутентификацию, выполненную до другой операции. Это не межпроцессная блокировка:
-независимые объекты/процессы для одного профиля требуют отдельного контракта.
+аутентификацию, выполненную до другой операции. Create/enroll и open/read
+используют ту же границу; разные профили не блокируются общим KDF mutex.
+Registry хранит слабые ссылки, удаляет закрытые пути и уменьшает allocation.
+`open` не создаёт отсутствующий каталог ради canonical key.
+
+Последний throttle timestamp разделяется живыми handles; после закрытия
+последнего handle он не хранится постоянно. Счётчик попыток остаётся на диске.
+Межпроцессная filesystem lock не добавлена: параллельные процессы одного
+профиля по-прежнему требуют отдельного контракта. Новые independent-open
+counter/password-change и registry/alias/prune tests написаны и ожидают GitHub CI;
+прежняя проверка одного `Arc<Vault>` сама по себе эту границу не доказывала.
 
 Legacy `.device`/vault v1 и legacy plaintext headless DB отклоняются явно.
 Автоматическое удаление или «исправление» старых данных отсутствует. Ранее
@@ -51,7 +62,7 @@ Legacy `.device`/vault v1 и legacy plaintext headless DB отклоняются
 |---|---|---|---|
 | Android | Неэкспортируемый AES-GCM key в Android Keystore, TEE/StrongBox обязателен; 12-byte IV + 48-byte ciphertext для 32-byte secret, ID как AAD | Копия файлов профиля и software storage без аппаратного wrapping key не открывается | Software-only Keystore отклоняется. Clear data/uninstall/reset Keystore может навсегда лишить доступа без явного экспорта |
 | Windows | Native DPAPI: внутренняя user-scope обёртка, затем внешняя `LOCAL_MACHINE`, обе без UI | Копия профиля на другой OS account/машину не получает необходимых DPAPI secrets | Это не TPM. Полный клон ОС, её secrets и привилегии администратора — другая угроза |
-| macOS | Native Security.framework Data Protection Keychain, `WhenUnlockedThisDeviceOnly`, `Synchronizable=false`, без legacy file Keychain fallback | Копирование файлов профиля и cloud sync credential не являются способом переноса | Требуются работающий Data Protection Keychain и допустимая подпись/entitlements; неподдерживаемая конфигурация отклоняется, SEP-аттестация не заявлена |
+| macOS | Native Security.framework, file-based системный Keychain вне профиля; явный `macos-local-keychain-v2`, без Data Protection/iCloud sync | Копия только app profile и пароль vault не содержат отдельный OS credential | Software tier, доступный бесплатной ad-hoc сборке. Полный перенос Keychain/ОС не покрывается гарантией; возможен системный запрос доступа после обновления, SEP/ThisDeviceOnly не заявлены |
 | Linux desktop | OS Secret Service через `/usr/bin/secret-tool`, секрет по stdin, не argv; credential вне профиля | Копия только каталога профиля не содержит credential | **Не защищает от клона всей ОС/keyring вместе с учётными данными. Не TPM и не hardware binding** |
 | Linux headless / OpenWrt | Шифрованная DB требует заранее доступного OS credential provider | Нет скрытого plaintext/keyfile fallback | TPM2 provider ещё не реализован; без Secret Service/session/provider запуск отказывает до создания DB. Наличие release binary не означает доступность защищённого unattended runtime |
 
@@ -59,6 +70,29 @@ Legacy `.device`/vault v1 и legacy plaintext headless DB отклоняются
 используются две обёртки, а `LOCAL_MACHINE` не применяется единственным фактором.
 Это следует из [контракта Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata).
 Два слоя не превращают software OS credentials в аппаратный TPM.
+
+macOS использует один явный native local Keychain provider: это не скрытый
+fallback после ошибки Data Protection. По [Apple TN3137](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains)
+`SecItem` поддерживает file-based Keychain без paid provisioning entitlement.
+Добавление привязано через `kSecUseKeychain` к текущему default Keychain ОС;
+чтение/удаление — через `kSecMatchSearchList` только к нему. Секрет не записывается
+в app profile, а file-based provider не включает iCloud sync. DP-only параметры
+`ThisDeviceOnly`/synchronizable не передаются. Тип старого DP provider отклоняется
+как другой `kind`, без автоматического переноса или удаления.
+
+Обычные системные запросы доступа разрешены: после изменения ad-hoc подписи при
+обновлении пользователь может разрешить доступ приложению к Keychain. Отказ или
+закрытый Keychain возвращают ошибку до password counter/wipe. Это не обещание
+unattended macOS service без предварительного OS provisioning/ACL. Полный клон
+ОС/Keychain остаётся вне гарантии; внутренние файлы entropy, их расположение и
+формат приложение не использует.
+
+Linux desktop требует пакет с `/usr/bin/secret-tool` (Debian/Ubuntu:
+`libsecret-tools`) и уже доступный Secret Service в пользовательской D-Bus
+сессии, например GNOME Keyring. Наличие одного CLI без разблокированного
+провайдера недостаточно. AppImage не устанавливает этот системный сервис;
+подмена его переносимым файлом с ключом запрещена. Для unattended service
+провайдер и доступ к сессии provisioned явно до запуска агента.
 
 Android проверяет аппаратное происхождение ключа при создании и каждом
 использовании, а не доверяет флагу из копируемой metadata. Неэкспортируемость
@@ -132,3 +166,11 @@ skipped: такой результат нельзя записывать как 
 Положительный тест нужно запускать на реальном hardware-backed устройстве,
 отдельно проверяя недоступность raw-copy после переноса и отсутствие
 автоматического восстановления credential после clear-data/uninstall.
+
+Live agent job в `e2e-i2pd.yml` получает настоящий временный Secret Service
+в отдельной `dbus-run-session` через `with-test-secret-service.sh`. Keyring
+создаётся под `RUNNER_TEMP` со случайным одноразовым паролем через stdin;
+он не включается в artifacts/cache и удаляется после сценария. Это проверка
+native Linux API и SQLCipher lifecycle, а не TPM и не переносимый fallback
+в приложении. До запуска I2P job проверяет store/lookup/clear; отсутствие
+провайдера остаётся ошибкой приложения.

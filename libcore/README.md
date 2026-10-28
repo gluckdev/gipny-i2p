@@ -21,7 +21,7 @@
 | `i2p_http.rs` | HTTPS GET в clearnet через i2p без локального прокси: свой поток к outproxy, `CONNECT`, TLS (rustls/ring, корни webpki), HTTP/1.1 (hyper) | `get`, `Body`, `OUTPROXY` (b32 `exit.stormycloud.i2p`) |
 | `update.rs` | Автообновление через GitHub Releases по i2p-outproxy (транспорт — `i2p_http.rs`) | `Updater` (`check`/`asset_sha256`/`download`/`install`), обязательный `Sha256Digest`, `Component`, `InstallOutcome`, `target_suffix`, `apply_staged_windows_installer`, `is_deb_install`/`install_deb_now` (пакет ставит менеджер пакетов через `pkexec`, поэтому там установка по кнопке, а не молча) |
 | `agent.rs` | Режим агента: выполнение команд мастера | `run_command`, `handle_console_request`, `parse_control`, `save_uploads`, `BODY_GRANT`/`BODY_REVOKE`/`BODY_OFF` |
-| `card.rs` | Текстовая карточка `gipny:v1:` / `gipny:v2:` для headless-бинарей | `ContactCard`, `is_valid_i2p_address` |
+| `card.rs` | Компактная карточка `gipny:v3:`; импорт прежних v1/v2 | `ContactCard`, `ContactCard::encode` → `Result`, `is_valid_i2p_address`; [формат и ограничения](../docs/contact-cards.md) |
 | `lib.rs` | Реэкспорты | В том числе общая `diagnostics` и `debug_trace!` из `i2p-embed`; [политика релиза и тестов](../docs/release-diagnostics.md) |
 | `tests/` | `crypto.rs` (криптоядро), `compat.rs` + `fixtures/compat-0.4.0` (база и vault из 0.4.0 открываются), `first_run.rs` | — |
 
@@ -46,14 +46,14 @@
 | Имена ассетов автообновления, установка по платформам | `update.rs`: `target_suffix`, `install` |
 | Частота проверки обновлений | `update.rs`: `UPDATE_CHECK_INITIAL_SECS`, `UPDATE_CHECK_INTERVAL_SECS` |
 | Команды консоли агента | `agent.rs` (`handle_console_request`, `HELP_TEXT`) |
-| Формат карточки | `card.rs` **и** `ui/src/api.ts` (`encodeCard`/`decodeCard`) |
+| Формат карточки | `card.rs` **и** `ui/src/contact-card.ts` (`encodeCard`/`decodeCard`, реэкспорт из `api.ts`) |
 | Поведение агента и ботов при приёме и отправке | `session.rs` (`flush_all_pending`, `handle_incoming_envelope`, `relay_for`) |
 
 ## Что менять вместе
 
 - **`session.rs` ↔ `core/src/core.rs`.** Это две копии одной логики доставки. Исправление приёма или отправки почти всегда нужно в обоих файлах.
 - **`relay.rs` ↔ `core/relay/src/proto.rs`.** Протокол описан дважды. Порядок вариантов — это номер на проводе, поэтому golden-тесты стоят в обоих крейтах.
-- **`card.rs` ↔ `ui/src/api.ts`** — формат карточки.
+- **`card.rs` ↔ `ui/src/contact-card.ts`** — формат карточки и общие golden fixtures.
 - **`update.rs` ↔ `.github/workflows/release.yml`** — имена ассетов релиза.
 
 ## Инварианты и грабли
