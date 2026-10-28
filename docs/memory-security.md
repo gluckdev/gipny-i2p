@@ -144,11 +144,49 @@ base64 IPC, `Blob`, браузерные caches, layout/GPU buffers и GC не �
 файлы и сторонние copies находятся за этой границей. JS-шифрование кеша тем же
 доступным процессу ключом не выдаётся за защиту всей RAM.
 
-Написаны, но ещё не исполнены в CI, DOM regressions для switch/lock с задержанными
+DOM regressions проверяют switch/lock с задержанными
 list/pinned responses, фоновых событий без body fetch, stale response после
 tombstone, destroy с незавершённой загрузкой вложений, image URL cleanup и
-deletion-before-image-response. Существующая проверка locale draft invariants
-сохранена; новые изменения не обозначают её повторно пройденной.
+deletion-before-image-response. На checkpoint
+`d907307e5b03a4c6301890d21689835f224a09a7` **2026-10-28** TypeScript/Vite и
+13/13 UI tests, включая эти cases и locale draft invariants, прошли в
+[GitHub Actions](https://github.com/gluckdev/gipny-i2p/actions/runs/40757759828/job/123061162378).
+Это результат UI-границы данного SHA, не подтверждение всех memory/native
+tests или более поздних изменений рабочего дерева.
+
+## Native libi2pd и JNI: принадлежащие нам копии
+
+Rust FFI создаёт приватные NUL-terminated буферы заранее с нужной ёмкостью
+в `Zeroizing<Vec<u8>>`, без промежуточного долгоживущего `CString`. Shim
+очищает принадлежащие ему строки через `OPENSSL_cleanse` до `free`; Base64
+приватных ключей очищается после копирования на границе. Private destination
+cache в Rust хранится как `SealedBlob`, guard заканчивается до network await.
+
+Публичный patch `i2p-embed/patches/0001-clean-owned-private-material.patch`
+применяется к pinned source во всех native CI paths. Он добавляет очистку
+`PrivateKeys`, `B33OfflineKeys` и временных Base64 vectors, `BN_clear_free`
+для private BIGNUM и очистку RedDSA private array. Нативная сборка проверяет
+marker patch и отказывает при его отсутствии. Проверка контекста через
+`git apply --check` прошла на исходном pinned дереве; новой локальной C++
+сборки не выполнялось. Это очистка известных owned buffers; долгоживущие
+private objects C++ роутера ещё не получили полного idle encryption.
+
+Android bridge использует настоящий Tauri JVM и ClassLoader, затем GlobalRef
+класса и AttachGuard фонового потока. Инициализация provider завершается
+до vault create/unlock/import; UI thread не блокируется. Keystore wrapping
+key не экспортируется, краткий binding secret возвращается в Java byte array,
+копируется в `Zeroizing` Rust buffer, Java array очищается до закрытия JNI frame.
+Это не обещание очистки внутренних копий Android crypto service.
+
+Отдельный actual-code отзыв Claude получен 2026-10-28. Подтверждённые замечания
+привели к `Zeroizing<Vec<u8>>` в возвращаемых типах backup plaintext и
+`RatchetState::to_bytes`, а также к сериализации vault authentication/mutations
+одним operation mutex. Он закрывает конкурентное чтение stale attempt counter
+в одном объекте Vault; межпроцессная блокировка этим не заявлена. Предположение
+отзыва о shared signer проверено по pinned `PrivateKeys::operator=`: signer
+сбрасывается и пересоздаётся, а не заимствует private storage исходного объекта.
+Замечание об отсутствии backup KDF bounds относилось к более раннему snapshot;
+лимит был добавлен до получения отзыва. Ответ модели не заменяет GitHub CI.
 
 ## Проверки перед выпуском
 

@@ -410,7 +410,8 @@ impl RatchetState {
 
     fn decrypt_inner(&mut self, header: &RatchetHeader, ct: &[u8], ad: &[u8]) -> Result<Vec<u8>> {
         if let Some(mk) = self.skipped.remove(&(header.dh, header.n)) {
-            return aead_decrypt(&mk.open()?, ad, header, ct);
+            let guard = mk.open()?;
+            return aead_decrypt(&guard, ad, header, ct);
         }
         if Some(header.dh) != self.dhr {
             self.skip_message_keys(header.pn)?;
@@ -501,10 +502,10 @@ mod sealed32 {
     use super::*;
     pub fn serialize<S: serde::Serializer>(key: &Sealed<32>, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let guard = key.open().map_err(serde::ser::Error::custom)?;
-        (*guard).serialize(serializer)
+        serde::Serialize::serialize(&*guard, serializer)
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Sealed<32>, D::Error> {
-        let key = Zeroizing::new(<[u8; 32]>::deserialize(deserializer)?);
+        let key = Zeroizing::new(<[u8; 32] as serde::Deserialize>::deserialize(deserializer)?);
         Sealed::from_slice(SecretKind::Ratchet, &*key).map_err(serde::de::Error::custom)
     }
 }

@@ -35,8 +35,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
+      - name: Pinned certificate source for the stub fixture
+        # The Rust shim needs its embedded certificate fixture. Recursive
+        # Android Boost/OpenSSL test repositories are unrelated to this check;
+        # full native/release jobs still initialize all their pinned sources.
+        run: git submodule update --init --depth 1 third_party/i2pd
       - uses: dtolnay/rust-toolchain@1.93.1
       - uses: actions/setup-node@v7
         with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
@@ -86,8 +89,8 @@ jobs:
       RANLIB_aarch64_linux_android: llvm-ranlib
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
+      - name: Pinned certificate source for the stub fixture
+        run: git submodule update --init --depth 1 third_party/i2pd
       - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: aarch64-linux-android

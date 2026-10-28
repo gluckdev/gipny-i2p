@@ -25,6 +25,7 @@ function Read-GipnyUpdateJournal([string]$InstallDir) {
 function Save-GipnyUpdateJournal([string]$InstallDir, $Record, [switch]$Replace) {
     $path = Join-Path $InstallDir '.agent-update-state.json'
     $temp = Join-Path $InstallDir ('.agent-update-state-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $previous = Join-Path $InstallDir ('.agent-update-state-' + [guid]::NewGuid().ToString('N') + '.old')
     try {
         $output = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try {
@@ -32,9 +33,14 @@ function Save-GipnyUpdateJournal([string]$InstallDir, $Record, [switch]$Replace)
             $output.Write($bytes, 0, $bytes.Length)
             $output.Flush($true)
         } finally { $output.Dispose() }
-        if ($Replace) { [IO.File]::Replace($temp, $path, $null) }
+        # Windows PowerShell converts $null to an empty string for this .NET
+        # overload. Use an owned backup path, then remove that old journal.
+        if ($Replace) { [IO.File]::Replace($temp, $path, $previous) }
         else { [IO.File]::Move($temp, $path) }
-    } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue } }
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $previous) { Remove-Item -LiteralPath $previous -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 function Get-GipnyImageHash([string]$Path) {
