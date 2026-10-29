@@ -41,7 +41,7 @@ section[id], main { scroll-margin-top: 2rem; }
 .language-switch { display: flex; gap: 2px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
 .language-switch button { min-width: 42px; min-height: 36px; padding: 4px 9px; border: none; border-radius: 5px; color: var(--muted); background: transparent; font-size: .75rem; font-weight: 650; cursor: pointer; }
 .language-switch button[aria-pressed="true"] { color: var(--background); background: var(--mint); }
-.hero { display: grid; grid-template-columns: 1.12fr 1fr; align-items: center; gap: 64px; padding: 98px 0 106px; }
+.hero { position: relative; display: grid; grid-template-columns: 1.12fr 1fr; align-items: center; gap: 64px; padding: 98px 0 106px; }
 .eyebrow { color: var(--mint); display: flex; align-items: center; gap: 9px; font-size: .69rem; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; }
 .status-dot { height: 6px; width: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 12px #a7f6d245; }
 h1 { font-size: clamp(2.8rem, 4.7vw, 4rem); margin-top: 25px; }
@@ -66,11 +66,11 @@ h1 > span { display: block; }
 .device-icon::after { position: absolute; content: ""; height: 2px; width: 8px; bottom: 4px; border-radius: 2px; background: #85adb2; }
 .device-icon > span { width: 10px; height: 10px; border: 1px solid var(--mint); border-radius: 3px; }
 .route-connection { display: flex; justify-content: space-around; align-self: start; padding-top: 23px; }
-.route-connection i { height: 2px; width: 2px; border-radius: 50%; background: #79bba4; }
+.route-connection i { height: 5px; width: 5px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 8px #a7f6d2, 0 0 18px #a7f6d266; }
 .network-orbit { position: relative; width: 52px; height: 43px; }
-.network-orbit::before, .network-orbit::after { content: ""; position: absolute; left: 3px; top: 2px; width: 44px; height: 34px; border: 1px solid #659488; border-radius: 50%; transform: rotate(55deg); }
+.network-orbit::before, .network-orbit::after { content: ""; position: absolute; left: 3px; top: 2px; width: 44px; height: 34px; border: 1px solid #7fb8a6; border-radius: 50%; transform: rotate(55deg); }
 .network-orbit::after { transform: rotate(-55deg); }
-.network-orbit i { position: absolute; width: 6px; height: 6px; background: var(--mint); border: 2px solid #173e3d; border-radius: 50%; z-index: 1; }
+.network-orbit i { position: absolute; width: 7px; height: 7px; background: var(--mint); border: 2px solid #173e3d; border-radius: 50%; box-shadow: 0 0 10px #a7f6d2; z-index: 1; }
 .network-orbit i:first-child { left: 4px; top: 5px; }
 .network-orbit i:nth-child(2) { right: 4px; top: 5px; }
 .network-orbit i:nth-child(3) { left: 22px; bottom: 0; }
@@ -185,8 +185,12 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
 .catalog-resources { display: flex; flex-wrap: wrap; gap: 4px 22px; min-width: 0; }
 .catalog-resources a { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; font-size: .8rem; overflow-wrap: anywhere; }
 .hero-actions .text-link { min-height: 44px; }
+.garlic-backdrop { position: absolute; z-index: -1; top: -120px; left: 24%; width: min(58%, 680px); height: auto; color: var(--mint); pointer-events: none; }
+@media (max-width: 1000px) { .garlic-backdrop { top: -90px; left: 18%; width: 66%; } }
+@media (max-width: 740px) { .garlic-backdrop { top: -40px; right: 0; width: 84%; opacity: .75; } }
 .route-endpoint, .route-network { position: relative; }
-.route-endpoint::before, .route-network::before { content: ""; position: absolute; top: -15px; left: calc(50% - 38px); width: 76px; height: 76px; border-radius: 50%; background: radial-gradient(circle, #a7f6d2 0%, transparent 70%); opacity: 0; pointer-events: none; }
+.route-endpoint::before, .route-network::before { content: ""; position: absolute; top: -26px; left: calc(50% - 50px); width: 100px; height: 100px; border-radius: 50%; background: radial-gradient(circle, #d6fff0 0%, #a7f6d2 24%, #a7f6d255 48%, transparent 70%); opacity: 0; pointer-events: none; }
+.route-endpoint > *, .route-network > * { position: relative; z-index: 1; }
 @media (max-width: 740px) {
   .language-switch button { min-height: 44px; min-width: 44px; }
   .main-nav a { display: inline-flex; align-items: center; min-height: 44px; }
@@ -202,13 +206,34 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
   .route-connection i { animation: message-flow 6s ease-in-out infinite; animation-delay: var(--flow-delay); }
   .route-connection i:nth-child(2) { animation-delay: calc(var(--flow-delay) + .15s); }
   .route-connection i:nth-child(3) { animation-delay: calc(var(--flow-delay) + .3s); }
+  .network-orbit::before { animation: orbit-spin 16s linear infinite; }
+  .network-orbit::after { animation: orbit-spin-back 16s linear infinite; }
+  .network-orbit i { animation: node-pulse 6s ease-in-out infinite; animation-delay: 1.4s; }
+  .network-orbit i:nth-child(2) { animation-delay: 1.9s; }
+  .network-orbit i:nth-child(3) { animation-delay: 2.4s; }
+  .garlic-backdrop { animation: garlic-drift 18s ease-in-out infinite; }
+  .garlic-trail { animation: trail-pulse 6s ease-in-out infinite; }
   @keyframes message-glow {
-    0%, 35%, 100% { opacity: 0; transform: scale(.88); }
-    18% { opacity: .18; transform: scale(1.05); }
+    0%, 35%, 100% { opacity: 0; transform: scale(.85); }
+    18% { opacity: .6; transform: scale(1.15); }
   }
   @keyframes message-flow {
-    0%, 35%, 100% { opacity: .35; transform: translateX(0); }
-    18% { opacity: 1; transform: translateX(2px); }
+    0%, 35%, 100% { opacity: .3; transform: translateX(0) scale(1); }
+    18% { opacity: 1; transform: translateX(5px) scale(1.6); }
+  }
+  @keyframes node-pulse {
+    0%, 40%, 100% { opacity: .8; transform: scale(1); }
+    20% { opacity: 1; transform: scale(1.6); }
+  }
+  @keyframes orbit-spin { from { transform: rotate(55deg); } to { transform: rotate(415deg); } }
+  @keyframes orbit-spin-back { from { transform: rotate(-55deg); } to { transform: rotate(-415deg); } }
+  @keyframes garlic-drift {
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+    50% { transform: translate3d(-16px, 14px, 0) rotate(-2deg); }
+  }
+  @keyframes trail-pulse {
+    0%, 100% { opacity: .55; }
+    50% { opacity: 1; }
   }
 }
 @media (prefers-reduced-motion: reduce) {
