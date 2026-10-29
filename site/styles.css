@@ -160,6 +160,57 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
   .site-footer { flex-wrap: wrap; justify-content: flex-start; gap: 13px 23px; padding-bottom: 28px; }
   .site-footer p { flex-basis: calc(100% - 120px); }
 }
+.downloads-intro { max-width: 760px; color: var(--muted); margin-bottom: 24px; }
+.catalog-release { color: var(--muted); font-size: .85rem; margin-bottom: 20px; }
+.catalog-release a { color: var(--mint); }
+.download-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 18px; min-width: 0; }
+.download-platform { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.download-platform h3 { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; font-size: 1.25rem; }
+.platform-icon { display: inline-block; width: 32px; height: 32px; flex-shrink: 0; color: var(--mint); }
+.download-files { display: grid; gap: 8px; }
+.download-file { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: center; gap: 3px 10px; min-height: 60px; min-width: 0; padding: 11px 12px; border: 1px solid #39575e; border-radius: 7px; text-decoration: none; background: var(--background); }
+.download-file:hover { border-color: var(--mint); }
+.download-architecture { min-width: 0; font-size: .85rem; font-weight: 650; overflow-wrap: anywhere; }
+.download-file-info { grid-row: 2; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
+.download-arrow { grid-column: 2; grid-row: 1 / 3; align-self: center; color: var(--mint); font-size: 1.3rem; }
+.download-advanced { margin-top: 25px; border: 1px solid var(--line); border-radius: 10px; padding: 0 18px; }
+.download-advanced summary { min-height: 56px; padding: 14px 0; cursor: pointer; color: var(--mint); font-weight: 650; overflow-wrap: anywhere; }
+.download-advanced summary:focus-visible { outline: 3px solid var(--mint); outline-offset: 3px; }
+.download-advanced-note { color: var(--muted); font-size: .85rem; margin: 5px 0 25px; }
+.download-component { margin-bottom: 24px; min-width: 0; }
+.download-component h4 { margin: 0 0 13px; font-size: .95rem; }
+.download-component-file { padding: 13px; }
+.download-component-file > .platform-icon { width: 25px; height: 25px; margin-bottom: 10px; }
+.catalog-verification { margin: 25px 0 8px; color: var(--muted); font-size: .82rem; }
+.catalog-resources { display: flex; flex-wrap: wrap; gap: 4px 22px; min-width: 0; }
+.catalog-resources a { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; font-size: .8rem; overflow-wrap: anywhere; }
+.hero-actions .text-link { min-height: 44px; }
+.route-endpoint, .route-network { position: relative; }
+.route-endpoint::before, .route-network::before { content: ""; position: absolute; top: -15px; left: calc(50% - 38px); width: 76px; height: 76px; border-radius: 50%; background: radial-gradient(circle, #a7f6d2 0%, transparent 70%); opacity: 0; pointer-events: none; }
+@media (max-width: 740px) {
+  .language-switch button { min-height: 44px; min-width: 44px; }
+  .main-nav a { display: inline-flex; align-items: center; min-height: 44px; }
+  .download-platform { padding: 16px; }
+  .download-advanced { padding: 0 13px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .route-endpoint::before, .route-network::before { animation: message-glow 6s ease-in-out infinite; }
+  .route-network::before { animation-delay: 1.4s; }
+  .route-endpoint:last-child::before { animation-delay: 2.8s; }
+  .route-connection { --flow-delay: .7s; }
+  .route-connection:nth-child(4) { --flow-delay: 2.1s; }
+  .route-connection i { animation: message-flow 6s ease-in-out infinite; animation-delay: var(--flow-delay); }
+  .route-connection i:nth-child(2) { animation-delay: calc(var(--flow-delay) + .15s); }
+  .route-connection i:nth-child(3) { animation-delay: calc(var(--flow-delay) + .3s); }
+  @keyframes message-glow {
+    0%, 35%, 100% { opacity: 0; transform: scale(.88); }
+    18% { opacity: .18; transform: scale(1.05); }
+  }
+  @keyframes message-flow {
+    0%, 35%, 100% { opacity: .35; transform: translateX(0); }
+    18% { opacity: 1; transform: translateX(2px); }
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   :root { scroll-behavior: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
