@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,105 +7,112 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#09151e">
-  <meta name="description" content="gipny-i2p is an open-source messenger with end-to-end encryption and a built-in I2P router. Explore native apps for desktop and Android.">
-  <title>gipny.i2p — Private conversations. Your own keys.</title>
+  <meta name="description" content="Мессенджер с открытым кодом для компьютеров и Android: сквозное шифрование, встроенный I2P и контакты без номера телефона.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="gipny.i2p — Личная переписка через I2P.">
+  <meta property="og:description" content="Мессенджер с открытым кодом для компьютеров и Android: сквозное шифрование, встроенный I2P и контакты без номера телефона.">
+  <meta property="og:locale" content="ru_RU">
+  <meta property="og:locale:alternate" content="en_US">
+  <title>gipny.i2p — Личная переписка через I2P.</title>
   <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./styles.css">
   <script type="module" src="./main.js"></script>
 </head>
 <body>
-  <a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
+  <a class="skip-link" href="#main" data-i18n="skip">Перейти к содержимому</a>
   <div class="page-shell">
     <header class="site-header">
       <a class="brand" href="#main" aria-label="gipny.i2p">
         <img src="./assets/logo.svg" width="42" height="42" alt="">
         <span>gipny<span class="brand-network">.i2p</span></span>
       </a>
-      <nav class="main-nav" aria-label="Main navigation" data-i18n-aria="navLabel">
-        <a href="#principles" data-i18n="navPrinciples">The idea</a>
-        <a href="#get-started" data-i18n="navApps">Get the app</a>
-        <a href="#browser" data-i18n="navBrowser">In the browser?</a>
+      <nav class="main-nav" aria-label="Основная навигация" data-i18n-aria="navLabel">
+        <a href="#principles" data-i18n="navPrinciples">Как работает</a>
+        <a href="#get-started" data-i18n="navApps">Скачать</a>
+        <a href="#browser" data-i18n="navBrowser">А в браузере?</a>
       </nav>
-      <div class="language-switch" role="group" aria-label="Site language" data-i18n-aria="languageLabel" hidden>
-        <button type="button" data-language="en" lang="en" aria-pressed="true" aria-label="Read in English">EN</button>
-        <button type="button" data-language="ru" lang="ru" aria-pressed="false" aria-label="Читать по-русски">RU</button>
+      <div class="language-switch" role="group" aria-label="Язык сайта" data-i18n-aria="languageLabel" hidden>
+        <button type="button" data-language="en" lang="en" aria-pressed="false" aria-label="Read in English">EN</button>
+        <button type="button" data-language="ru" lang="ru" aria-pressed="true" aria-label="Читать по-русски">RU</button>
       </div>
     </header>
 
     <main id="main" tabindex="-1">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span><span data-i18n="heroEyebrow">Private messaging. Built on I2P.</span></p>
-          <h1 id="hero-title"><span data-i18n="heroTitleOne">Private conversations.</span><span class="accent" data-i18n="heroTitleTwo">Your own keys.</span></h1>
-          <p class="hero-description" data-i18n="heroDescription">An open-source messenger with end-to-end encryption, a built-in I2P router and an identity that doesn’t start with your phone number.</p>
+          <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span><span data-i18n="heroEyebrow">Переписка со сквозным шифрованием</span></p>
+          <h1 id="hero-title"><span data-i18n="heroTitleOne">Ваши разговоры.</span><span class="accent" data-i18n="heroTitleTwo">Ваши ключи.</span></h1>
+          <p class="hero-description" data-i18n="heroDescription">Общайтесь и передавайте файлы без привязки к номеру телефона. Ключи и история хранятся на вашем устройстве, а встроенный роутер подключает приложение к I2P.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/gluckdev/gipny-i2p/releases/latest"><span data-i18n="download">Get the native app</span><span aria-hidden="true">↗</span></a>
-            <a class="text-link" href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="source">Explore the source</span><span aria-hidden="true">↗</span></a>
+            <a class="button button-primary" href="https://github.com/gluckdev/gipny-i2p/releases/latest"><span data-i18n="download">Скачать приложение</span><span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="source">Открыть исходники</span><span aria-hidden="true">↗</span></a>
           </div>
-          <p class="availability" data-i18n="availability">Native releases for Linux, Windows, macOS and Android.</p>
+          <p class="availability" data-i18n="availability">Загрузки и инструкции для Linux, Windows, macOS и Android.</p>
         </div>
 
         <figure class="message-path">
-          <div class="path-header"><span class="tiny-label" data-i18n="pathEyebrow">The path of a message</span><span class="path-badge">E2E</span></div>
+          <div class="path-header"><span class="tiny-label" data-i18n="pathEyebrow">Путь сообщения</span><span class="path-badge">E2E</span></div>
           <div class="path-route">
-            <div class="route-endpoint"><span class="device-icon" aria-hidden="true"><span></span></span><span data-i18n="pathSender">Your device</span></div>
+            <div class="route-endpoint"><span class="device-icon" aria-hidden="true"><span></span></span><span data-i18n="pathSender">Ваше устройство</span></div>
             <div class="route-connection" aria-hidden="true"><i></i><i></i><i></i></div>
             <div class="route-network"><span class="network-orbit" aria-hidden="true"><i></i><i></i><i></i></span><span>I2P</span></div>
             <div class="route-connection" aria-hidden="true"><i></i><i></i><i></i></div>
-            <div class="route-endpoint"><span class="device-icon" aria-hidden="true"><span></span></span><span data-i18n="pathRecipient">Their device</span></div>
+            <div class="route-endpoint"><span class="device-icon" aria-hidden="true"><span></span></span><span data-i18n="pathRecipient">Устройство собеседника</span></div>
           </div>
-          <div class="sealed-note"><span class="lock-icon" aria-hidden="true"></span><span data-i18n="pathSealed">Encrypted before it leaves.</span></div>
-          <figcaption data-i18n="pathCaption">I2P carries the traffic. End-to-end encryption protects the content. Relays forward encrypted messages.</figcaption>
-          <div class="path-footer"><span data-i18n="pathLocal">Private keys stay local</span><span aria-hidden="true">↔</span><span data-i18n="pathNoAccount">No phone account</span></div>
+          <div class="sealed-note"><span class="lock-icon" aria-hidden="true"></span><span data-i18n="pathSealed">Сначала шифрование — затем отправка.</span></div>
+          <figcaption data-i18n="pathCaption">I2P переносит трафик, а сквозное шифрование защищает текст и вложения. Релеи передают и временно хранят шифротекст; собеседник расшифровывает его на своём устройстве.</figcaption>
+          <div class="path-footer"><span data-i18n="pathLocal">Ключи на вашем устройстве</span><span aria-hidden="true">↔</span><span data-i18n="pathNoAccount">Без номера телефона</span></div>
         </figure>
       </section>
 
       <section class="principles section" id="principles" aria-labelledby="principles-title">
-        <div class="section-heading"><p class="eyebrow" data-i18n="principlesEyebrow">A different starting point</p><h2 id="principles-title" data-i18n="principlesTitle">Less to hand over. More to keep yours.</h2></div>
+        <div class="section-heading"><p class="eyebrow" data-i18n="principlesEyebrow">Как это устроено</p><h2 id="principles-title" data-i18n="principlesTitle">Контроль начинается с вашего устройства.</h2></div>
         <div class="principle-grid">
-          <article class="principle"><span class="card-number" aria-hidden="true">01</span><h3 data-i18n="identityTitle">An identity, not a phone number.</h3><p data-i18n="identityBody">Your cryptographic identity replaces a phone or email account. Add people by exchanging contact cards.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">02</span><h3 data-i18n="encryptionTitle">Sealed on your device.</h3><p data-i18n="encryptionBody">Messages are encrypted before they reach a relay. The recipient decrypts them locally, using X3DH and Double Ratchet sessions.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">03</span><h3 data-i18n="networkTitle">I2P comes with the app.</h3><p data-i18n="networkBody">The i2pd router is built in. Client messages travel through I2P, with no direct-IP message fallback when the network is unavailable.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">01</span><h3 data-i18n="identityTitle">Ключ контакта вместо номера телефона.</h3><p data-i18n="identityBody">Профиль создаётся локально, без регистрации по телефону или почте. Обменяйтесь карточками контакта и сверьте отпечатки по доверенному каналу.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">02</span><h3 data-i18n="encryptionTitle">Шифрование до отправки.</h3><p data-i18n="encryptionBody">Личные чаты используют X3DH и Double Ratchet. Сообщения и файлы шифруются до передачи релеям, а расшифровываются на устройствах участников.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">03</span><h3 data-i18n="networkTitle">I2P встроен в приложение.</h3><p data-i18n="networkBody">Отдельный роутер устанавливать не нужно. При недоступности I2P или релеев доставка может задержаться; прямой IP-канал для сообщений не используется.</p></article>
         </div>
+        <aside class="hosting-note" aria-label="Защита и её границы" data-i18n-aria="securityLabel"><p data-i18n="securityBoundary">Релеи видят служебные данные доставки, а интернет-провайдер может заметить использование I2P. Заражённое устройство может раскрыть переписку. Копии, которые собеседник сохранил отдельно, нельзя удалить удалённо.</p></aside>
       </section>
 
       <section class="native-section section" id="get-started" aria-labelledby="native-title">
         <div class="native-copy">
-          <p class="pill pill-available" data-i18n="nativeStatus">Available now · native apps</p>
-          <h2 id="native-title" data-i18n="nativeTitle">Start with an app that already speaks I2P.</h2>
-          <p data-i18n="nativeBody">Private chats, groups, attachments and contact verification — in desktop and Android apps. Choose your platform on the release page.</p>
-          <a class="button button-primary" href="https://github.com/gluckdev/gipny-i2p/releases/latest"><span data-i18n="nativeDownload">See downloads</span><span aria-hidden="true">↗</span></a>
+          <p class="pill pill-available" data-i18n="nativeStatus">Приложения для компьютеров и Android</p>
+          <h2 id="native-title" data-i18n="nativeTitle">Выберите приложение для своего устройства.</h2>
+          <p data-i18n="nativeBody">Личные чаты, группы, вложения и проверка контактов работают в приложении. На странице релиза есть пакеты, поддерживаемые архитектуры и инструкции; перед установкой проверьте требования к системе.</p>
+          <a class="button button-primary" href="https://github.com/gluckdev/gipny-i2p/releases/latest"><span data-i18n="nativeDownload">Открыть загрузки</span><span aria-hidden="true">↗</span></a>
           <p class="technology">Rust <span aria-hidden="true">/</span> Tauri <span aria-hidden="true">/</span> i2pd</p>
         </div>
         <ol class="steps">
-          <li><span class="step-index" aria-hidden="true">1</span><div><h3 data-i18n="stepOneTitle">Get the app.</h3><p data-i18n="stepOneBody">Download the release for your device and follow the installation notes.</p></div></li>
-          <li><span class="step-index" aria-hidden="true">2</span><div><h3 data-i18n="stepTwoTitle">Create a local profile.</h3><p data-i18n="stepTwoBody">Your identity and keys are created on your device. Give the built-in router time to connect.</p></div></li>
-          <li><span class="step-index" aria-hidden="true">3</span><div><h3 data-i18n="stepThreeTitle">Exchange contact cards.</h3><p data-i18n="stepThreeBody">Add someone you know and compare contact fingerprints through a channel you trust.</p></div></li>
+          <li><span class="step-index" aria-hidden="true">1</span><div><h3 data-i18n="stepOneTitle">Скачайте приложение.</h3><p data-i18n="stepOneBody">Выберите пакет для своей системы и архитектуры. Прочитайте инструкцию по установке и требования к защите устройства.</p></div></li>
+          <li><span class="step-index" aria-hidden="true">2</span><div><h3 data-i18n="stepTwoTitle">Создайте локальный профиль.</h3><p data-i18n="stepTwoBody">Задайте пароль. Приложение создаст личность и ключи локально; для хранилища нужен поддерживаемый механизм защиты операционной системы. Дайте I2P время подключиться.</p></div></li>
+          <li><span class="step-index" aria-hidden="true">3</span><div><h3 data-i18n="stepThreeTitle">Обменяйтесь карточками.</h3><p data-i18n="stepThreeBody">Передайте свою карточку по доверенному каналу и добавьте карточку собеседника. Прежде чем обсуждать важное, сравните отпечатки контакта.</p></div></li>
         </ol>
       </section>
 
       <section class="browser-section section" id="browser" aria-labelledby="browser-title">
         <div class="browser-mark" aria-hidden="true"><span>&gt;_</span><i></i></div>
         <div class="browser-copy">
-          <p class="pill pill-research" data-i18n="browserStatus">Research · not available yet</p>
-          <h2 id="browser-title" data-i18n="browserTitle">A browser client, with the device in control.</h2>
-          <p data-i18n="browserBody">The goal is a static client with cryptography and storage on your device. Pages would only serve the site and code. Browser-to-I2P transport is still being researched.</p>
-          <p class="browser-boundary" data-i18n="browserBoundary">This is the project website. It does not send or receive messages, create profiles or hold your keys.</p>
-          <aside class="hosting-note" aria-label="Visiting this site" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">No analytics run here. GitHub Pages still sees normal page requests, including your IP address and access time. This site does not access your messages, contacts or keys.</p></aside>
+          <p class="pill pill-research" data-i18n="browserStatus">В разработке · пока недоступно</p>
+          <h2 id="browser-title" data-i18n="browserTitle">Скоро — веб-клиент.</h2>
+          <p data-i18n="browserBody">Код будет выполняться в браузере на вашем устройстве; ключи, шифрование и хранилище останутся у вас. Хостинг будет раздавать только сайт и код. Связь браузера с I2P ещё прорабатывается.</p>
+          <p class="browser-boundary" data-i18n="browserTimeline">Планируем выпустить веб-клиент до весны 2027 года.</p>
+          <p class="browser-boundary" data-i18n="browserBoundary">Перед вами сайт проекта. Он не отправляет и не принимает сообщения, не создаёт профили и не хранит ваши ключи.</p>
+          <aside class="hosting-note" aria-label="О посещении сайта" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">На сайте нет аналитики и внешних скриптов. Но его хостинг, GitHub Pages, видит запросы страниц, включая IP-адрес и время посещения. Открытие сайта само по себе не включает защиту I2P; сайт не получает ваши сообщения, контакты или ключи.</p></aside>
         </div>
       </section>
 
       <section class="open-section section" aria-labelledby="open-title">
-        <div><p class="eyebrow" data-i18n="openEyebrow">Open development</p><h2 id="open-title" data-i18n="openTitle">The code is part of the conversation.</h2><p data-i18n="openBody">Explore the architecture, read the documented trade-offs and follow the work in the repository.</p></div>
+        <div><p class="eyebrow" data-i18n="openEyebrow">Открытая разработка</p><h2 id="open-title" data-i18n="openTitle">Открытый код. Понятные ограничения.</h2><p data-i18n="openBody">Исходники, архитектура и описание защиты доступны публично. Следите за разработкой, изучайте известные ограничения и сообщайте о проблемах.</p></div>
         <div class="resource-links">
-          <a href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="resourceCode">Source code & issues</span><span aria-hidden="true">↗</span></a>
-          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/README.md"><span data-i18n="resourceDocs">Project documentation (Russian)</span><span aria-hidden="true">↗</span></a>
-          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/SECURITY.md"><span data-i18n="resourceSecurity">Security policy</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="resourceCode">Исходники и задачи</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/README.md"><span data-i18n="resourceDocs">Документация проекта</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/SECURITY.md"><span data-i18n="resourceSecurity">Политика безопасности</span><span aria-hidden="true">↗</span></a>
         </div>
       </section>
     </main>
 
-    <footer class="site-footer"><a class="footer-brand" href="#main">gipny<span>.i2p</span></a><p><span data-i18n="footerAttribution">An I2P fork of</span> <a href="https://github.com/ri-kont/gipny">gipny</a>.</p><a href="https://github.com/gluckdev/gipny-i2p/releases" data-i18n="footerReleases">Release history</a></footer>
+    <footer class="site-footer"><a class="footer-brand" href="#main">gipny<span>.i2p</span></a><p><span data-i18n="footerAttribution">I2P-форк проекта</span> <a href="https://github.com/ri-kont/gipny">gipny</a>.</p><a href="https://github.com/gluckdev/gipny-i2p/releases" data-i18n="footerReleases">История релизов</a></footer>
   </div>
 </body>
 </html>

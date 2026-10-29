@@ -17,7 +17,7 @@ set -euo pipefail
 TAG="$1"
 DIR="$2"
 REPO="$3"
-REF="${4:-$TAG}"
+REF="$(git rev-parse --verify "${4:-$TAG}^{commit}")"
 VERSION="${TAG#v}"
 BASE="https://github.com/$REPO/releases/download/$TAG"
 
@@ -100,7 +100,9 @@ highlights="docs/releases/$VERSION.md"
   echo "Анонимный мессенджер поверх i2p со сквозным шифрованием. Без номера телефона и почты; релей для доставки может поднять любой."
   echo
   if [ -f "$highlights" ]; then
-    cat "$highlights"
+    # Highlights live in docs/releases/. Resolve their parent-doc links when
+    # embedding them on a release page, where repository-relative URLs fail.
+    sed "s#](\.\./#](https://github.com/$REPO/blob/$REF/docs/#g" "$highlights"
     echo
   fi
 
@@ -120,8 +122,8 @@ highlights="docs/releases/$VERSION.md"
   echo "- **macOS** — перетащите приложение в «Программы». При первом запуске macOS его заблокирует: откройте *Системные настройки → Конфиденциальность и безопасность* и разрешите открытие. Или в терминале: \`xattr -dr com.apple.quarantine /Applications/gipny-i2p.app\`"
   echo "- **Linux** — AppImage: \`chmod +x gipny-i2p_*.AppImage\` и запустить. deb: \`sudo apt install ./gipny-i2p_*.deb\`"
   echo "- **Android** — разрешите установку из этого источника, когда телефон спросит. Релизы подписаны одним постоянным ключом, поэтому следующие версии ставятся поверх установленной."
-  echo "- **Релей** — архив для своего сервера: \`gipny-relay\` (роутер внутри) и systemd-юнит. Отдельного \`i2pd\` в архиве нет. Как развернуть — [в README](https://github.com/$REPO#2-запуск-собственного-выделенного-релея)."
-  echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P. В архиве \`gipny-agent\` (роутер внутри), снимок сети \`i2pd-netdb-seed.tar.gz\` и установщик для соответствующей платформы; Linux также содержит systemd-юнит. Команду установки можно скопировать в настройках GIPNY; как поставить вручную — в \`README.txt\` внутри и [в README](https://github.com/$REPO#%EF%B8%8F-remote-agent--удалённая-консоль)."
+  echo "- **Релей** — архив для своего сервера: \`gipny-relay\` (роутер внутри) и systemd-юнит. Отдельного \`i2pd\` в архиве нет. Как развернуть — [в README](https://github.com/$REPO/blob/$REF/README.md#2-запуск-собственного-выделенного-релея)."
+  echo "- **Агент** — автономный демон \`gipny-agent\` для удалённого исполнения консольных команд мастером через E2E-канал I2P. В архиве \`gipny-agent\` (роутер внутри), снимок сети \`i2pd-netdb-seed.tar.gz\` и установщик для соответствующей платформы; Linux также содержит systemd-юнит. Команду установки можно скопировать в настройках GIPNY; как поставить вручную — в \`README.txt\` внутри и [в README](https://github.com/$REPO/blob/$REF/README.md#2-автономный-headless-демон-gipny-agent)."
   echo "- **OpenWrt** — отдельные статические musl-архивы агента для четырёх ABI, без systemd и без внешнего i2pd. Выбор по CPU/ABI и памяти, а не году выпуска роутера; MIPS/MIPSel в эту версию не входят. [Совместимость, установка procd и пределы проверки](https://github.com/$REPO/blob/$REF/docs/openwrt.md)."
   echo
   echo "## Проверка файлов"

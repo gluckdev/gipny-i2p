@@ -24,11 +24,16 @@ function documentFixture() {
   const aria = [...html.matchAll(/data-i18n-aria="([^"]+)"/g)].map(match => new Element({ i18nAria: match[1] }));
   const buttons = ['en', 'ru'].map(language => new Element({ language }));
   const description = new Element();
+  const openGraph = Object.fromEntries(['title', 'description', 'locale', 'locale:alternate'].map(key => [key, new Element()]));
   const languageSwitch = new Element();
   return {
-    documentElement: {}, title: '', text, aria, buttons, description, languageSwitch,
+    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch,
     querySelectorAll(selector) { return { '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons }[selector]; },
-    querySelector(selector) { return { 'meta[name="description"]': description, '.language-switch': languageSwitch }[selector]; },
+    querySelector(selector) {
+      return { 'meta[name="description"]': description, '.language-switch': languageSwitch,
+        ...Object.fromEntries(Object.entries(openGraph).map(([key, node]) => [`meta[property="og:${key}"]`, node])),
+      }[selector];
+    },
   };
 }
 
@@ -42,24 +47,44 @@ test('both languages cover every rendered string and accessible label', () => {
     assert.notEqual(messages.ru[key], messages.en[key], `untranslated ${key}`);
   }
   for (const match of html.matchAll(/<([a-z][\w-]*)\b[^>]*data-i18n="([^"]+)"[^>]*>([^<]*)<\/\1>/g)) {
-    assert.equal(match[3], messages.en[match[2]], `English fallback differs for ${match[2]}`);
+    assert.equal(match[3], messages.ru[match[2]], `Russian fallback differs for ${match[2]}`);
   }
-  assert.match(html, /<html lang="en">/);
+  for (const match of html.matchAll(/<[^>]+aria-label="([^"]*)"[^>]+data-i18n-aria="([^"]+)"[^>]*>/g)) {
+    assert.equal(match[1], messages.ru[match[2]], `Russian accessible name differs for ${match[2]}`);
+  }
+  assert.match(html, /<html lang="ru">/);
   assert.match(messages.en.browserStatus, /not available/i);
   assert.match(messages.ru.browserStatus, /недоступно/i);
   assert.match(messages.en.browserBoundary, /does not send or receive messages/);
   assert.match(messages.ru.browserBoundary, /не отправляет и не принимает сообщения/);
+  assert.match(messages.ru.browserStatus, /В разработке/);
+  assert.match(messages.ru.browserTimeline, /Планируем.*до весны 2027/);
+  assert.match(messages.en.browserTimeline, /plan.*before spring 2027/);
 });
 
-test('language preference honors explicit links, supported browser locales and English fallback', () => {
+test('Russian is the default regardless of browser locale; explicit language links keep their choice', () => {
   assert.equal(resolveLanguage('', ['ru-RU', 'en-US']), 'ru');
-  assert.equal(resolveLanguage('', ['en-GB', 'ru-RU']), 'en');
+  assert.equal(resolveLanguage('', ['en-GB', 'ru-RU']), 'ru');
   assert.equal(resolveLanguage('', ['fr-FR', 'ru']), 'ru');
-  assert.equal(resolveLanguage('', ['fr-FR']), 'en');
-  assert.equal(resolveLanguage(), 'en');
+  assert.equal(resolveLanguage('', ['fr-FR']), 'ru');
+  assert.equal(resolveLanguage(), 'ru');
   assert.equal(resolveLanguage('?lang=en', ['ru-RU']), 'en');
   assert.equal(resolveLanguage('?lang=ru', ['en-US']), 'ru');
   assert.equal(resolveLanguage('?lang=__proto__', ['ru-RU']), 'ru');
+  assert.equal(resolveLanguage('?lang=unknown', ['en-US']), 'ru');
+  assert.equal(resolveLanguage('?lang=en-US', ['en-US']), 'ru');
+});
+
+test('static title, description, Open Graph and pressed language agree with the Russian no-script page', () => {
+  assert.equal(html.match(/<title>([^<]+)<\/title>/)[1], messages.ru.title);
+  assert.equal(html.match(/<meta name="description" content="([^"]+)"/)[1], messages.ru.description);
+  for (const key of ['title', 'description']) {
+    assert.equal(html.match(new RegExp(`<meta property="og:${key}" content="([^"]+)"`))[1], messages.ru[key]);
+  }
+  assert.match(html, /property="og:locale" content="ru_RU"/);
+  assert.match(html, /property="og:locale:alternate" content="en_US"/);
+  assert.match(html, /data-language="ru" lang="ru" aria-pressed="true"/);
+  assert.match(html, /data-language="en" lang="en" aria-pressed="false"/);
 });
 
 test('language switch updates content, metadata and pressed state without HTML injection', () => {
@@ -68,22 +93,38 @@ test('language switch updates content, metadata and pressed state without HTML i
   assert.equal(doc.documentElement.lang, 'ru');
   assert.equal(doc.title, messages.ru.title);
   assert.equal(doc.description.attributes.content, messages.ru.description);
+  assert.equal(doc.openGraph.title.attributes.content, messages.ru.title);
+  assert.equal(doc.openGraph.description.attributes.content, messages.ru.description);
+  assert.equal(doc.openGraph.locale.attributes.content, 'ru_RU');
+  assert.equal(doc.openGraph['locale:alternate'].attributes.content, 'en_US');
   for (const node of doc.text) assert.equal(node.textContent, messages.ru[node.dataset.i18n]);
   for (const node of doc.aria) assert.equal(node.attributes['aria-label'], messages.ru[node.dataset.i18nAria]);
   assert.equal(doc.buttons[0].attributes['aria-pressed'], 'false');
   assert.equal(doc.buttons[1].attributes['aria-pressed'], 'true');
-  assert.equal(applyLanguage('unknown', doc), 'en');
+  assert.equal(applyLanguage('en', doc), 'en');
   assert.equal(doc.documentElement.lang, 'en');
+  assert.equal(doc.title, messages.en.title);
+  assert.equal(doc.description.attributes.content, messages.en.description);
+  assert.equal(doc.openGraph.title.attributes.content, messages.en.title);
+  assert.equal(doc.openGraph.description.attributes.content, messages.en.description);
+  assert.equal(doc.openGraph.locale.attributes.content, 'en_US');
+  assert.equal(doc.openGraph['locale:alternate'].attributes.content, 'ru_RU');
+  for (const node of doc.text) assert.equal(node.textContent, messages.en[node.dataset.i18n]);
+  for (const node of doc.aria) assert.equal(node.attributes['aria-label'], messages.en[node.dataset.i18nAria]);
+  assert.equal(doc.buttons[0].attributes['aria-pressed'], 'true');
+  assert.equal(doc.buttons[1].attributes['aria-pressed'], 'false');
+  assert.equal(applyLanguage('unknown', doc), 'ru');
   assert.doesNotMatch(js, /innerHTML|eval\(|new Function|document\.write/);
 });
 
-test('initialization and native button clicks preserve the project Pages base path', () => {
+test('English selection survives initialization and URL history without losing the project prefix', () => {
   const doc = documentFixture();
+  const listeners = {};
   const browser = {
     location: new URL('https://example.test/gipny-i2p/?campaign=local#browser'),
-    navigator: { languages: ['ru-RU'] },
+    navigator: { languages: ['en-US'] },
     history: { replaceState(_state, _title, url) { browser.location = new URL(url); } },
-    addEventListener() {},
+    addEventListener(name, callback) { listeners[name] = callback; },
   };
   initialize(doc, browser);
   assert.equal(doc.documentElement.lang, 'ru');
@@ -94,6 +135,15 @@ test('initialization and native button clicks preserve the project Pages base pa
   assert.equal(browser.location.searchParams.get('lang'), 'en');
   assert.equal(browser.location.searchParams.get('campaign'), 'local');
   assert.equal(browser.location.hash, '#browser');
+  const reloaded = documentFixture();
+  initialize(reloaded, browser);
+  assert.equal(reloaded.documentElement.lang, 'en');
+  browser.location.searchParams.set('lang', 'ru');
+  listeners.popstate();
+  assert.equal(reloaded.documentElement.lang, 'ru');
+  browser.location.searchParams.delete('lang');
+  listeners.popstate();
+  assert.equal(reloaded.documentElement.lang, 'ru');
 });
 
 test('content policy allows only local resources and denies application connections', () => {

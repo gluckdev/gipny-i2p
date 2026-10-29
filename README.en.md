@@ -366,19 +366,21 @@ A lost backup passphrase cannot be recovered.
 
 ## Pages website and browser client
 
-[site/](site/README.md) is an EN/RU static project landing page with native
-application downloads. [pages.yml](.github/workflows/pages.yml) checks PRs and
-allows deployment only from `main`. The owner must separately enable GitHub
-Actions in Settings → Pages; check the workflow for deployment status. The page creates
-no profiles and receives no messages, contact lists or keys. Visiting Pages
-still makes an ordinary web request to the hosting provider.
+[The project website](https://gluckdev.github.io/gipny-i2p/) is published on
+GitHub Pages with Russian by default, an English switch and native application
+downloads. See [site/](site/README.md) and [pages.yml](.github/workflows/pages.yml)
+for source and deployment rules; deployment is allowed only from `main`.
+The page creates no profiles and receives no messages, contact lists or keys.
+Visiting Pages still makes an ordinary web request to the hosting provider.
 
 The existing `gipny-web` is an HTTP/WebSocket **server gateway**; its operator
 hosts the vault, cryptography and profile state. It is not the intended static
-browser messenger. On-device browser crypto/storage/I2P, browser transport and
-temporary offline shares across independent stores are still research. Pages
-serves static assets; the landing page does not implement that client or a
-distributed-share backend.
+browser messenger. We are preparing a web client, targeting **before spring
+2027**: it will load in the browser and run code on the user's device, where
+keys and encryption will remain. This is a development target; browser I2P
+transport and temporary offline shares across independent stores are still
+research. Pages serves static assets; the published landing page does not yet
+implement that client or a distributed-share backend.
 
 ## Agent and bot
 
