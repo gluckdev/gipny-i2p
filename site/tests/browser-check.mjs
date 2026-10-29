@@ -12,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 const prefix = '/gipny-i2p/';
 const report = { schema: 1, commit: process.env.GITHUB_SHA ?? null, checks: [], runtimeErrors: [] };
 const output = resolve(process.argv[3] ?? 'site-browser-results');
-let browser, server, cdp, profile, browserLog = '';
+let browser, browserClosed, server, cdp, profile, browserLog = '';
 const pathMotion = `(() => [...document.querySelectorAll('.message-path .route-endpoint, .message-path .route-network, .message-path .route-connection i')]
   .flatMap(node => [null, '::before', '::after'].map(pseudo => {
     const css = getComputedStyle(node, pseudo);
@@ -121,6 +121,7 @@ async function startChrome() {
     '--disable-sync', '--no-pings', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
     '--remote-allow-origins=*', // Ephemeral loopback CDP endpoint, only in this GHA fixture.
     `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  browserClosed = new Promise(yes => browser.once('close', yes));
   let spawnError;
   browser.once('error', error => { spawnError = error; });
   browser.stderr.on('data', chunk => { browserLog = (browserLog + chunk).slice(-32_768); });
@@ -246,14 +247,30 @@ async function run() {
 }
 
 async function cleanup() {
-  cdp?.socket.close();
-  if (browser && browser.exitCode === null && browser.signalCode === null) {
-    browser.kill('SIGTERM');
-    await Promise.race([new Promise(yes => browser.once('exit', yes)), delay(2_000)]);
-    if (browser.exitCode === null && browser.signalCode === null) browser.kill('SIGKILL');
+  const waitForBrowser = async () => {
+    let timer;
+    try {
+      return await Promise.race([browserClosed.then(() => true),
+        new Promise(yes => { timer = setTimeout(() => yes(false), 2_000); })]);
+    } finally { clearTimeout(timer); }
+  };
+  let unclosed = false;
+  if (browser) {
+    // Let Chrome stop its profile writers before removing the owned directory.
+    // Closing Chrome can close CDP before its command response; that is expected.
+    if (cdp?.socket.readyState === WebSocket.OPEN) cdp.call('Browser.close').catch(() => {});
+    if (!await waitForBrowser()) {
+      browser.kill('SIGTERM');
+      if (!await waitForBrowser()) {
+        browser.kill('SIGKILL');
+        unclosed = !await waitForBrowser();
+      }
+    }
   }
+  cdp?.socket.close();
   if (server) { server.closeAllConnections(); await new Promise(yes => server.close(yes)); }
-  if (profile) await rm(profile, { recursive: true, force: true });
+  if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 });
+  assert(!unclosed, 'Chrome did not close after its bounded shutdown');
 }
 
 await mkdir(output, { recursive: true });
@@ -268,7 +285,12 @@ try {
   process.exitCode = 1;
 } finally {
   clearTimeout(deadline);
-  await cleanup();
+  try { await cleanup(); } catch (error) {
+    report.cleanupError = error.stack ?? String(error);
+    // Keep the original assertion/setup failure when cleanup also fails.
+    if (report.success) { report.success = false; report.error = 'Browser cleanup failed'; }
+    process.exitCode = 1;
+  }
   await writeFile(join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   console.log(`Browser checks: ${report.success ? 'PASS' : 'FAIL'} (${report.checks.length} viewport/language cases); ${output}`);
 }
