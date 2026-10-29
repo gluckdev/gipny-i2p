@@ -8,9 +8,9 @@ name: i2p-embed
 
 on:
   push:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'Cargo.toml', 'Cargo.lock', 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/**', '.github/workflows/i2p-embed.yml' ]
   pull_request:
-    paths: [ 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/**', '.github/workflows/i2p-embed.yml' ]
+    paths: [ 'Cargo.toml', 'Cargo.lock', 'i2p-embed/**', 'libcore/**', 'tests/e2e-harness/**', 'android-router/**', 'scripts/fresh-i2p-certs.sh', '.github/scripts/**', '.github/workflows/i2p-embed.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -308,7 +308,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: i2p-embed-e2e
       - name: build the harness on the in-process router
-        run: cargo build --release -p e2e-harness
+        run: cargo build --locked --release -p e2e-harness
       - name: run
         env:
           E2E_IN_PROCESS_RELAYS: '1'
@@ -376,7 +376,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: i2p-embed-e2e
       - name: build the harness on the in-process router
-        run: cargo build --release -p e2e-harness
+        run: cargo build --locked --release -p e2e-harness
       - name: run
         env:
           E2E_UPDATE_CHECK: '1'

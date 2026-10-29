@@ -19,6 +19,12 @@
 | `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `network database snapshot`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует один раз. Ручной запуск по умолчанию — превью; явный `publish=true` только с `main` продолжает неопубликованную версию через ту же полную матрицу и строгие draft/asset guards. Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
 | `relay-testnet.yml` | push в `main`, меняющий `core/relay/**`, `libcore/**`, `third_party/i2pd`, `scripts/**` или сам workflow; по расписанию каждые 5 ч; вручную | `relay` | **Временный** публичный `gipny-relay --dht` на раннере GitHub (~5,5 ч на запуск): и тестовый релей, и **сид сети релеев**. Идентичность, очередь, узел сети и роутер переносятся между запусками через `actions/cache` (`dht-seed-state-*`) **только зашифрованными `age`** (секрет `DHT_SEED_AGE_KEY`; без него сервис работает, но ничего не сохраняет, и адрес меняется каждый запуск). Адрес — в summary и в артефакте `relay-destination`; его вписывают в переменную `GIPNY_DHT_SEEDS`. |
 
+`i2p-embed.yml` также запускается при изменении корневых `Cargo.toml` и
+`Cargo.lock`, чтобы обновление TLS-зависимости не пропустило native проверки.
+Live updater собирается с `--locked`. Этот job имеет `continue-on-error`
+из-за внешнего outproxy: при TLS-изменении проверяй именно его фактический
+SUCCESS, а не только общий зелёный статус workflow.
+
 `security-fast.yml` дополнительно выполняет реальный macOS local Keychain
 enrollment/read/copy-isolation/delete под бесплатной ad-hoc подписью в двух
 временных OS Keychain. На Linux отдельная регрессия создаёт настоящий
