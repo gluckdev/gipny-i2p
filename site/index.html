@@ -28,7 +28,7 @@
       </a>
       <nav class="main-nav" aria-label="Основная навигация" data-i18n-aria="navLabel">
         <a href="#principles" data-i18n="navPrinciples">Как работает</a>
-        <a href="#get-started" data-i18n="navApps">Скачать</a>
+        <a href="#downloads" data-i18n="navApps">Скачать</a>
         <a href="#browser" data-i18n="navBrowser">А в браузере?</a>
       </nav>
       <div class="language-switch" role="group" aria-label="Язык сайта" data-i18n-aria="languageLabel" hidden>
@@ -44,7 +44,7 @@
           <h1 id="hero-title"><span data-i18n="heroTitleOne">Ваши разговоры.</span><span class="accent" data-i18n="heroTitleTwo">Ваши ключи.</span></h1>
           <p class="hero-description" data-i18n="heroDescription">Общайтесь и передавайте файлы без привязки к номеру телефона. Ключи и история хранятся на вашем устройстве, а встроенный роутер подключает приложение к I2P.</p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/gluckdev/gipny-i2p/releases/latest"><span data-i18n="download">Скачать приложение</span><span aria-hidden="true">↗</span></a>
+            <a class="button button-primary" href="#downloads"><span data-i18n="download">Скачать приложение</span><span aria-hidden="true">↓</span></a>
             <a class="text-link" href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="source">Открыть исходники</span><span aria-hidden="true">↗</span></a>
           </div>
           <p class="availability" data-i18n="availability">Загрузки и инструкции для Linux, Windows, macOS и Android.</p>
@@ -75,12 +75,20 @@
         <aside class="hosting-note" aria-label="Защита и её границы" data-i18n-aria="securityLabel"><p data-i18n="securityBoundary">Релеи видят служебные данные доставки, а интернет-провайдер может заметить использование I2P. Заражённое устройство может раскрыть переписку. Копии, которые собеседник сохранил отдельно, нельзя удалить удалённо.</p></aside>
       </section>
 
+      <section class="downloads-section section" id="downloads" aria-labelledby="downloads-title">
+        <div class="section-heading"><p class="eyebrow" data-i18n="downloadsEyebrow">Готовые пакеты</p><h2 id="downloads-title" data-i18n="downloadsTitle">Скачайте для своего устройства.</h2></div>
+        <p class="downloads-intro" data-i18n="downloadsBody">Выберите систему, архитектуру и формат. Ниже — файлы опубликованного релиза; размер указан для скачиваемого пакета.</p>
+        <!-- download-catalog:start -->
+        <p class="catalog-fallback"><a href="https://github.com/gluckdev/gipny-i2p/releases/latest" data-i18n="nativeDownload">Открыть загрузки</a></p>
+        <!-- download-catalog:end -->
+      </section>
+
       <section class="native-section section" id="get-started" aria-labelledby="native-title">
         <div class="native-copy">
           <p class="pill pill-available" data-i18n="nativeStatus">Приложения для компьютеров и Android</p>
           <h2 id="native-title" data-i18n="nativeTitle">Выберите приложение для своего устройства.</h2>
           <p data-i18n="nativeBody">Личные чаты, группы, вложения и проверка контактов работают в приложении. На странице релиза есть пакеты, поддерживаемые архитектуры и инструкции; перед установкой проверьте требования к системе.</p>
-          <a class="button button-primary" href="https://github.com/gluckdev/gipny-i2p/releases/latest"><span data-i18n="nativeDownload">Открыть загрузки</span><span aria-hidden="true">↗</span></a>
+          <a class="button button-primary" href="#downloads"><span data-i18n="nativeDownload">Открыть загрузки</span><span aria-hidden="true">↑</span></a>
           <p class="technology">Rust <span aria-hidden="true">/</span> Tauri <span aria-hidden="true">/</span> i2pd</p>
         </div>
         <ol class="steps">
@@ -100,6 +108,17 @@
           <p class="browser-boundary" data-i18n="browserBoundary">Перед вами сайт проекта. Он не отправляет и не принимает сообщения, не создаёт профили и не хранит ваши ключи.</p>
           <aside class="hosting-note" aria-label="О посещении сайта" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">На сайте нет аналитики и внешних скриптов. Но его хостинг, GitHub Pages, видит запросы страниц, включая IP-адрес и время посещения. Открытие сайта само по себе не включает защиту I2P; сайт не получает ваши сообщения, контакты или ключи.</p></aside>
         </div>
+      </section>
+
+      <section class="plans-section section" id="plans" aria-labelledby="plans-title">
+        <div class="section-heading"><p class="pill pill-research" data-i18n="plansEyebrow">В планах</p><h2 id="plans-title" data-i18n="plansTitle">Поговорили и забыли.</h2></div>
+        <p class="downloads-intro" data-i18n="plansIntro">Это планы для будущих версий. Сейчас приложения сохраняют историю переписки локально.</p>
+        <div class="principle-grid">
+          <article class="principle"><span class="card-number" aria-hidden="true">01</span><h3 data-i18n="planHistoryTitle">Без истории по умолчанию.</h3><p data-i18n="planHistoryBody">Планируем не сохранять историю переписки по умолчанию. В начале каждого нового чата приложение сообщит об этом и предложит включить зашифрованное локальное хранение.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">02</span><h3 data-i18n="planNameTitle">Имя, которым удобно делиться.</h3><p data-i18n="planNameBody">Хотим добавить имена для обмена — например, @Петрович666 — без центрального аккаунта. Имя не заменит ключ: отпечаток контакта по-прежнему нужно будет сверять по доверенному каналу.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">03</span><h3 data-i18n="planConsentTitle">Контакт — после вашего согласия.</h3><p data-i18n="planConsentBody">Запрос на добавление будет приходить с уведомлением. Контакт появится в списке только после принятия; нежелательный запрос можно будет отклонить.</p></article>
+        </div>
+        <aside class="hosting-note"><p data-i18n="plansBoundary">Собеседник всё равно сможет сохранить текст или сделать снимок экрана.</p></aside>
       </section>
 
       <section class="open-section section" aria-labelledby="open-title">

@@ -11,6 +11,10 @@ on:
       - 'site/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -22,16 +26,36 @@ concurrency:
 jobs:
   build:
     name: Validate and build static site
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # A release completion refreshes trusted main, never the triggering
+          # run's checkout or executable artifacts.
+          ref: ${{ github.event_name == 'workflow_run' && 'refs/heads/main' || github.ref }}
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
       - name: Validate translations, paths and content policy
         run: node --test --test-isolation=none site/tests/site.test.mjs
+      - name: Read the latest published release for direct downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/gipny-release.json"
       - name: Build public files
-        run: node site/build.mjs _site
+        run: node site/build.mjs _site "$RUNNER_TEMP/gipny-release.json"
+      - name: Check phone and desktop layouts in Chrome
+        id: browser
+        run: node site/tests/browser-check.mjs _site site-browser-results
+      - name: Keep browser screenshots and layout results
+        if: always() && steps.browser.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-browser-${{ github.run_id }}
+          path: site-browser-results
+          if-no-files-found: error
+          retention-days: 3
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
@@ -40,7 +64,7 @@ jobs:
   deploy:
     name: Deploy reviewed main to GitHub Pages
     needs: build
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-latest
     permissions:
       contents: read
