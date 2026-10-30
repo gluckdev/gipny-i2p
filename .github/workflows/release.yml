@@ -133,7 +133,7 @@ jobs:
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - name: run the router and let it learn the network
         run: |
           cargo run --locked --release -p i2p-embed --example netdb_snapshot -- "$PWD/seed-dir" 2500 360
@@ -253,7 +253,7 @@ jobs:
             echo "I2P_EMBED_STATIC_LIBS=boost_program_options,ssl,crypto"
             echo "MACOSX_DEPLOYMENT_TARGET=15.0"
           } >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -374,7 +374,7 @@ jobs:
           - { arch: arm64, runs-on: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -453,7 +453,7 @@ jobs:
           sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev dbus-daemon gnome-keyring libsecret-tools
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           # only main writes it — see .github/workflows/README.md
@@ -770,7 +770,7 @@ jobs:
           echo "GIPNY_NETDB_SEED=$GITHUB_WORKSPACE/android-router/netdb-seed-archive/i2pd-netdb-seed.tar.gz" >> "$GITHUB_ENV"
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ matrix.rust }}
       - uses: actions/setup-java@v6
@@ -798,7 +798,7 @@ jobs:
           echo "$tc" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v7
         with: { node-version: '24', cache: npm, cache-dependency-path: ui/package-lock.json }
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with: { targets: 'aarch64-linux-android,armv7-linux-androideabi' }
       # The Rust side of the APK is the same workspace the desktop builds, and
       # it was recompiled from zero every release.

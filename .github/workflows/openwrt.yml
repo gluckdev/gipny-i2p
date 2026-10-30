@@ -54,7 +54,7 @@ jobs:
           sudo apt-get install -y -qq build-essential perl curl xz-utils zstd python3 qemu-user busybox
       # All targets use musl 1.2.5. Pin Rust too; changing either is an ABI
       # review, especially for 32-bit time_t and prebuilt C++ runtime archives.
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ matrix.target }}
       - name: release diagnostics policy

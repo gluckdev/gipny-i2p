@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: i2pd under test and its build deps
         run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           # Cache the relay sub-workspace and the harness separately from the
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: i2pd under test and its build deps
         run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -303,7 +303,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: i2pd under test and its build deps
         run: .github/scripts/i2pd-under-test.sh "${{ needs.head.outputs.sha }}"
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -380,7 +380,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq dbus-daemon gnome-keyring libsecret-tools
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
