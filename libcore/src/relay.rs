@@ -139,9 +139,10 @@ pub enum EnvelopeBlob {
 
 pub const RELAY_PORT: u16 = 443;
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
-// TODO(i2p): bake in the deployed relay's i2p destination (the base64 string the
-// relay server prints as "I2P DESTINATION" on first run). Empty until deployed —
-// users can meanwhile paste a relay destination in Settings (overrides this).
+/// Default external relay: empty on purpose. Every app runs its own relay inside
+/// its process (RelayMode::Builtin); users can paste an external relay destination
+/// in Settings (SETTING_RELAY_ONION), and contact cards plus the DHT seeds baked
+/// in from GIPNY_DHT_SEEDS at release time tell clients where to find each other.
 pub const DEFAULT_RELAY: &str = "";
 
 pub type Result<T> = std::result::Result<T, RelayError>;

@@ -178,7 +178,7 @@ async fn main() -> anyhow::Result<()> {
     let destination_hash = destination_hash(&dest_pub)
         .ok_or_else(|| anyhow::anyhow!("dest.pub is not an i2p destination"))?;
     eprintln!("========================================================");
-    eprintln!("[relay] I2P DESTINATION (bake into client DEFAULT_RELAY):");
+    eprintln!("[relay] I2P DESTINATION (paste into the client's Settings as an external relay, or publish as a seed via GIPNY_DHT_SEEDS):");
     eprintln!("{dest_pub}");
     eprintln!("========================================================");
     // Relay doesn't need long exploratory tunnels: use 2 hops instead of 3.
