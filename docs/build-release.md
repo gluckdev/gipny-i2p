@@ -87,10 +87,16 @@ Android build manifest содержит provenance `libi2pd.so` из router job 
 workflow SHA. Файл перед сборкой APK и после неё повторно проверяется по хэшу;
 внешний native binary не считается равноценным input. Router application-code
 cache в релизе не используется. Зависимости могут кэшироваться по source pins.
-Android выравнивает nested i2pd на desktop pin и Boost-for-Android на явный
-`BOOST_FOR_ANDROID_REV`; actual commits отражаются в build manifest. Source
-archive хранит исходные gitlinks; публичные override commits и преобразование
-API 16 → 21 зафиксированы в workflow, а не скрыты внутри бинарника.
+Android выравнивает nested i2pd на desktop pin и применяет
+`scripts/apply-i2pd-memory-patches.sh`; actual commits отражаются в build manifest.
+На 2026-10-31 подготовлен переход на layout i2pd-android 3.0.0; его сборку ещё
+должен подтвердить CI. `binary/jni/fetch_deps.sh` закрепляет версии и SHA256
+архивов Boost/OpenSSL/miniupnpc, `build_openssl.sh arm64|arm` собирает OpenSSL
+для API 23. Boost program_options компилирует наш `Android.mk`; miniupnpc
+не линкуется. Source archive хранит исходные gitlinks; версии зависимостей
+закреплены скриптами этого пина i2pd-android. Оба workflow используют NDK
+`27.3.13750724` и общий ключ кэша по NDK, ABI, commit i2pd-android и хэшу обоих
+скриптов; сохраняют `deps/boost`, `deps/openssl/out/<abi>` и `deps/*.tar.gz`.
 
 Сертификаты reseed берутся из публичного upstream; их точный commit сохраняется
 как `GIPNY_RESEED_SOURCE_SHA`. Снимок netDb содержит публичные RouterInfos,
