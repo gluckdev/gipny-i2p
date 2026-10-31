@@ -74,8 +74,10 @@ Build/CodeQL badges README явно обозначают `main`; статус о
 вкомпилирует роутер. Что сделано, чтобы это не длилось час:
 
 - **boost и OpenSSL для Windows (vcpkg) и Android (`android-deps-*`)
-  кешируются** — это самая долгая часть холодной сборки; `libi2pd.so` для
-  Android в shipping pipeline каждый раз собирается из исходников;
+  кешируются** — для Android сохраняются исходники `deps/boost`, сборка
+  OpenSSL `deps/openssl/out/<abi>` и архивы `deps/*.tar.gz` из `fetch_deps.sh`.
+  Ключ включает NDK, ABI, commit i2pd-android и хэш `fetch_deps.sh`/`build_openssl.sh`;
+  Boost program_options и `libi2pd.so` каждый раз собираются из исходников;
   его manifest и SHA256 проверяются перед упаковкой APK.
 - **Rust и Gradle кешируются в сборке APK** (`Swatinem/rust-cache`, `~/.gradle`),
   `tauri-cli 2.12.2` компилируется из публичного crate через `cargo install --locked`.
