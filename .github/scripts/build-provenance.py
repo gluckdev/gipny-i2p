@@ -182,7 +182,7 @@ def record(output, target, patterns, input_manifests, inputs):
                                  for path in sorted((ROOT / 'i2p-embed/patches').glob('*.patch'))}
                                  | ({'scripts/apply-i2pd-memory-patches.sh': digest(ROOT / 'scripts/apply-i2pd-memory-patches.sh')}
                                     if (ROOT / 'scripts/apply-i2pd-memory-patches.sh').is_file() else {}),
-        'build_config': {key: os.environ[key] for key in ('NDK_VERSION', 'BOOST_FOR_ANDROID_REV',
+        'build_config': {key: os.environ[key] for key in ('NDK_VERSION',
                          'GIPNY_VCPKG_COMMIT', 'I2PD_REV', 'MACOSX_DEPLOYMENT_TARGET',
                          'I2P_EMBED_STATIC_LIBS', 'GIPNY_RESEED_SOURCE_SHA', 'GIPNY_DHT_SEEDS') if key in os.environ},
         'downloaded_inputs': inputs_list,

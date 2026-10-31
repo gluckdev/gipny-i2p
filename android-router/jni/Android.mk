@@ -5,8 +5,8 @@
 # The app's Rust side links this library and starts the router itself, in
 # process: no daemon, no SAM, no proxies, no port. So libi2pd_client (SAM,
 # proxies, tunnels), the daemon and its web console, and i18n are not built.
-# Derived from third_party/i2pd-android/app/jni/Android.mk; miniupnpc is
-# dropped along with USE_UPNP.
+# Derived from third_party/i2pd-android/native/jni/Android.mk and
+# binary/jni/deps.mk; only libi2pd and its required dependencies are built.
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 LOCAL_MODULE := i2pd
@@ -30,9 +30,11 @@ include $(BUILD_SHARED_LIBRARY)
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 LOCAL_MODULE := boost_program_options
-LOCAL_SRC_FILES := $(BOOST_PATH)/build/out/$(TARGET_ARCH_ABI)/lib/libboost_program_options.a
-LOCAL_EXPORT_C_INCLUDES := $(BOOST_PATH)/build/out/$(TARGET_ARCH_ABI)/include
-include $(PREBUILT_STATIC_LIBRARY)
+LOCAL_CPP_FEATURES := rtti exceptions
+LOCAL_SRC_FILES := $(wildcard $(BOOST_PATH)/libs/program_options/src/*.cpp)
+LOCAL_C_INCLUDES := $(BOOST_PATH)
+LOCAL_EXPORT_C_INCLUDES := $(BOOST_PATH)
+include $(BUILD_STATIC_LIBRARY)
 
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
