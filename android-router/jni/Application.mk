@@ -1,10 +1,8 @@
 NDK_TOOLCHAIN_VERSION := clang
 APP_STL := c++_static
 
-# C++20, not the c++17 i2pd-android still uses: upstream i2pd dropped C++17
-# (libi2pd/Tag.h now defines operator<=>), and its own Makefile asks clang for
-# c++20. The pinned revision builds either way, so this costs nothing today and
-# keeps the pin bump from breaking the Android router.
+# C++20, as in third_party/i2pd-android/native/jni/Application.mk: upstream
+# libi2pd/Tag.h uses operator<=>.
 APP_CPPFLAGS += -std=c++20 -fexceptions -frtti
 # As i2p-embed/build.rs: libi2pd's globals are not destroyed at exit (their
 # order is the linker's, and ~Tunnels outlived a mutex it needs on macOS); the
@@ -19,11 +17,12 @@ ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
 APP_CPPFLAGS += -DANDROID_ARM7A
 endif
 
-# Dependencies and the i2pd sources are built by i2pd-android's own scripts under
-# third_party/i2pd-android/binary/jni, which is what NDK_MODULE_PATH points at.
-IFADDRS_PATH  = $(NDK_MODULE_PATH)/android-ifaddrs
-BOOST_PATH    = $(NDK_MODULE_PATH)/boost
-OPENSSL_PATH  = $(NDK_MODULE_PATH)/openssl
+# fetch_deps.sh unpacks sources and build_openssl.sh builds OpenSSL under
+# third_party/i2pd-android/binary/jni, which NDK_MODULE_PATH points at.
+# Our Android.mk compiles Boost program_options and our pinned i2pd sources.
+IFADDRS_PATH  = $(NDK_MODULE_PATH)/ifaddrs
+BOOST_PATH    = $(NDK_MODULE_PATH)/deps/boost
+OPENSSL_PATH  = $(NDK_MODULE_PATH)/deps/openssl
 
 I2PD_SRC_PATH = $(NDK_MODULE_PATH)/i2pd
 LIB_SRC_PATH  = $(I2PD_SRC_PATH)/libi2pd

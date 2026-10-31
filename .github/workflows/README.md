@@ -49,7 +49,7 @@ Build/CodeQL badges README явно обозначают `main`; статус о
 - `.github/scripts/i2pd-under-test.sh <sha>` ставит сабмодуль на проверяемую ревизию для всех джоб `e2e-i2pd.yml`.
 - `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e, `relay-testnet.yml`), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.
 - `.github/codeql/codeql-config.yml`: `paths-ignore: '**/tests/**'`.
-- `.github/dependabot.yml`: еженедельные PR для cargo (корень и `core/relay`), npm (`ui`), github-actions и сабмодулей.
+- `.github/dependabot.yml`: еженедельные PR для cargo (корень и `core/relay`), npm (`ui`), github-actions и сабмодулей. Правила `ignore`: `dtolnay/rust-toolchain` (версия Rust закреплена вручную, тег действия — это версия Rust), мажорные bincode в обоих cargo-каталогах (смена wire-формата, не обновление зависимости) и minor-версии `jni` 0.x (ломающее изменение API — поднимать вместе с портом кода).
 
 ## Куда вносить правки
 
@@ -75,8 +75,10 @@ Build/CodeQL badges README явно обозначают `main`; статус о
 вкомпилирует роутер. Что сделано, чтобы это не длилось час:
 
 - **boost и OpenSSL для Windows (vcpkg) и Android (`android-deps-*`)
-  кешируются** — это самая долгая часть холодной сборки; `libi2pd.so` для
-  Android в shipping pipeline каждый раз собирается из исходников;
+  кешируются** — для Android сохраняются исходники `deps/boost`, сборка
+  OpenSSL `deps/openssl/out/<abi>` и архивы `deps/*.tar.gz` из `fetch_deps.sh`.
+  Ключ включает NDK, ABI, commit i2pd-android и хэш `fetch_deps.sh`/`build_openssl.sh`;
+  Boost program_options и `libi2pd.so` каждый раз собираются из исходников;
   его manifest и SHA256 проверяются перед упаковкой APK.
 - **Rust и Gradle кешируются в сборке APK** (`Swatinem/rust-cache`, `~/.gradle`),
   `tauri-cli 2.12.2` компилируется из публичного crate через `cargo install --locked`.
