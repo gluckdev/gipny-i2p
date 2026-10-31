@@ -148,7 +148,7 @@ impl DeviceKeyProvider for Provider {
                 Ok(Ok(env.convert_byte_array(&output)?))
             });
             result
-        })
+        })?
     }
 
     fn unseal(&self, id: &str, wrapped: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
@@ -177,7 +177,7 @@ impl DeviceKeyProvider for Provider {
                 Ok(Ok(secret))
             });
             result
-        })
+        })?
     }
 
     fn delete(&self, id: &str) -> Result<()> {

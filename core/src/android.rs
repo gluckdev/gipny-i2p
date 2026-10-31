@@ -62,7 +62,7 @@ mod android {
                 &context, jni::jni_str!("getPackageName"), jni::jni_sig!("()Ljava/lang/String;"), &[],
             )?.l()?;
             let package_name = JString::cast_local(env, package_name)?;
-            let package: String = env.get_string(&package_name)?.into();
+            let package = String::from(package_name.mutf8_chars(env)?);
             let authority = env.new_string(format!("{package}.fileprovider"))?;
             let file_path = env.new_string(path)?;
             let file = env.new_object(
