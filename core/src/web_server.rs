@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::net::SocketAddr;
+use axum::{extract::Request, http::{header, HeaderValue, StatusCode}, middleware::{self, Next}, response::{IntoResponse, Response}};
 
 use axum::{
     extract::{
@@ -76,36 +76,123 @@ pub fn emit_boot_status(state: &WebServerState, stage: &'static str, state_str: 
     );
 }
 
-pub async fn run_server(
-    ctx: Arc<AppCtx>,
-    addr: SocketAddr,
-    static_dir: PathBuf,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (event_tx, _) = broadcast::channel(1024);
-    let state = Arc::new(WebServerState { ctx, event_tx });
+/// GitHub Pages project app path (site/README.md documents the project prefix).
+pub const PAGES_APP_URL: &str = "https://gluckdev.github.io/gipny-i2p/app/";
 
-    let index_file = static_dir.join("index.html");
-    let serve_dir = ServeDir::new(&static_dir).not_found_service(ServeFile::new(index_file));
-
-    let app = Router::new()
-        .route("/health", get(|| async { "OK" }))
-        .route(
-            "/ws",
-            get(|ws: WebSocketUpgrade, State(s): State<Arc<WebServerState>>| async move {
-                ws.on_upgrade(|socket| handle_socket(socket, s))
-            }),
-        )
-        .fallback_service(serve_dir)
-        .layer(CorsLayer::permissive())
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    eprintln!("[web] listening on http://{}", addr);
-    axum::serve(listener, app).await?;
-    Ok(())
+/// Local UI endpoints use IPv4 loopback, including explicit loopback --listen.
+/// Normalization keeps the launch URL and the Host/Origin policy consistent.
+pub fn resolve_listen_addr(listen: Option<std::net::SocketAddr>, port: Option<u16>) -> Result<std::net::SocketAddr, String> {
+    if listen.is_some() && port.is_some() { return Err("--port and --listen are mutually exclusive".into()); }
+    let addr = listen.unwrap_or_else(|| ([127, 0, 0, 1], port.unwrap_or(0)).into());
+    Ok(if addr.ip().is_loopback() { ([127, 0, 0, 1], addr.port()).into() } else { addr })
 }
 
-async fn handle_socket(ws: WebSocket, state: Arc<WebServerState>) {
+pub fn normalize_origin(value: &str) -> Result<String, String> {
+    let error = "--allow-origin requires an http(s) origin with authority and no path, query, fragment or userinfo";
+    let lower = value.to_ascii_lowercase();
+    let uri: axum::http::Uri = lower.parse().map_err(|_| error.to_string())?;
+    let scheme = uri.scheme_str().filter(|scheme| matches!(*scheme, "http" | "https")).ok_or(error)?;
+    let authority = uri.authority().ok_or(error)?;
+    // Inspect the text too: Uri treats a missing path as '/' when accessed.
+    let tail = lower.strip_prefix(&format!("{scheme}://")).ok_or(error)?;
+    if tail.contains(['/', '?', '#', '@']) || authority.host().is_empty() { return Err(error.into()); }
+    Ok(format!("{scheme}://{authority}"))
+}
+
+#[derive(Clone)]
+pub struct LocalPolicy {
+    pub port: u16,
+    pub token: String,
+    pub allowed_origins: Vec<String>,
+}
+
+impl LocalPolicy {
+    fn allows_origin(&self, origin: &str) -> bool {
+        origin == format!("http://127.0.0.1:{}", self.port)
+            || origin == format!("http://localhost:{}", self.port)
+            || origin == "https://gluckdev.github.io"
+            || self.allowed_origins.iter().any(|allowed| allowed == origin)
+    }
+}
+
+// Token length is public (43 for a generated capability). Always inspect every
+// byte for equal-length inputs, never return at the first differing byte.
+fn token_eq(expected: &str, supplied: &str) -> bool {
+    if expected.len() != supplied.len() { return false; }
+    let mut diff = 0u8;
+    for (a, b) in expected.bytes().zip(supplied.bytes()) {
+        diff |= std::hint::black_box(a ^ b);
+    }
+    std::hint::black_box(diff) == 0
+}
+
+async fn local_guard(policy: LocalPolicy, request: Request, next: Next) -> Response {
+    let host = request.headers().get(header::HOST).and_then(|v| v.to_str().ok());
+    let ip_host = format!("127.0.0.1:{}", policy.port);
+    let localhost = format!("localhost:{}", policy.port);
+    let denied = if host != Some(ip_host.as_str()) && host != Some(localhost.as_str()) {
+        Some(StatusCode::FORBIDDEN)
+    } else if request.uri().path() == "/ws" {
+        // Launch capabilities are base64url: no URL decoding is necessary.
+        let token = request.uri().query().and_then(|query| query.split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find_map(|(key, value)| (key == "token").then_some(value))).unwrap_or("");
+        if !token_eq(&policy.token, token) {
+            Some(StatusCode::UNAUTHORIZED)
+        } else if !request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok())
+            .map(|origin| policy.allows_origin(origin)).unwrap_or(false) {
+            Some(StatusCode::FORBIDDEN)
+        } else { None }
+    } else { None };
+    let mut response = match denied {
+        Some(status) => status.into_response(),
+        None => next.run(request).await,
+    };
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    if headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("text/html")).unwrap_or(false) {
+        let csp = format!("default-src 'self'; connect-src 'self' ws://127.0.0.1:{0} ws://localhost:{0}; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; worker-src 'self'", policy.port);
+        headers.insert("content-security-policy", HeaderValue::from_str(&csp).unwrap());
+    }
+    response
+}
+
+/// None retains the explicitly requested legacy hosted gateway policy.
+/// Constructing the router does not unlock a vault or start a Core/router.
+pub fn build_router(state: Arc<WebServerState>, static_dir: PathBuf, policy: Option<LocalPolicy>) -> Router {
+    let local = policy.is_some();
+    let index_file = static_dir.join("index.html");
+    let serve_dir = ServeDir::new(&static_dir).not_found_service(ServeFile::new(index_file));
+    let app = Router::new()
+        .route("/health", get(|| async { "OK" }))
+        .route("/ws", get(move |ws: WebSocketUpgrade, State(s): State<Arc<WebServerState>>| async move {
+            ws.on_upgrade(move |socket| handle_socket(socket, s, local))
+        }))
+        .fallback_service(serve_dir)
+        .with_state(state);
+    match policy {
+        Some(policy) => app.layer(middleware::from_fn(move |req, next| local_guard(policy.clone(), req, next))),
+        None => app.layer(CorsLayer::permissive()),
+    }
+}
+
+pub async fn serve(listener: tokio::net::TcpListener, router: Router) -> std::io::Result<()> {
+    axum::serve(listener, router).with_graceful_shutdown(async {
+        #[cfg(unix)]
+        {
+            let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+        }
+        #[cfg(not(unix))]
+        { let _ = tokio::signal::ctrl_c().await; }
+    }).await
+}
+
+async fn handle_socket(ws: WebSocket, state: Arc<WebServerState>, local: bool) {
     let (mut sender, mut receiver) = ws.split();
     let mut rx = state.event_tx.subscribe();
 
@@ -131,7 +218,11 @@ async fn handle_socket(ws: WebSocket, state: Arc<WebServerState>) {
                 match msg {
                     Ok(Message::Text(text)) => {
                         if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
-                            let res = dispatch_rpc(&state, &req.method, req.params).await;
+                            let res = if req.method == "web_info" {
+                                Ok(json!({ "mode": if local { "local" } else { "gateway" }, "version": env!("CARGO_PKG_VERSION") }))
+                            } else {
+                                dispatch_rpc(&state, &req.method, req.params).await
+                            };
                             let resp = match res {
                                 Ok(val) => RpcResponse { id: req.id, result: Some(val), error: None },
                                 Err(e) => RpcResponse { id: req.id, result: None, error: Some(e) },
@@ -156,6 +247,20 @@ async fn handle_socket(ws: WebSocket, state: Arc<WebServerState>) {
 
 async fn core_of(ctx: &AppCtx) -> Result<Arc<Core>, String> {
     ctx.core.lock().await.clone().ok_or_else(|| "locked".to_string())
+}
+
+fn prepare_inline_attachments(db: &gipny_libcore::db::Db, attachments: &Value) -> Result<Vec<PendingAttachment>, String> {
+    let sanitize = crate::attachment_privacy_enabled(db)?;
+    let mut pending = Vec::new();
+    if let Some(attachments) = attachments.as_array() {
+        for attachment in attachments {
+            let name = attachment.get("name").and_then(Value::as_str).unwrap_or("file").to_string();
+            let encoded = attachment.get("data").and_then(Value::as_str).ok_or("bad attachment")?;
+            let data = crate::base64_decode(encoded).ok_or("bad base64")?;
+            pending.push(crate::prepare_attachment(name, data, sanitize)?);
+        }
+    }
+    Ok(pending)
 }
 
 async fn dispatch_rpc(
@@ -415,16 +520,9 @@ async fn dispatch_rpc(
             let body = p["body"].as_str().unwrap_or("").to_string();
             let ttl = p["ttlSecs"].as_u64().map(std::time::Duration::from_secs);
             let reply_to = p["replyTo"].as_i64();
-            let mut pending = Vec::new();
-            if let Some(atts) = p["attachments"].as_array() {
-                for a in atts {
-                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("file").to_string();
-                    let data_b64 = a.get("data").and_then(|v| v.as_str()).ok_or("bad attachment")?;
-                    let data = crate::base64_decode(data_b64).ok_or("bad base64")?;
-                    pending.push(PendingAttachment { name, data, from: None });
-                }
-            }
-            let id = core_of(ctx).await?.send_message(contact_id, body, pending, ttl, reply_to).await.map_err(err)?;
+            let core = core_of(ctx).await?;
+            let pending = prepare_inline_attachments(core.db(), &p["attachments"])?;
+            let id = core.send_message(contact_id, body, pending, ttl, reply_to).await.map_err(err)?;
             Ok(json!(id))
         }
         "send_edit" => {
@@ -532,16 +630,9 @@ async fn dispatch_rpc(
             let body = p["body"].as_str().unwrap_or("").to_string();
             let ttl = p["ttlSecs"].as_u64().map(std::time::Duration::from_secs);
             let reply_to = p["replyTo"].as_i64();
-            let mut pending = Vec::new();
-            if let Some(atts) = p["attachments"].as_array() {
-                for a in atts {
-                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("file").to_string();
-                    let data_b64 = a.get("data").and_then(|v| v.as_str()).ok_or("bad attachment")?;
-                    let data = crate::base64_decode(data_b64).ok_or("bad base64")?;
-                    pending.push(PendingAttachment { name, data, from: None });
-                }
-            }
-            let id = core_of(ctx).await?.send_to_group(&gid, body, pending, ttl, reply_to).await.map_err(err)?;
+            let core = core_of(ctx).await?;
+            let pending = prepare_inline_attachments(core.db(), &p["attachments"])?;
+            let id = core.send_to_group(&gid, body, pending, ttl, reply_to).await.map_err(err)?;
             Ok(json!(id))
         }
         "delete_group" => {
@@ -751,4 +842,30 @@ async fn boot_core_web(
     *state.ctx.core.lock().await = Some(core);
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_attachments_follow_the_desktop_privacy_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = gipny_libcore::db::Db::open_plain(&dir.path().join("attachments.db")).unwrap();
+        // Structurally valid JPEG segments; APP1 metadata must not survive.
+        let metadata = b"Exif\0\0private-camera-location";
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        jpeg.extend_from_slice(&((metadata.len() + 2) as u16).to_be_bytes());
+        jpeg.extend_from_slice(metadata);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        let input = json!([{ "name": "photo.jpg", "data": crate::base64_encode(&jpeg) }]);
+        let prepared = prepare_inline_attachments(&db, &input).unwrap();
+        assert_eq!(prepared[0].data, vec![0xff, 0xd8, 0xff, 0xd9]);
+        let unsupported = json!([{ "name": "photo.heic", "data": crate::base64_encode(b"unhandled") }]);
+        assert!(prepare_inline_attachments(&db, &unsupported).is_err());
+        db.set_setting("attachment_privacy", b"0").unwrap();
+        assert_eq!(prepare_inline_attachments(&db, &input).unwrap()[0].data, jpeg);
+        assert_eq!(prepare_inline_attachments(&db, &unsupported).unwrap()[0].data, b"unhandled");
+    }
 }

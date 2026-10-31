@@ -1,7 +1,8 @@
 import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { Api, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
+import { downloadBrowserFile, forgetBrowserFiles } from './browser-files';
+import { Api, isTauri, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 import type { Message, LinkStats } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
@@ -428,6 +429,7 @@ export class ChatView extends View {
           this.draftEpoch++;
           this.app.closeModals();
           this.input.value = '';
+          if (!isTauri) forgetBrowserFiles(this.pending.map((file) => file.path));
           this.pending = [];
           this.consoleHistory.fill('');
           this.consoleHistory = [];
@@ -578,6 +580,7 @@ export class ChatView extends View {
     this.consoleDraft = '';
     this.consoleSending = 0;
     this.prependCompensation = null;
+    if (!isTauri) forgetBrowserFiles(this.pending.map((file) => file.path));
     this.pending = [];
     for (const picker of this.filePickers) { picker.value = ''; picker.remove(); }
     this.filePickers.clear();
@@ -672,7 +675,7 @@ export class ChatView extends View {
   private async pickFiles(): Promise<void> {
     if (this.disposed) return;
     const epoch = this.draftEpoch;
-    if (/Android/.test(navigator.userAgent)) {
+    if (!isTauri || /Android/.test(navigator.userAgent)) {
       this.pickFilesAndroid();
       return;
     }
@@ -716,7 +719,7 @@ export class ChatView extends View {
     }
     if (collected.length === 0) {
       let path: string | null = null;
-      try { path = await Api.pasteClipboardImage(); } catch { path = null; }
+      try { if (isTauri) path = await Api.pasteClipboardImage(); } catch { path = null; }
       if (this.disposed || epoch !== this.draftEpoch) return;
       if (!path) return;
       e.preventDefault();
@@ -1318,6 +1321,11 @@ export class ChatView extends View {
 
   private async downloadAttachment(id: number, name: string): Promise<void> {
     try {
+      if (!isTauri) {
+        const data = await Api.loadAttachment(id);
+        if (!this.disposed) downloadBrowserFile(data, name);
+        return;
+      }
       const dest = await save({ defaultPath: name });
       if (!dest || this.disposed) return;
       await Api.saveAttachment(id, dest);
@@ -1333,7 +1341,7 @@ export class ChatView extends View {
     this.pending.forEach((f, i) => {
       this.fileChips.appendChild(h('div', {
         class: 'attachment',
-        onClick: () => { this.pending.splice(i, 1); this.renderFileChips(); },
+        onClick: () => { if (!isTauri) forgetBrowserFiles([f.path]); this.pending.splice(i, 1); this.renderFileChips(); },
       }, `◆ ${f.name} [x]`));
     });
   }

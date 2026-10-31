@@ -1,7 +1,7 @@
 import { errorText, logText } from './error-text';
 import { t as tr } from './i18n';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Api, encodeCard } from './api';
+import { Api, isTauri, encodeCard } from './api';
 import type { RelayInfo, RelayMode, RouterSettings, TransitProfile, YggdrasilMode } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
@@ -49,6 +49,7 @@ export class SettingsModal {
             apkErr.textContent = '';
             apkProgress.textContent = '';
             try {
+              if (!isTauri) { apkErr.textContent = tr('web.desktop_only'); return; }
               const fname = `gipny-${version}-android-${it.arch}.apk`;
               const dest = await save({ defaultPath: fname, filters: [{ name: 'APK', extensions: ['apk'] }] });
               if (!dest) return;
@@ -573,6 +574,7 @@ export class SettingsModal {
             class: 'btn btn-block',
             onClick: async () => {
               errEl.textContent = '';
+              if (!isTauri) { errEl.textContent = tr('web.desktop_only'); return; }
               if (passI.value.length < 8) { errEl.textContent = tr('settings.too_short'); return; }
               try {
                 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);

@@ -1901,6 +1901,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-tungstenite",
  "tower-http",
  "windows-sys 0.61.2",
  "x25519-dalek",
