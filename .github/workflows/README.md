@@ -48,7 +48,7 @@ Build/CodeQL badges README явно обозначают `main`; статус о
 - `.github/scripts/i2pd-under-test.sh <sha>` ставит сабмодуль на проверяемую ревизию для всех джоб `e2e-i2pd.yml`.
 - `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e, `relay-testnet.yml`), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.
 - `.github/codeql/codeql-config.yml`: `paths-ignore: '**/tests/**'`.
-- `.github/dependabot.yml`: еженедельные PR для cargo (корень и `core/relay`), npm (`ui`), github-actions и сабмодулей.
+- `.github/dependabot.yml`: еженедельные PR для cargo (корень и `core/relay`), npm (`ui`), github-actions и сабмодулей. Правила `ignore`: `dtolnay/rust-toolchain` (версия Rust закреплена вручную, тег действия — это версия Rust), мажорные bincode в обоих cargo-каталогах (смена wire-формата, не обновление зависимости) и minor-версии `jni` 0.x (ломающее изменение API — поднимать вместе с портом кода).
 
 ## Куда вносить правки
 
