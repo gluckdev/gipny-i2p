@@ -2298,8 +2298,9 @@ impl Core {
             loop {
                 let onion = this.relay_onion();
                 if onion.is_empty() {
-                    // No relay configured yet (i2p: DEFAULT_RELAY not baked in and
-                    // none set in Settings). Look again soon; the backoff is for
+                    // No relay address yet: the built-in relay has not published one,
+                    // or external mode has none saved in Settings (SETTING_RELAY_ONION).
+                    // Look again soon; the backoff is for
                     // failed dials, and growing it here made the first real one
                     // start late and its retry wait the full 15 s (e2e run
                     // 36042483601: 20 s from the relay being set to connected).
