@@ -165,7 +165,7 @@ index 977cb30..1c55cfa 100644
      ///
      /// `public_keys` is guaranteed to contain at least one element corresponding to the private key
 diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
-index 0fdce43..66fdf1e 100644
+index 0fdce43..fc61eac 100644
 --- a/emissary-core/src/destination/session/mod.rs
 +++ b/emissary-core/src/destination/session/mod.rs
 @@ -312,7 +312,22 @@ impl<R: Runtime> SessionManager<R> {
@@ -269,7 +269,7 @@ index 0fdce43..66fdf1e 100644
 +        let receiver_id = receiver_ls.header.destination.id();
 +        let mut sender = SessionManager::<MockRuntime>::new(
 +            sender_id.clone(), sender_key.clone(), vec![sender_key.public()],
-+            Bytes::from(sender_ls.serialize(&sender_sign)),
++            Bytes::from(sender_ls.clone().serialize(&sender_sign)),
 +        );
 +        let mut receiver = SessionManager::<MockRuntime>::new(
 +            receiver_id.clone(), receiver_key.clone(), vec![receiver_key.public()],
