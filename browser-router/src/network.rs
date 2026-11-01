@@ -15,10 +15,7 @@ use std::{
 };
 
 use emissary_core::{
-    crypto::base64_encode,
-    router::RouterBuilder,
-    runtime::Runtime,
-    sam::embedded::{ClientIdentity, ClientSession},
+    crypto::base64_encode, router::RouterBuilder, runtime::Runtime, ClientIdentity, ClientSession,
 };
 use futures::{
     channel::oneshot,
@@ -241,9 +238,12 @@ impl StreamPermit {
 
     fn transfer(mut self) -> StreamCountGuard {
         self.transferred = true;
+        if let Some(accepts) = self.active_accepts.take() {
+            accepts.fetch_sub(1, Ordering::SeqCst);
+        }
         StreamCountGuard {
             active_streams: self.active_streams.clone(),
-            active_accepts: self.active_accepts.clone(),
+            active_accepts: None,
             decremented: AtomicBool::new(false),
         }
     }
@@ -512,7 +512,7 @@ impl BrowserNetwork {
             );
 
             let dest_b64 = base64_encode(session.destination().serialize());
-            Ok((dest_b64, session))
+            Ok::<_, String>((dest_b64, session))
         };
 
         let timeout = TimeoutFuture::new(STARTUP_DEADLINE_MS);

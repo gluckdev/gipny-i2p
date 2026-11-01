@@ -1,4 +1,4 @@
-import { BrowserEngine, contact_qr_svg, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
+import { BrowserEngine, clean_attachment, contact_qr_svg, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
 import type { BootStatus, Contact, CoreEvent, GroupMember, Message, PendingAttachment, RelayInfo } from '../api';
 import { isValidI2pAddress } from '../contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './storage';
@@ -28,6 +28,7 @@ export class BrowserBackend {
   private closing = false;
   private pumping = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private hosted: RelayInfo['hosted'] = { state: 'off' };
   private networkConfig: Record<string, string> | null = null;
   constructor(private emit: EventSink) {}
@@ -81,9 +82,11 @@ export class BrowserBackend {
     this.closing = true;
     this.generation++;
     if (this.timer) clearTimeout(this.timer);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
     this.timer = null;
+    this.retryTimer = null;
     this.relay?.close(); this.relay = null;
-    this.network?.close(); this.network = null;
+    this.network?.close(); this.network?.free(); this.network = null;
     this.engine?.close(); this.engine?.free(); this.engine = null;
     this.storage?.close(); this.storage = null;
     this.state = null; this.identity = null;
@@ -146,9 +149,16 @@ export class BrowserBackend {
   }
   private networkFailed(error: string): void {
     this.relay?.close(); this.relay = null;
-    this.network?.close(); this.network = null;
+    this.network?.close(); this.network?.free(); this.network = null;
     this.hosted = { state: 'failed', reason: error };
     this.boot('relay', 'failed', error); this.relayChanged();
+    if (this.networkConfig && !this.closing && this.engine) {
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        if (!this.closing && this.engine && this.hosted.state === 'failed') void this.startNetwork(++this.generation);
+      }, 30000);
+    }
   }
   private schedule(delay = 1000): void {
     if (this.closing || !this.relay) return;
@@ -346,7 +356,10 @@ export class BrowserBackend {
     const attachments = (args.attachments || []) as PendingAttachment[];
     if (body.length > 128 * 1024 || attachments.length > 16) throw new Error('Message size limit');
     const letter = payload(this.identity!, state.displayName);
-    letter.attachments = attachments.map(file => ({ name: file.name.slice(0, 255), data: unbase64(file.data) }));
+    letter.attachments = attachments.map(file => {
+      const name = file.name.slice(0, 255); const data = unbase64(file.data);
+      return state.ui.attachment_privacy === 'false' ? { name, data } : JSON.parse(clean_attachment(name, new Uint8Array(data))) as { name: string; data: number[] };
+    });
     if (letter.attachments.reduce((n, file) => n + file.data.length, 0) > 1024 * 1024) throw new Error('Browser attachments are limited to 1 MiB per message');
     letter.origin_msg_id = allocate(state); letter.body = body;
     const ttl = args.ttlSecs;
@@ -361,7 +374,7 @@ export class BrowserBackend {
     if (!groupId) letter.dm = { kind: 0, reference: { author: unhex(this.identity!.sign_pk), origin: letter.origin_msg_id, sent_at: letter.sent_at } };
     const row: StoredMessage = { id: letter.origin_msg_id, origin: letter.origin_msg_id, author: this.identity!.sign_pk, contact_id: contact?.id || null, group_id: groupId, sender_sign_pk: groupId ? this.identity!.sign_pk : null, outgoing: true, body, sent_at: letter.sent_at, sent: false, delivered: false, read: true, expires_at: letter.ttl_ms === null ? null : letter.sent_at + letter.ttl_ms, reply_to: typeof args.replyTo === 'number' ? args.replyTo : null, dm_seq: state.messages.filter(value => sameScope(value, contact?.id || null, groupId)).length + 1 };
     state.messages.push(row);
-    for (const attachment of attachments) { const data = unbase64(attachment.data); state.attachments.push({ id: allocate(state), message_id: row.id, name: attachment.name.slice(0, 255), size: data.length, data: attachment.data }); }
+    for (const attachment of letter.attachments) state.attachments.push({ id: allocate(state), message_id: row.id, name: attachment.name, size: attachment.data.length, data: base64(attachment.data) });
     const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(member => !member.is_self).map(member => {
       let recipient = state.contacts.find(value => value.sign_pk === member.sign_pk);
       if (!recipient) recipient = this.addContact(state, { signPk: member.sign_pk, dhPk: member.dh_pk, onion: member.onion, name: member.name }, 'none');
@@ -374,6 +387,13 @@ export class BrowserBackend {
 
   async invoke(command: string, args: Args = {}): Promise<unknown> {
     if (command === 'init') { this.configure(args.config as Record<string, string> | null); return null; }
+    if (command === 'retry_network') {
+      if (this.engine && this.hosted.state === 'failed' && this.networkConfig) {
+        if (this.retryTimer) clearTimeout(this.retryTimer); this.retryTimer = null;
+        void this.startNetwork(++this.generation);
+      }
+      return null;
+    }
     if (command === 'list_profiles') return listProfiles();
     if (command === 'delete_profile') { if (this.engine) throw new Error('Lock the profile first'); await removeProfile(text(args, 'profile')); return null; }
     if (command === 'vault_status') return { exists: this.storage?.name === args.profile || (await listProfiles()).includes(text(args, 'profile')), unlocked: this.storage?.name === args.profile && this.engine !== null };
@@ -396,8 +416,8 @@ export class BrowserBackend {
     if (command === 'get_router_settings') return { transit: 'frugal', yggdrasil: 'off' };
     if (command === 'get_dht_status') return { peers: 0, items: 0, bytes: 0, joined: false, stores: false, seeds: 0 };
     if (command === 'list_unreachable_contacts') return [];
-    if (command === 'get_attachment_privacy') return true;
     const { state, engine, identity } = this.require();
+    if (command === 'get_attachment_privacy') return state.ui.attachment_privacy !== 'false';
     if (command === 'my_card') return { sign_pk: identity.sign_pk, dh_pk: identity.dh_pk };
     if (command === 'my_bundle') return JSON.parse(engine.bundle_info());
     if (command === 'qr_svg') return contact_qr_svg(text(args, 'text'));
@@ -521,7 +541,7 @@ export class BrowserBackend {
     }
     if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); state.outbox = state.outbox.filter(value => value.row === null || !rows.has(value.row)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
     if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? this.getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
-    if (command === 'set_attachment_privacy') { if (!args.enabled) throw new Error('Attachment privacy cannot be disabled in the browser'); return null; }
+    if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; return null; }
     if (command === 'set_relay_mode') { if (args.mode !== 'builtin') throw new Error('This browser uses its own I2P destination'); return null; }
     if (command === 'set_auto_update' && args.enabled === false) return null;
     if (command === 'send_typing') {

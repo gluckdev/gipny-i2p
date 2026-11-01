@@ -103,7 +103,7 @@ export class SettingsModal {
       h('div', { class: 'modal-body' },
         h('div', { class: 'card-label' }, tr('settings.version')),
         verSlot,
-        (() => {
+        !usesBrowserCore() && (() => {
           // A found-but-not-installed version: either auto-update is off, or
           // its install failed and the log was the only place that said so.
           const pending = h('div', { class: 'hint' });
@@ -206,7 +206,7 @@ export class SettingsModal {
               : tr('settings.built_in_relay_is_starting_usually_1_2');
           };
 
-          const box = h('div', null, h('div', { class: 'opts' }, ...rows), status, externalBox, relayErr);
+          const box = h('div', null, !usesBrowserCore() && h('div', { class: 'opts' }, ...rows), status, !usesBrowserCore() && externalBox, relayErr);
           // The modal has no teardown hook; the subscription lets go of itself
           // once the modal has been on screen and is gone again.
           let shown = false;
@@ -219,8 +219,8 @@ export class SettingsModal {
           return box;
         })(),
 
-        h('div', { class: 'divider-text' }, tr('about.relay_network')),
-        (() => {
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('about.relay_network')),
+        !usesBrowserCore() && (() => {
           const stat = (label: string) => {
             const v = h('div', { class: 'stat-value' }, '…');
             return { v, el: h('div', { class: 'stat' }, v, h('div', { class: 'stat-label' }, label)) };
@@ -289,8 +289,8 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.agent_mode')),
-        (() => {
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.agent_mode')),
+        !usesBrowserCore() && (() => {
           const picker = h('select', { class: 'input' }) as HTMLSelectElement;
           const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
           const err = h('div', { class: 'err' });
@@ -346,7 +346,7 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'card-block', style: { marginTop: '14px' } },
+        !usesBrowserCore() && h('div', { class: 'card-block', style: { marginTop: '14px' } },
           h('div', { class: 'card-label' }, tr('settings.remote_server_agent_linux_macos_windows')),
           h('button', {
             class: 'btn btn-block', style: { marginTop: '10px' },
@@ -409,8 +409,8 @@ export class SettingsModal {
           return h('div', { class: 'opt-group' }, ...rows);
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.router_i2p')),
-        (() => {
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.router_i2p')),
+        !usesBrowserCore() && (() => {
           const err = h('div', { class: 'err' });
           const note = h('div', { class: 'hint', style: { marginTop: '6px' } });
 
@@ -497,7 +497,7 @@ export class SettingsModal {
           );
         })(),
 
-        (() => {
+        !usesBrowserCore() && (() => {
           apkSection.append(
             h('div', { class: 'divider-text' }, tr('settings.android_app')),
             apkInfo,
@@ -576,12 +576,12 @@ export class SettingsModal {
         }, tr('common.save')),
 
 
-        h('div', { class: 'divider-text' }, tr('settings.backup')),
-        h('div', { class: 'hint', style: { marginBottom: '8px' } },
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.backup')),
+        !usesBrowserCore() && h('div', { class: 'hint', style: { marginBottom: '8px' } },
           tr('settings.export_your_whole_profile_identity_contacts_groups_all'),
           tr('settings.on_another_device_profile_selection_import_backup'),
           tr('settings.one_identity_means_one_active_device_after_importing')),
-        (() => {
+        !usesBrowserCore() && (() => {
           const passI = h('input', { class: 'input', type: 'password', placeholder: tr('settings.backup_passphrase_at_least_8_characters') }) as HTMLInputElement;
           const errEl = h('div', { class: 'err' });
           const exportBtn = h('button', {
@@ -609,8 +609,8 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.application_log')),
-        (() => {
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.application_log')),
+        !usesBrowserCore() && (() => {
           const panel = h('div', { class: 'application-log' },
             h('div', { class: 'hint' }, tr('settings.log_capability_loading')));
           const out = h('pre', { class: 'log-view hidden' });

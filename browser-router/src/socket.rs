@@ -329,7 +329,7 @@ impl futures::io::AsyncRead for BrowserTcpStream {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<std::io::Result<usize>> {
-        match emissary_core::runtime::AsyncRead::poll_read(self, cx) {
+        match emissary_core::runtime::AsyncRead::poll_read(self, cx, buf) {
             Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
             Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::Other,

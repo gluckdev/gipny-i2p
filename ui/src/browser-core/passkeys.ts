@@ -4,10 +4,8 @@
  * to derive profile encryption keys and must be zeroized after use. */
 
 function toUint8Array(source: BufferSource): Uint8Array {
-  if (source instanceof ArrayBuffer) {
-    return new Uint8Array(source);
-  }
-  return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  return new Uint8Array(source);
 }
 
 function toBase64Url(bytes: Uint8Array): string {

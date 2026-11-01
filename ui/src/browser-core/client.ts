@@ -53,7 +53,10 @@ export class BrowserCoreClient implements BrowserBackend {
       this.terminate('The browser core stopped; unlock the profile to recover');
       if (wasUnlocked) window.dispatchEvent(new Event('gipny-browser-locked'));
     };
-    this.init = this.send('init', { config: this.config });
+    this.init = this.send('init', { config: this.config }).catch(error => {
+      if (this.worker === worker) this.terminate('Browser core initialization failed');
+      throw error;
+    });
     return this.init;
   }
   private send(command: string, args?: Record<string, unknown>): Promise<unknown> {
@@ -78,6 +81,7 @@ export class BrowserCoreClient implements BrowserBackend {
     try {
       const result = await this.send(command, args) as T;
       if (opening) this.unlocked = true;
+      if (command === 'vault_create') void navigator.storage?.persist?.().catch(() => false);
       return result;
     } catch (error) {
       if (opening) this.terminate('Profile opening failed');
@@ -103,6 +107,13 @@ export class BrowserCoreClient implements BrowserBackend {
     try {
       await this.invoke('enroll_passkey', { credentialId: [...result.credentialId], rpId: result.rpId, salt: [...result.salt], prf });
     } finally { prf.fill(0); result.prf.fill(0); }
+  }
+  async reconnect(): Promise<void> {
+    if (!this.unlocked) return;
+    await this.configure();
+    if (!this.unlocked) return;
+    await this.invoke('init', { config: this.config });
+    await this.invoke('retry_network');
   }
   async unlockPasskey(profile: string): Promise<void> {
     const entries = await this.invoke<{ credentialId: number[]; rpId: string; salt: number[] }[]>('passkey_entries', { profile });

@@ -34,3 +34,14 @@ pub fn contact_qr_svg(text: &str) -> Result<String, JsValue> {
         .light_color(qrcode::render::svg::Color("#ffffff"))
         .build())
 }
+
+#[wasm_bindgen]
+pub fn clean_attachment(name: &str, data: &[u8]) -> Result<String, JsValue> {
+    if name.len() > 1024 || data.len() > 1024 * 1024 {
+        return Err(JsValue::from_str("browser attachment size limit"));
+    }
+    let (name, data) = crate::sanitizer::sanitize_attachment_data(name, data)
+        .map_err(|error| JsValue::from_str(&error))?;
+    serde_json::to_string(&serde_json::json!({ "name": name, "data": data }))
+        .map_err(|_| JsValue::from_str("attachment serialization failed"))
+}

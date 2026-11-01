@@ -401,6 +401,12 @@ fn clean_webp(d: &[u8]) -> Result<Vec<u8>, String> {
 
 // ----- PDF -------------------------------------------------------------------
 
+#[cfg(target_arch = "wasm32")]
+fn clean_pdf(_: &[u8]) -> Result<Vec<u8>, String> {
+    Err("очистка PDF недоступна в браузере; конвертируйте документ или явно отключите очистку метаданных".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn clean_pdf(d: &[u8]) -> Result<Vec<u8>, String> {
     use lopdf::{Document, Object, ObjectId};
 
@@ -444,7 +450,7 @@ fn clean_pdf(d: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

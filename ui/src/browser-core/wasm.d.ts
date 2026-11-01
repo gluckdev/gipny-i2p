@@ -48,4 +48,5 @@ declare module '*gipny_browser_router.js' {
   export function encode_relay_frame(value: string): Uint8Array;
   export function decode_relay_frame(value: Uint8Array): string;
   export function contact_qr_svg(text: string): string;
+  export function clean_attachment(name: string, data: Uint8Array): string;
 }

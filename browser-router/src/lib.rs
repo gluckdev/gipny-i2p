@@ -19,9 +19,15 @@ mod socket;
 mod tasks;
 #[cfg(target_arch = "wasm32")]
 mod ui_helpers;
+#[cfg(target_arch = "wasm32")]
+#[path = "../../core/src/sanitizer.rs"]
+#[rustfmt::skip]
+mod sanitizer;
 mod unsupported;
 #[cfg(target_arch = "wasm32")]
 mod vault;
+#[cfg(target_arch = "wasm32")]
+pub use ui_helpers::clean_attachment;
 #[cfg(target_arch = "wasm32")]
 pub use ui_helpers::contact_qr_svg;
 

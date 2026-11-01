@@ -32,7 +32,14 @@ self.addEventListener('activate', event => event.waitUntil((async () => {
   await self.clients.claim();
 })()));
 self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET' || !ALLOWED.has(event.request.url)) return;
+  if (event.request.method !== 'GET') return;
+  const path = new URL(event.request.url);
+  const shell = new URL('browser.html', self.registration.scope).href;
+  if (event.request.mode === 'navigate' && path.origin === self.location.origin && (path.href === self.registration.scope || path.pathname === new URL(shell).pathname)) {
+    event.respondWith(caches.open(CACHE).then(async cache => (await cache.match(shell)) || fetch(event.request)));
+    return;
+  }
+  if (!ALLOWED.has(event.request.url)) return;
   event.respondWith(caches.open(CACHE).then(async cache => (await cache.match(event.request)) || fetch(event.request)));
 });
 ` });

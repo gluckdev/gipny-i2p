@@ -114,7 +114,11 @@ export async function listProfiles(): Promise<string[]> {
       const name = await label(directory);
       const hasData = await Promise.all(['a', 'b'].map(async slot => {
         try { return (await (await directory.getFileHandle(`vault-${slot}.bin`)).getFile()).size > 0; }
-        catch (error) { if (error instanceof DOMException && error.name === 'NotFoundError') return false; throw error; }
+        catch (error) {
+          if (error instanceof DOMException && error.name === 'NotFoundError') return false;
+          if (error instanceof DOMException && error.name === 'NoModificationAllowedError') return true;
+          throw error;
+        }
       }));
       if (await directoryId(name) === id && hasData.some(Boolean)) {
         result.push(name);

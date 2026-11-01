@@ -451,7 +451,7 @@ mod implementation {
             }
 
             let state = Self {
-                profile: payload.profile,
+                profile: std::mem::take(&mut payload.profile),
                 vault,
                 identity,
                 client_identity_bytes,
@@ -466,7 +466,7 @@ mod implementation {
                 alternates,
             };
 
-            Ok((state, payload.metadata_json))
+            Ok((state, std::mem::take(&mut payload.metadata_json)))
         }
 
         fn refill_otks(&mut self) -> Result<(), JsValue> {

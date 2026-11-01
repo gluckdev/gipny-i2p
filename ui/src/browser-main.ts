@@ -5,8 +5,11 @@ import { clearBrowserFiles } from './browser-files';
 const client = new BrowserCoreClient();
 configureBrowserBackend(client);
 await client.configure();
+window.addEventListener('online', () => { void client.reconnect().catch(() => {}); });
 window.addEventListener('pagehide', () => { client.terminate(); clearBrowserFiles(); document.getElementById('app')?.replaceChildren(); });
-document.addEventListener('freeze', () => { client.terminate(); window.dispatchEvent(new Event('gipny-browser-locked')); });
+let resumeLocked = false;
+document.addEventListener('freeze', () => { client.terminate(); clearBrowserFiles(); document.getElementById('app')?.replaceChildren(); resumeLocked = true; });
+document.addEventListener('resume', () => { if (resumeLocked) window.dispatchEvent(new Event('gipny-browser-locked')); });
 window.addEventListener('pageshow', event => { if (event.persisted) window.dispatchEvent(new Event('gipny-browser-locked')); });
 window.addEventListener('gipny-browser-locked', () => { window.location.reload(); });
 // The shared authentication/settings views call these after a user gesture,
