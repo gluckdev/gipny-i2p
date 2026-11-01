@@ -44,7 +44,7 @@ use futures::{channel::oneshot, future::BoxFuture, stream::FuturesUnordered, Str
 use rand::{CryptoRng, RngExt};
 use wasm_bindgen::prelude::*;
 
-pub use metrics::{metrics_snapshot, BrowserMetrics, MetricsSnapshot};
+pub use metrics::{metrics_snapshot, public_network_metrics, BrowserMetrics, MetricsSnapshot};
 pub use socket::{configure_forwarder, configure_forwarder_authenticated, BrowserTcpStream};
 pub use unsupported::{BrowserTcpListener, BrowserUdpSocket};
 
@@ -159,6 +159,10 @@ impl Runtime for BrowserRuntime {
 
     fn register_metrics(_: Vec<MetricType>, _: Option<u16>) -> BrowserMetrics {
         metrics::register()
+    }
+
+    fn client_event(name: &'static str, value: usize) {
+        metrics::client_event(name, value);
     }
 
     fn timer(duration: Duration) -> BrowserTimer {

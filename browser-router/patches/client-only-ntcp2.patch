@@ -9,7 +9,7 @@ index b9a3cf3..2ccc0a9 100644
  version = "0.4.0"
  edition.workspace = true
 diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
-index 427fe88..4876dc8 100644
+index 427fe88..427d53a 100644
 --- a/emissary-core/src/destination/mod.rs
 +++ b/emissary-core/src/destination/mod.rs
 @@ -207,6 +207,9 @@ pub struct Destination<R: Runtime> {
@@ -30,7 +30,7 @@ index 427fe88..4876dc8 100644
              public_keys: public_keys.clone(),
              query_futures: R::join_set(),
              remote_destinations: HashMap::new(),
-@@ -292,19 +296,38 @@ impl<R: Runtime> Destination<R> {
+@@ -292,19 +296,39 @@ impl<R: Runtime> Destination<R> {
      /// [`DestinationEvent::LeaseSetFound`], indicating that a lease set is foun and the remote
      /// destination is reachable.
      pub fn query_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
@@ -41,6 +41,7 @@ index 427fe88..4876dc8 100644
 +    /// A restarted peer retains its destination but replaces its inbound tunnels;
 +    /// their previously signed LeaseSet can remain unexpired for several minutes.
 +    pub(crate) fn refresh_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
++        R::client_event("client_lease_refresh_requested", 1);
 +        self.stale_destinations.insert(destination_id.clone());
 +        self.query_lease_set_inner(destination_id, true)
 +    }
@@ -71,7 +72,30 @@ index 427fe88..4876dc8 100644
              );
          }
  
-@@ -878,6 +901,7 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -860,6 +884,7 @@ impl<R: Runtime> Stream for Destination<R> {
+ 
+                 match result {
+                     Err(error) => {
++                        R::client_event("client_lease_query_failure", 1);
+                         self.pending_queries.remove(&destination_id);
+ 
+                         return Poll::Ready(Some(DestinationEvent::LeaseSetNotFound {
+@@ -868,6 +893,14 @@ impl<R: Runtime> Stream for Destination<R> {
+                         }));
+                     }
+                     Ok(lease_set) => {
++                        R::client_event("client_lease_query_success", 1);
++                        if let Some(previous) = self.remote_destinations.get(&destination_id) {
++                            R::client_event(if lease_set.header.published > previous.lease_set.header.published {
++                                "client_newer_lease_received"
++                            } else {
++                                "client_unchanged_lease_received"
++                            }, 1);
++                        }
+                         self.pending_queries.remove(&destination_id);
+ 
+                         match lease_set.public_keys.iter().find(|&remote_key| {
+@@ -878,6 +911,7 @@ impl<R: Runtime> Stream for Destination<R> {
                              Some(key) => {
                                  self.session_manager
                                      .add_remote_destination(destination_id.clone(), key.clone());
@@ -79,7 +103,7 @@ index 427fe88..4876dc8 100644
                              }
                              None => {
                                  tracing::warn!(
-@@ -1008,7 +1032,7 @@ mod tests {
+@@ -1008,7 +1042,7 @@ mod tests {
  
      #[tokio::test]
      async fn query_lease_set_found() {
@@ -88,7 +112,7 @@ index 427fe88..4876dc8 100644
          let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
          let private_key = StaticPrivateKey::random(MockRuntime::rng());
          let mut destination = Destination::<MockRuntime>::new(
-@@ -1038,6 +1062,21 @@ mod tests {
+@@ -1038,6 +1072,21 @@ mod tests {
  
          // query lease set and verify it exists
          assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
@@ -111,10 +135,10 @@ index 427fe88..4876dc8 100644
  
      #[tokio::test]
 diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
-index 0fdce43..7a147c6 100644
+index 0fdce43..ff7d683 100644
 --- a/emissary-core/src/destination/session/mod.rs
 +++ b/emissary-core/src/destination/session/mod.rs
-@@ -312,7 +312,21 @@ impl<R: Runtime> SessionManager<R> {
+@@ -312,7 +312,22 @@ impl<R: Runtime> SessionManager<R> {
          destination_id: DestinationId,
          public_key: StaticPublicKey,
      ) {
@@ -125,6 +149,7 @@ index 0fdce43..7a147c6 100644
 +                || old.to_vec() != public_key.to_vec()
 +        });
 +        if changed {
++            R::client_event("client_lease_encryption_key_changed", 1);
 +            // A restarted destination publishes a fresh LeaseSet encryption
 +            // key. Its previous ECIES tags and pending handshakes are gone.
 +            // Preserve application keys; only replace this transport session.
@@ -137,7 +162,7 @@ index 0fdce43..7a147c6 100644
      }
  
      /// Remove session for `destination_id` from active sessions.
-@@ -1136,6 +1150,51 @@ mod tests {
+@@ -1136,6 +1151,51 @@ mod tests {
  
      const TEST_THRESHOLD: u16 = 10;
  
@@ -283,10 +308,10 @@ index 322456b..c66d66c 100644
      ///
      /// The first request to shutdown the router starts a graceful shutdown and TOOD
 diff --git a/emissary-core/src/runtime/mod.rs b/emissary-core/src/runtime/mod.rs
-index 488d668..72596be 100644
+index 488d668..6e5fa24 100644
 --- a/emissary-core/src/runtime/mod.rs
 +++ b/emissary-core/src/runtime/mod.rs
-@@ -170,6 +170,13 @@ pub enum MetricType {
+@@ -170,6 +170,16 @@ pub enum MetricType {
  }
  
  pub trait Runtime: Clone + Unpin + Send + 'static {
@@ -297,14 +322,17 @@ index 488d668..72596be 100644
 +    /// Neither endpoint is a listening network socket.
 +    fn memory_stream_pair() -> Option<(Self::TcpStream, Self::TcpStream)> { None }
 +
++    /// Bounded public client lifecycle counters; never keys or protocol data.
++    fn client_event(_name: &'static str, _value: usize) {}
++
      type TcpStream: TcpStream;
      type UdpSocket: UdpSocket;
      type TcpListener: TcpListener<Self::TcpStream>;
 diff --git a/emissary-core/src/sam/mod.rs b/emissary-core/src/sam/mod.rs
-index cd3b4a4..9728ed3 100644
+index cd3b4a4..279885e 100644
 --- a/emissary-core/src/sam/mod.rs
 +++ b/emissary-core/src/sam/mod.rs
-@@ -74,6 +74,156 @@ pub use {
+@@ -74,6 +74,159 @@ pub use {
      protocol::streaming::Packet,
  };
  
@@ -425,7 +453,10 @@ index cd3b4a4..9728ed3 100644
 +                options: HashMap::from_iter([("TO_PORT".to_string(), port.to_string())]),
 +                session_id: self.session_id.clone(),
 +            }).await.map_err(|_| Error::EssentialTaskClosed)?;
-+            if read_line::<R>(&mut stream).await? != b"STREAM STATUS RESULT=OK\n" { return Err(Error::DialFailure); }
++            let status = read_line::<R>(&mut stream).await?;
++            if status != b"STREAM STATUS RESULT=OK\n" {
++                return Err(Error::Custom(format!("stream connect status: {}", String::from_utf8_lossy(&status).trim())));
++            }
 +            Ok(stream)
 +        }
 +
@@ -462,12 +493,14 @@ index cd3b4a4..9728ed3 100644
  const LOG_TARGET: &str = "emissary::sam";
  
 diff --git a/emissary-core/src/sam/session.rs b/emissary-core/src/sam/session.rs
-index 76ba296..9388d4c 100644
+index 76ba296..2f7553f 100644
 --- a/emissary-core/src/sam/session.rs
 +++ b/emissary-core/src/sam/session.rs
-@@ -1280,6 +1280,10 @@ impl<R: Runtime> Future for SamSession<R> {
+@@ -1279,7 +1279,12 @@ impl<R: Runtime> Future for SamSession<R> {
+                     }
                  },
                  Poll::Ready(Some(StreamManagerEvent::StreamRejected { destination_id })) => {
++                    R::client_event("client_stream_syn_rejected", 1);
                      self.pending_outbound.remove(&destination_id);
 +                    // A peer may have restarted on the same destination keys.
 +                    // Query fresh leases instead of retrying its dead tunnels

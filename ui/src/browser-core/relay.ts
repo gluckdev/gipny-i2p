@@ -109,6 +109,13 @@ export class BrowserRelay {
       return new Uint8Array(frame.Bundle.bundle);
     } finally { this.release(stream); }
   }
+  async ping(address: string): Promise<void> {
+    const stream = await this.authenticated(address);
+    try {
+      await this.writeClient(stream, 'Ping');
+      if (await this.readRelay(stream) !== 'Pong') throw new Error('Relay did not answer ping');
+    } finally { this.release(stream); }
+  }
   async deposit(address: string, peer: string, blob: number[]): Promise<void> {
     const stream = await this.authenticated(address);
     try {

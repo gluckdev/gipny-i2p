@@ -254,6 +254,12 @@ def main():
             reply = rpc(bob, 'send_message', contactId=bob_contact, body='browser live beta', attachments=[dict(name='hello.txt', data='aGVsbG8=')], ttlSecs=None, replyTo=None)
             wait_for(lambda: any(row['body'] == 'browser live beta' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 120, 'Bob to Alice ratchet reply')
             wait_for(lambda: any(row['id'] == reply and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'reply receipt')
+            received_reply = next(row for row in rpc(alice, 'list_messages', contactId=alice_contact) if row['body'] == 'browser live beta')
+            attachments = rpc(alice, 'list_attachments', messageId=received_reply['id'])
+            if len(attachments) != 1 or attachments[0]['name'] != 'hello.txt':
+                raise RuntimeError('inline attachment metadata did not survive delivery')
+            if rpc(alice, 'load_attachment', attachmentId=attachments[0]['id']) != 'aGVsbG8=':
+                raise RuntimeError('inline attachment bytes changed during delivery')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and inline attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
             rpc(bob, 'update_contact', id=bob_contact, name='Alice', trust=2)
@@ -329,9 +335,11 @@ def main():
         # Only bounded public transport failure strings, never RPC arguments,
         # plaintext, credentials or protocol/network dumps.
         receipt['transport_failures'] = []
+        receipt['network_metrics'] = []
         for client in clients:
             try:
                 receipt['transport_failures'].append(evaluate(client, 'globalThis.__coreFailures || []'))
+                receipt['network_metrics'].append(rpc(client, 'browser_diagnostics'))
             except Exception:
                 receipt['transport_failures'].append(['diagnostics unavailable'])
         raise

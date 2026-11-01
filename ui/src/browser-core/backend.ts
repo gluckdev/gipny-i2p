@@ -1,4 +1,4 @@
-import { BrowserEngine, clean_attachment, contact_qr_svg, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
+import { BrowserEngine, clean_attachment, contact_qr_svg, public_network_metrics, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
 import type { BootStatus, Contact, CoreEvent, GroupMember, Message, PendingAttachment, RelayInfo } from '../api';
 import { isValidI2pAddress } from '../contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './storage';
@@ -32,6 +32,7 @@ export class BrowserBackend {
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private hosted: RelayInfo['hosted'] = { state: 'off' };
   private networkConfig: Record<string, string> | null = null;
+  private relayProbes = { attempted: 0, completed: 0, failed: 0 };
   constructor(private emit: EventSink) {}
 
   configure(config: Record<string, string> | null): void { this.networkConfig = config; }
@@ -151,7 +152,38 @@ export class BrowserBackend {
       this.boot('dht', 'skipped', 'Contact cards supply relay destinations');
       this.relayChanged();
       this.schedule(0);
+      void this.warmPeerRelays(attempt);
     } catch (error) { if (attempt === this.generation && !this.closing) this.networkFailed(reason(error)); }
+  }
+
+  private async warmPeerRelays(attempt: number): Promise<void> {
+    // A restored destination has fresh I2P encryption keys and inbound leases.
+    // Establish outbound streams so peers learn its current signed LeaseSet
+    // without waiting for their cached pre-restart address to expire.
+    const peers = this.state?.contacts.filter(peer => peer.trust !== 2 && peer.request !== 'incoming')
+      .map(peer => ({ key: peer.sign_pk, address: peer.relay || peer.onion })) || [];
+    this.relayProbes = { attempted: 0, completed: 0, failed: 0 };
+    let next = 0;
+    const active = (): boolean => attempt === this.generation && !this.closing && this.relay !== null;
+    const worker = async (): Promise<void> => {
+      while (active() && next < peers.length) {
+        const peer = peers[next++]!;
+        for (let retry = 0; retry < 3 && active(); retry++) {
+          if (!this.state?.contacts.some(contact => contact.sign_pk === peer.key && contact.trust !== 2 && contact.request !== 'incoming')) break;
+          this.relayProbes.attempted++;
+          try {
+            await this.relay!.ping(peer.address);
+            if (active()) this.relayProbes.completed++;
+            break;
+          } catch {
+            if (!active()) return;
+            this.relayProbes.failed++;
+            if (retry < 2) await new Promise(resolve => setTimeout(resolve, 10000));
+          }
+        }
+      }
+    };
+    await Promise.all([worker(), worker()]);
   }
   private networkFailed(error: string): void {
     this.relay?.close(); this.relay = null;
@@ -439,6 +471,7 @@ export class BrowserBackend {
     if (command === 'current_version') return '0.4.19-browser';
     if (command === 'update_configured' || command === 'get_auto_update' || command === 'update_installs_itself' || command === 'update_asks_for_root') return false;
     if (command === 'check_update' || command === 'get_agent_mode') return null;
+    if (command === 'browser_diagnostics') return { ...JSON.parse(public_network_metrics()), relay_probes: { ...this.relayProbes } };
     if (command === 'get_relay_info') return this.info();
     if (command === 'get_relay_address') return this.identity?.onion || '';
     if (command === 'get_router_settings') return { transit: 'frugal', yggdrasil: 'off' };

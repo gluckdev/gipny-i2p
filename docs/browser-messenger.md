@@ -40,6 +40,9 @@ record is selected before checking credentials. A successful password change
 flushes the new credential wrapper to both live slots; an old wrapper is not
 left in the recovery slot. Previously copied profiles retain their own password
 wrappers. File I/O errors are surfaced.
+Profile labels and credential descriptors are available before unlock; they are
+not encrypted conversation data. Password salts and wrapped-key headers are
+public format metadata, while private keys and conversation state are encrypted.
 
 Password wrapping uses Argon2id with 64 MiB, three iterations and one lane.
 Passkeys are enrolled only when WebAuthn returns a real 32-byte PRF result.
@@ -88,14 +91,30 @@ out-of-order messages and fixed-integer bincode compatibility. Vault tests check
 wrong credentials, password rotation, passkey wrapping and torn-slot recovery.
 An emulated or virtual authenticator test is not physical mobile validation.
 
-The subsequent `e6709dd` run passed all 46 WASM tests, but stopped at the new
+Latest completed run: `b93fdc7`,
+[41317354451](https://github.com/gluckdev/gipny-i2p/actions/runs/41317354451).
+Both native recovery regressions and all 46 WASM tests passed. Desktop and
+constrained cold bootstrap passed (162.31 / 178.52 s to ready, 32 / 33 s held,
+3 / 5 roundtrips, 157 verified RouterInfo records). Live bidirectional messages,
+receipts, PRF, blocking and restored identity/address passed again. Delivery
+following recipient restart still timed out after 180 s; the sender recorded
+six `DialFailure` transport errors. The HTTP-server-offline phase was not reached.
+
+The next change probes known contact relays with bounded authenticated Ping/Pong
+streams after network recovery, allowing peers to learn the fresh signed
+LeaseSet through an outbound connection. It does not send chat text or advance
+the application's ratchet. Public numeric lookup/key-change/probe counters and
+explicit stream status errors improve the failure receipt. This change awaits
+its own live CI run; it is not a confirmed recovery result.
+
+The earlier intermediate `e6709dd` run passed all 46 WASM tests, but stopped at the new
 native regression: its initial empty-queue assertion mistook local-destination
 registration for a remote lookup. That assertion is corrected in source.
 The follow-up also resets stale I2P ECIES sessions when the signed LeaseSet
 encryption key changes and checks decryption by a restarted recipient. These
 changes await CI; there is no new live result from the stopped run.
 
-Latest completed live evidence: `f72d7f4`, 2026-11-01,
+Earlier live evidence: `f72d7f4`, 2026-11-01,
 [Actions run 41309131811](https://github.com/gluckdev/gipny-i2p/actions/runs/41309131811).
 
 | Check | Result |
@@ -199,6 +218,34 @@ need to be supplied for deployment and device acceptance. This branch prepares
 the code and artifacts; it does not publish a public service.
 The older [`scripts/deploy` templates](../scripts/deploy/README.md) describe a
 server-side `gipny-web` gateway and do not deploy this browser architecture.
+
+## Physical-device acceptance
+
+This procedure has not yet been run on physical phones. Use test profiles and
+the exact PWA artifact/commit under review, served by the HTTPS/WSS setup above.
+Record device model, OS/browser versions, artifact commit and each result.
+
+1. Create independent profiles on the phone and a second browser. Record cold
+   navigation-to-ready time, including profile unlock and client tunnel startup.
+   Compare identity fingerprints through a trusted channel and exchange cards.
+2. Send messages both ways, a reply and a small attachment. Check the receiver's
+   contents and the sender's end-to-end Delivered status.
+3. Enroll a passkey where the authenticator provides PRF; lock and unlock with
+   it. If PRF is unavailable, record that result and check password fallback.
+   Change the password, restart the app and check that the old password fails.
+4. Close the receiving app, queue a message from the sender, then reopen it.
+   Check unchanged identity/address, recovered history, eventual delivery and
+   absence of duplicate messages. Repeat after phone sleep and a Wi-Fi/mobile
+   network transition. Record recovery time separately from initial startup.
+5. After the shell has been cached, disable connectivity and reopen the app
+   from its installed icon or start URL. Unlock and read saved history. Restore
+   connectivity and check reconnection and pending delivery.
+6. Install the PWA where offered. Check navigation, lock/reopen and return from
+   background in installed mode as well as a normal tab.
+
+Retain public pass/fail results and timings. Passwords, PRF output, capability
+tokens, private browser directories and protocol dumps are not acceptance
+artifacts. A successful desktop emulation does not complete these device checks.
 
 The first browser transport supports direct messages, group fanout and inline
 attachments up to 1 MiB per message within a 16 MiB encrypted profile. Native
