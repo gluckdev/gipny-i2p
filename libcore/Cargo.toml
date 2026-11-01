@@ -8,13 +8,7 @@ name = "gipny_libcore"
 path = "src/lib.rs"
 
 [dependencies]
-# The i2pd router inside the process (no SAM, no port); see embedded.rs.
-i2p-embed = { path = "../i2p-embed" }
-gipny-dht = { path = "../dht" }
-futures = { workspace = true }
-tokio = { workspace = true }
 serde = { workspace = true }
-serde_json = "1"
 base64 = "0.23"
 serde-big-array = { workspace = true }
 bincode = { workspace = true }
@@ -27,6 +21,14 @@ chacha20poly1305 = { workspace = true }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The i2pd router inside the process (no SAM, no port); see embedded.rs.
+i2p-embed = { path = "../i2p-embed" }
+gipny-dht = { path = "../dht" }
+futures = { workspace = true }
+tokio = { workspace = true }
+serde_json = "1"
 argon2 = { workspace = true }
 rusqlite = { workspace = true }
 libc = { workspace = true }

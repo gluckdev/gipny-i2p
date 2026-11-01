@@ -2,12 +2,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DmReference {
-    pub author: [u8; 32],
-    pub origin: u64,
-    pub sent_at: i64,
-}
+include!("../dm_reference.rs");
 
 #[derive(Clone, Debug)]
 pub struct DmDelete {

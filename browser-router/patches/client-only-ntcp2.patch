@@ -120,10 +120,10 @@ index 488d668..72596be 100644
      type UdpSocket: UdpSocket;
      type TcpListener: TcpListener<Self::TcpStream>;
 diff --git a/emissary-core/src/sam/mod.rs b/emissary-core/src/sam/mod.rs
-index cd3b4a4..25c556f 100644
+index cd3b4a4..9728ed3 100644
 --- a/emissary-core/src/sam/mod.rs
 +++ b/emissary-core/src/sam/mod.rs
-@@ -74,6 +74,152 @@ pub use {
+@@ -74,6 +74,156 @@ pub use {
      protocol::streaming::Packet,
  };
  
@@ -149,6 +149,10 @@ index cd3b4a4..25c556f 100644
 +        pub fn generate<R: Runtime>() -> Self {
 +            let signing_key = SigningPrivateKey::random(R::rng());
 +            let destination = Destination::new::<R>(signing_key.public());
++            // The wire certificate deliberately advertises the legacy
++            // encryption type for Java streaming compatibility. Parse that
++            // descriptor to use its canonical private-key size on export.
++            let destination = Destination::parse(destination.serialize()).expect("generated destination");
 +            let mut private_key = vec![0; destination.private_key_length()];
 +            R::rng().fill_bytes(&mut private_key);
 +            Self(DestinationContext { destination, private_key, signing_key: Box::new(signing_key) })

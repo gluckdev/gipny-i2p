@@ -39,6 +39,19 @@ jobs:
         run: |
           cargo build --locked --target wasm32-unknown-unknown -p emissary-core
           cargo build --locked --release --target wasm32-unknown-unknown
+      - name: Verify the WASM graph has no native application dependencies
+        run: |
+          cargo tree --locked --target wasm32-unknown-unknown -e normal --prefix none --format '{p}' > "$RUNNER_TEMP/browser-wasm-dependencies.txt"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          forbidden = {'tokio', 'rusqlite', 'openssl-sys', 'i2p-embed', 'libsqlite3-sys', 'ring'}
+          packages = {line.split()[0] for line in (Path(os.environ['RUNNER_TEMP']) / 'browser-wasm-dependencies.txt').read_text().splitlines() if line.strip()}
+          found = sorted(packages & forbidden)
+          if found:
+              raise SystemExit(f'native-only dependencies entered WASM: {found}')
+          print('WASM uses the portable crypto/wire core without native transport/database libraries')
+          PY
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
