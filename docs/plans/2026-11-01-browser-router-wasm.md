@@ -2,7 +2,8 @@
 
 Дата: **2026-11-01**. Исследование — `reports/I2P клиент в браузере.md`, заметки —
 `research_notes/I2P клиент в браузере/`. Статус: **runtime реализован в
-`browser-router/`; проверка GitHub CI готовится; живой роутер ещё не запущен**.
+`browser-router/`; GitHub CI: WASM build и 9/9 Chrome tests PASS;
+живой роутер ещё не запущен**.
 
 ## Контекст и требование владельца
 
@@ -97,3 +98,18 @@ iOS/Android, relay+push.
 из предыдущей сессии не заменяют GitHub CI. Браузерный runtime ещё не означает
 работающий `Router<BrowserRuntime>`: NTCP2-рукопожатие, exploratory-туннель,
 netDb и измерения телефона остаются критериями следующих этапов.
+
+### Подтверждённый результат
+
+Коммит `d1eccd7`, [GitHub run 41269666409](https://github.com/gluckdev/gipny-i2p/actions/runs/41269666409)
+(pull_request) и `41269662893` (push): core и release WASM собраны с `--locked`,
+все **9 тестов в Chrome прошли**. В первом прогоне `7e99adc` тест чистого
+закрытия нашёл гонку `flush`/close; она исправлена с проверкой отсутствия
+неотправленных команд и нулевого `bufferedAmount` при чистом закрытии.
+
+Raw WASM probe — **649 825 байт**; artifact `browser-router-wasm`
+(`13068294053`) содержит WASM, размер, SHA256 и исходный commit. Это размер
+probe часов/RNG/gzip, не всего роутера. В браузерных тестах также проверены
+WebSocket, таймеры/задачи, частичные чтения/записи, backpressure, EOF,
+недопустимые кадры и ограничение распаковки. Память полного роутера, bootstrap,
+NTCP2, exploratory и мобильный lifecycle пока не измерены.
