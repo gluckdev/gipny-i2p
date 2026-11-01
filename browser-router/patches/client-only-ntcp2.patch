@@ -8,6 +8,18 @@ index b9a3cf3..2ccc0a9 100644
  name = "emissary-core"
  version = "0.4.0"
  edition.workspace = true
+diff --git a/emissary-core/src/lib.rs b/emissary-core/src/lib.rs
+index fec3635..999657a 100644
+--- a/emissary-core/src/lib.rs
++++ b/emissary-core/src/lib.rs
+@@ -42,6 +42,7 @@ pub use config::{
+ };
+ pub use error::Error;
+ pub use profile::Profile;
++pub use sam::embedded::{ClientHandle, ClientIdentity, ClientSession};
+ 
+ #[cfg(feature = "fuzz")]
+ pub use {
 diff --git a/emissary-core/src/primitives/router_address.rs b/emissary-core/src/primitives/router_address.rs
 index 3d3bb5e..e69eced 100644
 --- a/emissary-core/src/primitives/router_address.rs
@@ -38,10 +50,31 @@ index 3d3bb5e..e69eced 100644
      }
  
 diff --git a/emissary-core/src/router/mod.rs b/emissary-core/src/router/mod.rs
-index 322456b..2f48a06 100644
+index 322456b..c66d66c 100644
 --- a/emissary-core/src/router/mod.rs
 +++ b/emissary-core/src/router/mod.rs
-@@ -410,7 +410,7 @@ impl<R: Runtime> Router<R> {
+@@ -126,6 +126,8 @@ impl<R: Runtime> RouterBuilder<R> {
+ 
+ /// Router.
+ pub struct Router<R: Runtime> {
++    /// Direct application API; independent of SAM/I2CP network servers.
++    client_handle: crate::ClientHandle<R>,
+     /// Protocol address information.
+     address_info: ProtocolAddressInfo,
+ 
+@@ -369,6 +371,11 @@ impl<R: Runtime> Router<R> {
+         // router info when, e.g., it goes stale or a new external address is discovered
+         transport_manager_builder.register_netdb_handle(netdb_handle.clone());
+ 
++        let client_handle = crate::ClientHandle::new(
++            netdb_handle.clone(), tunnel_manager_handle.clone(),
++            profile_storage.clone(), sam_event_handle.clone(),
++        );
++
+         // initialize i2cp server if it was enabled
+         if let Some(I2cpConfig { host, port }) = i2cp_config {
+             let i2cp_server = I2cpServer::<R>::new(
+@@ -410,7 +417,7 @@ impl<R: Runtime> Router<R> {
          }
  
          if let Some(context) = ntcp2_context {
@@ -50,20 +83,199 @@ index 322456b..2f48a06 100644
              transport_manager_builder.register_ntcp2(context);
          }
  
+@@ -421,6 +428,7 @@ impl<R: Runtime> Router<R> {
+ 
+         Ok((
+             Self {
++                client_handle,
+                 address_info,
+                 event_manager,
+                 router_id,
+@@ -434,6 +442,9 @@ impl<R: Runtime> Router<R> {
+         ))
+     }
+ 
++    /// Access the in-process client API without binding SAM or I2CP sockets.
++    pub fn client_handle(&self) -> crate::ClientHandle<R> { self.client_handle.clone() }
++
+     /// Shut down the router.
+     ///
+     /// The first request to shutdown the router starts a graceful shutdown and TOOD
 diff --git a/emissary-core/src/runtime/mod.rs b/emissary-core/src/runtime/mod.rs
-index 488d668..417c1a7 100644
+index 488d668..72596be 100644
 --- a/emissary-core/src/runtime/mod.rs
 +++ b/emissary-core/src/runtime/mod.rs
-@@ -170,6 +170,9 @@ pub enum MetricType {
+@@ -170,6 +170,13 @@ pub enum MetricType {
  }
  
  pub trait Runtime: Clone + Unpin + Send + 'static {
 +    /// Whether TCP listeners are supported; outbound streams may still work.
 +    const TCP_LISTENER_SUPPORTED: bool = true;
 +
++    /// Optional bounded byte pipe for clients embedded in the router process.
++    /// Neither endpoint is a listening network socket.
++    fn memory_stream_pair() -> Option<(Self::TcpStream, Self::TcpStream)> { None }
++
      type TcpStream: TcpStream;
      type UdpSocket: UdpSocket;
      type TcpListener: TcpListener<Self::TcpStream>;
+diff --git a/emissary-core/src/sam/mod.rs b/emissary-core/src/sam/mod.rs
+index cd3b4a4..25c556f 100644
+--- a/emissary-core/src/sam/mod.rs
++++ b/emissary-core/src/sam/mod.rs
+@@ -74,6 +74,152 @@ pub use {
+     protocol::streaming::Packet,
+ };
+ 
++/// Typed application access to the existing destination/streaming engine.
++/// No SAM listener, UDP socket, or external control connection is created.
++pub mod embedded {
++    use super::{parser::{DestinationContext, SessionKind}, pending::session::PendingSamSession,
++        session::SamSession, socket::SamSocket, types::{SamSessionCommand, SamSessionCommandRecycle}};
++    use crate::{crypto::{base32_decode, base64_decode, base64_encode, SigningPrivateKey},
++        events::EventHandle, netdb::NetDbHandle, primitives::{Destination, DestinationId, Str},
++        profile::ProfileStorage, runtime::{AsyncRead, Runtime}, tunnel::{TunnelManagerHandle, TunnelPoolConfig}, Error};
++    use alloc::{boxed::Box, string::{String, ToString}, sync::Arc, vec, vec::Vec};
++    use core::pin::Pin;
++    use futures::future::poll_fn;
++    use hashbrown::HashMap;
++    use rand::Rng;
++    use thingbuf::mpsc::{channel, with_recycle, Sender};
++
++    /// Persistent destination identity. Keep exported private bytes encrypted.
++    pub struct ClientIdentity(DestinationContext);
++
++    impl ClientIdentity {
++        pub fn generate<R: Runtime>() -> Self {
++            let signing_key = SigningPrivateKey::random(R::rng());
++            let destination = Destination::new::<R>(signing_key.public());
++            let mut private_key = vec![0; destination.private_key_length()];
++            R::rng().fill_bytes(&mut private_key);
++            Self(DestinationContext { destination, private_key, signing_key: Box::new(signing_key) })
++        }
++
++        pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
++            if bytes.len() > 2048 { return Err(Error::NotSupported); }
++            let (rest, destination) = Destination::parse_frame(bytes).map_err(|_| Error::NotSupported)?;
++            let key_len = destination.private_key_length();
++            if destination.signing_key_length() != 32 || rest.len() != key_len + 32 {
++                return Err(Error::NotSupported);
++            }
++            let signing_key = SigningPrivateKey::from_bytes(&rest[key_len..]).ok_or(Error::NotSupported)?;
++            if signing_key.public().as_ref() != destination.verifying_key().as_ref() {
++                return Err(Error::NotSupported);
++            }
++            Ok(Self(DestinationContext { destination, private_key: rest[..key_len].to_vec(), signing_key: Box::new(signing_key) }))
++        }
++
++        pub fn to_bytes(&self) -> Vec<u8> {
++            let mut bytes = self.0.destination.serialize().to_vec();
++            bytes.extend_from_slice(&self.0.private_key);
++            bytes.extend_from_slice(self.0.signing_key.as_ref().as_ref());
++            bytes
++        }
++
++        pub fn destination(&self) -> &Destination { &self.0.destination }
++    }
++
++    /// Factory for application destinations. It shares the router's real
++    /// NetDb/tunnel manager and never exposes a network control protocol.
++    #[derive(Clone)]
++    pub struct ClientHandle<R: Runtime> {
++        netdb: NetDbHandle,
++        tunnels: TunnelManagerHandle,
++        profiles: ProfileStorage<R>,
++        events: EventHandle<R>,
++    }
++
++    impl<R: Runtime> ClientHandle<R> {
++        pub(crate) fn new(netdb: NetDbHandle, tunnels: TunnelManagerHandle, profiles: ProfileStorage<R>, events: EventHandle<R>) -> Self {
++            Self { netdb, tunnels, profiles, events }
++        }
++
++        pub async fn create(&self, identity: &ClientIdentity) -> crate::Result<ClientSession<R>> {
++            let (mut control, driver_control) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
++            let session_id: Arc<str> = Arc::from(base64_encode(identity.destination().id().to_vec()));
++            let config = TunnelPoolConfig { name: Str::from(Arc::clone(&session_id)), ..TunnelPoolConfig::default() };
++            let future = self.tunnels.create_tunnel_pool(config).map_err(|_| Error::EssentialTaskClosed)?;
++            let (sender, receiver) = with_recycle(32, SamSessionCommandRecycle::default());
++            let (datagram_tx, datagram_rx) = channel(1);
++            let options = HashMap::from_iter([("i2cp.leaseSetEncType".to_string(), "4".to_string())]);
++            let context = PendingSamSession::new(
++                Box::new(SamSocket::new(driver_control)), identity.0.clone(), session_id.clone(),
++                SessionKind::Stream, options, receiver, datagram_tx, Box::pin(future), self.netdb.clone(),
++                None, self.events.clone(), self.profiles.clone(), None,
++            ).run().await?;
++            R::spawn(async move { SamSession::new(context).await; drop(datagram_rx); });
++            let ready = read_line::<R>(&mut control).await?;
++            if !ready.starts_with(b"SESSION STATUS RESULT=OK ") { return Err(Error::NotSupported); }
++            Ok(ClientSession { destination: identity.destination().clone(), session_id, sender, _control: control })
++        }
++    }
++
++    /// Application destination and its private client pool. Dropping this
++    /// handle closes its control pipe and shuts down the session.
++    pub struct ClientSession<R: Runtime> {
++        destination: Destination,
++        session_id: Arc<str>,
++        sender: Sender<SamSessionCommand<R>, SamSessionCommandRecycle>,
++        _control: R::TcpStream,
++    }
++
++    impl<R: Runtime> ClientSession<R> {
++        pub fn destination(&self) -> &Destination { &self.destination }
++
++        pub async fn connect(&self, address: &str, port: u16) -> crate::Result<R::TcpStream> {
++            let destination_id = if let Some(host) = address.strip_suffix(".b32.i2p") {
++                let bytes = base32_decode(host).ok_or(Error::NotSupported)?;
++                if bytes.len() != 32 { return Err(Error::NotSupported); }
++                DestinationId::from(bytes)
++            } else {
++                let bytes = base64_decode(address).ok_or(Error::NotSupported)?;
++                Destination::parse(bytes).map_err(|_| Error::NotSupported)?.id()
++            };
++            let (mut stream, driver_stream) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
++            self.sender.send(SamSessionCommand::Connect {
++                socket: Box::new(SamSocket::new(driver_stream)), destination_id,
++                options: HashMap::from_iter([("TO_PORT".to_string(), port.to_string())]),
++                session_id: self.session_id.clone(),
++            }).await.map_err(|_| Error::EssentialTaskClosed)?;
++            if read_line::<R>(&mut stream).await? != b"STREAM STATUS RESULT=OK\n" { return Err(Error::DialFailure); }
++            Ok(stream)
++        }
++
++        pub async fn accept(&self) -> crate::Result<(R::TcpStream, Destination)> {
++            let (mut stream, driver_stream) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
++            self.sender.send(SamSessionCommand::Accept {
++                socket: Box::new(SamSocket::new(driver_stream)), options: HashMap::new(),
++                session_id: self.session_id.clone(),
++            }).await.map_err(|_| Error::EssentialTaskClosed)?;
++            if read_line::<R>(&mut stream).await? != b"STREAM STATUS RESULT=OK\n" { return Err(Error::DialFailure); }
++            let line = read_line::<R>(&mut stream).await?;
++            let bytes = base64_decode(&line[..line.len() - 1]).ok_or(Error::NotSupported)?;
++            let destination = Destination::parse(bytes).map_err(|_| Error::NotSupported)?;
++            Ok((stream, destination))
++        }
++    }
++
++    // Consume engine-internal acknowledgements inside bounded memory pipes.
++    // Application callers only receive typed streams and destinations.
++    async fn read_line<R: Runtime>(stream: &mut R::TcpStream) -> crate::Result<Vec<u8>> {
++        let mut line = Vec::new();
++        while line.len() < 4096 {
++            let mut byte = [0];
++            let read = poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, &mut byte)).await?;
++            if read == 0 { return Err(Error::EssentialTaskClosed); }
++            line.push(byte[0]);
++            if byte[0] == b'\n' { return Ok(line); }
++        }
++        Err(Error::NotSupported)
++    }
++}
++
+ /// Logging target for the file.
+ const LOG_TARGET: &str = "emissary::sam";
+ 
 diff --git a/emissary-core/src/transport/ntcp2/mod.rs b/emissary-core/src/transport/ntcp2/mod.rs
 index 544a0ad..dfb1664 100644
 --- a/emissary-core/src/transport/ntcp2/mod.rs

@@ -18,7 +18,7 @@ use emissary_core::{
 use futures::{
     channel::{mpsc, oneshot},
     task::AtomicWaker,
-    Sink, Stream, StreamExt,
+    Sink, SinkExt, Stream, StreamExt,
 };
 use wasm_bindgen::{closure::Closure, JsCast};
 use web_sys::{CloseEvent, Event, MessageEvent, WebSocket};
@@ -108,6 +108,78 @@ pub struct BrowserTcpStream {
     cursor: usize,
     flushing: Option<oneshot::Receiver<bool>>,
     write_closed: bool,
+}
+
+impl BrowserTcpStream {
+    /// Bounded byte pipe for an application inside the WASM process. This never
+    /// opens a WebSocket, TCP listener, or UDP socket.
+    pub fn memory_pair() -> (Self, Self) {
+        let (commands_a, receiver_a) = mpsc::channel(QUEUE_DEPTH);
+        let (commands_b, receiver_b) = mpsc::channel(QUEUE_DEPTH);
+        let (incoming_a, frames_a) = mpsc::channel(QUEUE_DEPTH);
+        let (incoming_b, frames_b) = mpsc::channel(QUEUE_DEPTH);
+        let terminal_a = Arc::new(Terminal::default());
+        let terminal_b = Arc::new(Terminal::default());
+        crate::tasks::spawn(memory_driver(
+            receiver_a,
+            incoming_b,
+            terminal_a.clone(),
+            terminal_b.clone(),
+        ));
+        crate::tasks::spawn(memory_driver(
+            receiver_b,
+            incoming_a,
+            terminal_b.clone(),
+            terminal_a.clone(),
+        ));
+        let endpoint = |commands, incoming, terminal| Self {
+            commands,
+            incoming,
+            terminal,
+            buffered: Vec::new(),
+            cursor: 0,
+            flushing: None,
+            write_closed: false,
+        };
+        (
+            endpoint(commands_a, frames_a, terminal_a),
+            endpoint(commands_b, frames_b, terminal_b),
+        )
+    }
+}
+
+struct MemoryClose(Arc<Terminal>);
+impl Drop for MemoryClose {
+    fn drop(&mut self) {
+        self.0.clean_drained.store(
+            self.0.pending_writes.load(Ordering::SeqCst) == 0,
+            Ordering::SeqCst,
+        );
+        self.0.finish(false);
+    }
+}
+
+async fn memory_driver(
+    mut receiver: mpsc::Receiver<Command>,
+    mut peer: mpsc::Sender<Vec<u8>>,
+    own: Arc<Terminal>,
+    remote: Arc<Terminal>,
+) {
+    let _closed = MemoryClose(remote);
+    while let Some(command) = receiver.next().await {
+        match command {
+            Command::Write(bytes) => {
+                if peer.send(bytes).await.is_err() {
+                    own.finish(true);
+                    return;
+                }
+                own.pending_writes.fetch_sub(1, Ordering::SeqCst);
+            }
+            Command::Flush(ack) => {
+                let _ = ack.send(true);
+            }
+        }
+    }
 }
 
 impl TcpStream for BrowserTcpStream {

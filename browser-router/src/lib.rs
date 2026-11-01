@@ -97,6 +97,9 @@ impl Future for BrowserTimer {
 
 impl Runtime for BrowserRuntime {
     const TCP_LISTENER_SUPPORTED: bool = false;
+    fn memory_stream_pair() -> Option<(Self::TcpStream, Self::TcpStream)> {
+        Some(BrowserTcpStream::memory_pair())
+    }
     type TcpStream = BrowserTcpStream;
     type UdpSocket = BrowserUdpSocket;
     type TcpListener = BrowserTcpListener;
