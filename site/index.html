@@ -122,10 +122,13 @@
       <section class="browser-section section" id="browser" aria-labelledby="browser-title">
         <div class="browser-mark" aria-hidden="true"><span>&gt;_</span><i></i></div>
         <div class="browser-copy">
-          <p class="pill pill-research" data-i18n="browserStatus">В разработке · пока недоступно</p>
-          <h2 id="browser-title" data-i18n="browserTitle">Скоро — веб-клиент.</h2>
-          <p data-i18n="browserBody">Код будет выполняться в браузере на вашем устройстве; ключи, шифрование и хранилище останутся у вас. Хостинг будет раздавать только сайт и код. Связь браузера с I2P ещё прорабатывается.</p>
-          <p class="browser-boundary" data-i18n="browserTimeline">Планируем выпустить веб-клиент до весны 2027 года.</p>
+          <p class="pill pill-research" data-i18n="browserStatus">Эксперимент · проверка реализуемости</p>
+          <h2 id="browser-title" data-i18n="browserTitle">Веб-версия</h2>
+          <p data-i18n="browserBody">Браузер — только интерфейс; локально установленный gipny-web хранит ключи, выполняет криптографию и работает с данными на вашем устройстве. Pages раздаёт статический код и не получает переписку, даже шифротекст.</p>
+          <p class="browser-boundary" data-i18n="browserTimeline">Это эксперимент, а не выпущенный веб-мессенджер.</p>
+          <p><a class="button button-primary" href="./app/" data-i18n="browserOpen">Открыть экспериментальный интерфейс</a></p>
+          <p><a href="https://github.com/gluckdev/gipny-i2p/blob/main/core/README.md#gipny-web" data-i18n="browserSetup">Настройка локального gipny-web</a></p>
+          <p class="browser-boundary" data-i18n="browserLocal">Нужен gipny-web на этом устройстве; браузер подключается к 127.0.0.1. Chrome может запросить доступ к локальной сети. Поддержка HTTPS → loopback в Firefox не проверена.</p>
           <p class="browser-boundary" data-i18n="browserBoundary">Перед вами сайт проекта. Он не отправляет и не принимает сообщения, не создаёт профили и не хранит ваши ключи.</p>
           <aside class="hosting-note" aria-label="О посещении сайта" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">На сайте нет аналитики и внешних скриптов. Но его хостинг, GitHub Pages, видит запросы страниц, включая IP-адрес и время посещения. Открытие сайта само по себе не включает защиту I2P; сайт не получает ваши сообщения, контакты или ключи.</p></aside>
         </div>

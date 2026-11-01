@@ -68,6 +68,12 @@ jobs:
         run: cargo check --locked -p gipny-libcore -p gipny-agent -p gipny-bot -p e2e-harness --all-targets
       - name: Check native app commands and test targets
         run: cargo check --locked -p gipny --all-targets --features web-gateway
+      - name: Local web capability, Origin and Host boundary
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p gipny --features web-gateway --test web_local
+      - name: Web attachments keep desktop metadata privacy
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p gipny --features web-gateway --lib web_server::tests::inline_attachments_follow_the_desktop_privacy_setting
       - name: SQLCipher logging survives a real Windows lock-quota failure
         if: runner.os == 'Windows'
         run: cargo test --locked -p gipny-libcore --test sqlcipher_windows -- --test-threads=1

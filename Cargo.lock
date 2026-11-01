@@ -1842,6 +1842,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tower-http 0.7.1",
  "windows-sys 0.61.2",
  "x25519-dalek",

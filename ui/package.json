@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node tests/localization.test.mjs"
+    "test": "node tests/localization.test.mjs && node tests/web-transport.test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

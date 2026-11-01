@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'site/**'
+      - 'ui/**'
       - '.github/workflows/pages.yml'
   push:
     branches: [main]
     paths:
       - 'site/**'
+      - 'ui/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
   workflow_run:
@@ -45,6 +47,15 @@ jobs:
         run: gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/gipny-release.json"
       - name: Build public files
         run: node site/build.mjs _site "$RUNNER_TEMP/gipny-release.json"
+      - name: Build experimental local UI under the project app path
+        env:
+          VITE_BASE: /gipny-i2p/app/
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+          npm test --prefix ui
+          mkdir -p _site/app
+          cp -R ui/dist/. _site/app/
       - name: Check phone and desktop layouts in Chrome
         id: browser
         run: node site/tests/browser-check.mjs _site site-browser-results
