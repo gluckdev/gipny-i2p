@@ -74,9 +74,15 @@ export class BrowserCoreClient implements BrowserBackend {
       return null as T;
     }
     await this.ensureWorker();
-    const result = await this.send(command, args) as T;
-    if (command === 'vault_create' || command === 'vault_unlock' || command === 'vault_unlock_passkey') this.unlocked = true;
-    return result;
+    const opening = command === 'vault_create' || command === 'vault_unlock' || command === 'vault_unlock_passkey';
+    try {
+      const result = await this.send(command, args) as T;
+      if (opening) this.unlocked = true;
+      return result;
+    } catch (error) {
+      if (opening) this.terminate('Profile opening failed');
+      throw error;
+    }
   }
   listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
     const callback = (payload: unknown): void => handler({ payload: payload as T });

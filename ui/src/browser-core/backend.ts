@@ -229,7 +229,7 @@ export class BrowserBackend {
       contact.last_seen = incoming.sent_at;
       if (contact.request === 'outgoing') { contact.request = 'none'; events.push({ ContactUpdated: { contact_id: contact.id } }); }
       let groupId: string | null = null;
-      if (incoming.group) groupId = this.ingestGroup(state, incoming.group, peer);
+      if (incoming.group) { groupId = this.ingestGroup(state, incoming.group, peer); events.push({ GroupUpdated: { group_id: groupId } }); }
       const contactId = groupId ? null : contact.id;
       const own = this.identity!;
       const ack = incoming.origin_msg_id > 0 && !incoming.ack_for ? payload(own, state.displayName) : null;
@@ -247,7 +247,7 @@ export class BrowserBackend {
       } else if (incoming.dm?.kind === 2) {
         // An authenticated deletion acknowledgement never creates chat text.
       } else if (incoming.wipe === true && groupId === null) {
-        this.removeContact(state, contact.id); events.push({ ContactWiped: { contact_id: contact.id, name: contact.name } });
+        engine.forget_peer(peer); this.removeContact(state, contact.id); events.push({ ContactWiped: { contact_id: contact.id, name: contact.name } });
       } else if (incoming.edit_of !== null) {
         const row = state.messages.find(value => !value.outgoing && value.author === peer && value.origin === incoming.edit_of && sameScope(value, contactId, groupId));
         if (row && visible(row)) { row.body = incoming.body; row.buttons = incoming.buttons; events.push({ MessageEdited: { message_id: row.id, body: row.body, buttons: row.buttons || null } }); }
@@ -314,8 +314,13 @@ export class BrowserBackend {
     let group = state.groups.find(value => value.id === id);
     if (group && !group.members.some(member => member.sign_pk === peer)) throw new Error('Uninvited group sender');
     if (!group) { group = { id, name: wire.name, members, created_at: Date.now(), pinned_at: null, last_message_at: Date.now() }; state.groups.push(group); }
-    // Existing membership is pinned locally. A message cannot silently replace
-    // known identity keys or invite a new sender into an established group.
+    else for (const member of members) {
+      const known = group.members.find(value => value.sign_pk === member.sign_pk) || state.contacts.find(value => value.sign_pk === member.sign_pk);
+      if (known && known.dh_pk !== member.dh_pk) throw new Error('Group member identity changed');
+      if (!group.members.some(value => value.sign_pk === member.sign_pk)) group.members.push(member);
+    }
+    // An established member can introduce a new member. Existing identity keys
+    // stay pinned, and a stale message cannot remove later additions.
     return id;
   }
   private groupWire(state: BrowserState, id: string): WireGroup {
@@ -443,7 +448,12 @@ export class BrowserBackend {
     if (command === 'accept_contact_request') { this.getContact(state, number(args, 'id')).request = 'none'; return null; }
     if (command === 'decline_contact_request' || command === 'delete_contact') {
       if (args.forBoth) throw new Error('Browser contact removal is local; delete messages individually to notify the peer');
-      this.removeContact(state, number(args, 'id')); return null;
+      engine.forget_peer(this.getContact(state, number(args, 'id')).sign_pk); this.removeContact(state, number(args, 'id')); return null;
+    }
+    if (command === 'reset_contact_session') {
+      const contact = this.getContact(state, number(args, 'id'));
+      if (state.outbox.some(value => value.peer === contact.sign_pk)) throw new Error('Wait for pending messages before resetting this session');
+      engine.forget_peer(contact.sign_pk); return null;
     }
     if (command === 'send_message' || command === 'send_group_message') return this.send(state, args, command === 'send_group_message');
     if (command === 'mark_read' || command === 'mark_group_read') { for (const row of state.messages) if (sameScope(row, command === 'mark_read' ? number(args, 'contactId') : null, command === 'mark_group_read' ? text(args, 'groupId') : null)) row.read = true; return null; }
@@ -481,6 +491,33 @@ export class BrowserBackend {
       const members: GroupMember[] = ids.map(id => { const contact = this.getContact(state, id); return { sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }; });
       members.push({ sign_pk: this.identity!.sign_pk, dh_pk: this.identity!.dh_pk, onion: this.identity!.onion, name: state.displayName, is_self: true });
       const id = hex(crypto.getRandomValues(new Uint8Array(32))); state.groups.push({ id, name: text(args, 'name').slice(0, 128), members, created_at: Date.now(), pinned_at: null, last_message_at: null }); return id;
+    }
+    if (command === 'add_group_member') {
+      const group = state.groups.find(value => value.id === args.groupId); if (!group) throw new Error('Group not found');
+      const contact = this.getContact(state, number(args, 'contactId'));
+      if (group.members.length >= 64 || group.members.some(value => value.sign_pk === contact.sign_pk)) throw new Error('Group member already exists or group is full');
+      group.members.push({ sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }); return null;
+    }
+    if (['pin_contact_message', 'unpin_contact_message', 'pin_group_message', 'unpin_group_message'].includes(command)) {
+      const groupId = typeof args.groupId === 'string' ? args.groupId : null;
+      const contactId = typeof args.contactId === 'number' ? args.contactId : null;
+      const row = state.messages.find(value => value.id === args.messageId && visible(value) && sameScope(value, contactId, groupId));
+      if (!row) throw new Error('Message not found');
+      const unpin = command.startsWith('unpin_');
+      state.pinnedMessages = state.pinnedMessages.filter(value => value !== row.id);
+      if (!unpin) state.pinnedMessages.push(row.id);
+      const letter = payload(this.identity!, state.displayName);
+      letter.pin = { sender_sign_pk: unhex(row.author), origin_msg_id: row.origin, unpin };
+      if (groupId) letter.group = this.groupWire(state, groupId);
+      const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(value => !value.is_self).map(value => value.sign_pk) : [this.getContact(state, contactId!).sign_pk];
+      for (const peer of peers) this.enqueue(state, peer, structuredClone(letter), null);
+      return null;
+    }
+    if (command === 'forward_message') {
+      const source = state.messages.find(value => value.id === args.sourceMessageId && visible(value));
+      if (!source) throw new Error('Message not found');
+      const attachments = state.attachments.filter(value => value.message_id === source.id).map(value => ({ name: value.name, data: value.data }));
+      return this.send(state, { ...args, body: source.body, attachments, ttlSecs: null, replyTo: null }, typeof args.groupId === 'string');
     }
     if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); state.outbox = state.outbox.filter(value => value.row === null || !rows.has(value.row)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
     if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? this.getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }

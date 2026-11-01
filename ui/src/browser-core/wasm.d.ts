@@ -12,6 +12,7 @@ declare module '*gipny_browser_router.js' {
     my_bundle(): Uint8Array;
     bundle_info(): string;
     has_session(peer: string): boolean;
+    forget_peer(peer: string): void;
     begin(): void;
     rollback(): void;
     seal(metadata: string): Uint8Array;

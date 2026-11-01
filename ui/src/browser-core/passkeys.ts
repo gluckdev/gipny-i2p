@@ -211,14 +211,14 @@ export async function unlockBrowserPasskey(
   }
 
   const allowCredentials: PublicKeyCredentialDescriptor[] = matching.map(entry => ({
-    id: entry.credentialId,
+    id: new Uint8Array(entry.credentialId),
     type: 'public-key',
   }));
 
   const evalByCredential: Record<string, AuthenticationExtensionsPRFValues> = {};
   for (const entry of matching) {
     evalByCredential[toBase64Url(entry.credentialId)] = {
-      first: entry.salt,
+      first: new Uint8Array(entry.salt),
     };
   }
 
@@ -240,7 +240,7 @@ export async function unlockBrowserPasskey(
         extensions: {
           prf: {
             eval: {
-              first: firstEntry.salt,
+              first: new Uint8Array(firstEntry.salt),
             },
             evalByCredential,
           },

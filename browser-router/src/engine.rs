@@ -791,6 +791,20 @@ mod implementation {
             }
         }
 
+        /// Forget a peer only inside a durable transaction. Removing an
+        /// unsent initial from the outbox must also discard that ratchet.
+        pub fn forget_peer(&self, peer_sign_hex: &str) -> Result<(), JsValue> {
+            let peer = parse_hex32(peer_sign_hex)?;
+            let mut inner = self.inner.borrow_mut();
+            let state = &mut inner.active_candidate_mut()?.state;
+            state.sessions.remove(&peer);
+            state.peer_dhs.remove(&peer);
+            state.lost_inits.remove(&peer);
+            state.own_inits.remove(&peer);
+            state.alternates.remove(&peer);
+            Ok(())
+        }
+
         /// Begins a transaction: clones committed private state and Vault into a candidate.
         pub fn begin(&self) -> Result<(), JsValue> {
             let mut inner = self.inner.borrow_mut();

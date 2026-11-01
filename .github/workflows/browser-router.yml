@@ -2,9 +2,10 @@ name: Browser router WASM
 
 on:
   push:
-    paths: ['browser-router/**', 'libcore/**', 'ui/**', '.github/workflows/browser-router.yml']
+    branches: [main]
+    paths: ['browser-router/**', 'libcore/**', 'ui/**', 'Cargo.toml', 'Cargo.lock', 'third_party/i2pd', '.github/workflows/browser-router.yml']
   pull_request:
-    paths: ['browser-router/**', 'libcore/**', 'ui/**', '.github/workflows/browser-router.yml']
+    paths: ['browser-router/**', 'libcore/**', 'ui/**', 'Cargo.toml', 'Cargo.lock', 'third_party/i2pd', '.github/workflows/browser-router.yml']
   workflow_dispatch:
 
 permissions:
