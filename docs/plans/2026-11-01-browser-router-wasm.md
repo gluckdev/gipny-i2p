@@ -3,7 +3,7 @@
 Дата: **2026-11-01**. Исследование — `reports/I2P клиент в браузере.md`, заметки —
 `research_notes/I2P клиент в браузере/`. Статус: **runtime реализован в
 `browser-router/`; GitHub CI: WASM build и 9/9 Chrome tests PASS;
-живой роутер ещё не запущен**.
+живое NTCP2 проверено, полный браузерный роутер ещё не запущен**.
 
 ## Контекст и требование владельца
 
@@ -113,3 +113,36 @@ probe часов/RNG/gzip, не всего роутера. В браузерны
 WebSocket, таймеры/задачи, частичные чтения/записи, backpressure, EOF,
 недопустимые кадры и ограничение распаковки. Память полного роутера, bootstrap,
 NTCP2, exploratory и мобильный lifecycle пока не измерены.
+
+## Проверка живого NTCP2 (продолжение 2026-11-01)
+
+На `b912f01` [run 41272794574](https://github.com/gluckdev/gipny-i2p/actions/runs/41272794574)
+прошёл целиком: WASM build, 9 тестов runtime в Chrome, 5 Python-тестов границы
+форвардера и 3 WASM-теста NTCP2 в Chrome. Проверены native i2pd из pinned C++
+`6b214f74d2c1b9d892cda29119f0942097cbfd85`, публичный пэр из свежего verified
+reseed/netDb и отказ на повреждённой подписи/неверном capability.
+
+Форвардер проверяет Host, Origin и одноразовый capability в WS subprotocol,
+выбирает только IP:port из подписанных RouterInfo и ограничивает очереди,
+соединения, время, объём и срок allowlist. Public/private IP фильтруются до
+TCP connect; loopback разрешён отдельным флагом только для fixture. Никакой
+NTCP2-криптографии на форвардере нет.
+
+Браузерный probe проверил подпись/свежесть RI, выполнил классический X25519
+handshake и расшифровал data-phase ответ после `SessionConfirmed`. У native
+fixture — 687 аутентифицированных байт/3 блока, 191 мс; у публичного пэра
+`75QXU02JP4g9ySNMZEBqee9AGt-c8a0XUMfcpT8jaNk=` — 1224 байта/3 блока,
+491 мс с первой попытки. Это длительность одной попытки после загрузки WASM
+и проверки RI. Не измерены bootstrap целого приложения, пиковая память и
+телефон. Release WASM с probe — 1 451 904 байта, не размер полного роутера.
+Артефакты run: `browser-ntcp2-evidence` (`13069873728`) и
+`browser-router-wasm` (`13070052907`). Private keys и capability в них нет.
+
+Этап 2 плана ещё не завершён: критерий требует exploratory-туннель.
+Обнаружен отдельный блокер upstream — `Ntcp2Transport::initialize` обязательно
+bind'ит listener, а `supported_transports` и `connect` используют его наличие
+как разрешение исходящего транспорта. Поэтому текущий `ntcp2::probe`
+использует публичные crypto API emissary, но не выдаётся за запущенный
+`Router<BrowserRuntime>`. Следующая доработка — явный client-only транспорт,
+затем exploratory и netDb/bootstrap в браузере; интерфейс `Runtime` менять
+ради `Send`/`Sync` до сих пор не потребовалось.

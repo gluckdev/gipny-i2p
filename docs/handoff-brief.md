@@ -1226,3 +1226,46 @@ I2P-роутера**: экспорт удерживает часы/RNG/gzip; Web
 ещё не подтверждены. Следующий шаг — защищённый байтовый форвардер и NTCP2.
 Слияние PR #143 и публикация не выполнялись. Локальные изменения подмодуля
 `third_party/i2pd-android`, оставшиеся до продолжения, не включены в PR.
+
+ПРОДОЛЖЕНИЕ 2026-11-01: ЖИВОЕ NTCP2 ИЗ БРАУЗЕРА
+
+По указанию владельца продолжена проверка реального NTCP2. В тот же draft
+PR #143 добавлены `browser-router/src/ntcp2.rs` и байтовый форвардер
+`browser-router/forwarder/server.py`. Probe использует публичные crypto API
+закреплённого emissary (Noise/AES/ChaChaPoly/SipHash), проверяет подпись,
+netId=2 и свежесть RI до 36 часов, выполняет классический X25519 handshake
+и принимает успех после аутентифицированного data-phase ответа; Termination
+от пэра означает отказ. После успеха probe закрывает сессию нормально.
+
+Форвардер: точные Host/Origin, capability в WS subprotocol (не в URL),
+allowlist IP:port из проверенных подписей netDb, запрет private/reserved IP
+с явным исключением loopback fixture, TTL allowlist 10 минут, лимиты
+соединений/байтов/времени/очередей; non-loopback listener требует TLS.
+Capability одноразовый для CI; он и private keys не сохраняются в артефактах.
+Native fixture компилируется из нашего pinned i2pd
+`6b214f74d2c1b9d892cda29119f0942097cbfd85`; test-only C++ adapter разрешает
+loopback до запуска transport threads. Его FFI entrypoint находится в
+библиотеке browser-router, чтобы Cargo включал её native archive в бинарь.
+CLI `nat`/`ipv6` у i2pd — bool_switch: `--nat=true`/`--ipv6=false` не
+принимаются; IPv6 выключен по умолчанию. InitI2P делает synchronous reseed,
+поэтому ожидание тестового порта допускает 180 секунд с проверкой живости PID.
+
+Подтверждено на `b912f01`: GitHub run `41272794574` прошёл целиком:
+**9/9 Chrome runtime, 5/5 Python forwarder, 3/3 Chrome NTCP2 tests**.
+Проверены 13 подписанных RI: fixture и 12 публичных кандидатов. Native i2pd:
+191 мс, 687 аутентифицированных байт, 3 блока. Публичный пэр
+`75QXU02JP4g9ySNMZEBqee9AGt-c8a0XUMfcpT8jaNk=` (`83.142.167.185:31442`):
+491 мс с первой попытки, 1224 аутентифицированных байта, 3 блока. Это время
+одного handshake после загрузки WASM и проверки RI, не bootstrap приложения.
+Raw release WASM с экспортом `ntcp2_probe` — 1 451 904 байта. Артефакты:
+`browser-ntcp2-evidence` (`13069873728`) и `browser-router-wasm` (`13070052907`),
+последний также содержит лицензию emissary. Прежний размер 649 825 байт
+относится к checkpoint `d1eccd7` без NTCP2-probe.
+
+Полный `Router<BrowserRuntime>` ещё не запускается: в upstream
+`Ntcp2Transport::initialize` требует TCP listener, а `supported_transports`
+и `connect` проверяют его наличие даже для outbound. Поэтому proof сейчас
+отдельный NTCP2 initiator на public crypto API, без фиктивного listener и
+без форка upstream. Следующее — client-only NTCP2 в emissary, exploratory
+pool, затем netDb/bootstrap/память и телефон. В PR обновлены README и план;
+слияние/публикация не выполнялись.
