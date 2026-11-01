@@ -106,6 +106,11 @@ LeaseSet through an outbound connection. It does not send chat text or advance
 the application's ratchet. Public numeric lookup/key-change/probe counters and
 explicit stream status errors improve the failure receipt. This change awaits
 its own live CI run; it is not a confirmed recovery result.
+The inbound-first path also needs to register the peer's signed LeaseSet
+encryption key. Without that entry, a later lookup sees no previous key and
+fails to retire the old active ECIES session. A new regression keeps the
+receiver alive while its peer restarts, and verifies the reply to the fresh
+session. The complete native session test module now runs in CI as well.
 
 The earlier intermediate `e6709dd` run passed all 46 WASM tests, but stopped at the new
 native regression: its initial empty-queue assertion mistook local-destination

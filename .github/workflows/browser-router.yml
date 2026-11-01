@@ -146,6 +146,8 @@ jobs:
         run: |
           cargo test --locked -p emissary-core --lib destination::tests::query_lease_set_found -- --exact
           cargo test --locked -p emissary-core --lib destination::session::tests::remote_encryption_key_change_restarts_garlic_session -- --exact
+          cargo test --locked -p emissary-core --lib destination::session::tests::inbound_peer_restart_replaces_existing_session -- --exact
+          cargo test --locked -p emissary-core --lib destination::session::tests
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack

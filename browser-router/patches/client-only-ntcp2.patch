@@ -135,7 +135,7 @@ index 427fe88..427d53a 100644
  
      #[tokio::test]
 diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
-index 0fdce43..ff7d683 100644
+index 0fdce43..6537411 100644
 --- a/emissary-core/src/destination/session/mod.rs
 +++ b/emissary-core/src/destination/session/mod.rs
 @@ -312,7 +312,22 @@ impl<R: Runtime> SessionManager<R> {
@@ -162,7 +162,25 @@ index 0fdce43..ff7d683 100644
      }
  
      /// Remove session for `destination_id` from active sessions.
-@@ -1136,6 +1151,51 @@ mod tests {
+@@ -786,6 +801,17 @@ impl<R: Runtime> SessionManager<R> {
+                     return Err(SessionError::InvalidKey);
+                 }
+ 
++                // Record the signed encryption key for inbound-first peers too.
++                // Otherwise the first later lookup has no previous key to compare
++                // against and leaves an active pre-restart ECIES session alive.
++                if let Some(remote_key) = lease_set.public_keys.iter().find(|remote_key| {
++                    self.public_keys.iter().any(|local_key| {
++                        mem::discriminant(*remote_key) == mem::discriminant(local_key)
++                    })
++                }) {
++                    self.add_remote_destination(destination_id.clone(), remote_key.clone());
++                }
++
+                 match self.pending.get_mut(&destination_id) {
+                     None => {
+                         tracing::debug!(
+@@ -1136,6 +1162,98 @@ mod tests {
  
      const TEST_THRESHOLD: u16 = 10;
  
@@ -210,6 +228,53 @@ index 0fdce43..ff7d683 100644
 +        assert!(!sender.pending.contains_key(&receiver_id));
 +    }
 +
++
++    #[tokio::test]
++    async fn inbound_peer_restart_replaces_existing_session() {
++        let sender_key = StaticPrivateKey::random(MockRuntime::rng());
++        let receiver_key = StaticPrivateKey::random(MockRuntime::rng());
++        let (mut sender_ls, sender_sign) = LeaseSet2::random();
++        sender_ls.public_keys = vec![sender_key.public()];
++        let sender_id = sender_ls.header.destination.id();
++        let (mut receiver_ls, receiver_sign) = LeaseSet2::random();
++        receiver_ls.public_keys = vec![receiver_key.public()];
++        let receiver_id = receiver_ls.header.destination.id();
++        let mut sender = SessionManager::<MockRuntime>::new(
++            sender_id.clone(), sender_key.clone(), vec![sender_key.public()],
++            Bytes::from(sender_ls.serialize(&sender_sign)),
++        );
++        let mut receiver = SessionManager::<MockRuntime>::new(
++            receiver_id.clone(), receiver_key.clone(), vec![receiver_key.public()],
++            Bytes::from(receiver_ls.serialize(&receiver_sign)),
++        );
++        sender.add_remote_destination(receiver_id.clone(), receiver_key.public());
++        let message = sender.encrypt(&receiver_id, vec![1]).unwrap();
++        receiver.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        assert_eq!(receiver.remote_destinations[&sender_id].to_vec(), sender_key.public().to_vec());
++        let message = receiver.encrypt(&sender_id, vec![2]).unwrap();
++        sender.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        let message = sender.encrypt(&receiver_id, vec![3]).unwrap();
++        receiver.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        assert!(receiver.active.contains_key(&sender_id));
++
++        // The receiver remains alive; its peer restarts on the same signed
++        // destination identity but a new LeaseSet encryption key and no tags.
++        let reboot_key = StaticPrivateKey::random(MockRuntime::rng());
++        sender_ls.public_keys = vec![reboot_key.public()];
++        let mut rebooted = SessionManager::<MockRuntime>::new(
++            sender_id.clone(), reboot_key.clone(), vec![reboot_key.public()],
++            Bytes::from(sender_ls.serialize(&sender_sign)),
++        );
++        rebooted.add_remote_destination(receiver_id.clone(), receiver_key.public());
++        let message = rebooted.encrypt(&receiver_id, vec![4]).unwrap();
++        receiver.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        assert!(!receiver.active.contains_key(&sender_id));
++        assert!(receiver.pending.contains_key(&sender_id));
++        let message = receiver.encrypt(&sender_id, vec![5]).unwrap();
++        let mut cloves = rebooted.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        let data = cloves.find(|clove| core::matches!(clove.message_type, MessageType::Data)).unwrap();
++        assert_eq!(&data.message_body[4..], &[5]);
++    }
 +
      /// Decrypt `message` using `session` and verify the inbound `Data` message
      /// inside the garlic message matches `diff`
