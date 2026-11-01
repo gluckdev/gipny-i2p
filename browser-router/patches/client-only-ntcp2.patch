@@ -9,10 +9,28 @@ index b9a3cf3..2ccc0a9 100644
  version = "0.4.0"
  edition.workspace = true
 diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
-index 427fe88..5c5b2d7 100644
+index 427fe88..4876dc8 100644
 --- a/emissary-core/src/destination/mod.rs
 +++ b/emissary-core/src/destination/mod.rs
-@@ -292,19 +292,34 @@ impl<R: Runtime> Destination<R> {
+@@ -207,6 +207,9 @@ pub struct Destination<R: Runtime> {
+     /// Pending lease set queries:
+     pending_queries: HashSet<DestinationId>,
+ 
++    /// Cached destinations that failed a streaming handshake.
++    stale_destinations: HashSet<DestinationId>,
++
+     /// Public keys.
+     public_keys: Vec<StaticPublicKey>,
+ 
+@@ -263,6 +266,7 @@ impl<R: Runtime> Destination<R> {
+             lease_set_prune_timer: R::timer(LEASE_SET_PRUNE_INTERVAL),
+             netdb_handle,
+             pending_queries: HashSet::new(),
++            stale_destinations: HashSet::new(),
+             public_keys: public_keys.clone(),
+             query_futures: R::join_set(),
+             remote_destinations: HashMap::new(),
+@@ -292,19 +296,38 @@ impl<R: Runtime> Destination<R> {
      /// [`DestinationEvent::LeaseSetFound`], indicating that a lease set is foun and the remote
      /// destination is reachable.
      pub fn query_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
@@ -23,6 +41,7 @@ index 427fe88..5c5b2d7 100644
 +    /// A restarted peer retains its destination but replaces its inbound tunnels;
 +    /// their previously signed LeaseSet can remain unexpired for several minutes.
 +    pub(crate) fn refresh_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
++        self.stale_destinations.insert(destination_id.clone());
 +        self.query_lease_set_inner(destination_id, true)
 +    }
 +
@@ -37,7 +56,10 @@ index 427fe88..5c5b2d7 100644
  
          if let Some(context) = self.remote_destinations.get(destination_id) {
 -            if !context.lease_set.is_expired::<R>() {
-+            if !force_refresh && !context.lease_set.is_expired::<R>() {
++            if !force_refresh
++                && !self.stale_destinations.contains(destination_id)
++                && !context.lease_set.is_expired::<R>()
++            {
                  return LeaseSetStatus::Found;
              }
  
@@ -49,7 +71,15 @@ index 427fe88..5c5b2d7 100644
              );
          }
  
-@@ -1008,7 +1023,7 @@ mod tests {
+@@ -878,6 +901,7 @@ impl<R: Runtime> Stream for Destination<R> {
+                             Some(key) => {
+                                 self.session_manager
+                                     .add_remote_destination(destination_id.clone(), key.clone());
++                                self.stale_destinations.remove(&destination_id);
+                             }
+                             None => {
+                                 tracing::warn!(
+@@ -1008,7 +1032,7 @@ mod tests {
  
      #[tokio::test]
      async fn query_lease_set_found() {
@@ -58,11 +88,14 @@ index 427fe88..5c5b2d7 100644
          let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
          let private_key = StaticPrivateKey::random(MockRuntime::rng());
          let mut destination = Destination::<MockRuntime>::new(
-@@ -1038,6 +1053,18 @@ mod tests {
+@@ -1038,6 +1062,21 @@ mod tests {
  
          // query lease set and verify it exists
          assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
-+        assert!(rx.try_recv().is_err(), "ordinary lookup should use its cache");
++        assert!(destination.query_futures.is_empty(), "ordinary lookup should use its cache");
++        // LeaseSetManager registers the local destination during construction.
++        // Drain those startup actions before examining the remote lookup.
++        while rx.try_recv().is_ok() {}
 +
 +        // A failed handshake must be able to bypass an unexpired stale address.
 +        assert_eq!(destination.refresh_lease_set(&remote), LeaseSetStatus::NotFound);
@@ -77,6 +110,85 @@ index 427fe88..5c5b2d7 100644
      }
  
      #[tokio::test]
+diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
+index 0fdce43..7a147c6 100644
+--- a/emissary-core/src/destination/session/mod.rs
++++ b/emissary-core/src/destination/session/mod.rs
+@@ -312,7 +312,21 @@ impl<R: Runtime> SessionManager<R> {
+         destination_id: DestinationId,
+         public_key: StaticPublicKey,
+     ) {
+-        self.remote_destinations.insert(destination_id, public_key);
++        let previous = self.remote_destinations.insert(destination_id.clone(), public_key.clone());
++        let changed = previous.as_ref().is_some_and(|old| {
++            mem::discriminant(old) != mem::discriminant(&public_key)
++                || old.to_vec() != public_key.to_vec()
++        });
++        if changed {
++            // A restarted destination publishes a fresh LeaseSet encryption
++            // key. Its previous ECIES tags and pending handshakes are gone.
++            // Preserve application keys; only replace this transport session.
++            if let Some(active) = self.active.remove(&destination_id) {
++                active.session.destroy();
++            }
++            self.pending.remove(&destination_id);
++            self.garlic_tags.write().retain(|_, remote| *remote != destination_id);
++        }
+     }
+ 
+     /// Remove session for `destination_id` from active sessions.
+@@ -1136,6 +1150,51 @@ mod tests {
+ 
+     const TEST_THRESHOLD: u16 = 10;
+ 
++    #[tokio::test]
++    async fn remote_encryption_key_change_restarts_garlic_session() {
++        let sender_key = StaticPrivateKey::random(MockRuntime::rng());
++        let old_key = StaticPrivateKey::random(MockRuntime::rng());
++        let (sender_ls, sender_sign) = LeaseSet2::random();
++        let sender_id = sender_ls.header.destination.id();
++        let (receiver_ls, receiver_sign) = LeaseSet2::random();
++        let receiver_id = receiver_ls.header.destination.id();
++        let receiver_bytes = Bytes::from(receiver_ls.serialize(&receiver_sign));
++        let mut sender = SessionManager::<MockRuntime>::new(
++            sender_id, sender_key.clone(), vec![sender_key.public()],
++            Bytes::from(sender_ls.serialize(&sender_sign)),
++        );
++        let mut receiver = SessionManager::<MockRuntime>::new(
++            receiver_id.clone(), old_key.clone(), vec![old_key.public()], receiver_bytes.clone(),
++        );
++        sender.add_remote_destination(receiver_id.clone(), old_key.public());
++        let first = sender.encrypt(&receiver_id, vec![1]).unwrap();
++        receiver.decrypt(Message { payload: first, ..Default::default() }).unwrap();
++        let reply = receiver.encrypt(&sender.destination_id, vec![2]).unwrap();
++        sender.decrypt(Message { payload: reply, ..Default::default() }).unwrap();
++        let confirm = sender.encrypt(&receiver_id, vec![3]).unwrap();
++        receiver.decrypt(Message { payload: confirm, ..Default::default() }).unwrap();
++        assert!(sender.active.contains_key(&receiver_id));
++        sender.add_remote_destination(receiver_id.clone(), old_key.public());
++        assert!(sender.active.contains_key(&receiver_id), "ordinary lease renewal must preserve keys");
++
++        let new_key = StaticPrivateKey::random(MockRuntime::rng());
++        let mut restarted = SessionManager::<MockRuntime>::new(
++            receiver_id.clone(), new_key.clone(), vec![new_key.public()], receiver_bytes,
++        );
++        sender.add_remote_destination(receiver_id.clone(), new_key.public());
++        assert!(!sender.active.contains_key(&receiver_id));
++        let fresh = sender.encrypt(&receiver_id, vec![4]).unwrap();
++        let mut cloves = restarted.decrypt(Message { payload: fresh, ..Default::default() }).unwrap();
++        let data = cloves.find(|clove| core::matches!(clove.message_type, MessageType::Data)).unwrap();
++        assert_eq!(&data.message_body[4..], &[4]);
++        assert!(sender.pending.contains_key(&receiver_id));
++        sender.add_remote_destination(receiver_id.clone(), new_key.public());
++        assert!(sender.pending.contains_key(&receiver_id));
++        sender.add_remote_destination(receiver_id.clone(), StaticPrivateKey::random(MockRuntime::rng()).public());
++        assert!(!sender.pending.contains_key(&receiver_id));
++    }
++
++
+     /// Decrypt `message` using `session` and verify the inbound `Data` message
+     /// inside the garlic message matches `diff`
+     macro_rules! decrypt_and_verify {
 diff --git a/emissary-core/src/lib.rs b/emissary-core/src/lib.rs
 index fec3635..999657a 100644
 --- a/emissary-core/src/lib.rs

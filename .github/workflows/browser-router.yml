@@ -143,7 +143,9 @@ jobs:
         run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb --bin collect-netdb
       - name: Requery cached LeaseSet after a failed streaming handshake
         working-directory: browser-router/upstream/emissary
-        run: cargo test --locked -p emissary-core --lib destination::tests::query_lease_set_found -- --exact
+        run: |
+          cargo test --locked -p emissary-core --lib destination::tests::query_lease_set_found -- --exact
+          cargo test --locked -p emissary-core --lib destination::session::tests::remote_encryption_key_change_restarts_garlic_session -- --exact
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack

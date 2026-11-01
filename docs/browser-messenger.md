@@ -88,7 +88,14 @@ out-of-order messages and fixed-integer bincode compatibility. Vault tests check
 wrong credentials, password rotation, passkey wrapping and torn-slot recovery.
 An emulated or virtual authenticator test is not physical mobile validation.
 
-Latest completed evidence: `f72d7f4`, 2026-11-01,
+The subsequent `e6709dd` run passed all 46 WASM tests, but stopped at the new
+native regression: its initial empty-queue assertion mistook local-destination
+registration for a remote lookup. That assertion is corrected in source.
+The follow-up also resets stale I2P ECIES sessions when the signed LeaseSet
+encryption key changes and checks decryption by a restarted recipient. These
+changes await CI; there is no new live result from the stopped run.
+
+Latest completed live evidence: `f72d7f4`, 2026-11-01,
 [Actions run 41309131811](https://github.com/gluckdev/gipny-i2p/actions/runs/41309131811).
 
 | Check | Result |
@@ -109,6 +116,8 @@ The restart fix now refreshes a cached remote LeaseSet after a failed streaming
 handshake. A peer can restart on the same destination keys with different
 inbound tunnels while its previous LeaseSet is still unexpired. This source
 change and its CI regression await a new run; the full acceptance remains open.
+Failed refresh queries also keep the cache marked stale until a valid lookup
+succeeds, rather than immediately reusing the old unexpired address.
 
 Earlier baseline: `bb0578e`, 2026-11-01:
 
