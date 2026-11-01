@@ -2,9 +2,9 @@ name: Browser router WASM
 
 on:
   push:
-    paths: ['browser-router/**', '.github/workflows/browser-router.yml']
+    paths: ['browser-router/**', 'libcore/**', 'ui/**', '.github/workflows/browser-router.yml']
   pull_request:
-    paths: ['browser-router/**', '.github/workflows/browser-router.yml']
+    paths: ['browser-router/**', 'libcore/**', 'ui/**', '.github/workflows/browser-router.yml']
   workflow_dispatch:
 
 permissions:
@@ -78,6 +78,23 @@ jobs:
               raise SystemExit('WebSocket fixture did not start')
           PY
           wasm-pack test --headless --chrome --locked
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the browser messenger with its generated WASM worker
+        run: |
+          wasm-pack build --target web --release --locked
+          npm ci --prefix ../ui
+          npm run build:browser --prefix ../ui
+          npm test --prefix ../ui
+      - uses: actions/upload-artifact@v7
+        with:
+          name: browser-messenger-pwa
+          path: ui/browser-dist/
+          if-no-files-found: error
+          retention-days: 5
       - name: Record artifact size and source
         run: |
           python3 scripts/prepare_emissary.py
@@ -100,7 +117,7 @@ jobs:
   ntcp2:
     name: Browser NTCP2 and exploratory tunnels
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - name: Prepare pinned emissary and reviewed client-only patch
@@ -135,6 +152,17 @@ jobs:
         run: wasm-pack build --target web --release --locked
       - name: Cold browser bootstrap from a downloaded netDb snapshot
         run: python3 browser-router/tests/run_bootstrap_ci.py
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build browser messenger for live integration
+        run: |
+          npm ci --prefix ui
+          npm run build:browser --prefix ui
+      - name: Two independent browsers exchange messages and recover their profiles
+        run: python3 browser-router/tests/run_messenger_ci.py
       - name: Verify source provenance after tests
         run: python3 browser-router/scripts/prepare_emissary.py
       - name: Keep public protocol evidence and diagnostics
@@ -164,6 +192,17 @@ jobs:
             ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz
             ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz.json
             browser-router/emissary-provenance.json
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Keep browser messenger public receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-messenger-evidence
+          path: |
+            ${{ runner.temp }}/browser-messenger/receipt.json
+            ${{ runner.temp }}/browser-messenger/forwarder.log
+            ${{ runner.temp }}/browser-messenger/chrome-*.log
           if-no-files-found: warn
           retention-days: 5
       - name: Keep loadable browser module

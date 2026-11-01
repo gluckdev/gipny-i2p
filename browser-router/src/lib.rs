@@ -2,6 +2,14 @@
 //! browser executor; only channels cross emissary's Send/Sync boundaries.
 
 pub mod bootstrap;
+#[cfg(target_arch = "wasm32")]
+pub mod engine;
+#[cfg(target_arch = "wasm32")]
+pub use engine::BrowserEngine;
+#[cfg(target_arch = "wasm32")]
+pub mod network;
+#[cfg(target_arch = "wasm32")]
+pub use network::*;
 mod metrics;
 #[cfg(all(feature = "native-peer", not(target_arch = "wasm32")))]
 pub mod native_fixture;
@@ -9,9 +17,13 @@ pub mod ntcp2;
 pub mod router;
 mod socket;
 mod tasks;
+#[cfg(target_arch = "wasm32")]
+mod ui_helpers;
 mod unsupported;
 #[cfg(target_arch = "wasm32")]
 mod vault;
+#[cfg(target_arch = "wasm32")]
+pub use ui_helpers::contact_qr_svg;
 
 use std::{
     future::Future,

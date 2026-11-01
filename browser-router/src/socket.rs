@@ -323,6 +323,62 @@ impl AsyncWrite for BrowserTcpStream {
     }
 }
 
+impl futures::io::AsyncRead for BrowserTcpStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match emissary_core::runtime::AsyncRead::poll_read(self, cx) {
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl futures::io::AsyncWrite for BrowserTcpStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match emissary_core::runtime::AsyncWrite::poll_write(self, cx, buf) {
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match emissary_core::runtime::AsyncWrite::poll_flush(self, cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match emissary_core::runtime::AsyncWrite::poll_close(self, cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 /// Drop always detaches handlers, breaking JS/Rust reference cycles, and closes
 /// the socket. This also handles cancellation during open or failed handoff.
 struct SocketGuard {

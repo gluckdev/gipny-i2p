@@ -1,7 +1,7 @@
 import { errorText, logText } from './error-text';
 import { t as tr } from './i18n';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Api, isTauri, encodeCard } from './api';
+import { Api, isTauri, usesBrowserCore, encodeCard } from './api';
 import type { RelayInfo, RelayMode, RouterSettings, TransitProfile, YggdrasilMode } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
@@ -527,13 +527,27 @@ export class SettingsModal {
           },
         }, tr('actions.change')),
 
-        h('div', { class: 'divider-text' }, tr('settings.duress_passphrase')),
-        h('div', { class: 'field' }, currP),
-        h('div', { class: 'field' }, duP, h('div', { class: 'hint' }, tr('settings.leave_empty_to_remove'))),
-        h('label', { class: 'chk', style: { marginBottom: '10px' } },
+        usesBrowserCore() && (() => {
+          const error = h('div', { class: 'err' });
+          const button = h('button', { class: 'btn btn-block', onClick: () => busy(button as HTMLButtonElement, async () => {
+            error.textContent = '';
+            try {
+              const profile = store.currentProfile.get();
+              if (!profile) return;
+              await new Promise<void>((resolve, reject) => window.dispatchEvent(new CustomEvent('gipny-enroll-passkey', { detail: { profile, done: (err?: unknown) => err ? reject(err) : resolve() } })));
+              store.showToast(tr('browser.passkey_added'));
+            } catch (err) { error.textContent = errorText(err); }
+          }) }, tr('browser.add_passkey'));
+          return h('div', { class: 'stack' }, h('div', { class: 'divider-text' }, tr('browser.passkey')), h('div', { class: 'hint' }, tr('browser.passkey_hint')), button, error);
+        })(),
+
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.duress_passphrase')),
+        !usesBrowserCore() && h('div', { class: 'field' }, currP),
+        !usesBrowserCore() && h('div', { class: 'field' }, duP, h('div', { class: 'hint' }, tr('settings.leave_empty_to_remove'))),
+        !usesBrowserCore() && h('label', { class: 'chk', style: { marginBottom: '10px' } },
           duWipe, h('span', { class: 'box' }), h('span', null, tr('settings.wipe_on_duress_unchecked_decoy'))),
-        duErr,
-        h('button', {
+        !usesBrowserCore() && duErr,
+        !usesBrowserCore() && h('button', {
           class: 'btn btn-block btn-amber',
           onClick: async () => {
             duErr.textContent = '';
@@ -545,11 +559,11 @@ export class SettingsModal {
           },
         }, tr('common.save')),
 
-        h('div', { class: 'divider-text' }, tr('settings.attempt_limit')),
-        h('div', { class: 'field' }, attP),
-        h('div', { class: 'field' }, attN, h('div', { class: 'hint' }, tr('settings.0_unlimited'))),
-        attErr,
-        h('button', {
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.attempt_limit')),
+        !usesBrowserCore() && h('div', { class: 'field' }, attP),
+        !usesBrowserCore() && h('div', { class: 'field' }, attN, h('div', { class: 'hint' }, tr('settings.0_unlimited'))),
+        !usesBrowserCore() && attErr,
+        !usesBrowserCore() && h('button', {
           class: 'btn btn-block btn-amber',
           onClick: async () => {
             attErr.textContent = '';

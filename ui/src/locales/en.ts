@@ -688,5 +688,10 @@ export const en = {
   "chat.mode_chat": "chat",
   "chat.mode_console": "console",
   "settings.attempt_limit_updated": "Attempt limit updated",
-  "media.file_count": "Files: {n}"
+  "media.file_count": "Files: {n}",
+  "browser.unlock_passkey": "Open with a passkey",
+  "browser.add_passkey": "Add a passkey",
+  "browser.passkey": "Passkey",
+  "browser.passkey_added": "Passkey added",
+  "browser.passkey_hint": "Your browser and passkey must support PRF. Keep your profile password for recovery."
 } as const satisfies Record<keyof typeof ru, string>;

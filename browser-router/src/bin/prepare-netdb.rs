@@ -116,7 +116,7 @@ fn main() {
         let manifest = serde_json::json!({
             "sha256": digest, "compressed_bytes": bytes.len(), "records": records.len(),
             "created_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-            "i2pd_revision": "6b214f74d2c1b9d892cda29119f0942097cbfd85",
+            "i2pd_revision": env!("GIPNY_BROWSER_I2PD_REVISION"),
         });
         fs::write(
             format!("{}.json", args[4]),

@@ -48,6 +48,7 @@ struct Header {
     passkeys: Vec<Passkey>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Vault {
     header: Header,
     key: Zeroizing<[u8; 32]>,
@@ -332,6 +333,14 @@ impl Vault {
             wrapped,
         });
         Ok(())
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.header.profile
+    }
+
+    pub fn passkeys(&self) -> &[Passkey] {
+        &self.header.passkeys
     }
 }
 

@@ -6,6 +6,13 @@ import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
 export const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 
 const webClient = new WebTransportClient();
+export interface BrowserBackend {
+  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn>;
+}
+let browserBackend: BrowserBackend | null = null;
+export function configureBrowserBackend(backend: BrowserBackend): void { browserBackend = backend; }
+export function usesBrowserCore(): boolean { return browserBackend !== null; }
 export function configureWebTransport(endpoint: string | null): void { webClient.configure(endpoint); }
 export function connectWebTransport(): Promise<void> { return webClient.connect(); }
 
@@ -13,6 +20,7 @@ export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<
   if (isTauri) {
     return tauriInvoke(cmd, args);
   }
+  if (browserBackend) return browserBackend.invoke<T>(cmd, args);
   return webClient.invoke<T>(cmd, args);
 }
 
@@ -20,6 +28,7 @@ export function listen<T>(event: string, handler: (event: { payload: T }) => voi
   if (isTauri) {
     return tauriListen(event, handler);
   }
+  if (browserBackend) return browserBackend.listen<T>(event, handler);
   return webClient.listen<T>(event, handler);
 }
 export type { UnlistenFn };

@@ -686,5 +686,10 @@ export const ru = {
   "chat.mode_chat": "чат",
   "chat.mode_console": "консоль",
   "settings.attempt_limit_updated": "Лимит попыток обновлён",
-  "media.file_count": "Файлов: {n}"
+  "media.file_count": "Файлов: {n}",
+  "browser.unlock_passkey": "Открыть ключом доступа",
+  "browser.add_passkey": "Добавить ключ доступа",
+  "browser.passkey": "Ключ доступа",
+  "browser.passkey_added": "Ключ доступа добавлен",
+  "browser.passkey_hint": "Браузер и ключ должны поддерживать PRF. Сохраните пароль профиля для восстановления доступа."
 } as const;

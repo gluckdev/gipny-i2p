@@ -31,6 +31,17 @@ impl TaskScope {
             Ok(Self(state))
         })
     }
+
+    pub fn abort_all(&self) {
+        let handles = {
+            let mut state = self.0.lock().unwrap();
+            state.closed = true;
+            std::mem::take(&mut state.tasks)
+        };
+        for handle in handles.into_values() {
+            handle.abort();
+        }
+    }
 }
 
 impl Drop for TaskScope {

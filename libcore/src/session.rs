@@ -2628,13 +2628,6 @@ fn acknowledge_delivery(db: &Db, contact_id: i64, payload: &WirePayload) -> Resu
     }
 }
 
-fn build_ad(a: &[u8], b: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(a.len() + b.len());
-    if a <= b { out.extend_from_slice(a); out.extend_from_slice(b); }
-    else      { out.extend_from_slice(b); out.extend_from_slice(a); }
-    out
-}
-
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }

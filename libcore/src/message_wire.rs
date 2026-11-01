@@ -776,7 +776,6 @@ pub fn pad_payload(pt: &[u8]) -> Vec<u8> {
     }
     out
 }
-
 /// As [`pad_payload`], but the padding is optional.
 ///
 /// The length prefix is written either way, so the receiver does not care and
@@ -800,4 +799,11 @@ pub fn unpad_payload(padded: &[u8]) -> Option<Vec<u8>> {
     let end = 4usize.checked_add(len)?;
     if end > padded.len() { return None; }
     Some(padded[4..end].to_vec())
+}
+
+pub fn build_ad(a: &[u8], b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    if a <= b { out.extend_from_slice(a); out.extend_from_slice(b); }
+    else      { out.extend_from_slice(b); out.extend_from_slice(a); }
+    out
 }
