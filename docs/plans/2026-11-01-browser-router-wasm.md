@@ -140,7 +140,7 @@ fixture — 687 аутентифицированных байт/3 блока, 19
 
 Этап 2 плана ещё не завершён: критерий требует exploratory-туннель.
 Обнаружен отдельный блокер upstream — `Ntcp2Transport::initialize` обязательно
-bind'ит listener, а `supported_transports` и `connect` используют его наличие
+bind'ит listener, а `classify` и `connect` используют его наличие
 как разрешение исходящего транспорта. Поэтому текущий `ntcp2::probe`
 использует публичные crypto API emissary, но не выдаётся за запущенный
 `Router<BrowserRuntime>`. Следующая доработка — явный client-only транспорт,

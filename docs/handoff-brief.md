@@ -1263,7 +1263,7 @@ Raw release WASM с экспортом `ntcp2_probe` — 1 451 904 байта. �
 относится к checkpoint `d1eccd7` без NTCP2-probe.
 
 Полный `Router<BrowserRuntime>` ещё не запускается: в upstream
-`Ntcp2Transport::initialize` требует TCP listener, а `supported_transports`
+`Ntcp2Transport::initialize` требует TCP listener, а `classify`
 и `connect` проверяют его наличие даже для outbound. Поэтому proof сейчас
 отдельный NTCP2 initiator на public crypto API, без фиктивного listener и
 без форка upstream. Следующее — client-only NTCP2 в emissary, exploratory
