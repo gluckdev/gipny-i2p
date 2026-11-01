@@ -112,6 +112,7 @@ pub async fn run_exploratory(
     verify_no_listener(router.protocol_address_info(), &local_info)?;
     let router_id = router.router_id().to_string();
     let mut stable = None;
+    let mut confirmation_floor = None;
     let mut first_ready = None;
     let mut connections = 0;
     loop {
@@ -137,9 +138,13 @@ pub async fn run_exploratory(
             let (since, initial_roundtrips) =
                 *stable.get_or_insert_with(|| (web_time::Instant::now(), roundtrips));
             first_ready.get_or_insert(started.elapsed().as_millis());
-            if since.elapsed() >= Duration::from_secs(hold_seconds)
-                && roundtrips > initial_roundtrips
-            {
+            let confirmed = if since.elapsed() >= Duration::from_secs(hold_seconds) {
+                let floor = *confirmation_floor.get_or_insert(roundtrips);
+                roundtrips > floor
+            } else {
+                false
+            };
+            if confirmed && roundtrips > initial_roundtrips {
                 // Stop the root future, then TaskScope cancels all its children.
                 for _ in 0..3 {
                     router.shutdown();
@@ -153,12 +158,13 @@ pub async fn run_exploratory(
                     roundtrips,
                     ready_after_ms: first_ready.unwrap(),
                     elapsed_ms: started.elapsed().as_millis(),
-                    held_seconds: hold_seconds,
+                    held_seconds: since.elapsed().as_secs(),
                     wasm_memory_bytes: wasm_memory_bytes(),
                 });
             }
         } else {
             stable = None;
+            confirmation_floor = None;
         }
         if started.elapsed() >= Duration::from_secs(timeout_seconds) {
             return Err(format!(
