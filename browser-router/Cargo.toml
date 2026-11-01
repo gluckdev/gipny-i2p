@@ -31,13 +31,16 @@ zeroize = "1"
 i2p-embed = { path = "../i2p-embed", optional = true }
 
 [features]
-native-peer = ["dep:i2p-embed"]
+native-peer = ["dep:i2p-embed", "dep:cc"]
 ntcp2-live-tests = []
 
 [[bin]]
 name = "native-peer"
 path = "src/bin/native-peer.rs"
 required-features = ["native-peer"]
+
+[build-dependencies]
+cc = { version = "1", optional = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

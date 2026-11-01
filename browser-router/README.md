@@ -87,7 +87,9 @@ unpadded base64url; его нет в retained artifacts. Python-зависимо
 
 Джоба `NTCP2 browser to native and public I2P` собирает fixture `native-peer`
 из собственного `i2p-embed` и pinned C++ i2pd, выполняет verified reseed и
-проверяет полученный netDb. Затем три WASM-теста в Chrome проверяют handshake
+проверяет полученный netDb. Тестовый `native/fixture.cpp` разрешает loopback
+перед запуском транспортных потоков; он собирается только с feature
+`native-peer`. Затем три WASM-теста в Chrome проверяют handshake
 с native fixture, handshake хотя бы с одним из 12 публичных кандидатов и
 отказ на повреждённой подписи/неверном capability. Публичные пэры проверяются
 последовательно, по 20 секунд на попытку. Журналы и публичные RouterInfo

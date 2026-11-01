@@ -670,6 +670,7 @@ dependencies = [
 name = "gipny-browser-router"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "emissary-core",
  "flate2",
  "futures",
