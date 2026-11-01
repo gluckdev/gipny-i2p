@@ -104,7 +104,7 @@ BRIDGE = r"""
 
 
 def evaluate(cdp, expression):
-    result = cdp.call('Runtime.evaluate', expression=expression, awaitPromise=True, returnByValue=True)
+    result = cdp.call('Runtime.evaluate', expression=expression, awaitPromise=True, returnByValue=True, userGesture=True)
     if 'exceptionDetails' in result:
         # No expression/args or full exception object can enter evidence.
         detail = result['exceptionDetails'].get('exception', {}).get('description', 'browser operation failed')
@@ -131,6 +131,37 @@ def ready(cdp):
     if info['hosted']['state'] == 'failed':
         raise RuntimeError('I2P client startup failed: ' + info['hosted']['reason'][:300])
     return info['hosted']['state'] == 'ready'
+
+
+def create_ui(cdp, profile, password):
+    # Exercise the shipped auth form and Store/API adapter as well as RPC.
+    values = json.dumps([profile, profile, password, password])
+    evaluate(cdp, f'''(() => {{
+      const fields = [...document.querySelectorAll('.auth input')];
+      const values = {values};
+      if (fields.length !== 4) throw new Error('Browser profile form is missing');
+      fields.forEach((field, i) => {{ field.value = values[i]; field.dispatchEvent(new Event('input', {{bubbles:true}})); }});
+      const button = document.querySelector('.auth-card .row .btn:not(.btn-ghost)');
+      if (!button) throw new Error('Create profile button is missing');
+      button.click();
+    }})()''')
+    wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production profile creation form')
+
+
+def unlock_ui(cdp, profile, password):
+    cdp.call('Page.navigate', url='http://localhost:18770/browser.html')
+    label = json.dumps('◉  ' + profile)
+    wait_for(lambda: evaluate(cdp, f'[...document.querySelectorAll(".auth button")].some(button=>button.textContent === {label})'), 30, 'saved profile selector')
+    evaluate(cdp, f'[...document.querySelectorAll(".auth button")].find(button=>button.textContent === {label}).click()')
+    wait_for(lambda: evaluate(cdp, '!!document.querySelector(".auth input[type=password]")'), 10, 'profile password form')
+    wrong_rejected = evaluate(cdp, '__coreCall("vault_unlock", {profile:' + json.dumps(profile) + ',pass:"incorrect password"}).then(()=>false,()=>true)')
+    if not wrong_rejected:
+        raise RuntimeError('wrong password accepted')
+    evaluate(cdp, f'''(() => {{
+      document.querySelector('.auth input[type=password]').value = {json.dumps(password)};
+      document.querySelector('.auth-card .row .btn:not(.btn-ghost)').click();
+    }})()''')
+    wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production unlock form')
 
 
 def main():
@@ -194,13 +225,13 @@ def main():
             alice.call('WebAuthn.enable', enableUI=False)
             alice.call('WebAuthn.addVirtualAuthenticator', options=dict(protocol='ctap2', ctap2Version='ctap2_1', transport='internal', hasResidentKey=True, hasUserVerification=True, hasPrf=True, automaticPresenceSimulation=True, isUserVerified=True))
             rpc(alice, 'init', config=None)
-            rpc(alice, 'vault_create', profile='alice', displayName='alice', **{'pass': password_a}, maxAttempts=0, duressPass=None)
+            create_ui(alice, 'alice', password_a)
             evaluate(alice, 'new Promise((resolve,reject)=>window.dispatchEvent(new CustomEvent("gipny-enroll-passkey",{detail:{profile:"alice",done:error=>error?reject(error):resolve(true)}})))')
             rpc(alice, 'vault_lock')
             evaluate(alice, 'fetch("/browser-config.json",{cache:"no-store"}).then(r=>r.json()).then(config=>__coreCall("init",{config}))')
             evaluate(alice, 'new Promise((resolve,reject)=>window.dispatchEvent(new CustomEvent("gipny-unlock-passkey",{detail:{profile:"alice",done:error=>error?reject(error):resolve(true)}})))')
             receipt['assertions'].append('actual WebAuthn PRF helper enrollment and unlock with a virtual CTAP2 authenticator')
-            rpc(bob, 'vault_create', profile='bob', displayName='bob', **{'pass': password_b}, maxAttempts=0, duressPass=None)
+            create_ui(bob, 'bob', password_b)
             for client in clients:
                 wait_for(lambda: ready(client), 330, 'client destination tunnels')
             receipt['assertions'].append('two independent WASM client destinations ready over live I2P')
@@ -209,29 +240,25 @@ def main():
             alice_address, bob_address = rpc(alice, 'my_b32'), rpc(bob, 'my_b32')
             alice_contact = rpc(alice, 'add_contact', onion=bob_address, signPk=bob_card['sign_pk'], dhPk=bob_card['dh_pk'], name='Bob', relay=bob_address)
             bob_contact = rpc(bob, 'add_contact', onion=alice_address, signPk=alice_card['sign_pk'], dhPk=alice_card['dh_pk'], name='Alice', relay=alice_address)
-            first = rpc(alice, 'send_message', contactId=alice_contact['id'], body='browser live alpha', attachments=[], ttlSecs=None, replyTo=None)
-            wait_for(lambda: any(row['body'] == 'browser live alpha' for row in rpc(bob, 'list_messages', contactId=bob_contact['id'])), 150, 'Alice to Bob decrypted message')
-            wait_for(lambda: any(row['id'] == first and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact['id'])), 120, 'authenticated end-to-end receipt')
-            reply = rpc(bob, 'send_message', contactId=bob_contact['id'], body='browser live beta', attachments=[dict(name='hello.txt', data='aGVsbG8=')], ttlSecs=None, replyTo=None)
-            wait_for(lambda: any(row['body'] == 'browser live beta' for row in rpc(alice, 'list_messages', contactId=alice_contact['id'])), 120, 'Bob to Alice ratchet reply')
-            wait_for(lambda: any(row['id'] == reply and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact['id'])), 120, 'reply receipt')
+            first = rpc(alice, 'send_message', contactId=alice_contact, body='browser live alpha', attachments=[], ttlSecs=None, replyTo=None)
+            wait_for(lambda: any(row['body'] == 'browser live alpha' for row in rpc(bob, 'list_messages', contactId=bob_contact)), 150, 'Alice to Bob decrypted message')
+            wait_for(lambda: any(row['id'] == first and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), 120, 'authenticated end-to-end receipt')
+            reply = rpc(bob, 'send_message', contactId=bob_contact, body='browser live beta', attachments=[dict(name='hello.txt', data='aGVsbG8=')], ttlSecs=None, replyTo=None)
+            wait_for(lambda: any(row['body'] == 'browser live beta' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 120, 'Bob to Alice ratchet reply')
+            wait_for(lambda: any(row['id'] == reply and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'reply receipt')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and inline attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
             # Stop Alice's whole worker: this discards WASM memory and sockets.
             rpc(alice, 'vault_lock')
-            offline = rpc(bob, 'send_message', contactId=bob_contact['id'], body='durable offline outbox', attachments=[], ttlSecs=None, replyTo=None)
+            offline = rpc(bob, 'send_message', contactId=bob_contact, body='durable offline outbox', attachments=[], ttlSecs=None, replyTo=None)
             time.sleep(3)
-            evaluate(alice, '__restartCore()')
-            wrong_rejected = evaluate(alice, '__coreCall("vault_unlock", {profile:"alice",pass:"incorrect password"}).then(()=>false,()=>true)')
-            if not wrong_rejected:
-                raise RuntimeError('wrong password accepted')
-            rpc(alice, 'vault_unlock', profile='alice', **{'pass': password_a})
+            unlock_ui(alice, 'alice', password_a)
             if rpc(alice, 'my_b32') != alice_address or rpc(alice, 'my_card') != alice_card:
                 raise RuntimeError('destination or identity changed after worker restart')
             wait_for(lambda: ready(alice), 330, 'restored client destination')
-            wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact['id'])), 180, 'offline outbox recovered recipient')
-            wait_for(lambda: any(row['id'] == offline and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact['id'])), 120, 'offline message delivery receipt')
-            rows = rpc(alice, 'list_messages', contactId=alice_contact['id'])
+            wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 180, 'offline outbox recovered recipient')
+            wait_for(lambda: any(row['id'] == offline and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'offline message delivery receipt')
+            rows = rpc(alice, 'list_messages', contactId=alice_contact)
             if len([row for row in rows if row['body'] == 'durable offline outbox']) != 1:
                 raise RuntimeError('retry duplicated history')
             receipt['assertions'].append('worker termination, wrong-password rejection, identity/destination/ratchet/history restoration, offline outbox retry without duplicate history')

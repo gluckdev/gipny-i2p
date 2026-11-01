@@ -26,7 +26,7 @@ mod implementation {
     use wasm_bindgen::prelude::*;
     use zeroize::{Zeroize, Zeroizing};
 
-    use crate::vault::{newest, Passkey, Record, Vault};
+    use crate::vault::{newest, Record, Vault};
     use crate::BrowserRuntime;
 
     const TARGET_OPK: usize = 20;

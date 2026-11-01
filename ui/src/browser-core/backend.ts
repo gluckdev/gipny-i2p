@@ -188,7 +188,6 @@ export class BrowserBackend {
             if (!current) return;
             if (!current.blob) {
               current.blob = [...engine.encrypt(contact.sign_pk, contact.dh_pk, bundle, JSON.stringify(current.payload))];
-              current.payload = null;
             }
             current.at = Date.now(); current.attempts++;
           });
@@ -242,7 +241,7 @@ export class BrowserBackend {
       if (incoming.group) { groupId = this.ingestGroup(state, incoming.group, peer); events.push({ GroupUpdated: { group_id: groupId } }); }
       const contactId = groupId ? null : contact.id;
       const own = this.identity!;
-      const ack = incoming.origin_msg_id > 0 && !incoming.ack_for ? payload(own, state.displayName) : null;
+      let ack = incoming.origin_msg_id > 0 && !incoming.ack_for ? payload(own, state.displayName) : null;
       if (ack) { ack.ack_for = incoming.origin_msg_id; ack.group = incoming.group; }
       if (incoming.ack_for !== null) {
         const row = state.messages.find(value => value.outgoing && value.origin === incoming.ack_for && sameScope(value, contactId, groupId));
@@ -253,7 +252,7 @@ export class BrowserBackend {
       } else if (incoming.typing !== null) {
         if (contact.request !== 'incoming') events.push({ Typing: { contact_id: contactId, group_id: groupId, sender_sign_pk: groupId ? peer : null, typing: incoming.typing } });
       } else if (incoming.dm?.kind === 1 && groupId === null) {
-        this.applyDeletion(state, contact, incoming, peer, events);
+        ack = this.applyDeletion(state, contact, incoming, peer, events);
       } else if (incoming.dm?.kind === 2) {
         // An authenticated deletion acknowledgement never creates chat text.
       } else if (incoming.wipe === true && groupId === null) {
@@ -269,6 +268,7 @@ export class BrowserBackend {
           events.push(incoming.pin.unpin ? { MessageUnpinned: { contact_id: contactId, group_id: groupId, message_id: row.id } } : { MessagePinned: { contact_id: contactId, group_id: groupId, message_id: row.id } });
         }
       } else if (incoming.origin_msg_id > 0 && !incoming.callback_data && !incoming.console && !incoming.files.length && incoming.file_chunk === null) {
+        if (incoming.dm && (incoming.dm.kind !== 0 || hex(incoming.dm.reference.author) !== peer || incoming.dm.reference.origin !== incoming.origin_msg_id || incoming.dm.reference.sent_at !== incoming.sent_at || groupId !== null)) throw new Error('Forged direct-message reference');
         const existing = state.messages.some(value => value.author === peer && value.origin === incoming.origin_msg_id && sameScope(value, contactId, groupId));
         const deleted = state.tombstones.includes(`${peer}:${incoming.origin_msg_id}:${incoming.sent_at}`);
         if (!existing && !deleted) {
@@ -293,11 +293,20 @@ export class BrowserBackend {
   private validatePayload(value: WirePayload): void {
     if (!Number.isSafeInteger(value.origin_msg_id) || value.origin_msg_id < 0 || !Number.isSafeInteger(value.sent_at) || typeof value.body !== 'string' || value.body.length > 128 * 1024 || !Array.isArray(value.attachments) || value.attachments.length > 16 || value.attachments.reduce((n, file) => n + file.data.length, 0) > 1024 * 1024 || value.attachments.some(file => file.name.length > 255) || (value.ttl_ms !== null && (!Number.isSafeInteger(value.ttl_ms) || value.ttl_ms < 0 || value.ttl_ms > 365 * 86400000))) throw new Error('Unsupported message payload');
     if (value.files.length || value.file_chunk !== null || value.file_ack !== null || value.file_cancel !== null || value.console !== null || value.callback_data !== null) throw new Error('This browser does not support this message control');
+    if (value.edit_of !== null && (!Number.isSafeInteger(value.edit_of) || value.edit_of <= 0 || value.attachments.length > 0)) throw new Error('Invalid edit payload');
+    if (value.ack_for !== null && (!Number.isSafeInteger(value.ack_for) || value.ack_for <= 0)) throw new Error('Invalid receipt');
+    if (value.pin !== null && (value.pin.sender_sign_pk.length !== 32 || !Number.isSafeInteger(value.pin.origin_msg_id) || value.pin.origin_msg_id <= 0)) throw new Error('Invalid pinned-message reference');
   }
   private addContact(state: BrowserState, args: Args, request: Contact['request'] = 'outgoing'): Contact {
     const sign = text(args, 'signPk').toLowerCase(); const dh = text(args, 'dhPk').toLowerCase();
     unhex(sign); unhex(dh);
-    if (sign === this.identity!.sign_pk || state.contacts.some(value => value.sign_pk === sign)) throw new Error('Contact already exists');
+    if (sign === this.identity!.sign_pk) throw new Error('Cannot add your own identity as a contact');
+    const existing = state.contacts.find(value => value.sign_pk === sign);
+    if (existing) {
+      if (existing.dh_pk !== dh) throw new Error('Contact identity key changed');
+      if (typeof args.relay === 'string') { if (!isValidI2pAddress(args.relay)) throw new Error('Invalid I2P destination'); existing.relay = args.relay; }
+      return existing;
+    }
     if (state.contacts.length >= 512) throw new Error('Contact limit reached');
     const onion = text(args, 'onion'); const relay = typeof args.relay === 'string' ? args.relay : null;
     if (!isValidI2pAddress(onion) || (relay !== null && !isValidI2pAddress(relay))) throw new Error('Invalid I2P destination');
@@ -327,7 +336,7 @@ export class BrowserBackend {
     else for (const member of members) {
       const known = group.members.find(value => value.sign_pk === member.sign_pk) || state.contacts.find(value => value.sign_pk === member.sign_pk);
       if (known && known.dh_pk !== member.dh_pk) throw new Error('Group member identity changed');
-      if (!group.members.some(value => value.sign_pk === member.sign_pk)) group.members.push(member);
+      if (!group.members.some(value => value.sign_pk === member.sign_pk)) { if (group.members.length >= 64) throw new Error('Group member limit reached'); group.members.push(member); }
     }
     // An established member can introduce a new member. Existing identity keys
     // stay pinned, and a stale message cannot remove later additions.
@@ -337,15 +346,15 @@ export class BrowserBackend {
     const group = state.groups.find(value => value.id === id); if (!group) throw new Error('Group not found');
     return { id: unhex(id), name: group.name, members: group.members.map(member => ({ sign_pk: unhex(member.sign_pk), dh_pk: unhex(member.dh_pk), onion: member.onion, name: member.name })) };
   }
-  private applyDeletion(state: BrowserState, contact: Contact, incoming: WirePayload, peer: string, events: CoreEvent[]): void {
+  private applyDeletion(state: BrowserState, contact: Contact, incoming: WirePayload, peer: string, events: CoreEvent[]): WirePayload {
     const reference = incoming.dm!.reference;
-    if (incoming.origin_msg_id !== 0 || incoming.body || incoming.attachments.length || incoming.typing !== null || incoming.edit_of !== null || incoming.pin !== null || incoming.wipe !== null || incoming.ack_for !== null || incoming.reply_to !== null || hex(reference.author) !== peer) throw new Error('Invalid deletion control');
+    if (incoming.origin_msg_id !== 0 || incoming.body || incoming.attachments.length || incoming.typing !== null || incoming.edit_of !== null || incoming.pin !== null || incoming.wipe !== null || incoming.ack_for !== null || incoming.reply_to !== null || incoming.ttl_ms !== null || incoming.buttons != null || incoming.notify_sound !== null || hex(reference.author) !== peer || !Number.isSafeInteger(reference.origin) || reference.origin <= 0 || !Number.isSafeInteger(reference.sent_at)) throw new Error('Invalid deletion control');
     const key = `${peer}:${reference.origin}:${reference.sent_at}`;
     if (!state.tombstones.includes(key)) state.tombstones.push(key);
     const row = state.messages.find(value => value.contact_id === contact.id && !value.outgoing && value.author === peer && value.origin === reference.origin && value.sent_at === reference.sent_at);
     if (row) { row.body = ''; row.deleted_at = Date.now(); state.attachments = state.attachments.filter(value => value.message_id !== row.id); events.push({ MessageDeleted: { contact_id: contact.id, message_id: row.id, deleted_at: row.deleted_at, pending: false } }); }
     const ack = payload(this.identity!, state.displayName); ack.dm = { kind: 2, reference };
-    this.enqueue(state, peer, ack, null);
+    return ack;
   }
 
   private send(state: BrowserState, args: Args, group: boolean): number {
@@ -436,7 +445,7 @@ export class BrowserBackend {
     if (command === 'list_messages' || command === 'list_group_messages') {
       const group = command === 'list_group_messages';
       const rows = state.messages.filter(value => sameScope(value, group ? null : number(args, 'contactId'), group ? text(args, 'groupId') : null) && visible(value) && (typeof args.beforeId !== 'number' || value.id < args.beforeId));
-      return rows.slice(-Math.min(500, typeof args.limit === 'number' ? Math.max(1, args.limit) : 100));
+      return rows.slice(-Math.min(500, typeof args.limit === 'number' ? Math.max(1, args.limit) : 100)).reverse();
     }
     if (command === 'unread_count' || command === 'group_unread_count') return state.messages.filter(value => !value.read && visible(value) && sameScope(value, command === 'unread_count' ? number(args, 'contactId') : null, command === 'group_unread_count' ? text(args, 'groupId') : null)).length;
     if (command === 'list_attachments') return state.attachments.filter(value => value.message_id === args.messageId).map(({ data: _, ...attachment }) => attachment);
@@ -451,8 +460,11 @@ export class BrowserBackend {
       const messages = state.messages.filter(value => visible(value) && sameScope(value, command === 'list_media_contact' ? number(args, 'contactId') : null, command === 'list_media_group' ? text(args, 'groupId') : null));
       return state.attachments.filter(value => messages.some(message => message.id === value.message_id)).slice(-100).map(({ data: _, ...attachment }) => ({ ...attachment, sent_at: messages.find(message => message.id === attachment.message_id)!.sent_at }));
     }
-    if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
+    if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).reverse().findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
     const result = await this.transact((next, core) => this.mutate(command, args, next, core));
+    if (command === 'add_contact' && typeof result === 'number') this.event({ ContactAdded: { contact_id: result } });
+    if (command === 'create_group' && typeof result === 'string') this.event({ GroupUpdated: { group_id: result } });
+    if (command === 'add_group_member') this.event({ GroupUpdated: { group_id: text(args, 'groupId') } });
     this.schedule(0);
     return result;
   }
@@ -463,7 +475,7 @@ export class BrowserBackend {
     if (command === 'set_display_name') { state.displayName = text(args, 'name').slice(0, 64); return null; }
     if (command === 'set_ui_data') { const json = text(args, 'json'); if (json.length > 256 * 1024) throw new Error('UI preference size limit'); JSON.parse(json); state.ui[text(args, 'key')] = json; return null; }
     if (command === 'set_muted') { const key = text(args, 'targetKey'); state.muted = state.muted.filter(value => value !== key); if (args.muted === true) state.muted.push(key); return null; }
-    if (command === 'add_contact') return this.addContact(state, args);
+    if (command === 'add_contact') return this.addContact(state, args).id;
     if (command === 'update_contact') { const contact = this.getContact(state, number(args, 'id')); contact.name = text(args, 'name').slice(0, 96); contact.trust = number(args, 'trust'); return null; }
     if (command === 'accept_contact_request') { this.getContact(state, number(args, 'id')).request = 'none'; return null; }
     if (command === 'decline_contact_request' || command === 'delete_contact') {
@@ -472,7 +484,9 @@ export class BrowserBackend {
     }
     if (command === 'reset_contact_session') {
       const contact = this.getContact(state, number(args, 'id'));
-      if (state.outbox.some(value => value.peer === contact.sign_pk)) throw new Error('Wait for pending messages before resetting this session');
+      const pending = state.outbox.filter(value => value.peer === contact.sign_pk);
+      if (pending.some(value => !value.payload)) throw new Error('An older queued letter cannot be re-encrypted');
+      for (const item of pending) { item.key = crypto.randomUUID(); item.blob = null; item.deposited = false; item.at = 0; item.attempts = 0; }
       engine.forget_peer(contact.sign_pk); return null;
     }
     if (command === 'send_message' || command === 'send_group_message') return this.send(state, args, command === 'send_group_message');
@@ -503,6 +517,7 @@ export class BrowserBackend {
     }
     if (command === 'clear_dm_chat' || command === 'clear_message_history') {
       const ids = new Set(state.messages.filter(value => command === 'clear_message_history' || value.contact_id === args.contactId).map(value => value.id));
+      for (const row of state.messages) if (ids.has(row.id) && row.group_id === null) { const tombstone = `${row.author}:${row.origin}:${row.sent_at}`; if (!state.tombstones.includes(tombstone)) state.tombstones.push(tombstone); }
       state.messages = state.messages.filter(value => !ids.has(value.id)); state.attachments = state.attachments.filter(value => !ids.has(value.message_id)); for (const letter of state.outbox) if (letter.row !== null && ids.has(letter.row)) letter.row = null; return null;
     }
     if (command === 'create_group') {

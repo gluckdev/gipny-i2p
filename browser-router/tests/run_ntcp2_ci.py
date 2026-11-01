@@ -41,14 +41,24 @@ def main(router_mode=False):
         # InitI2P may perform synchronous verified reseed before listening.
         wait_port(19720, 180, peer)
         deadline = time.monotonic() + 240
+        prepared = False
         while time.monotonic() < deadline:
             if peer.poll() is not None:
                 raise RuntimeError("native peer exited")
             files = list((data / "netDb").rglob("routerInfo-*.dat"))
             if len(files) >= (150 if router_mode else 25):
-                break
+                # A file count alone can be satisfied before i2pd's next
+                # netDb flush contains usable public classic NTCP2 records.
+                # Wait for the existing signature/freshness/address verifier.
+                result = subprocess.run([str(root / "target/release/prepare-netdb"), str(data), str(candidates), "512" if router_mode else "12"], check=False)
+                if result.returncode == 0:
+                    prepared = True
+                    break
+                if result.returncode != 2:
+                    raise RuntimeError('RouterInfo verifier failed')
             time.sleep(2)
-        subprocess.run([str(root / "target/release/prepare-netdb"), str(data), str(candidates), "512" if router_mode else "12"], check=True)
+        if not prepared:
+            raise RuntimeError('fresh netDb did not provide verified public NTCP2 peers before deadline')
         limits = ["--max-connections", "24", "--session-seconds", "600", "--idle-seconds", "120", "--max-bytes", str(32 * 1024 * 1024)] if router_mode else []
         forwarder = subprocess.Popen([sys.executable, "forwarder/server.py",
             "--host", "127.0.0.1:18767", "--origin", "http://127.0.0.1:18769",

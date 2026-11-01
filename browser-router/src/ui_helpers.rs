@@ -1,4 +1,5 @@
 //! Public presentation data only. Private state stays behind BrowserEngine.
+use crate::BrowserEngine;
 use gipny_libcore::crypto::PreKeyBundle;
 use wasm_bindgen::prelude::*;
 
@@ -7,7 +8,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[wasm_bindgen]
-impl crate::BrowserEngine {
+impl BrowserEngine {
     pub fn bundle_info(&self) -> Result<String, JsValue> {
         let bundle: PreKeyBundle = bincode::deserialize(&self.my_bundle()?)
             .map_err(|_| JsValue::from_str("public bundle serialization"))?;

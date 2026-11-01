@@ -6,12 +6,9 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use std::{
-    pin::Pin,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 
 use emissary_core::{
@@ -22,7 +19,7 @@ use futures::{
     future::{select, Either, Shared},
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     lock::Mutex as AsyncMutex,
-    Future, FutureExt,
+    FutureExt,
 };
 use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen::prelude::*;
