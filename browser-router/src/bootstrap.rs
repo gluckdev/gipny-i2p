@@ -194,7 +194,8 @@ mod browser {
         expected_digest(digest)?;
         let parsed = url::Url::parse(url).map_err(|_| "invalid snapshot URL")?;
         let loopback = matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
-            || matches!(parsed.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+            || matches!(parsed.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback())
+            || parsed.host_str() == Some("localhost");
         if !(parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback))
             || !parsed.username().is_empty()
             || parsed.password().is_some()

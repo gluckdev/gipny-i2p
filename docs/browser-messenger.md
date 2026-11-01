@@ -66,6 +66,33 @@ out-of-order messages and fixed-integer bincode compatibility. Vault tests check
 wrong credentials, password rotation, passkey wrapping and torn-slot recovery.
 An emulated or virtual authenticator test is not physical mobile validation.
 
+Recorded evidence for `bb0578e`, 2026-11-01:
+
+| Check | Result |
+|---|---|
+| Release WASM, production PWA and UI tests | PASS |
+| WASM tests in Chrome | 45/45 PASS, including 9/9 BrowserEngine tests |
+| Real NTCP2 handshakes | PASS |
+| Cold bootstrap, desktop | PASS: 50.28 s from navigation, 33 s sustained availability, 5 roundtrips |
+| Cold bootstrap, constrained Chrome | PASS: 34.35 s, 33 s sustained availability, 3 roundtrips; 4× CPU slowdown, 80 ms latency, 200/100 KiB/s down/up |
+| Two independent browser messengers | FAILED during startup: lower-level snapshot URL validation rejected `localhost`; corrected in source, rerun pending |
+| Physical phones and public deployment | Not performed |
+
+Source: [Actions run 41306799095](https://github.com/gluckdev/gipny-i2p/actions/runs/41306799095).
+Both cold probes used a fresh snapshot with 175 verified RouterInfo records.
+The loadable module contained 3,165,432 bytes WASM and 62,471 bytes JS.
+The `browser-messenger-pwa` artifact ZIP was 1,977,472 bytes with SHA256
+`b85c623f7abf16ce7f34eb06fda20676a334866ecb2462ff978b234f9e415546`.
+These are measurements of that commit, not promises for every network or device.
+The earlier constrained run at `e22a800` timed out; live I2P startup varies.
+The successful WASM job does not make the failed integration workflow green.
+
+The acceptance scenario also covers password rotation through the production UI,
+old-password rejection after worker restart, PRF enrollment/unlock through the
+main-thread helper, blocked-contact handling, and offline history after stopping
+the HTTP server. These assertions remain unconfirmed until the entire scenario
+passes in Actions. Later commits must be checked against their own runs.
+
 ## Hosting preparation
 
 Serve the artifact over HTTPS with `application/wasm` for `.wasm`, no third-party

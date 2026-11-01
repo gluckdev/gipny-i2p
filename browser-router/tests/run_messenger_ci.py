@@ -250,6 +250,17 @@ def main():
             wait_for(lambda: any(row['id'] == reply and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'reply receipt')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and inline attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
+            rpc(bob, 'update_contact', id=bob_contact, name='Alice', trust=2)
+            outbound_blocked = evaluate(bob, '__coreCall("send_message",{contactId:' + str(bob_contact) + ',body:"blocked outbound",attachments:[],ttlSecs:null,replyTo:null}).then(()=>false,()=>true)')
+            if not outbound_blocked:
+                raise RuntimeError('blocked contact accepted an outgoing message')
+            held = rpc(alice, 'send_message', contactId=alice_contact, body='held while blocked', attachments=[], ttlSecs=None, replyTo=None)
+            wait_for(lambda: any(row['id'] == held and row['sent'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), 120, 'blocked mailbox deposit')
+            if any(row['body'] == 'held while blocked' for row in rpc(bob, 'list_messages', contactId=bob_contact)):
+                raise RuntimeError('blocked incoming contact entered history')
+            rpc(bob, 'update_contact', id=bob_contact, name='Alice', trust=1)
+            wait_for(lambda: any(row['id'] == held and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), 120, 'unblocked exact ciphertext retry')
+            receipt['assertions'].append('blocked contacts cannot send or enter history; unblocking resumes exact ciphertext delivery')
             rpc(alice, 'change_passphrase', **{'old': password_a, 'new': password_new})
             # Stop Alice's whole worker: this discards WASM memory and sockets.
             rpc(alice, 'vault_lock')

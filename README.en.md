@@ -214,7 +214,9 @@ the endpoint is closed. A GitHub Actions testnet seed is not a permanent SLA.
 | CI, packaging and release | [.github/workflows/README.md](.github/workflows/README.md) |
 | Icons and configuration tools | [tools/README.md](tools/README.md) |
 | Static project website | [site/README.md](site/README.md) |
+| Browser I2P runtime in WASM (client-only emissary, Worker, forwarder, tests) | [browser-router/README.md](browser-router/README.md) |
 | Decisions, plans and release history | [docs/README.md](docs/README.md) |
+| Browser messenger guide (architecture, OPFS, passkey, hosting) | [docs/browser-messenger.md](docs/browser-messenger.md) |
 
 Update affected component guides together with code and both project READMEs.
 The pinned `third_party/i2pd` and `third_party/i2pd-android` sources are submodules;
@@ -231,7 +233,11 @@ Linux development setup, following the CI inputs:
 
 New builds and checks for this work run in **GitHub Actions** from source, as
 required by the owner. [Build provenance and release gates](docs/build-release.md)
-describe dependencies and manifests. The commands below document the environment
+describe dependencies and manifests. Autonomous browser messenger builds and tests
+also run strictly in CI: the packaged `browser-messenger-pwa` artifact is produced
+by the [Browser router WASM](.github/workflows/browser-router.yml) workflow;
+no local build or test commands are instructed.
+The commands below document the environment
 and CI steps; they are not a report of another local build.
 
 ```bash
@@ -331,6 +337,7 @@ See the live [e2e workflow](.github/workflows/e2e-i2pd.yml) and
 | Relay/DHT | Ciphertext, sealed `from`, TTL and quotas | Authentication metadata, timing, size classes, drop/eviction and Sybil remain |
 | Network | I2P application transport; no local bridge/proxy | Router IP transports and the application's shared crash boundary remain |
 | Updates | TLS/webpki and required SHA256 in 0.4.19 | A hash and asset from one release are not an independent publisher signature |
+| Browser messenger | OPFS (dual-slot XChaCha20-Poly1305, Argon2id, WebAuthn PRF passkey), TLS WSS forwarder to verified RI IPv4 allowlist | No `mlock`/`mprotect` in JS/browser RAM; OPFS quota (profile up to 16 MiB); keys never leave browser, but forwarder is mandatory. Acceptance in progress ([PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) |
 
 [OS binding and migration limits](docs/device-bound-storage.md): Android
 requires a TEE/StrongBox provider, Windows binds the key to user and machine,
@@ -355,6 +362,7 @@ checks. Installation is platform-specific: `.deb` requires a person, Android
 requires permission for that source and the system installer. Host/stub tests
 alone do not establish live I2P, complete native packaging or device installation.
 See the [dated CI evidence](docs/today-2026-10-28.md) for individual results.
+The autonomous browser messenger (`ui/browser.html`, draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) runs client-only (2-hop exploratory and client pools, emissary WASM) and forwards NTCP2 bytes over WSS to verified IPv4 RouterInfo peers. It lacks `mlock`/`mprotect` RAM boundaries, is subject to OPFS storage quotas (16 MiB max profile, 1 MiB inline attachments), and omits DHT offline mail, the agent console, large chunked file transfers, transit tunnels, and native duress wiping. End-to-end acceptance in CI is in progress (see [current evidence](docs/browser-messenger.md#validation-and-artifacts)); physical mobile browsers and public hosting are not tested or deployed.
 
 ## Backups and another device
 
@@ -364,23 +372,62 @@ new device. Close the old copy after moving: one identity currently supports
 one active device; concurrent copies can make ratchet sessions diverge.
 A lost backup passphrase cannot be recovered.
 
-## Pages website and browser client
+## Web surfaces and browser messenger
 
-[The project website](https://gluckdev.github.io/gipny-i2p/) is published on
-GitHub Pages with Russian by default, an English switch and native application
-downloads. See [site/](site/README.md) and [pages.yml](.github/workflows/pages.yml)
-for source and deployment rules; deployment is allowed only from `main`.
-The page creates no profiles and receives no messages, contact lists or keys.
-Visiting Pages still makes an ordinary web request to the hosting provider.
+The project distinguishes three separate web surfaces:
 
-The existing `gipny-web` is an HTTP/WebSocket **server gateway**; its operator
-hosts the vault, cryptography and profile state. It is not the intended static
-browser messenger. We are preparing a web client, targeting **before spring
-2027**: it will load in the browser and run code on the user's device, where
-keys and encryption will remain. This is a development target; browser I2P
-transport and temporary offline shares across independent stores are still
-research. Pages serves static assets; the published landing page does not yet
-implement that client or a distributed-share backend.
+1. **Static marketing website (`site/`, GitHub Pages):**
+   Published at [gluckdev.github.io/gipny-i2p](https://gluckdev.github.io/gipny-i2p/):
+   Russian by default, an English switch, and direct downloads for native releases.
+   Source code is in [site/](site/README.md); deployments run via
+   [pages.yml](.github/workflows/pages.yml) strictly from the `main` branch.
+   The site enforces strict CSP (`connect-src 'none'`), has no backend, creates no
+   profiles, and receives no messages, contact lists, or keys. Visiting Pages remains
+   an ordinary web request to the hosting provider. Static website hosting is completely
+   separated from public browser messenger deployment.
+
+2. **Legacy loopback WebUI (`ui/index.html`, `/app/` directory):**
+   A web interface paired over local loopback WebSocket (`ws://127.0.0.1:*`) with a
+   running native client or `gipny-web` headless gateway on the same device.
+   Cryptography, the SQLCipher vault, and the embedded C++ `libi2pd` router run inside
+   the native host process; the web page acts solely as a thin loopback client.
+
+3. **Autonomous browser messenger (`ui/browser.html`):**
+   A standalone PWA entry point running entirely within the browser without requiring a
+   native client.
+   - **Architecture and runtime:** A Dedicated Worker runs the Rust WASM router based on
+     client-only emissary alongside the cryptographic core (X3DH, Double Ratchet,
+     XChaCha20-Poly1305, matching `libcore` wire formats). The router is configured
+     strictly as a client: 2-hop exploratory and client pools, no SAM/I2CP listeners,
+     no SSU2, and no transit traffic.
+   - **Network transport:** As browsers cannot open raw TCP/UDP sockets, NTCP2 byte streams
+     are forwarded over TLS WebSocket (WSS) to public IPv4 peers from a verified RouterInfo
+     allowlist. Identity and session private keys never leave the browser, though the WSS
+     forwarder is mandatory for network transport.
+   - **Storage:** Profiles are stored in OPFS (Origin Private File System) across two
+     alternating authenticated slots using sync access handles; master keys are wrapped
+     with Argon2id (64 MiB) or a WebAuthn PRF passkey.
+   - **Browser limits:** Browser memory lacks `mlock`/`mprotect` boundaries; OPFS quotas
+     apply (profile storage limited to 16 MiB); inline attachments are limited to 1 MiB per
+     message; DHT offline mail / relay discovery, remote agent consoles, large chunked file
+     transfers, transit tunnels, and native duress wipes are not supported.
+   - **Development status:** The browser router spike [PR #143](https://github.com/gluckdev/gipny-i2p/pull/143)
+     was merged to `main` (`318b2d5`). Full browser messenger development is in progress in draft
+     [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144) (branch `feat/browser-messenger`).
+     The BrowserEngine, WASM Worker, OPFS encrypted slots, passkey PRF, UI adapter, and PWA
+     are implemented, but live acceptance has **not yet passed**. At commit `bb0578e`, release WASM/PWA, all 45 WASM tests
+     (including all 9 engine tests), NTCP2 and both cold bootstrap profiles passed.
+     The live messenger scenario stopped at localhost URL validation; the fix awaits CI.
+     Physical mobile browsers and public hosting remain unverified. See
+     [current CI evidence](docs/browser-messenger.md#validation-and-artifacts).
+   - **Builds and artifacts:** Builds and tests run **strictly in GitHub Actions**.
+     The packaged `browser-messenger-pwa` artifact is generated by the
+     [Browser router WASM](.github/workflows/browser-router.yml) workflow; no local build
+     or test commands are required.
+   - **Detailed documentation:** See [docs/browser-messenger.md](docs/browser-messenger.md)
+     (architecture, OPFS, passkey, forwarder and hosting guide) and
+     [browser-router/README.md](browser-router/README.md) (WASM runtime, client-only patch,
+     forwarder server, and bootstrap tests).
 
 ## Agent and bot
 

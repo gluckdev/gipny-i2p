@@ -349,16 +349,16 @@ export class ProfileStorage {
 
   /** Only ciphertext reaches this callback. A failed write leaves the other
    * slot intact; Rust must stop the transaction instead of advancing its state. */
-  persist = async (bytes: Uint8Array, generation: string, mirrorCredentials = false): Promise<void> => {
+  persist = async (bytes: Uint8Array, generation: string, replaceRecovery = false): Promise<void> => {
     if (this.closed) throw new Error('Profile is locked');
     if (!/^[1-9][0-9]{0,19}$/.test(generation)) throw new Error('Invalid profile generation');
     const value = BigInt(generation);
     if (value > 0xffffffffffffffffn) throw new Error('Invalid profile generation');
     const target = Number(value % 2n) === 0 ? this.slots[0] : this.slots[1];
     writeAll(target, bytes);
-    // Credential changes must remove the old password wrapper from both live
-    // slots. The first copy is already flushed before replacing the second.
-    if (mirrorCredentials) writeAll(target === this.slots[0] ? this.slots[1] : this.slots[0], bytes);
+    // Credential changes and logical erasure replace both live records. The
+    // first copy is flushed before replacing the recovery copy.
+    if (replaceRecovery) writeAll(target === this.slots[0] ? this.slots[1] : this.slots[0], bytes);
   };
 
   close(): void {

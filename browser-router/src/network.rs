@@ -335,8 +335,8 @@ impl NetworkInner {
 
         let stream_inner = Arc::new(StreamInner {
             remote_destination: address.to_string(),
-            reader: AsyncMutex::new(Some(read_half)),
-            writer: AsyncMutex::new(Some(write_half)),
+            reader: Arc::new(AsyncMutex::new(Some(read_half))),
+            writer: Arc::new(AsyncMutex::new(Some(write_half))),
             cancellation_source: Mutex::new(CancellationSource::new()),
             network_cancellation: self.cancellation_token.clone(),
             fatal_error: self.fatal_error.clone(),
@@ -387,8 +387,8 @@ impl NetworkInner {
 
         let stream_inner = Arc::new(StreamInner {
             remote_destination: remote_dest,
-            reader: AsyncMutex::new(Some(read_half)),
-            writer: AsyncMutex::new(Some(write_half)),
+            reader: Arc::new(AsyncMutex::new(Some(read_half))),
+            writer: Arc::new(AsyncMutex::new(Some(write_half))),
             cancellation_source: Mutex::new(CancellationSource::new()),
             network_cancellation: self.cancellation_token.clone(),
             fatal_error: self.fatal_error.clone(),
@@ -590,8 +590,8 @@ impl Drop for BrowserNetwork {
 
 struct StreamInner {
     remote_destination: String,
-    reader: AsyncMutex<Option<ReadHalf<BrowserTcpStream>>>,
-    writer: AsyncMutex<Option<WriteHalf<BrowserTcpStream>>>,
+    reader: Arc<AsyncMutex<Option<ReadHalf<BrowserTcpStream>>>>,
+    writer: Arc<AsyncMutex<Option<WriteHalf<BrowserTcpStream>>>>,
     cancellation_source: Mutex<CancellationSource>,
     network_cancellation: CancellationToken,
     fatal_error: Arc<Mutex<Option<String>>>,
@@ -605,8 +605,24 @@ impl StreamInner {
     }
 
     fn close(&self) {
-        self.cancellation_source.lock().unwrap().cancel();
+        let first = {
+            let mut source = self.cancellation_source.lock().unwrap();
+            let first = !source.is_cancelled();
+            source.cancel();
+            first
+        };
         self._guard.release();
+        if first {
+            let reader = self.reader.clone();
+            let writer = self.writer.clone();
+            // Cancelled I/O releases its guards before these awaits finish.
+            // Dropping both halves closes the in-process pipe even while JS
+            // retains the closed BrowserStream wrapper.
+            wasm_bindgen_futures::spawn_local(async move {
+                reader.lock().await.take();
+                writer.lock().await.take();
+            });
+        }
     }
 
     async fn read_frame(&self) -> Result<Vec<u8>, String> {
@@ -872,4 +888,49 @@ pub fn decode_relay_frame(bytes: &[u8]) -> Result<String, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("decode relay frame failed: {e}")))?;
     serde_json::to_string(&frame)
         .map_err(|e| JsValue::from_str(&format!("serialize relay frame to JSON failed: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    async fn close_cancels_pending_read_and_releases_pipe_before_js_wrapper_is_freed() {
+        let (mut peer, socket) = BrowserTcpStream::memory_pair();
+        let (reader, writer) = socket.split();
+        let network = CancellationSource::new();
+        let active = Arc::new(AtomicUsize::new(1));
+        let stream = BrowserStream {
+            inner: Arc::new(StreamInner {
+                remote_destination: String::new(),
+                reader: Arc::new(AsyncMutex::new(Some(reader))),
+                writer: Arc::new(AsyncMutex::new(Some(writer))),
+                cancellation_source: Mutex::new(CancellationSource::new()),
+                network_cancellation: network.token(),
+                fatal_error: Arc::new(Mutex::new(None)),
+                _guard: StreamCountGuard {
+                    active_streams: active.clone(),
+                    active_accepts: None,
+                    decremented: AtomicBool::new(false),
+                },
+            }),
+        };
+        let pending = stream.read_frame();
+        TimeoutFuture::new(1).await;
+        stream.close();
+        assert!(JsFuture::from(pending).await.is_err());
+        let mut byte = [0];
+        let eof = peer.read(&mut byte);
+        let deadline = TimeoutFuture::new(2000);
+        futures::pin_mut!(eof, deadline);
+        match select(eof, deadline).await {
+            Either::Left((result, _)) => assert_eq!(result.unwrap(), 0),
+            Either::Right(_) => panic!("closed stream retained its memory pipe"),
+        }
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(JsFuture::from(stream.read_frame()).await.is_err());
+        // The wrapper deliberately remains alive until the end of this test.
+    }
 }

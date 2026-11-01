@@ -272,7 +272,7 @@ impl Vault {
     }
 
     pub fn committed(&mut self, generation: u64) -> Result<(), String> {
-        if generation != self.generation + 1 {
+        if self.generation.checked_add(1) != Some(generation) {
             return Err("profile commit order mismatch".into());
         }
         self.generation = generation;
@@ -381,7 +381,7 @@ impl<'a> Record<'a> {
         let aad_len = nonce_offset + 28;
         let cipher_len =
             u32::from_le_bytes(bytes[nonce_offset + 24..aad_len].try_into().unwrap()) as usize;
-        if cipher_len < 16 || aad_len + cipher_len != checksum_offset {
+        if cipher_len < 16 || aad_len.checked_add(cipher_len) != Some(checksum_offset) {
             return Err("invalid browser profile payload size".into());
         }
         Ok(Self {
@@ -437,6 +437,17 @@ mod tests {
         assert_eq!(plaintext.as_slice(), b"new private state");
         assert!(Vault::open_password("another profile", "long test passphrase", selected).is_err());
         assert!(Vault::open_password("profile", "wrong password", selected).is_err());
+        let mut oversized = second.clone();
+        let nonce_offset = 20 + u32::from_le_bytes(oversized[16..20].try_into().unwrap()) as usize;
+        oversized[nonce_offset + 24..nonce_offset + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        let checksum_at = oversized.len() - 32;
+        let checksum = Sha256::digest(&oversized[..checksum_at]);
+        oversized[checksum_at..].copy_from_slice(&checksum);
+        assert!(Record::parse(&oversized).is_err());
+        assert_eq!(
+            newest([first.as_slice(), oversized.as_slice()]).unwrap(),
+            first
+        );
         let mut tampered = second;
         tampered[40] ^= 1;
         assert!(Record::parse(&tampered).is_err());

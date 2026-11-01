@@ -59,3 +59,29 @@ export function payload(identity: PublicIdentity, name: string): WirePayload {
 }
 export function sameScope(message: StoredMessage, contactId: number | null, groupId: string | null): boolean { return message.contact_id === contactId && message.group_id === groupId; }
 export function visible(message: StoredMessage): boolean { return message.deleted_at == null && (message.expires_at == null || message.expires_at > Date.now()); }
+
+/** Remove expired plaintext, keeping a prepared ciphertext only long enough
+ * to finish its ratchet chain. Unencrypted queued letters can be discarded. */
+export function expireHistory(state: BrowserState, now = Date.now()): boolean {
+  const expired = new Set<number>();
+  for (const row of state.messages) {
+    if (row.deleted_at != null || row.expires_at === null || row.expires_at > now) continue;
+    expired.add(row.id);
+    row.body = ''; row.buttons = null; row.console = null; row.reply_to = null;
+    row.deleted_at = now; row.read = true;
+    if (row.group_id === null) {
+      const reference = `${row.author}:${row.origin}:${row.sent_at}`;
+      if (!state.tombstones.includes(reference)) state.tombstones.push(reference);
+    }
+  }
+  if (!expired.size) return false;
+  state.attachments = state.attachments.filter(file => !expired.has(file.message_id));
+  state.pinnedMessages = state.pinnedMessages.filter(id => !expired.has(id));
+  state.outbox = state.outbox.filter(item => {
+    if (item.row === null || !expired.has(item.row)) return true;
+    if (item.blob === null) return false;
+    item.payload = null; item.row = null;
+    return true;
+  });
+  return true;
+}

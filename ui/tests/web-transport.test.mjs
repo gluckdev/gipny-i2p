@@ -21,6 +21,44 @@ after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true,
 const token = 'A'.repeat(43);
 const page = (url) => new URL(url);
 
+test('browser expiry removes plaintext, attachments and pins while retaining unexpired history', () => {
+  const state = ui.newBrowserState('Alice');
+  state.messages = [
+    { id: 1, author: 'alice', origin: 42, sent_at: 100, expires_at: 999, deleted_at: null, group_id: null, body: 'expired secret', buttons: [[{text:'secret'}]], console: {kind:0}, reply_to: 7 },
+    { id: 2, author: 'bob', origin: 5, sent_at: 900, expires_at: 1001, deleted_at: null, group_id: null, body: 'still live' },
+  ];
+  state.attachments = [{ id: 11, message_id: 1, data: 'expired attachment' }, { id: 12, message_id: 2, data: 'live attachment' }];
+  state.pinnedMessages = [1, 2];
+  assert.equal(ui.expireHistory(state, 1000), true);
+  assert.equal(state.messages[0].body, '');
+  assert.equal(state.messages[0].buttons, null);
+  assert.equal(state.messages[0].console, null);
+  assert.equal(state.messages[0].reply_to, null);
+  assert.equal(state.messages[0].deleted_at, 1000);
+  assert.equal(state.messages[1].body, 'still live');
+  assert.deepEqual(state.attachments.map(file => file.id), [12]);
+  assert.deepEqual(state.pinnedMessages, [2]);
+  assert.deepEqual(state.tombstones, ['alice:42:100']);
+  assert.equal(ui.expireHistory(state, 1000), false, 'no repeated expiry transaction');
+});
+
+test('browser expiry preserves prepared ratchet ciphertext and discards unencrypted expired letters', () => {
+  const state = ui.newBrowserState('Alice');
+  state.messages = [{ id: 1, author: 'alice', origin: 1, sent_at: 1, expires_at: 10, deleted_at: null, group_id: null, body: 'expire' }];
+  const ciphertext = [1, 3, 5];
+  state.outbox = [
+    { key: 'prepared', row: 1, blob: ciphertext, payload: { body: 'expire' } },
+    { key: 'unprepared', row: 1, blob: null, payload: { body: 'expire' } },
+    { key: 'other', row: 2, blob: null, payload: { body: 'live' } },
+  ];
+  assert.equal(ui.expireHistory(state, 10), true);
+  assert.deepEqual(state.outbox.map(item => item.key), ['prepared', 'other']);
+  assert.equal(state.outbox[0].blob, ciphertext, 'exact ciphertext still completes the existing ratchet chain');
+  assert.equal(state.outbox[0].payload, null);
+  assert.equal(state.outbox[0].row, null);
+  assert.equal(state.outbox[1].payload.body, 'live');
+});
+
 test('loopback token uses current host; Pages credentials always target native loopback', () => {
   assert.equal(ui.resolveWebEndpoint(page(`http://127.0.0.1:3456/#token=${token}`)), `ws://127.0.0.1:3456/ws?token=${token}`);
   assert.equal(ui.resolveWebEndpoint(page(`http://localhost:3456/#token=${token}`)), `ws://localhost:3456/ws?token=${token}`);

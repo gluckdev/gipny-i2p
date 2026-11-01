@@ -4,7 +4,7 @@ import { isValidI2pAddress } from '../contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './storage';
 import { BrowserRelay } from './relay';
 import {
-  allocate, base64, hex, loadState, newState, payload, sameScope, unbase64, unhex, visible,
+  allocate, base64, expireHistory, hex, loadState, newState, payload, sameScope, unbase64, unhex, visible,
   type BrowserState, type Outbox, type PublicIdentity, type StoredMessage, type WireGroup, type WirePayload,
 } from './model';
 
@@ -29,6 +29,7 @@ export class BrowserBackend {
   private pumping = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private hosted: RelayInfo['hosted'] = { state: 'off' };
   private networkConfig: Record<string, string> | null = null;
   constructor(private emit: EventSink) {}
@@ -43,7 +44,7 @@ export class BrowserBackend {
   private info(): RelayInfo { return { mode: 'builtin', external: '', hosted: this.hosted, dial: { attempts: 0, last_error: this.hosted.state === 'failed' ? this.hosted.reason : null, unreachable_checks: 0, unreachable_error: null } }; }
   private relayChanged(): void { this.event({ RelayInfoChanged: { info: this.info() } }); }
 
-  private transact<T>(action: (state: BrowserState, engine: BrowserEngine) => T, mirrorCredentials = false): Promise<T> {
+  private transact<T>(action: (state: BrowserState, engine: BrowserEngine) => T, mirrorRecovery: boolean | (() => boolean) = false): Promise<T> {
     const run = async (): Promise<T> => {
       const { engine, state } = this.require();
       const storage = this.storage!;
@@ -52,10 +53,11 @@ export class BrowserBackend {
       let writing = false;
       try {
         const result = action(state, engine);
+        const expired = expireHistory(state);
         const ciphertext = engine.seal(JSON.stringify(state));
         const next = engine.pending_generation();
         writing = true;
-        await storage.persist(ciphertext, next, mirrorCredentials);
+        await storage.persist(ciphertext, next, expired || (typeof mirrorRecovery === 'function' ? mirrorRecovery() : mirrorRecovery));
         engine.commit();
         return result;
       } catch (error) {
@@ -83,8 +85,10 @@ export class BrowserBackend {
     this.generation++;
     if (this.timer) clearTimeout(this.timer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.timer = null;
     this.retryTimer = null;
+    this.sweepTimer = null;
     this.relay?.close(); this.relay = null;
     this.network?.close(); this.network?.free(); this.network = null;
     this.engine?.close(); this.engine?.free(); this.engine = null;
@@ -111,7 +115,9 @@ export class BrowserBackend {
       const state = create ? newState(text(args, 'displayName')) : loadState(engine.take_metadata());
       this.engine = engine; this.storage = storage; this.state = state;
       this.identity = JSON.parse(engine.public_info()) as PublicIdentity;
-      if (create) await this.transact(() => {});
+      const needsExpiry = (): boolean => !!this.state?.messages.some(row => row.deleted_at == null && row.expires_at !== null && row.expires_at <= Date.now());
+      if (create || needsExpiry()) await this.transact(() => {});
+      this.sweepTimer = setInterval(() => { if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
       this.boot('vault', 'done', 'Profile opened; keys remain in the WASM worker');
       const attempt = ++this.generation;
       void this.startNetwork(attempt);
@@ -174,7 +180,8 @@ export class BrowserBackend {
     this.pumping = true;
     const attempt = this.generation;
     try {
-      const eligible = this.state.outbox.filter(item => Date.now() - item.at >= Math.min(60000, 2000 * 2 ** Math.min(item.attempts, 5))).slice(0, 8);
+      const blocked = new Set(this.state.contacts.filter(contact => contact.trust === 2).map(contact => contact.sign_pk));
+      const eligible = this.state.outbox.filter(item => !blocked.has(item.peer) && Date.now() - item.at >= Math.min(60000, 2000 * 2 ** Math.min(item.attempts, 5))).slice(0, 8);
       for (const item of eligible) {
         if (attempt !== this.generation || !this.relay) break;
         const contact = this.state?.contacts.find(value => value.sign_pk === item.peer);
@@ -185,14 +192,14 @@ export class BrowserBackend {
           const bundle = !item.blob && !this.engine!.has_session(item.peer) ? await this.relay.bundle(address, item.peer) : new Uint8Array();
           await this.transact((state, engine) => {
             const current = state.outbox.find(value => value.key === item.key);
-            if (!current) return;
+            if (!current || state.contacts.some(value => value.sign_pk === item.peer && value.trust === 2)) return;
             if (!current.blob) {
               current.blob = [...engine.encrypt(contact.sign_pk, contact.dh_pk, bundle, JSON.stringify(current.payload))];
             }
             current.at = Date.now(); current.attempts++;
           });
           const current = this.state?.outbox.find(value => value.key === item.key);
-          if (!current?.blob || !this.relay || attempt !== this.generation) continue;
+          if (!current?.blob || !this.relay || attempt !== this.generation || this.state?.contacts.some(value => value.sign_pk === item.peer && value.trust === 2)) continue;
           await this.relay.deposit(address, current.peer, current.blob);
           let sent: number | null = null;
           await this.transact(state => {
@@ -218,12 +225,15 @@ export class BrowserBackend {
   }
 
   private async receive(peer: string, bytes: Uint8Array): Promise<void> {
+    if (this.state?.contacts.some(contact => contact.sign_pk === peer && contact.trust === 2)) return;
     const digestInput = new Uint8Array(32 + bytes.length); digestInput.set(unhex(peer)); digestInput.set(bytes, 32);
     const hash = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', digestInput)));
     const events: CoreEvent[] = [];
+    let erasure = false;
     await this.transact((state, engine) => {
+      if (state.contacts.some(contact => contact.sign_pk === peer && contact.trust === 2)) return;
       const duplicate = state.seen.find(value => value.hash === hash && value.peer === peer);
-      if (duplicate) { if (duplicate.ack) this.enqueue(state, peer, duplicate.ack, null); return; }
+      if (duplicate) { if (duplicate.ack && state.contacts.some(contact => contact.sign_pk === peer)) this.enqueue(state, peer, duplicate.ack, null); return; }
       let contact = state.contacts.find(value => value.sign_pk === peer);
       const decoded = JSON.parse(engine.decrypt(peer, contact?.dh_pk || '', bytes)) as { sign_pk: string; dh_pk: string; payload: WirePayload };
       if (decoded.sign_pk !== peer) throw new Error('Envelope sender mismatch');
@@ -252,10 +262,12 @@ export class BrowserBackend {
       } else if (incoming.typing !== null) {
         if (contact.request !== 'incoming') events.push({ Typing: { contact_id: contactId, group_id: groupId, sender_sign_pk: groupId ? peer : null, typing: incoming.typing } });
       } else if (incoming.dm?.kind === 1 && groupId === null) {
+        erasure = true;
         ack = this.applyDeletion(state, contact, incoming, peer, events);
       } else if (incoming.dm?.kind === 2) {
         // An authenticated deletion acknowledgement never creates chat text.
       } else if (incoming.wipe === true && groupId === null) {
+        erasure = true;
         engine.forget_peer(peer); this.removeContact(state, contact.id); events.push({ ContactWiped: { contact_id: contact.id, name: contact.name } });
       } else if (incoming.edit_of !== null) {
         const row = state.messages.find(value => !value.outgoing && value.author === peer && value.origin === incoming.edit_of && sameScope(value, contactId, groupId));
@@ -285,7 +297,7 @@ export class BrowserBackend {
       // them could replay an old X3DH initial after its OTK-free fallback.
       if (state.seen.length > 50000) throw new Error('Profile replay history limit reached');
       events.push({ PeerSeen: { contact_id: contact.id, at_ms: incoming.sent_at } });
-    });
+    }, () => erasure);
     events.forEach(event => this.event(event));
     this.schedule(0);
   }
@@ -329,6 +341,10 @@ export class BrowserBackend {
       if (member.sign_pk.length !== 32 || member.dh_pk.length !== 32 || !isValidI2pAddress(member.onion) || member.name.length > 96) throw new Error('Invalid group member');
       return { sign_pk: hex(member.sign_pk), dh_pk: hex(member.dh_pk), onion: member.onion, name: member.name, is_self: hex(member.sign_pk) === this.identity!.sign_pk };
     });
+    for (const member of members) {
+      const pinned = member.is_self ? this.identity : state.contacts.find(value => value.sign_pk === member.sign_pk);
+      if (pinned && pinned.dh_pk !== member.dh_pk) throw new Error('Group member identity changed');
+    }
     if (new Set(members.map(member => member.sign_pk)).size !== members.length || !members.some(member => member.is_self) || !members.some(member => member.sign_pk === peer)) throw new Error('Group sender is not a member');
     let group = state.groups.find(value => value.id === id);
     if (group && !group.members.some(member => member.sign_pk === peer)) throw new Error('Uninvited group sender');
@@ -359,6 +375,7 @@ export class BrowserBackend {
 
   private send(state: BrowserState, args: Args, group: boolean): number {
     const contact = group ? null : this.getContact(state, number(args, 'contactId'));
+    if (contact?.trust === 2) throw new Error('Contact is blocked');
     if (contact?.request === 'incoming') throw new Error('Accept the contact request first');
     const groupId = group ? text(args, 'groupId') : null;
     const body = text(args, 'body');
@@ -389,7 +406,9 @@ export class BrowserBackend {
       if (!recipient) recipient = this.addContact(state, { signPk: member.sign_pk, dhPk: member.dh_pk, onion: member.onion, name: member.name }, 'none');
       return recipient;
     }) : [contact!];
-    for (const peer of peers) { this.enqueue(state, peer.sign_pk, structuredClone(letter), row.id); peer.last_message_at = row.sent_at; }
+    const recipients = peers.filter(peer => peer.trust !== 2);
+    if (!recipients.length) throw new Error('No active recipients');
+    for (const peer of recipients) { this.enqueue(state, peer.sign_pk, structuredClone(letter), row.id); peer.last_message_at = row.sent_at; }
     if (groupId) state.groups.find(value => value.id === groupId)!.last_message_at = row.sent_at;
     return row.id;
   }
@@ -448,8 +467,8 @@ export class BrowserBackend {
       return rows.slice(-Math.min(500, typeof args.limit === 'number' ? Math.max(1, args.limit) : 100)).reverse();
     }
     if (command === 'unread_count' || command === 'group_unread_count') return state.messages.filter(value => !value.read && visible(value) && sameScope(value, command === 'unread_count' ? number(args, 'contactId') : null, command === 'group_unread_count' ? text(args, 'groupId') : null)).length;
-    if (command === 'list_attachments') return state.attachments.filter(value => value.message_id === args.messageId).map(({ data: _, ...attachment }) => attachment);
-    if (command === 'load_attachment') { const attachment = state.attachments.find(value => value.id === args.attachmentId); if (!attachment) throw new Error('Attachment not found'); return attachment.data; }
+    if (command === 'list_attachments') return state.messages.some(row => row.id === args.messageId && visible(row)) ? state.attachments.filter(value => value.message_id === args.messageId).map(({ data: _, ...attachment }) => attachment) : [];
+    if (command === 'load_attachment') { const attachment = state.attachments.find(value => value.id === args.attachmentId); if (!attachment || !state.messages.some(row => row.id === attachment.message_id && visible(row))) throw new Error('Attachment not found'); return attachment.data; }
     if (command === 'files_progress') return [];
     if (command === 'list_pinned_contact' || command === 'list_pinned_group') return state.messages.filter(value => state.pinnedMessages.includes(value.id) && visible(value) && sameScope(value, command === 'list_pinned_contact' ? number(args, 'contactId') : null, command === 'list_pinned_group' ? text(args, 'groupId') : null));
     if (command === 'search_messages') {
@@ -461,8 +480,10 @@ export class BrowserBackend {
       return state.attachments.filter(value => messages.some(message => message.id === value.message_id)).slice(-100).map(({ data: _, ...attachment }) => ({ ...attachment, sent_at: messages.find(message => message.id === attachment.message_id)!.sent_at }));
     }
     if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).reverse().findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
-    const result = await this.transact((next, core) => this.mutate(command, args, next, core), command === 'change_passphrase');
+    const replaceRecovery = ['change_passphrase', 'delete_message', 'delete_contact', 'decline_contact_request', 'delete_group', 'clear_dm_chat', 'clear_message_history'].includes(command);
+    const result = await this.transact((next, core) => this.mutate(command, args, next, core), replaceRecovery);
     if (command === 'add_contact' && typeof result === 'number') this.event({ ContactAdded: { contact_id: result } });
+    if (command === 'update_contact' || command === 'set_contact_bot' || command === 'accept_contact_request') this.event({ ContactUpdated: { contact_id: number(args, 'id') } });
     if (command === 'create_group' && typeof result === 'string') this.event({ GroupUpdated: { group_id: result } });
     if (command === 'add_group_member') this.event({ GroupUpdated: { group_id: text(args, 'groupId') } });
     this.schedule(0);
@@ -476,7 +497,8 @@ export class BrowserBackend {
     if (command === 'set_ui_data') { const json = text(args, 'json'); if (json.length > 256 * 1024) throw new Error('UI preference size limit'); JSON.parse(json); state.ui[text(args, 'key')] = json; return null; }
     if (command === 'set_muted') { const key = text(args, 'targetKey'); state.muted = state.muted.filter(value => value !== key); if (args.muted === true) state.muted.push(key); return null; }
     if (command === 'add_contact') return this.addContact(state, args).id;
-    if (command === 'update_contact') { const contact = this.getContact(state, number(args, 'id')); contact.name = text(args, 'name').slice(0, 96); contact.trust = number(args, 'trust'); return null; }
+    if (command === 'update_contact') { const contact = this.getContact(state, number(args, 'id')); const trust = number(args, 'trust'); if (trust > 2) throw new Error('Invalid contact trust'); contact.name = text(args, 'name').slice(0, 96); contact.trust = trust; return null; }
+    if (command === 'set_contact_bot') { this.getContact(state, number(args, 'id')).is_bot = args.isBot === true; return null; }
     if (command === 'accept_contact_request') { this.getContact(state, number(args, 'id')).request = 'none'; return null; }
     if (command === 'decline_contact_request' || command === 'delete_contact') {
       if (args.forBoth) throw new Error('Browser contact removal is local; delete messages individually to notify the peer');
@@ -484,6 +506,7 @@ export class BrowserBackend {
     }
     if (command === 'reset_contact_session') {
       const contact = this.getContact(state, number(args, 'id'));
+      state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk || value.row !== null || value.payload !== null);
       const pending = state.outbox.filter(value => value.peer === contact.sign_pk);
       if (pending.some(value => !value.payload)) throw new Error('An older queued letter cannot be re-encrypted');
       for (const item of pending) { item.key = crypto.randomUUID(); item.blob = null; item.deposited = false; item.at = 0; item.attempts = 0; }
@@ -562,7 +585,7 @@ export class BrowserBackend {
     if (command === 'send_typing') {
       if (typeof args.contactId !== 'number') return null;
       const contact = this.getContact(state, args.contactId);
-      if (contact.request !== 'none') return null;
+      if (contact.request !== 'none' || contact.trust === 2) return null;
       const letter = payload(this.identity!, state.displayName); letter.typing = args.typing === true;
       this.enqueue(state, contact.sign_pk, letter, null); return null;
     }
