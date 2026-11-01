@@ -138,4 +138,3 @@ pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
 /// in Settings (SETTING_RELAY_ONION), and contact cards plus the DHT seeds baked
 /// in from GIPNY_DHT_SEEDS at release time tell clients where to find each other.
 pub const DEFAULT_RELAY: &str = "";
-

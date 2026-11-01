@@ -797,7 +797,7 @@ pub fn pack_payload(pt: &[u8], padded: bool) -> Vec<u8> {
 pub fn unpad_payload(padded: &[u8]) -> Option<Vec<u8>> {
     if padded.len() < 4 { return None; }
     let len = u32::from_be_bytes(padded[0..4].try_into().ok()?) as usize;
-    if 4 + len > padded.len() { return None; }
-    Some(padded[4..4 + len].to_vec())
+    let end = 4usize.checked_add(len)?;
+    if end > padded.len() { return None; }
+    Some(padded[4..end].to_vec())
 }
-

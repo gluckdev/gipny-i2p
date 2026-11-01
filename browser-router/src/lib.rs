@@ -10,6 +10,8 @@ pub mod router;
 mod socket;
 mod tasks;
 mod unsupported;
+#[cfg(target_arch = "wasm32")]
+mod vault;
 
 use std::{
     future::Future,
