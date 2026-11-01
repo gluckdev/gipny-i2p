@@ -1,10 +1,7 @@
 //! Test-only i2pd peer. Built from the repository's pinned C++ sources in CI.
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    use std::ffi::{c_char, c_int, CString};
-    extern "C" {
-        fn gipny_browser_fixture_start(argc: c_int, argv: *const *const c_char) -> c_int;
-    }
+    use std::ffi::CString;
     let directory = std::env::args().nth(1).expect("native-peer <datadir>");
     std::fs::create_dir_all(&directory).expect("datadir");
     i2p_embed::write_certificates(&std::path::Path::new(&directory).join("certificates"))
@@ -24,12 +21,8 @@ fn main() {
     .into_iter()
     .map(|value: String| CString::new(value).unwrap())
     .collect();
-    let pointers: Vec<_> = arguments.iter().map(|value| value.as_ptr()).collect();
-    // SAFETY: argument storage remains alive throughout init/start; the C++
-    // adapter copies it and sets the loopback policy before spawning threads.
-    assert_eq!(
-        unsafe { gipny_browser_fixture_start(pointers.len() as c_int, pointers.as_ptr()) },
-        1,
+    assert!(
+        gipny_browser_router::native_fixture::start(&arguments),
         "native i2pd fixture init"
     );
     println!("READY");

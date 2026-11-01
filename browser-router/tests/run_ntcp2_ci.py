@@ -37,7 +37,8 @@ def main():
     peer = subprocess.Popen([str(root / "target/release/native-peer"), str(data)], stdout=peer_log, stderr=subprocess.STDOUT)
     forwarder = None
     try:
-        wait_port(19720, 30, peer)
+        # InitI2P may perform synchronous verified reseed before listening.
+        wait_port(19720, 180, peer)
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             if peer.poll() is not None:
