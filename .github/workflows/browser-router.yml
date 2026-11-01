@@ -1,0 +1,168 @@
+name: Browser router WASM
+
+on:
+  push:
+    paths: ['browser-router/**', '.github/workflows/browser-router.yml']
+  pull_request:
+    paths: ['browser-router/**', '.github/workflows/browser-router.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-router-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  wasm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: browser-router
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare pinned emissary and reviewed client-only patch
+        run: python3 scripts/prepare_emissary.py
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: browser-router
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format
+        run: cargo fmt --check
+      - name: Compile upstream core and browser runtime
+        run: |
+          cargo build --locked --target wasm32-unknown-unknown -p emissary-core
+          cargo build --locked --release --target wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: Install WebSocket fixture
+        run: python3 -m pip install websockets==15.0.1
+      - name: Forwarder boundary tests
+        run: python3 -m unittest discover -s forwarder -p 'test_*.py' -v
+      - name: Execute WASM tests in headless Chrome
+        env:
+          WASM_BINDGEN_TEST_TIMEOUT: '60'
+        run: |
+          python3 tests/echo_server.py > "$RUNNER_TEMP/browser-router-echo.log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          python3 - <<'PY'
+          import socket, time
+          for attempt in range(100):
+              try:
+                  with socket.create_connection(('127.0.0.1', 18765), timeout=1):
+                      break
+              except OSError:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit('WebSocket fixture did not start')
+          PY
+          wasm-pack test --headless --chrome --locked
+      - name: Record artifact size and source
+        run: |
+          python3 scripts/prepare_emissary.py
+          wc -c target/wasm32-unknown-unknown/release/gipny_browser_router.wasm | tee wasm-size.txt
+          sha256sum Cargo.lock target/wasm32-unknown-unknown/release/gipny_browser_router.wasm > SHA256SUMS.txt
+          printf '%s\n' "$GITHUB_SHA" > source-commit.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: browser-router-wasm
+          path: |
+            browser-router/target/wasm32-unknown-unknown/release/gipny_browser_router.wasm
+            browser-router/wasm-size.txt
+            browser-router/SHA256SUMS.txt
+            browser-router/source-commit.txt
+            browser-router/LICENSE-emissary
+            browser-router/emissary-provenance.json
+          if-no-files-found: error
+          retention-days: 5
+
+  ntcp2:
+    name: Browser NTCP2 and exploratory tunnels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - name: Prepare pinned emissary and reviewed client-only patch
+        run: python3 browser-router/scripts/prepare_emissary.py
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Pinned i2pd sources and native build dependencies
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          .github/scripts/assert-i2pd-pin.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: Verified reseed certificates
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: browser-router
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build native i2pd peer and RouterInfo verifier from source
+        working-directory: browser-router
+        run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb --bin collect-netdb
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: Install forwarder dependency
+        run: python3 -m pip install websockets==15.0.1
+      - name: Real NTCP2 handshakes from WASM in Chrome
+        run: python3 browser-router/tests/run_ntcp2_ci.py
+      - name: Build loadable browser module from source
+        working-directory: browser-router
+        run: wasm-pack build --target web --release --locked
+      - name: Cold browser bootstrap from a downloaded netDb snapshot
+        run: python3 browser-router/tests/run_bootstrap_ci.py
+      - name: Verify source provenance after tests
+        run: python3 browser-router/scripts/prepare_emissary.py
+      - name: Keep public protocol evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-ntcp2-evidence
+          path: |
+            ${{ runner.temp }}/browser-ntcp2/wasm-ntcp2.log
+            ${{ runner.temp }}/browser-ntcp2/forwarder.log
+            ${{ runner.temp }}/browser-ntcp2/native-peer-stdout.log
+            ${{ runner.temp }}/browser-ntcp2/native-peer/i2pd.log
+            ${{ runner.temp }}/browser-ntcp2/candidates.tsv
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Keep bootstrap and exploratory evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-bootstrap-evidence
+          path: |
+            ${{ runner.temp }}/browser-bootstrap/receipt-*.json
+            ${{ runner.temp }}/browser-bootstrap/forwarder-*.log
+            ${{ runner.temp }}/browser-bootstrap/chrome-*.log
+            ${{ runner.temp }}/browser-bootstrap/snapshot-source.log
+            ${{ runner.temp }}/browser-bootstrap/candidates.tsv
+            ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz
+            ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz.json
+            browser-router/emissary-provenance.json
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Keep loadable browser module
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-bootstrap-module
+          path: |
+            browser-router/pkg/*.js
+            browser-router/pkg/*.wasm
+            browser-router/pkg/package.json
+            browser-router/tests/bootstrap-page/
+            browser-router/LICENSE-emissary
+            browser-router/emissary-provenance.json
+          if-no-files-found: error
+          retention-days: 5

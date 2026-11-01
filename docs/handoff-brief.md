@@ -1175,7 +1175,8 @@ across 1 directory with 4 updates» (ветка `dependabot/cargo/rust-deps-0f21
 `@dependabot rebase` ждать до 15 минут, прежде чем перебазировать руками.
 CI #141 на `540de48` прошёл целиком (security fast, build, i2p-embed, OpenWrt,
 CodeQL); влит squash-слиянием → `82f8be9`, ветку dependabot удалил сам.
-Push-workflows на `82f8be9` на момент записи шли.
+Push-workflows на `82f8be9` прошли все: `build` (`41258911374`), `security
+fast` (`41258911364`), `i2p-embed` (`41258911367`), `codeql` (`41258911373`).
 
 Ветки. На GitHub удалены ветки влитых PR — #121, #125, #127, #131, #132,
 #133, #135, #136, #137, #138, #140 (их коммиты в `main` squash-ом), закрытых
@@ -1187,3 +1188,226 @@ PR — #129 (заменён #133), #119 и #120 (вошли в `main` через
 `gipny-wt/reports-20261031/`. Итог: на GitHub и локально одна ветка — `main`
 (2026-11-01 ~01:00 UTC; открытых PR нет). Эта запись — последний docs-PR
 той ночи, его ветка удаляется после слияния.
+
+ОБНОВЛЕНИЕ 2026-11-01: БРАУЗЕРНЫЙ RUNTIME И WASM CI
+
+Продолжена сессия OpenCode `ses_e6b30dfb4ffe5J47oehDd2afIS`, начатая после
+исследования Claude. Указания владельца сохранены: работать самостоятельно,
+Claude не вызывать; все сборки и исполнение тестов — только GitHub Actions.
+Отчёт `reports/I2P клиент в браузере.md` и десять заметок из
+`research_notes/I2P клиент в браузере/` сохранены в ветке вместе с планом
+`docs/plans/2026-11-01-browser-router-wasm.md`.
+
+Реализация — отдельный workspace `browser-router/` в этом репозитории,
+ветка `feat/browser-router-runtime`, draft PR #143. Зависимость emissary-core
+закреплена на публичном SHA `5e696a90276c316ebc5ec3a1d0815b02f17516ef`,
+upstream не правится. В соседнем `/home/artamonov/projects/emissary` остался
+старый локальный черновик прежней сессии без Cargo.toml; он не используется.
+
+Runtime использует `spawn_local`, `web-time`, `getrandom/wasm_js`, Rust gzip,
+ограниченные каналы и браузерный WebSocket. JS-объекты остаются у локальных
+задач; исходные `Send`/`Sync` обеспечены каналами без `unsafe impl`. TCP listener
+и UDP сразу отказывают, метрики пока пустые. Настоящего форвардера пока нет:
+Python fixture отвечает заданными байтами и не соединяется с сетью I2P.
+
+GitHub workflow `Browser router WASM`, коммит `d1eccd7`: pull_request run
+`41269666409` и push run `41269662893` прошли — upstream core и release WASM
+с `--locked`, **9/9 тестов в headless Chrome**. В первом прогоне `7e99adc`
+7/8 тестов прошли, тест чистого закрытия нашёл гонку `flush`/close; исправлено
+с проверками неотправленных команд и браузерного буфера. Девятый тест проверяет
+насыщение исходящей очереди и целостность большой записи.
+
+Артефакт `browser-router-wasm` (`13068294053`) содержит raw WASM, размер,
+SHA256 и исходный commit. Размер probe — 649 825 байт, **не размер полного
+I2P-роутера**: экспорт удерживает часы/RNG/gzip; WebSocket исполняется в
+тестовом WASM. Браузерный runtime теперь собирается и исполняется, но
+`Router<BrowserRuntime>`, живое NTCP2-рукопожатие, exploratory-туннель,
+проверка netDb, пиковая память, запуск на телефоне, OPFS/passkey и PWA lifecycle
+ещё не подтверждены. Следующий шаг — защищённый байтовый форвардер и NTCP2.
+Слияние PR #143 и публикация не выполнялись. Локальные изменения подмодуля
+`third_party/i2pd-android`, оставшиеся до продолжения, не включены в PR.
+
+ПРОДОЛЖЕНИЕ 2026-11-01: ЖИВОЕ NTCP2 ИЗ БРАУЗЕРА
+
+По указанию владельца продолжена проверка реального NTCP2. В тот же draft
+PR #143 добавлены `browser-router/src/ntcp2.rs` и байтовый форвардер
+`browser-router/forwarder/server.py`. Probe использует публичные crypto API
+закреплённого emissary (Noise/AES/ChaChaPoly/SipHash), проверяет подпись,
+netId=2 и свежесть RI до 36 часов, выполняет классический X25519 handshake
+и принимает успех после аутентифицированного data-phase ответа; Termination
+от пэра означает отказ. После успеха probe закрывает сессию нормально.
+
+Форвардер: точные Host/Origin, capability в WS subprotocol (не в URL),
+allowlist IP:port из проверенных подписей netDb, запрет private/reserved IP
+с явным исключением loopback fixture, TTL allowlist 10 минут, лимиты
+соединений/байтов/времени/очередей; non-loopback listener требует TLS.
+Capability одноразовый для CI; он и private keys не сохраняются в артефактах.
+Native fixture компилируется из нашего pinned i2pd
+`6b214f74d2c1b9d892cda29119f0942097cbfd85`; test-only C++ adapter разрешает
+loopback до запуска transport threads. Его FFI entrypoint находится в
+библиотеке browser-router, чтобы Cargo включал её native archive в бинарь.
+CLI `nat`/`ipv6` у i2pd — bool_switch: `--nat=true`/`--ipv6=false` не
+принимаются; IPv6 выключен по умолчанию. InitI2P делает synchronous reseed,
+поэтому ожидание тестового порта допускает 180 секунд с проверкой живости PID.
+
+Подтверждено на `b912f01`: GitHub run `41272794574` прошёл целиком:
+**9/9 Chrome runtime, 5/5 Python forwarder, 3/3 Chrome NTCP2 tests**.
+Проверены 13 подписанных RI: fixture и 12 публичных кандидатов. Native i2pd:
+191 мс, 687 аутентифицированных байт, 3 блока. Публичный пэр
+`75QXU02JP4g9ySNMZEBqee9AGt-c8a0XUMfcpT8jaNk=` (`83.142.167.185:31442`):
+491 мс с первой попытки, 1224 аутентифицированных байта, 3 блока. Это время
+одного handshake после загрузки WASM и проверки RI, не bootstrap приложения.
+Raw release WASM с экспортом `ntcp2_probe` — 1 451 904 байта. Артефакты:
+`browser-ntcp2-evidence` (`13069873728`) и `browser-router-wasm` (`13070052907`),
+последний также содержит лицензию emissary. Прежний размер 649 825 байт
+относится к checkpoint `d1eccd7` без NTCP2-probe.
+
+Полный `Router<BrowserRuntime>` ещё не запускается: в upstream
+`Ntcp2Transport::initialize` требует TCP listener, а `classify`
+и `connect` проверяют его наличие даже для outbound. Поэтому proof сейчас
+отдельный NTCP2 initiator на public crypto API, без фиктивного listener и
+без форка upstream. Следующее — client-only NTCP2 в emissary, exploratory
+pool, затем netDb/bootstrap/память и телефон. В PR обновлены README и план;
+слияние/публикация не выполнялись.
+
+ПРОДОЛЖЕНИЕ 2026-11-01: ПОЛНЫЙ ROUTER В CHROME/WASM И EXPLORATORY
+
+По следующему «go» владельца в том же draft PR #143 запущен настоящий
+`Router<BrowserRuntime>`. Коммит `d18630c`,
+[GitHub run 41277188521](https://github.com/gluckdev/gipny-i2p/actions/runs/41277188521)
+прошёл целиком: core/release WASM с `--locked`, **3 Chrome unit + 10 Chrome
+runtime + 6 Python forwarder + 3 Chrome NTCP2 + 1 Chrome exploratory PASS**.
+Все сборки и исполнение тестов — только GitHub Actions.
+
+Listener-блокер устранён отслеживаемым
+`browser-router/patches/client-only-ntcp2.patch` поверх emissary
+`5e696a90276c316ebc5ec3a1d0815b02f17516ef`. Подготовка исходников —
+`browser-router/scripts/prepare_emissary.py`, manifest — `emissary-source.json`,
+generated checkout — `browser-router/upstream/emissary/`. Скрипт проверяет
+официальный remote, точный HEAD, отсутствие неизвестных файлов и байтовое
+совпадение всего diff с патчем; provenance сохраняется в WASM-артефакте.
+SHA256 патча и diff:
+`4cb5f8fe8971d001905b7b6d029dd0b1a21c5e1b7b0cb7ab69c7835d0fe49b88`.
+Перед Cargo в CI и Rust CodeQL нужно выполнять этот скрипт. Старый соседний
+черновик emissary по-прежнему не используется.
+
+`Runtime::TCP_LISTENER_SUPPORTED` по умолчанию true; браузер задаёт false.
+NTCP2 использует разрешённые IP-семейства независимо от наличия listener,
+локальный RI содержит только ключ без входящего socket/IV, опубликованных
+портов нет. Попытка публикации возвращает ошибку. Криптография и `Send`/`Sync`
+не менялись. Runtime теперь хранит метрики, пустой JoinSet остаётся открытым
+и пробуждает владельца при новых задачах; task scope отменяет дочерние задачи
+при завершении/таймауте и запрещает параллельные router scopes на одном thread.
+Эти свойства проверены регрессиями, включая отказ входящей публикации.
+
+Live exploratory использовал 61 публичный seed RI из свежего verified
+reseed/netDb с повторной проверкой подписей в WASM. Дефолтный pool — 3 inbound
+и 3 outbound по 2 хопа; без transit, SAM/I2CP, SSU2, local IPs и insecure hop
+selection. Receipt `EXPLORATORY_PASS`: router `uo63A6bs`, 10 соединений,
+3 входящих и 3 исходящих туннеля, 7 успешных tunnel roundtrip. Наличие хотя бы
+одного пути в каждую сторону сохранялось 40 секунд; после 30-секундной границы
+обязательно получен ещё один roundtrip. Готовность — 81 298 мс, завершение —
+121 313 мс. Отсчёт после первичной проверки seed RI, перед RouterBuilder:
+загрузка страницы/WASM и получение netDb в него не входят. Линейная память
+в конце — 5 111 808 байт (4,875 МиБ), без JS heap и без измерения пика.
+
+Raw release WASM полного роутера — 3 403 781 байт. Артефакты:
+`browser-router-wasm` (`13070529979`, ZIP 987 085 байт вместе с метаданными),
+`browser-exploratory-evidence` (`13071837628`) и `browser-ntcp2-evidence`
+(`13071847528`). Повторные NTCP2 handshake: native 237 мс, публичный 575 мс
+с первой попытки, аутентифицированные data-phase ответы. Форвардер для полного
+роутера ограничен 24 соединениями / 600 секундами / 32 МиБ на соединение,
+idle 120 секунд; обычные probe defaults остаются 8 / 60 / 8 МиБ.
+Private keys/capability не сохраняются.
+
+Этапы 1 и 2 плана подтверждены. Следующее — доставка снапшота netDb прямо
+в браузер, распаковка/проверка подписей, замеры полного bootstrap и пика
+памяти, затем телефон. Размер raw WASM выше исходного ориентира ~1,9 МБ,
+bootstrap за секунды ещё не подтверждён. Messenger/client pool, обмен двух
+браузеров, OPFS/passkey и PWA lifecycle остаются отдельными этапами.
+PR #143 остаётся draft; слияние/публикация не выполнялись. Исходные локальные
+изменения `third_party/i2pd-android` не затронуты.
+
+ПРОДОЛЖЕНИЕ 2026-11-01: HTTP NETDB И ПОЛНЫЙ ХОЛОДНЫЙ BOOTSTRAP
+
+По «делай» владельца добавлены `browser-router/src/bootstrap.rs`,
+`collect-netdb`, упаковка snapshot в `prepare-netdb`, тестовая страница
+`tests/bootstrap-page/` и CI orchestration `tests/run_bootstrap_ci.py`.
+Коммит `6b37dc2`, [run 41281997598](https://github.com/gluckdev/gipny-i2p/actions/runs/41281997598)
+прошёл целиком: core/release WASM build, **3 unit + 10 runtime + 5 snapshot
+и 6 forwarder + 3 NTCP2 tests**, затем **2 холодных live bootstrap PASS**.
+Все сборки и исполнение тестов — только GitHub Actions.
+CodeQL на том же SHA прошёл целиком (`41281997545`).
+
+Важное уточнение предыдущей записи: повтор на документационном `953014f`
+(`41278342212`) прошёл runtime/NTCP2, но exploratory завершился по таймауту:
+74 seed RI, 3 построенных туннеля, 0 успешных roundtrip. CodeQL на том SHA
+прошёл (`41278342141`). Положительный `d18630c` остаётся действительным
+доказательством возможности; устойчивость времени bootstrap не заявляется.
+
+Новый cold bootstrap загружает JS/WASM и tar.gz netDb по HTTP с пустым Chrome
+profile/без кеша; seed RI не встроены в WASM этого сценария. Snapshot
+производит отдельный pinned i2pd с verified reseed. В браузере fetch
+ограничен 4 МиБ/45 секундами, redirect/credentials/referrer отключены;
+после SHA256 gzip ограничен 16 МиБ, tar — 4096 entries, принятый набор —
+2048 RI по 16 КиБ. Без извлечения на диск, links/parent paths отклоняются.
+Подписи/свежесть/netId/public IPv4 classic NTCP2 проверяются независимо
+от digest; дубликаты удаляются, между партиями проверок уступается event loop.
+
+Подтверждённый snapshot: 303 RI, 168 043 байта gzip / 542 208 байт tar,
+SHA256 `c3e13e03fb84b8cc53934c356814238e867b4a708762cfcde1b9e91b1fad08d9`.
+Chrome `156.0.8078.47`. Обычный холодный профиль: модуль готов за 67,8 мс,
+архив скачан за 4 мс, digest 2 мс, распаковка 5 мс, tar/проверка RI с
+уступкой event loop 87 мс. Готовые оба направления с roundtrip за
+197 328 мс от навигации, завершение за 229 338 мс: 12 соединений,
+2 inbound / 3 outbound, 5 roundtrip, 32 секунды удержания. Линейная WASM
+memory максимум 5 898 240 байт, sampled JS heap максимум 2 116 520 байт.
+
+Второй профиль — desktop Chrome с CPU ×4, viewport 390×844 и HTTP
+200 КиБ/с download / 100 КиБ/с upload / latency 80 мс. Модуль готов за
+10 369,6 мс, netDb скачан за 906 мс, digest 10 мс, распаковка 16 мс,
+tar/проверка 255 мс. Готовность за 107 202 мс от навигации, завершение
+за 141 239 мс: 17 соединений, 2 inbound / 3 outbound, 5 roundtrip,
+34 секунды удержания. WASM memory максимум 6 619 136 байт,
+sampled JS heap максимум 2 338 692 байта. Интервал 100-мс heartbeat доходил
+до 155,9 / 544,8 мс соответственно. JS heap семплируется CDP примерно
+раз в секунду, линейная память — её ёмкость, не RSS процесса/устройства.
+Эмуляция не проверяет физический телефон или Android/Safari engine.
+
+Подгружаемый wasm-bindgen модуль: 2 012 452 байта WASM + 29 579 байт JS.
+Raw release WASM до обработки — 3 603 680 байт. Артефакты:
+`browser-bootstrap-evidence` (`13074456534`: snapshot/manifest/receipts),
+`browser-bootstrap-module` (`13074327101`, ZIP 776 196 байт),
+`browser-router-wasm` (`13073487160`), `browser-ntcp2-evidence` (`13074067958`).
+HTTP-сжатие не включалось; ZIP не означает размер HTTP-загрузки.
+Source pin/patch SHA256 emissary не менялись. Private keys, capability и
+Chrome profile не сохраняются. NTCP2 повторно подтверждён: native 80 мс,
+public 349 мс со второй попытки с аутентифицированными data-phase ответами.
+
+Основное время занимает построение путей в живой I2P. Два запуска не дают
+основания заключать, что замедленный CPU ускоряет сеть; цель «секунды до
+туннеля на среднем телефоне» не достигнута. Следующее — реальный мобильный
+браузер и исследование времени построения путей, затем client/messenger
+pool, обмен двух браузеров, OPFS/passkey и PWA lifecycle. Доступ к
+физическому устройству не предоставлен; поиск BrowserStack через
+plugin-management не нашёл интеграции. Публичный хостинг не разворачивался,
+PR #143 остаётся draft, исходный dirty Android submodule не затронут.
+
+ПОДГОТОВКА СЛИЯНИЯ #143, 2026-11-01: ИТОГОВАЯ CODEQL-АННОТАЦИЯ
+
+При разрешённом владельцем слиянии обнаружено уточнение к статусам выше:
+успех джоб workflow CodeQL на `6b37dc2`/`646ad94` не означал отсутствие
+security findings. Отдельный итоговый check `CodeQL` содержал critical
+alert #250 `rust/hard-coded-cryptographic-value` на nonce=1 в NTCP2-probe.
+При дальнейших проверках смотреть не только conclusion workflow, но и
+PR statusCheckRollup / annotations / code-scanning alerts.
+
+NTCP2 требует nonce=0 для SessionCreated и следующий nonce=1 для
+SessionConfirmed part 1 под тем же session key; это подтверждено
+[спецификацией](https://i2p.net/en/docs/specs/ntcp2/#encryption-for-for-handshake-message-3-part-1-using-message-2-kdf)
+и pinned emissary initiator. Вместо восстановления cipher с числовым
+nonce probe теперь сохраняет один ChaChaPoly CipherState от расшифровки
+SessionCreated до шифрования SessionConfirmed part 1. Счётчик продвигает
+сама реализация cipher. Правила CodeQL не отключаются, alert вручную
+не dismiss'ится. До слияния требуется повторный GitHub CI с native/public
+NTCP2 и проверка итоговой аннотации CodeQL на новом head.

@@ -32,6 +32,9 @@ jobs:
         language: [ actions, javascript-typescript, rust ]
     steps:
       - uses: actions/checkout@v7
+      - name: Prepare browser router dependency source
+        if: matrix.language == 'rust'
+        run: python3 browser-router/scripts/prepare_emissary.py
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}

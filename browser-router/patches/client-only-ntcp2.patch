@@ -1,0 +1,214 @@
+diff --git a/emissary-core/Cargo.toml b/emissary-core/Cargo.toml
+index b9a3cf3..2ccc0a9 100644
+--- a/emissary-core/Cargo.toml
++++ b/emissary-core/Cargo.toml
+@@ -1,4 +1,5 @@
+ [package]
++workspace = ".."
+ name = "emissary-core"
+ version = "0.4.0"
+ edition.workspace = true
+diff --git a/emissary-core/src/primitives/router_address.rs b/emissary-core/src/primitives/router_address.rs
+index 3d3bb5e..e69eced 100644
+--- a/emissary-core/src/primitives/router_address.rs
++++ b/emissary-core/src/primitives/router_address.rs
+@@ -197,6 +197,15 @@ impl MlKemPreference {
+ impl RouterAddress {
+     /// Create new unpublished NTCP2 [`RouterAddress`].
+     pub fn new_unpublished_ntcp2(key: [u8; 32], address: SocketAddr) -> Self {
++        let mut result = Self::new_outbound_ntcp2(key);
++        if let Self::Ntcp2 { socket_address, .. } = &mut result {
++            *socket_address = Some(address);
++        }
++        result
++    }
++
++    /// Create an unpublished NTCP2 address without any local listening socket.
++    pub fn new_outbound_ntcp2(key: [u8; 32]) -> Self {
+         let static_key = StaticPrivateKey::from_bytes(key).public();
+         let key = base64_encode(&static_key);
+ 
+@@ -209,7 +218,7 @@ impl RouterAddress {
+             options,
+             static_key,
+             iv: None,
+-            socket_address: Some(address),
++            socket_address: None,
+         }
+     }
+ 
+diff --git a/emissary-core/src/router/mod.rs b/emissary-core/src/router/mod.rs
+index 322456b..2f48a06 100644
+--- a/emissary-core/src/router/mod.rs
++++ b/emissary-core/src/router/mod.rs
+@@ -410,7 +410,7 @@ impl<R: Runtime> Router<R> {
+         }
+ 
+         if let Some(context) = ntcp2_context {
+-            address_info.ntcp2_port = Some(context.port());
++            address_info.ntcp2_port = (context.port() != 0).then(|| context.port());
+             transport_manager_builder.register_ntcp2(context);
+         }
+ 
+diff --git a/emissary-core/src/runtime/mod.rs b/emissary-core/src/runtime/mod.rs
+index 488d668..417c1a7 100644
+--- a/emissary-core/src/runtime/mod.rs
++++ b/emissary-core/src/runtime/mod.rs
+@@ -170,6 +170,9 @@ pub enum MetricType {
+ }
+ 
+ pub trait Runtime: Clone + Unpin + Send + 'static {
++    /// Whether TCP listeners are supported; outbound streams may still work.
++    const TCP_LISTENER_SUPPORTED: bool = true;
++
+     type TcpStream: TcpStream;
+     type UdpSocket: UdpSocket;
+     type TcpListener: TcpListener<Self::TcpStream>;
+diff --git a/emissary-core/src/transport/ntcp2/mod.rs b/emissary-core/src/transport/ntcp2/mod.rs
+index 544a0ad..dfb1664 100644
+--- a/emissary-core/src/transport/ntcp2/mod.rs
++++ b/emissary-core/src/transport/ntcp2/mod.rs
+@@ -91,14 +91,14 @@ impl<R: Runtime> Ntcp2Context<R> {
+             .as_ref()
+             .or(self.ipv6_socket_address.as_ref())
+             .map(SocketAddr::port)
+-            .expect("socket address to exist")
++            .unwrap_or(0)
+     }
+ 
+     /// Classify `Ntcp2Listener` into zero or more `TransportKind`s.
+     pub fn classify(&self) -> impl Iterator<Item = TransportKind> {
+         vec![
+-            self.ipv4_listener.is_some().then_some(TransportKind::Ntcp2V4),
+-            self.ipv6_listener.is_some().then_some(TransportKind::Ntcp2V6),
++            self.config.ipv4.then_some(TransportKind::Ntcp2V4),
++            self.config.ipv6.then_some(TransportKind::Ntcp2V6),
+         ]
+         .into_iter()
+         .flatten()
+@@ -112,6 +112,10 @@ impl<R: Runtime> Ntcp2Context<R> {
+ 
+ /// NTCP2 transport.
+ pub struct Ntcp2Transport<R: Runtime> {
++    /// Outbound address families are independent of incoming listeners.
++    ipv4_enabled: bool,
++    ipv6_enabled: bool,
++
+     /// IPv4 connection listener.
+     ipv4_listener: Option<Ntcp2Listener<R>>,
+ 
+@@ -185,6 +189,8 @@ impl<R: Runtime> Ntcp2Transport<R> {
+         );
+ 
+         Ntcp2Transport {
++            ipv4_enabled: config.ipv4,
++            ipv6_enabled: config.ipv6,
+             ipv4_listener: ipv4_listener.map(|listener| Ntcp2Listener::new(listener, allow_local)),
+             ipv6_listener: ipv6_listener.map(|listener| Ntcp2Listener::new(listener, allow_local)),
+             max_connections: config.max_connections,
+@@ -231,6 +237,57 @@ impl<R: Runtime> Ntcp2Transport<R> {
+             return Ok((None, None, None));
+         }
+ 
++        let static_key = match (config.ml_kem, config.disable_pq) {
++            (Some(3), false) => {
++                tracing::info!(
++                    target: LOG_TARGET,
++                    "running ntcp2 as ml-kem-512-x25519/x25519 hybrid",
++                );
++                StaticPrivateKey::from_bytes_ml_kem_512(config.key)
++            }
++            (Some(4), false) => {
++                tracing::info!(
++                    target: LOG_TARGET,
++                    "running ntcp2 as ml-kem-768-x25519/x25519 hybrid",
++                );
++                StaticPrivateKey::from_bytes_ml_kem_768(config.key)
++            }
++            (Some(5), false) => {
++                tracing::info!(
++                    target: LOG_TARGET,
++                    "running ntcp2 as ml-kem-1024-x25519/x25519 hybrid",
++                );
++                StaticPrivateKey::from_bytes_ml_kem_1024(config.key)
++            }
++            _ => {
++                tracing::info!(
++                    target: LOG_TARGET,
++                    "running ntcp2 as x25519 only",
++                );
++                StaticPrivateKey::from_bytes(config.key)
++            }
++        };
++
++        if !R::TCP_LISTENER_SUPPORTED {
++            if config.publish_ipv4 || config.publish_ipv6 {
++                return Err(Error::NotSupported);
++            }
++            let ipv4 = config.ipv4.then(|| RouterAddress::new_outbound_ntcp2(config.key));
++            let ipv6 = config.ipv6.then(|| RouterAddress::new_outbound_ntcp2(config.key));
++            return Ok((
++                Some(Ntcp2Context {
++                    config,
++                    ipv4_listener: None,
++                    ipv4_socket_address: None,
++                    ipv6_listener: None,
++                    ipv6_socket_address: None,
++                    static_key,
++                }),
++                ipv4,
++                ipv6,
++            ));
++        }
++
+         // create ipv4 listener if it was enabled
+         let (ipv4_listener, ipv4_socket_address, ipv4_address) = if config.ipv4 {
+             let listener = R::TcpListener::bind(
+@@ -333,36 +390,6 @@ impl<R: Runtime> Ntcp2Transport<R> {
+             (None, None, None)
+         };
+ 
+-        let static_key = match (config.ml_kem, config.disable_pq) {
+-            (Some(3), false) => {
+-                tracing::info!(
+-                    target: LOG_TARGET,
+-                    "running ntcp2 as ml-kem-512-x25519/x25519 hybrid",
+-                );
+-                StaticPrivateKey::from_bytes_ml_kem_512(config.key)
+-            }
+-            (Some(4), false) => {
+-                tracing::info!(
+-                    target: LOG_TARGET,
+-                    "running ntcp2 as ml-kem-768-x25519/x25519 hybrid",
+-                );
+-                StaticPrivateKey::from_bytes_ml_kem_768(config.key)
+-            }
+-            (Some(5), false) => {
+-                tracing::info!(
+-                    target: LOG_TARGET,
+-                    "running ntcp2 as ml-kem-1024-x25519/x25519 hybrid",
+-                );
+-                StaticPrivateKey::from_bytes_ml_kem_1024(config.key)
+-            }
+-            _ => {
+-                tracing::info!(
+-                    target: LOG_TARGET,
+-                    "running ntcp2 as x25519 only",
+-                );
+-                StaticPrivateKey::from_bytes(config.key)
+-            }
+-        };
+ 
+         Ok((
+             Some(Ntcp2Context {
+@@ -389,8 +416,8 @@ impl<R: Runtime> Transport for Ntcp2Transport<R> {
+ 
+         let future = self.session_manager.create_session(
+             router,
+-            self.ipv4_listener.is_some(),
+-            self.ipv6_listener.is_some(),
++            self.ipv4_enabled,
++            self.ipv6_enabled,
+         );
+         self.pending_handshakes.push(future);
+         self.router_ctx.metrics_handle().counter(NUM_OUTBOUND_NTCP2).increment(1);
