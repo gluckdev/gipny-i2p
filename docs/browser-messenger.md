@@ -54,6 +54,12 @@ written and flushed before sending. Incoming messages and receipts are flushed
 before acknowledging the deposit. A failed write stops the profile and requires
 reopening it; the old ratchet is never reused after an ambiguous write.
 
+Transport recovery preserves the newest signed LeaseSet publication and tracks
+the peer's encryption key independently of the application's ratchet. I2P uses
+the one-second `published` field to version LeaseSet2 records; a LeaseSet2
+contains the destination's currently authorized leases.
+See the [I2P structure specification](https://i2p.net/en/docs/specs/common-structures/#leaseset2header).
+
 Expired history is pruned while the profile is open and when it is reopened.
 Local history/group removal discards unprepared letters and removes their
 plaintext retry payloads. Already prepared ciphertext remains queued so that
@@ -91,42 +97,67 @@ out-of-order messages and fixed-integer bincode compatibility. Vault tests check
 wrong credentials, password rotation, passkey wrapping and torn-slot recovery.
 An emulated or virtual authenticator test is not physical mobile validation.
 
-Latest completed run: `b93fdc7`,
-[41317354451](https://github.com/gluckdev/gipny-i2p/actions/runs/41317354451).
-Both native recovery regressions and all 46 WASM tests passed. Desktop and
+Latest completed run: `bee4456`,
+[41326667198](https://github.com/gluckdev/gipny-i2p/actions/runs/41326667198).
+The three recovery regressions, all 89 native session tests, 46 WASM tests,
+real NTCP2 and both cold bootstrap profiles passed (180.31 / 88.47 s from
+navigation to ready, 32 / 31 s held, 5 / 3 roundtrips, 153 verified RouterInfo
+records). All native platform/build checks and CodeQL passed. Live bidirectional
+messages, receipts, attachment name and bytes, and PRF passed. The next blocked
+contact mailbox deposit timed out after 120 s, before restart or offline-shell
+checks. The sender reported `CANT_REACH_PEER`, three rejected SYN handshakes
+and one newer LeaseSet lookup while both clients still had active tunnels.
+
+The implementation now probes known contact relays with bounded authenticated
+Ping/Pong streams after network recovery. It does not send chat text or advance
+the application's ratchet. The inbound-first path records the peer's signed
+LeaseSet encryption key so that a later key change retires the old ECIES
+session. These changes passed the native regressions but have not yet resolved
+live restart delivery.
+
+The `bee4456` fix preserves a newer signed LeaseSet/key learned from inbound
+traffic when an older lookup or garlic record arrives. Its regressions check
+that delayed older records cannot roll back the cached route or destroy the
+restarted session. That run did not reach the live restart assertion.
+
+The following route-cache fix treats an accepted LeaseSet as a complete set:
+superseded inbound tunnels are removed from existing and new routing handles,
+and repeated identical lookups preserve known failure status. Native tests
+cover those transitions and duplicate-cache prevention; the complete routing
+path module is added to CI. This change awaits its first CI result.
+Full live acceptance remains pending.
+
+The `bee4456` WASM/PWA job passed. Its
+[`browser-messenger-pwa` ZIP](https://github.com/gluckdev/gipny-i2p/actions/runs/41326667198/artifacts/13091328428)
+is 1,982,419 bytes; GitHub artifact SHA256:
+`f475d09eac0463865339ee0a3e5872c9da0793b7368c64b08e536744d59791e4`.
+The verified emissary patch SHA256 is
+`6567de72b7cb79894bc802d1b3a68efb54699a49e122231ac96c8863c1c627a9`.
+These identify that compiled artifact and source patch; the failed live job
+remains a separate acceptance gate.
+
+Earlier run `3e0ab82`,
+[41322770968](https://github.com/gluckdev/gipny-i2p/actions/runs/41322770968),
+passed the three recovery regressions, all 89 native session tests, 46 WASM
+tests and both cold profiles. Live restart delivery timed out after 180 s.
+Numeric diagnostics showed two encryption-key changes at the sender, repeated
+non-newer lookup results and failed probes from the restored recipient.
+
+Earlier run `b93fdc7`,
+[41317354451](https://github.com/gluckdev/gipny-i2p/actions/runs/41317354451),
+passed both native recovery regressions and all 46 WASM tests. Desktop and
 constrained cold bootstrap passed (162.31 / 178.52 s to ready, 32 / 33 s held,
 3 / 5 roundtrips, 157 verified RouterInfo records). Live bidirectional messages,
-receipts, PRF, blocking and restored identity/address passed again. Delivery
-following recipient restart still timed out after 180 s; the sender recorded
-six `DialFailure` transport errors. The HTTP-server-offline phase was not reached.
-
-The next change probes known contact relays with bounded authenticated Ping/Pong
-streams after network recovery, allowing peers to learn the fresh signed
-LeaseSet through an outbound connection. It does not send chat text or advance
-the application's ratchet. Public numeric lookup/key-change/probe counters and
-explicit stream status errors improve the failure receipt. This change awaits
-its own live CI run; it is not a confirmed recovery result.
-The inbound-first path also needs to register the peer's signed LeaseSet
-encryption key. Without that entry, a later lookup sees no previous key and
-fails to retire the old active ECIES session. A new regression keeps the
-receiver alive while its peer restarts, and verifies the reply to the fresh
-session. The complete native session test module now runs in CI as well.
-
-At `3e0ab82`, the three recovery regressions, all 89 native session tests,
-46 WASM tests and both cold profiles passed. Live restart delivery still
-failed. Numeric diagnostics showed two encryption-key changes at the sender
-and repeated non-newer lookup results. The next fix preserves a newer signed
-LeaseSet/key learned from inbound traffic when an older lookup or garlic
-record arrives. Its regressions check that delayed older records cannot roll
-back the cached route or destroy the restarted session. Full live acceptance
-remains pending.
+receipts, PRF, blocking and restored identity/address passed. Restart delivery
+timed out after 180 s with six sender `DialFailure` errors.
 
 The earlier intermediate `e6709dd` run passed all 46 WASM tests, but stopped at the new
 native regression: its initial empty-queue assertion mistook local-destination
 registration for a remote lookup. That assertion is corrected in source.
 The follow-up also resets stale I2P ECIES sessions when the signed LeaseSet
 encryption key changes and checks decryption by a restarted recipient. These
-changes await CI; there is no new live result from the stopped run.
+changes were subsequently checked in the later runs above; the stopped run
+itself provided no new live result.
 
 Earlier live evidence: `f72d7f4`, 2026-11-01,
 [Actions run 41309131811](https://github.com/gluckdev/gipny-i2p/actions/runs/41309131811).
@@ -145,10 +176,10 @@ Earlier live evidence: `f72d7f4`, 2026-11-01,
 | Offline shell with HTTP server stopped | Not reached |
 | Physical devices / public deployment | Not performed |
 
-The restart fix now refreshes a cached remote LeaseSet after a failed streaming
+The recovery implementation refreshes a cached remote LeaseSet after a failed streaming
 handshake. A peer can restart on the same destination keys with different
 inbound tunnels while its previous LeaseSet is still unexpired. This source
-change and its CI regression await a new run; the full acceptance remains open.
+change passed its native regression in later runs; full live acceptance remains open.
 Failed refresh queries also keep the cache marked stale until a valid lookup
 succeeds, rather than immediately reusing the old unexpired address.
 
@@ -161,7 +192,7 @@ Earlier baseline: `bb0578e`, 2026-11-01:
 | Real NTCP2 handshakes | PASS |
 | Cold bootstrap, desktop | PASS: 50.28 s from navigation, 33 s sustained availability, 5 roundtrips |
 | Cold bootstrap, constrained Chrome | PASS: 34.35 s, 33 s sustained availability, 3 roundtrips; 4× CPU slowdown, 80 ms latency, 200/100 KiB/s down/up |
-| Two independent browser messengers | FAILED during startup: lower-level snapshot URL validation rejected `localhost`; corrected in source, rerun pending |
+| Two independent browser messengers | FAILED during startup: lower-level snapshot URL validation rejected `localhost`; corrected and confirmed by later live runs above |
 | Physical phones and public deployment | Not performed |
 
 Source: [Actions run 41306799095](https://github.com/gluckdev/gipny-i2p/actions/runs/41306799095).
@@ -178,6 +209,29 @@ and unlocked conversation state. They are not measurements of full messenger RAM
 The acceptance scenario must also reach offline history after stopping the HTTP
 server. A partly successful run does not confirm that final phase. Later commits
 must be checked against their own runs.
+
+### Recovery diagnostics
+
+On failure, `browser-messenger-evidence/receipt.json` includes bounded transport
+status strings and `network_metrics` for the two clients, in Alice/Bob order.
+The `browser_diagnostics` worker RPC returns numeric counters/gauges and
+`relay_probes` totals; it does not return destination identifiers, message
+contents, credentials or keys. Router counters reset when a new runtime starts.
+
+| Signal | Meaning |
+|---|---|
+| `client_lease_refresh_requested`, `client_lease_query_success`, `client_lease_query_failure` | Forced refresh requests and completed lookup outcomes |
+| `client_newer_lease_received`, `client_unchanged_lease_received` | Accepted lookup publication compared with the cached record; a discarded older reply is counted as unchanged |
+| `client_stale_lease_query_ignored`, `client_stale_garlic_lease_ignored`, `client_stale_encryption_key_ignored` | An older signed publication was prevented from replacing newer state |
+| `client_lease_encryption_key_changed` | A changed peer transport key caused old ECIES sessions/tags to be retired; application ratchets are separate |
+| `client_stream_syn_rejected` | Streaming SYN retries were exhausted before the stream opened |
+| `client_selected_lease_missing` | A selected route referenced an inbound tunnel absent from the destination cache |
+| `relay_probes.attempted/completed/failed` | Authenticated Ping/Pong attempts to known contacts after network startup |
+
+`CANT_REACH_PEER` identifies a failed stream handshake, not successful envelope
+delivery. A successful lookup or an existing tunnel alone does not establish
+that a restarted contact is reachable. Diagnose these together with the exact
+failed assertion; do not treat a counter as proof of a root cause.
 
 ## Hosting preparation
 

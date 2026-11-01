@@ -51,8 +51,10 @@
 
 ## Матрица статуса (Done / In Progress / External Blocked)
 
-Последний завершённый прогон — `f72d7f4`: 46 WASM-тестов PASS; desktop cold PASS,
-constrained cold FAILED. Более ранние результаты ниже привязаны к своим SHA.
+Последний завершённый прогон — `bee4456`: 46 WASM-тестов, 89 нативных session-тестов
+и обе холодные загрузки PASS. Приём конверта релеем завершился таймаутом до
+проверки восстановления; исправление выбора старых маршрутов ожидает CI.
+Более ранние результаты ниже привязаны к своим SHA.
 Полный live acceptance ещё не пройден.
 
 | Компонент / Задача | Статус | Проверяемый факт / Ссылка |
@@ -68,9 +70,9 @@ constrained cold FAILED. Более ранние результаты ниже �
 | **CI: Security fast & UI typecheck** | **DONE** | На `bb0578e`: 5 платформ security fast + UI typecheck PASS. |
 | **CI: WASM Release compilation** | **DONE** | `wasm-pack build --target web --release --locked` компилируется без ошибок. |
 | **CI: Real NTCP2 Handshake** | **DONE** | Реальное рукопожатие NTCP2 в Chrome headless PASS. |
-| **CI: EngineTests** | **DONE** | `bb0578e`: 9/9 engine tests, всего 45/45 WASM tests PASS. |
-| **CI: Cold Bootstrap** | **DONE** | `bb0578e`: desktop и constrained PASS, 50,28 / 34,35 с до готовности. Результаты одного прогона не задают SLA. |
-| **CI: 2-Browser Live Integration** | **IN PROGRESS** | `f72d7f4`: живой обмен, квитанции, вложение и PRF PASS. После восстановления профиля доставка завершилась timeout; offline shell фаза не достигнута. [Подробные результаты](../browser-messenger.md#validation-and-artifacts). |
+| **CI: EngineTests** | **DONE** | `bee4456`: 9/9 engine tests, всего 46/46 WASM tests PASS. |
+| **CI: Cold Bootstrap** | **DONE** | На `bee4456` desktop и constrained PASS. Длительность зависит от публичной сети; результаты одного прогона не задают SLA. |
+| **CI: 2-Browser Live Integration** | **IN PROGRESS** | `bee4456`: живой обмен, квитанции, содержимое вложения и PRF PASS. Приём следующего конверта завершился timeout; восстановление и offline shell фазы не достигнуты. [Подробные результаты](../browser-messenger.md#validation-and-artifacts). |
 | **Физические мобильные устройства** | **EXTERNAL BLOCKED** | Проверка на физических телефонах iOS Safari и Android Chrome не проводилась (десктопная эмуляция не заменяет устройство). |
 | **Публичный хостинг форвардера и netDb** | **EXTERNAL BLOCKED** | Требуются серверная инфраструктура, домен, TLS-сертификаты и безопасный подписанный источник снапшотов netDb. |
 

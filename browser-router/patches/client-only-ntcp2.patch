@@ -9,7 +9,7 @@ index b9a3cf3..2ccc0a9 100644
  version = "0.4.0"
  edition.workspace = true
 diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
-index 427fe88..cd4aa2d 100644
+index 427fe88..316e1f9 100644
 --- a/emissary-core/src/destination/mod.rs
 +++ b/emissary-core/src/destination/mod.rs
 @@ -207,6 +207,9 @@ pub struct Destination<R: Runtime> {
@@ -72,7 +72,15 @@ index 427fe88..cd4aa2d 100644
              );
          }
  
-@@ -672,6 +696,14 @@ impl<R: Runtime> Destination<R> {
+@@ -478,6 +502,7 @@ impl<R: Runtime> Destination<R> {
+                         }
+                     }
+                     None => {
++                        R::client_event("client_selected_lease_missing", 1);
+                         tracing::warn!(
+                             target: LOG_TARGET,
+                             %destination_id,
+@@ -672,6 +697,14 @@ impl<R: Runtime> Destination<R> {
                                  "store lease set for remote destination",
                              );
  
@@ -87,7 +95,7 @@ index 427fe88..cd4aa2d 100644
                              self.routing_path_manager
                                  .register_leases(&destination_id, Ok(lease_set.leases.clone()));
  
-@@ -847,6 +879,17 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -847,6 +880,17 @@ impl<R: Runtime> Stream for Destination<R> {
              Poll::Pending => {}
              Poll::Ready(None) => return Poll::Ready(None),
              Poll::Ready(Some((destination_id, result))) => {
@@ -105,7 +113,7 @@ index 427fe88..cd4aa2d 100644
                  // always register lease set query result, regardless of its status as one or more
                  // routing paths might've initiated the query and need to know whether it succeeded
                  // or not
-@@ -860,6 +903,7 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -860,6 +904,7 @@ impl<R: Runtime> Stream for Destination<R> {
  
                  match result {
                      Err(error) => {
@@ -113,7 +121,7 @@ index 427fe88..cd4aa2d 100644
                          self.pending_queries.remove(&destination_id);
  
                          return Poll::Ready(Some(DestinationEvent::LeaseSetNotFound {
-@@ -868,6 +912,14 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -868,6 +913,14 @@ impl<R: Runtime> Stream for Destination<R> {
                          }));
                      }
                      Ok(lease_set) => {
@@ -128,7 +136,7 @@ index 427fe88..cd4aa2d 100644
                          self.pending_queries.remove(&destination_id);
  
                          match lease_set.public_keys.iter().find(|&remote_key| {
-@@ -877,7 +929,8 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -877,7 +930,8 @@ impl<R: Runtime> Stream for Destination<R> {
                          }) {
                              Some(key) => {
                                  self.session_manager
@@ -138,7 +146,7 @@ index 427fe88..cd4aa2d 100644
                              }
                              None => {
                                  tracing::warn!(
-@@ -1008,7 +1061,7 @@ mod tests {
+@@ -1008,7 +1062,7 @@ mod tests {
  
      #[tokio::test]
      async fn query_lease_set_found() {
@@ -147,7 +155,7 @@ index 427fe88..cd4aa2d 100644
          let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
          let private_key = StaticPrivateKey::random(MockRuntime::rng());
          let mut destination = Destination::<MockRuntime>::new(
-@@ -1027,6 +1080,11 @@ mod tests {
+@@ -1027,6 +1081,11 @@ mod tests {
          // insert dummy lease set for `remote` into `Destination`
          let remote = DestinationId::random();
          let (lease_set, _) = LeaseSet2::random();
@@ -159,7 +167,7 @@ index 427fe88..cd4aa2d 100644
          destination.remote_destinations.insert(
              remote.clone(),
              DestinationContext {
-@@ -1038,6 +1096,33 @@ mod tests {
+@@ -1038,6 +1097,33 @@ mod tests {
  
          // query lease set and verify it exists
          assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
@@ -193,6 +201,186 @@ index 427fe88..cd4aa2d 100644
      }
  
      #[tokio::test]
+diff --git a/emissary-core/src/destination/routing_path.rs b/emissary-core/src/destination/routing_path.rs
+index 2da85b2..3adf175 100644
+--- a/emissary-core/src/destination/routing_path.rs
++++ b/emissary-core/src/destination/routing_path.rs
+@@ -447,8 +447,10 @@ impl<R: Runtime> RoutingPathManager<R> {
+             );
+         }
+ 
+-        // extend the current set of `destination_id`'s leases and prune all expired leases
+-        current_leases.extend(leases.clone());
++        // A verified LeaseSet is the complete currently authorized set, not
++        // an incremental announcement. Superseded leases may still be
++        // unexpired even though their destination has restarted.
++        *current_leases = leases.clone();
+         current_leases.retain(|lease| lease.expires > R::time_since_epoch());
+ 
+         if let Some(subscribers) = self.subscribers.get_mut(destination_id) {
+@@ -1076,12 +1078,17 @@ impl<R: Runtime> Future for RoutingPathHandle<R> {
+                 None => return Poll::Ready(()),
+                 Some(event) => match event {
+                     RoutingPathEvent::InboundTunnelBuilt { tunnels } => {
+-                        // invalidate current routing path if it uses failing tunnel
++                        let authorized =
++                            tunnels.iter().map(|(tunnel_id, _)| *tunnel_id).collect::<HashSet<_>>();
++                        // Retire a path whose inbound tunnel was superseded,
++                        // as well as paths already known to be failing.
+                         if let Some(RoutingPath { inbound, .. }) = &self.routing_path {
+-                            if core::matches!(
+-                                self.tunnels.get(inbound),
+-                                Some(TunnelKind::FailingInbound { .. })
+-                            ) {
++                            if !authorized.contains(inbound)
++                                || core::matches!(
++                                    self.tunnels.get(inbound),
++                                    Some(TunnelKind::FailingInbound { .. })
++                                )
++                            {
+                                 tracing::debug!(
+                                     target: LOG_TARGET,
+                                     destination_id = %self.destination_id,
+@@ -1094,28 +1101,28 @@ impl<R: Runtime> Future for RoutingPathHandle<R> {
+                             }
+                         }
+                         let now = R::time_since_epoch();
+-                        let routing_path_inbound_tunnel =
+-                            self.routing_path.as_ref().map(|path| path.inbound);
+-
+-                        tunnels.into_iter().for_each(|(tunnel_id, expires)| {
+-                            self.tunnels
+-                                .insert(tunnel_id, TunnelKind::Inbound { tunnel_id, expires });
+-                        });
+-
+-                        self.tunnels.retain(|tunnel_id, kind| {
+-                            // don't remove tunnel currently used by the routing path
+-                            if let Some(inbound) = routing_path_inbound_tunnel {
+-                                if *tunnel_id == inbound {
+-                                    return true;
+-                                }
++                        self.tunnels.retain(|tunnel_id, kind| match kind {
++                            TunnelKind::Inbound { expires, .. }
++                            | TunnelKind::FailingInbound { expires, .. } => {
++                                authorized.contains(tunnel_id) && *expires > now
+                             }
+-
+-                            match kind {
+-                                TunnelKind::Inbound { expires, .. } => *expires > now,
+-                                TunnelKind::FailingInbound { expires, .. } => *expires > now,
+-                                _ => true,
+-                            }
+-                        })
++                            _ => true,
++                        });
++                        for (tunnel_id, expires) in
++                            tunnels.into_iter().filter(|(_, expires)| *expires > now)
++                        {
++                            // An identical lookup must not make a known failed
++                            // tunnel healthy again on every refresh.
++                            let kind = if core::matches!(
++                                self.tunnels.get(&tunnel_id),
++                                Some(TunnelKind::FailingInbound { .. })
++                            ) {
++                                TunnelKind::FailingInbound { tunnel_id, expires }
++                            } else {
++                                TunnelKind::Inbound { tunnel_id, expires }
++                            };
++                            self.tunnels.insert(tunnel_id, kind);
++                        }
+                     }
+                     RoutingPathEvent::OutboundTunnelBuilt { tunnel_id } => {
+                         // invalidate current routing path if it uses expiring/failing tunnel
+@@ -1197,6 +1204,62 @@ mod tests {
+     use crate::{primitives::RouterId, runtime::mock::MockRuntime};
+     use futures::StreamExt;
+ 
++    #[tokio::test(start_paused = true)]
++    async fn new_lease_set_retires_superseded_routes() {
++        let remote = DestinationId::random();
++        let outbound = TunnelId::random();
++        let old = Lease::random();
++        let fresh = Lease::random();
++        let mut manager =
++            RoutingPathManager::<MockRuntime>::new(DestinationId::random(), vec![outbound]);
++        manager.register_leases(&remote, Ok(vec![old.clone()]));
++        let mut existing = manager.handle(remote.clone());
++        assert_eq!(existing.routing_path().unwrap().inbound, old.tunnel_id);
++
++        manager.register_leases(&remote, Ok(vec![fresh.clone()]));
++        assert!((&mut existing).now_or_never().is_none());
++        assert!(
++            existing.routing_path.is_none(),
++            "even a healthy old route must be retired"
++        );
++        assert!(!existing.tunnels.contains_key(&old.tunnel_id));
++        assert_eq!(existing.routing_path().unwrap().inbound, fresh.tunnel_id);
++        assert!(existing.tunnels.contains_key(&outbound));
++
++        let mut new_handle = manager.handle(remote.clone());
++        assert!(!new_handle.tunnels.contains_key(&old.tunnel_id));
++        assert_eq!(new_handle.routing_path().unwrap().inbound, fresh.tunnel_id);
++        for _ in 0..3 {
++            manager.register_leases(&remote, Ok(vec![fresh.clone()]));
++            assert!((&mut existing).now_or_never().is_none());
++            assert!((&mut new_handle).now_or_never().is_none());
++        }
++        assert_eq!(
++            manager.inbound_tunnels.get(&remote).unwrap().len(),
++            1,
++            "identical query results must not accumulate duplicate leases"
++        );
++    }
++
++    #[tokio::test(start_paused = true)]
++    async fn identical_lease_set_preserves_failure_tracking() {
++        let remote = DestinationId::random();
++        let outbound = TunnelId::random();
++        let lease = Lease::random();
++        let mut manager =
++            RoutingPathManager::<MockRuntime>::new(DestinationId::random(), vec![outbound]);
++        manager.register_leases(&remote, Ok(vec![lease.clone()]));
++        let mut handle = manager.handle(remote.clone());
++        assert!(handle.routing_path().is_some());
++        assert!(handle.recreate_routing_path().is_some());
++        manager.register_leases(&remote, Ok(vec![lease.clone()]));
++        assert!((&mut handle).now_or_never().is_none());
++        assert!(core::matches!(
++            handle.tunnels.get(&lease.tunnel_id),
++            Some(TunnelKind::FailingInbound { .. })
++        ));
++    }
++
+     #[tokio::test]
+     async fn make_routing_path() {
+         let remote = DestinationId::random();
+@@ -1746,7 +1809,7 @@ mod tests {
+                 .iter()
+                 .filter(|(_, kind)| core::matches!(kind, TunnelKind::FailingInbound { .. }))
+                 .count(),
+-            1
++            0
+         );
+         assert_eq!(
+             handle
+@@ -1812,7 +1875,7 @@ mod tests {
+         let inbound2 = Lease::random();
+ 
+         manager.register_outbound_tunnel_built(outbound1);
+-        manager.register_leases(&remote, Ok(vec![inbound1]));
++        manager.register_leases(&remote, Ok(vec![lease.clone(), inbound1.clone()]));
+         assert!(tokio::time::timeout(Duration::from_secs(2), &mut handle).await.is_err());
+ 
+         // verify that the routing path hasn't changed
+@@ -1854,7 +1917,7 @@ mod tests {
+ 
+             // register two more tunnels and verify that both handles get the updates
+             manager.register_outbound_tunnel_built(outbound2);
+-            manager.register_leases(&remote_dest, Ok(vec![inbound2]));
++            manager.register_leases(&remote_dest, Ok(vec![lease, inbound1, inbound2]));
+ 
+             loop {
+                 tokio::time::sleep(Duration::from_secs(10)).await;
 diff --git a/emissary-core/src/destination/session/context.rs b/emissary-core/src/destination/session/context.rs
 index 977cb30..1c55cfa 100644
 --- a/emissary-core/src/destination/session/context.rs

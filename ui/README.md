@@ -15,8 +15,9 @@
 | `src/browser-core/backend.ts` | Транзакции, контакты, история, группы, outbox, TTL и релей |
 | `src/browser-core/storage.ts` | OPFS sync handles, Web Lock, `vault-a.bin` / `vault-b.bin` |
 | `src/browser-core/passkeys.ts` | WebAuthn PRF на главном потоке по действию пользователя |
-| `src/browser-core/relay.ts` | Приём и отправка через in-process I2P destination |
+| `src/browser-core/relay.ts` | Приём и отправка через in-process I2P destination, authenticated Ping/Pong |
 | `src/browser-core/model.ts` | Метаданные профиля, DTO, истечение истории |
+| `src/browser-core/wasm.d.ts` | Типы WASM API для проверки UI без сгенерированного пакета; обновляются вместе с Rust-экспортами |
 | `src/browser-files.ts` | Небольшие вложения браузера |
 | `vite.browser.config.ts` | Отдельная PWA сборка, manifest и Service Worker |
 
