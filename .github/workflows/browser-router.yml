@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: browser-router-${{ github.head_ref || github.ref }}
+  group: browser-router-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -42,6 +42,8 @@ jobs:
           tool: wasm-pack
       - name: Install WebSocket fixture
         run: python3 -m pip install websockets==15.0.1
+      - name: Forwarder boundary tests
+        run: python3 -m unittest discover -s forwarder -p 'test_*.py' -v
       - name: Execute WASM tests in headless Chrome
         env:
           WASM_BINDGEN_TEST_TIMEOUT: '60'
@@ -75,4 +77,49 @@ jobs:
             browser-router/SHA256SUMS.txt
             browser-router/source-commit.txt
           if-no-files-found: error
+          retention-days: 5
+
+  ntcp2:
+    name: NTCP2 browser to native and public I2P
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Pinned i2pd sources and native build dependencies
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          .github/scripts/assert-i2pd-pin.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
+      - name: Verified reseed certificates
+        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: browser-router
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build native i2pd peer and RouterInfo verifier from source
+        working-directory: browser-router
+        run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: Install forwarder dependency
+        run: python3 -m pip install websockets==15.0.1
+      - name: Real NTCP2 handshakes from WASM in Chrome
+        run: python3 browser-router/tests/run_ntcp2_ci.py
+      - name: Keep public protocol evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-ntcp2-evidence
+          path: |
+            ${{ runner.temp }}/browser-ntcp2/wasm-ntcp2.log
+            ${{ runner.temp }}/browser-ntcp2/forwarder.log
+            ${{ runner.temp }}/browser-ntcp2/native-peer-stdout.log
+            ${{ runner.temp }}/browser-ntcp2/native-peer/i2pd.log
+            ${{ runner.temp }}/browser-ntcp2/candidates.tsv
+          if-no-files-found: warn
           retention-days: 5

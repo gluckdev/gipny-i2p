@@ -1,6 +1,7 @@
 //! Feasibility runtime, not a shipping router. JS handles remain on the local
 //! browser executor; only channels cross emissary's Send/Sync boundaries.
 
+pub mod ntcp2;
 mod socket;
 mod unsupported;
 
@@ -20,7 +21,7 @@ use futures::{channel::oneshot, future::BoxFuture, stream::FuturesUnordered, Str
 use rand::{CryptoRng, RngExt};
 use wasm_bindgen::prelude::*;
 
-pub use socket::{configure_forwarder, BrowserTcpStream};
+pub use socket::{configure_forwarder, configure_forwarder_authenticated, BrowserTcpStream};
 pub use unsupported::{BrowserTcpListener, BrowserUdpSocket};
 
 /// Maximum accepted decompressed I2P payload (also bounds untrusted gzip input).

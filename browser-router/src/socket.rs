@@ -29,7 +29,29 @@ const MAX_BUFFERED: u32 = 2 * MAX_FRAME as u32;
 const IO_TIMEOUT_MS: f64 = 30_000.0;
 
 thread_local! {
-    static FORWARDER: RefCell<Option<url::Url>> = const { RefCell::new(None) };
+    static FORWARDER: RefCell<Option<(url::Url, Option<String>)>> = const { RefCell::new(None) };
+}
+
+/// Authenticate through a WebSocket subprotocol, keeping the capability out of
+/// URLs and access logs. The forwarder must echo the selected subprotocol.
+pub fn configure_forwarder_authenticated(
+    endpoint: &str,
+    capability: &str,
+) -> Result<(), &'static str> {
+    if capability.len() != 43
+        || !capability
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err("capability must be a 32-byte unpadded base64url token");
+    }
+    configure_forwarder(endpoint)?;
+    FORWARDER.with(|value| {
+        if let Some((_, protocol)) = value.borrow_mut().as_mut() {
+            *protocol = Some(format!("gipny.ntcp2.v1.{capability}"));
+        }
+    });
+    Ok(())
 }
 
 /// Configure the byte forwarder's endpoint for this browser thread. Target
@@ -44,7 +66,7 @@ pub fn configure_forwarder(endpoint: &str) -> Result<(), &'static str> {
     if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
         return Err("credentials and fragments are not supported");
     }
-    FORWARDER.with(|value| *value.borrow_mut() = Some(url));
+    FORWARDER.with(|value| *value.borrow_mut() = Some((url, None)));
     Ok(())
 }
 
@@ -94,7 +116,7 @@ impl TcpStream for BrowserTcpStream {
         // oneshot receiver, not a WebSocket, Closure, Rc or JS timer.
         let endpoint = FORWARDER.with(|v| v.borrow().clone());
         let (reply, result) = oneshot::channel();
-        if let Some(mut endpoint) = endpoint {
+        if let Some((mut endpoint, protocol)) = endpoint {
             // Do not allow a configured query to shadow the selected target.
             let query: Vec<_> = endpoint
                 .query_pairs()
@@ -106,7 +128,7 @@ impl TcpStream for BrowserTcpStream {
                 .query_pairs_mut()
                 .extend_pairs(query)
                 .append_pair("target", &address.to_string());
-            wasm_bindgen_futures::spawn_local(run_socket(endpoint.into(), reply));
+            wasm_bindgen_futures::spawn_local(run_socket(endpoint.into(), protocol, reply));
         }
         async move { result.await.ok().flatten() }
     }
@@ -251,8 +273,16 @@ impl Drop for SocketGuard {
     }
 }
 
-async fn run_socket(endpoint: String, reply: oneshot::Sender<Option<BrowserTcpStream>>) {
-    let Ok(ws) = WebSocket::new(&endpoint) else {
+async fn run_socket(
+    endpoint: String,
+    protocol: Option<String>,
+    reply: oneshot::Sender<Option<BrowserTcpStream>>,
+) {
+    let socket = match protocol.as_deref() {
+        Some(protocol) => WebSocket::new_with_str(&endpoint, protocol),
+        None => WebSocket::new(&endpoint),
+    };
+    let Ok(ws) = socket else {
         return;
     };
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
@@ -346,6 +376,9 @@ async fn run_socket(endpoint: String, reply: oneshot::Sender<Option<BrowserTcpSt
         futures::future::select(opened_rx, timeout).await,
         futures::future::Either::Left((Ok(true), _))
     ) {
+        return;
+    }
+    if protocol.is_some_and(|protocol| guard.ws.protocol() != protocol) {
         return;
     }
     let (commands, mut receiver) = mpsc::channel(QUEUE_DEPTH);
