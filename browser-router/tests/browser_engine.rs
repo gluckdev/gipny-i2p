@@ -145,8 +145,12 @@ fn encrypt_decrypt_roundtrip_and_replay_rejection() {
     alice.commit().expect("alice commit");
 
     bob.begin().expect("bob begin ratchet decrypt");
+    assert!(
+        bob.decrypt(alice_sign, bob_dh, &ratchet_envelope).is_err(),
+        "receiver DH must not be accepted as the pinned sender DH"
+    );
     let ratchet_decrypt_raw = bob
-        .decrypt(alice_sign, bob_dh, &ratchet_envelope)
+        .decrypt(alice_sign, alice_dh, &ratchet_envelope)
         .expect("bob ratchet decrypt");
     let ratchet_res: Value = serde_json::from_str(&ratchet_decrypt_raw).expect("ratchet json");
     assert_eq!(

@@ -21,8 +21,10 @@ identity information and the plaintext needed to display conversations.
 Profiles use OPFS in a worker, exclusive sync handles and a Web Lock. Two slots
 alternate encrypted records. XChaCha20-Poly1305 authenticates contents and record
 headers; a separate checksum detects incomplete writes. The newest complete
-record is selected before checking credentials, so changing a password does not
-allow an old password to unlock the older slot. File I/O errors are surfaced.
+record is selected before checking credentials. A successful password change
+flushes the new credential wrapper to both live slots; an old wrapper is not
+left in the recovery slot. Previously copied profiles retain their own password
+wrappers. File I/O errors are surfaced.
 
 Password wrapping uses Argon2id with 64 MiB, three iterations and one lane.
 Passkeys are enrolled only when WebAuthn returns a real 32-byte PRF result.

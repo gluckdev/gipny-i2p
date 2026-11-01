@@ -43,7 +43,7 @@ export class BrowserBackend {
   private info(): RelayInfo { return { mode: 'builtin', external: '', hosted: this.hosted, dial: { attempts: 0, last_error: this.hosted.state === 'failed' ? this.hosted.reason : null, unreachable_checks: 0, unreachable_error: null } }; }
   private relayChanged(): void { this.event({ RelayInfoChanged: { info: this.info() } }); }
 
-  private transact<T>(action: (state: BrowserState, engine: BrowserEngine) => T): Promise<T> {
+  private transact<T>(action: (state: BrowserState, engine: BrowserEngine) => T, mirrorCredentials = false): Promise<T> {
     const run = async (): Promise<T> => {
       const { engine, state } = this.require();
       const storage = this.storage!;
@@ -55,7 +55,7 @@ export class BrowserBackend {
         const ciphertext = engine.seal(JSON.stringify(state));
         const next = engine.pending_generation();
         writing = true;
-        await storage.persist(ciphertext, next);
+        await storage.persist(ciphertext, next, mirrorCredentials);
         engine.commit();
         return result;
       } catch (error) {
@@ -461,7 +461,7 @@ export class BrowserBackend {
       return state.attachments.filter(value => messages.some(message => message.id === value.message_id)).slice(-100).map(({ data: _, ...attachment }) => ({ ...attachment, sent_at: messages.find(message => message.id === attachment.message_id)!.sent_at }));
     }
     if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).reverse().findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
-    const result = await this.transact((next, core) => this.mutate(command, args, next, core));
+    const result = await this.transact((next, core) => this.mutate(command, args, next, core), command === 'change_passphrase');
     if (command === 'add_contact' && typeof result === 'number') this.event({ ContactAdded: { contact_id: result } });
     if (command === 'create_group' && typeof result === 'string') this.event({ GroupUpdated: { group_id: result } });
     if (command === 'add_group_member') this.event({ GroupUpdated: { group_id: text(args, 'groupId') } });

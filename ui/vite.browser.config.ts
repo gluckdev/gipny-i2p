@@ -8,11 +8,15 @@ export default defineConfig({
   build: { target: 'es2022', outDir: 'browser-dist', emptyOutDir: true, sourcemap: false, rollupOptions: { input: 'browser.html' } },
   plugins: [{
     name: 'gipny-offline-shell',
-    generateBundle(_options, bundle) {
+    generateBundle: {
+      // Vite emits transformed HTML/CSS after ordinary user hooks.
+      order: 'post',
+      handler(_options, bundle) {
       this.emitFile({ type: 'asset', fileName: 'browser-icon.svg', source: readFileSync(new URL('../core/icons/icon.svg', import.meta.url)) });
       this.emitFile({ type: 'asset', fileName: 'browser-icon-256.png', source: readFileSync(new URL('../core/icons/128x128@2x.png', import.meta.url)) });
       this.emitFile({ type: 'asset', fileName: 'browser.webmanifest', source: JSON.stringify({ id: './browser.html', name: 'Gipny', short_name: 'Gipny', start_url: './browser.html', scope: './', display: 'standalone', background_color: '#eef3f8', theme_color: '#eef3f8', icons: [{ src: 'browser-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }, { src: 'browser-icon-256.png', sizes: '256x256', type: 'image/png', purpose: 'any' }] }) });
-      const files = [...new Set([...Object.keys(bundle), 'browser-icon.svg', 'browser-icon-256.png', 'browser.webmanifest', 'theme-init.js', 'avatars.webp', 'notify.wav', 'sounds/success.wav'])].filter(name => !name.endsWith('.map') && name !== 'browser-config.json');
+      const files = [...new Set([...Object.keys(bundle), 'browser.html', 'browser-icon.svg', 'browser-icon-256.png', 'browser.webmanifest', 'theme-init.js', 'avatars.webp', 'notify.wav', 'sounds/success.wav'])].filter(name => !name.endsWith('.map') && name !== 'browser-config.json');
+      if (!files.some(name => name.endsWith('.wasm')) || !files.some(name => /worker.*\.js$/.test(name))) throw new Error('Offline shell is missing the emitted WASM worker assets');
       const digest = createHash('sha256');
       for (const name of files) {
         const file = bundle[name];
@@ -43,6 +47,7 @@ self.addEventListener('fetch', event => {
   event.respondWith(caches.open(CACHE).then(async cache => (await cache.match(event.request)) || fetch(event.request)));
 });
 ` });
+      },
     },
   }],
 });

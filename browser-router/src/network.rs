@@ -430,9 +430,6 @@ impl BrowserNetwork {
 
         let fatal_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let fatal_writer = fatal_error.clone();
-        let is_clean_shutdown = Arc::new(AtomicBool::new(false));
-        let clean_shutdown_flag = is_clean_shutdown.clone();
-
         let cancellation_source = Arc::new(Mutex::new(CancellationSource::new()));
         let cancellation_token = cancellation_source.lock().unwrap().token();
         let cancel_source_for_router = cancellation_source.clone();
@@ -476,11 +473,10 @@ impl BrowserNetwork {
 
             BrowserRuntime::spawn(async move {
                 router.await;
-                if !clean_shutdown_flag.load(Ordering::SeqCst) {
-                    *fatal_writer.lock().unwrap() =
-                        Some("emissary router stopped unexpectedly".into());
-                    cancel_source_for_router.lock().unwrap().cancel();
-                }
+                // TaskScope cancellation drops this future before reaching
+                // this tail. Any observed router completion is unexpected.
+                *fatal_writer.lock().unwrap() = Some("emissary router stopped unexpectedly".into());
+                cancel_source_for_router.lock().unwrap().cancel();
             });
 
             emit_boot(

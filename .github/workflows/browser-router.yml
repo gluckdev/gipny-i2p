@@ -56,6 +56,23 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the browser messenger with its generated WASM worker
+        run: |
+          wasm-pack build --target web --release --locked
+          npm ci --prefix ../ui
+          npm run build:browser --prefix ../ui
+          npm test --prefix ../ui
+      - uses: actions/upload-artifact@v7
+        with:
+          name: browser-messenger-pwa
+          path: ui/browser-dist/
+          if-no-files-found: error
+          retention-days: 5
       - name: Install WebSocket fixture
         run: python3 -m pip install websockets==15.0.1
       - name: Forwarder boundary tests
@@ -79,23 +96,6 @@ jobs:
               raise SystemExit('WebSocket fixture did not start')
           PY
           wasm-pack test --headless --chrome --locked
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - name: Build the browser messenger with its generated WASM worker
-        run: |
-          wasm-pack build --target web --release --locked
-          npm ci --prefix ../ui
-          npm run build:browser --prefix ../ui
-          npm test --prefix ../ui
-      - uses: actions/upload-artifact@v7
-        with:
-          name: browser-messenger-pwa
-          path: ui/browser-dist/
-          if-no-files-found: error
-          retention-days: 5
       - name: Record artifact size and source
         run: |
           python3 scripts/prepare_emissary.py
@@ -149,20 +149,25 @@ jobs:
       - name: Real NTCP2 handshakes from WASM in Chrome
         run: python3 browser-router/tests/run_ntcp2_ci.py
       - name: Build loadable browser module from source
+        id: browser_module
         working-directory: browser-router
         run: wasm-pack build --target web --release --locked
       - name: Cold browser bootstrap from a downloaded netDb snapshot
         run: python3 browser-router/tests/run_bootstrap_ci.py
       - uses: actions/setup-node@v6
+        if: ${{ !cancelled() && steps.browser_module.outcome == 'success' }}
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - name: Build browser messenger for live integration
+        if: ${{ !cancelled() && steps.browser_module.outcome == 'success' }}
+        id: messenger_build
         run: |
           npm ci --prefix ui
           npm run build:browser --prefix ui
       - name: Two independent browsers exchange messages and recover their profiles
+        if: ${{ !cancelled() && steps.messenger_build.outcome == 'success' }}
         run: python3 browser-router/tests/run_messenger_ci.py
       - name: Verify source provenance after tests
         run: python3 browser-router/scripts/prepare_emissary.py

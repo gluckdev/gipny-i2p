@@ -148,13 +148,13 @@ def create_ui(cdp, profile, password):
     wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production profile creation form')
 
 
-def unlock_ui(cdp, profile, password):
+def unlock_ui(cdp, profile, password, wrong_password='incorrect password'):
     cdp.call('Page.navigate', url='http://localhost:18770/browser.html')
     label = json.dumps('◉  ' + profile)
     wait_for(lambda: evaluate(cdp, f'[...document.querySelectorAll(".auth button")].some(button=>button.textContent === {label})'), 30, 'saved profile selector')
     evaluate(cdp, f'[...document.querySelectorAll(".auth button")].find(button=>button.textContent === {label}).click()')
     wait_for(lambda: evaluate(cdp, '!!document.querySelector(".auth input[type=password]")'), 10, 'profile password form')
-    wrong_rejected = evaluate(cdp, '__coreCall("vault_unlock", {profile:' + json.dumps(profile) + ',pass:"incorrect password"}).then(()=>false,()=>true)')
+    wrong_rejected = evaluate(cdp, '__coreCall("vault_unlock", {profile:' + json.dumps(profile) + ',pass:' + json.dumps(wrong_password) + '}).then(()=>false,()=>true)')
     if not wrong_rejected:
         raise RuntimeError('wrong password accepted')
     evaluate(cdp, f'''(() => {{
@@ -175,7 +175,9 @@ def main():
     manifest = json.loads(Path(str(snapshot) + '.json').read_text())
     capability = secrets.token_urlsafe(32)
     password_a, password_b = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
-    for secret in (capability, password_a, password_b):
+    password_new = secrets.token_urlsafe(24)
+    private_secrets = (capability, password_a, password_b, password_new)
+    for secret in private_secrets:
         print(f'::add-mask::{secret}', flush=True)
     cap_file = output / '.capability'
     cap_file.write_text(capability)
@@ -248,11 +250,30 @@ def main():
             wait_for(lambda: any(row['id'] == reply and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'reply receipt')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and inline attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
+            rpc(alice, 'change_passphrase', **{'old': password_a, 'new': password_new})
             # Stop Alice's whole worker: this discards WASM memory and sockets.
             rpc(alice, 'vault_lock')
+            mirrored = evaluate(alice, '''(async()=>{
+              const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('gipny-browser-v1');
+              for await (const directory of root.values()) {
+                if (directory.kind !== 'directory') continue;
+                const label = JSON.parse(await (await (await directory.getFileHandle('profile.json')).getFile()).text());
+                if (label.name !== 'alice') continue;
+                const headers = [];
+                for (const slot of ['a','b']) {
+                  const bytes = await (await (await directory.getFileHandle('vault-'+slot+'.bin')).getFile()).arrayBuffer();
+                  const length = new DataView(bytes).getUint32(16,true);
+                  headers.push(JSON.parse(new TextDecoder().decode(new Uint8Array(bytes,20,length))));
+                }
+                return JSON.stringify(headers[0].password) === JSON.stringify(headers[1].password) && JSON.stringify(headers[0].salt) === JSON.stringify(headers[1].salt);
+              }
+              return false;
+            })()''')
+            if not mirrored:
+                raise RuntimeError('password change left an old credential wrapper in a live OPFS slot')
             offline = rpc(bob, 'send_message', contactId=bob_contact, body='durable offline outbox', attachments=[], ttlSecs=None, replyTo=None)
             time.sleep(3)
-            unlock_ui(alice, 'alice', password_a)
+            unlock_ui(alice, 'alice', password_new, wrong_password=password_a)
             if rpc(alice, 'my_b32') != alice_address or rpc(alice, 'my_card') != alice_card:
                 raise RuntimeError('destination or identity changed after worker restart')
             wait_for(lambda: ready(alice), 330, 'restored client destination')
@@ -261,9 +282,26 @@ def main():
             rows = rpc(alice, 'list_messages', contactId=alice_contact)
             if len([row for row in rows if row['body'] == 'durable offline outbox']) != 1:
                 raise RuntimeError('retry duplicated history')
-            receipt['assertions'].append('worker termination, wrong-password rejection, identity/destination/ratchet/history restoration, offline outbox retry without duplicate history')
+            receipt['assertions'].append('worker termination, password rotation across both slots, old-password rejection, identity/destination/ratchet/history restoration, offline outbox retry without duplicate history')
             for client in clients:
                 rpc(client, 'vault_lock')
+            wait_for(lambda: evaluate(alice, 'navigator.serviceWorker.ready.then(()=>!!navigator.serviceWorker.controller)'), 20, 'offline shell installed')
+            forbidden = evaluate(alice, '(async()=>{for(const key of await caches.keys()){for(const request of await (await caches.open(key)).keys()){if(/browser-config\\.json|snapshot\\.tar\\.gz/.test(new URL(request.url).pathname))return true}}return false})()')
+            if forbidden:
+                raise RuntimeError('network configuration or snapshot entered PWA cache')
+            # Stop the actual web server: an emulated network label alone does
+            # not prove that service-worker/worker assets work offline.
+            server.shutdown(); server.server_close(); server = None
+            alice.call('Page.navigate', url='http://localhost:18770/')
+            wait_for(lambda: evaluate(alice, '!!document.querySelector(".auth-card .stack .btn-block")'), 30, 'offline root navigation and saved profiles')
+            unlock_ui(alice, 'alice', password_new)
+            wait_for(lambda: evaluate(alice, '!!document.querySelector(".boot-enter:not(.hidden)") || !!document.querySelector(".sidebar")'), 20, 'offline history entry')
+            evaluate(alice, 'document.querySelector(".boot-enter:not(.hidden)")?.click()')
+            wait_for(lambda: evaluate(alice, '!!document.querySelector(".contact-list .contact")'), 20, 'offline contact list')
+            evaluate(alice, 'document.querySelector(".contact-list .contact").click()')
+            wait_for(lambda: evaluate(alice, '[...document.querySelectorAll(".msg-body")].some(element=>element.textContent.includes("durable offline outbox"))'), 20, 'offline transcript rendered')
+            rpc(alice, 'vault_lock')
+            receipt['assertions'].append('offline root navigation, cached WASM worker and rendered encrypted history with the web server stopped; network config excluded from caches')
             receipt['stage'] = 'passed'
             print('MESSENGER_PASS live browser exchange and restart recovery', flush=True)
     except Exception as error:
@@ -283,7 +321,7 @@ def main():
         cap_file.unlink(missing_ok=True)
         receipt['elapsed_seconds'] = round(time.monotonic() - started, 2)
         content = json.dumps(receipt, indent=2)
-        if any(secret in content for secret in (capability, password_a, password_b)):
+        if any(secret in content for secret in private_secrets):
             raise RuntimeError('secret unexpectedly entered public receipt')
         (output / 'receipt.json').write_text(content)
         with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
