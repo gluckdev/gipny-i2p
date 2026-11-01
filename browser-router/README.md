@@ -28,10 +28,11 @@ JavaScript-объекты остаются в локальных задачах;
 
 Проверки выполняются в GitHub Actions:
 [Browser router WASM](../.github/workflows/browser-router.yml). Workflow
-собирает upstream core и release WASM с `--locked`, затем запускает восемь
+собирает upstream core и release WASM с `--locked`, затем запускает девять
 тестов WASM в headless Chrome: часы/RNG/задачи/таймеры, gzip и ограничение
 распаковки, недоступные сетевые операции, URL, короткие чтения, пустые кадры,
-EOF, ошибочные кадры/переполнение/обрыв и отказ подключения. Python-сервер
+EOF, ошибочные кадры/переполнение/обрыв, отказ подключения и backpressure
+при большой записи. Python-сервер
 из `tests/echo_server.py` — только fixture с заранее заданными ответами.
 Локальных сборок и запусков тестов для этого эксперимента нет.
 

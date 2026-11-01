@@ -173,3 +173,45 @@ async fn connection_refusal_returns_none() {
             .is_none()
     );
 }
+
+#[wasm_bindgen_test]
+async fn output_queue_applies_backpressure_and_preserves_large_writes() {
+    use std::task::Poll;
+    let mut stream = connect(10108).await;
+    let payload = vec![7_u8; 12 * 65536 + 17];
+    let mut offset = 0;
+    let mut saw_pending = false;
+    let mut saw_partial = false;
+    poll_fn(|cx| loop {
+        if offset == payload.len() {
+            return Poll::Ready(());
+        }
+        match Pin::new(&mut stream).poll_write(cx, &payload[offset..]) {
+            Poll::Ready(Ok(n)) => {
+                assert!(n > 0);
+                saw_partial |= n < payload.len() - offset;
+                offset += n;
+            }
+            Poll::Ready(Err(error)) => panic!("write failed: {error}"),
+            Poll::Pending => {
+                saw_pending = true;
+                return Poll::Pending;
+            }
+        }
+    })
+    .await;
+    assert!(saw_partial);
+    assert!(saw_pending);
+    write(&mut stream, b"done").await;
+    let mut receipt = [0_u8; 16];
+    let mut filled = 0;
+    while filled < receipt.len() {
+        let n = read(&mut stream, &mut receipt[filled..]).await.unwrap();
+        assert!(n > 0);
+        filled += n;
+    }
+    let received = u64::from_be_bytes(receipt[..8].try_into().unwrap());
+    let checksum = u64::from_be_bytes(receipt[8..].try_into().unwrap());
+    assert_eq!(received, payload.len() as u64);
+    assert_eq!(checksum, payload.len() as u64 * 7);
+}

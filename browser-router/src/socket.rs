@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -52,10 +52,16 @@ pub fn configure_forwarder(endpoint: &str) -> Result<(), &'static str> {
 struct Terminal {
     closed: AtomicBool,
     failed: AtomicBool,
+    pending_writes: AtomicUsize,
+    clean_drained: AtomicBool,
     waker: AtomicWaker,
 }
 
 impl Terminal {
+    fn flushed_on_close(&self) -> bool {
+        self.clean_drained.load(Ordering::SeqCst) && !self.failed.load(Ordering::SeqCst)
+    }
+
     fn finish(&self, failed: bool) {
         if failed {
             self.failed.store(true, Ordering::SeqCst);
@@ -162,12 +168,13 @@ impl AsyncWrite for BrowserTcpStream {
             Err(_) => Poll::Ready(Err(Error::DialFailure)),
             Ok(()) => {
                 let n = buf.len().min(MAX_FRAME);
-                Poll::Ready(
-                    Pin::new(&mut this.commands)
-                        .start_send(Command::Write(buf[..n].to_vec()))
-                        .map(|_| n)
-                        .map_err(|_| Error::DialFailure),
-                )
+                this.terminal.pending_writes.fetch_add(1, Ordering::SeqCst);
+                let sent =
+                    Pin::new(&mut this.commands).start_send(Command::Write(buf[..n].to_vec()));
+                if sent.is_err() {
+                    this.terminal.pending_writes.fetch_sub(1, Ordering::SeqCst);
+                }
+                Poll::Ready(sent.map(|_| n).map_err(|_| Error::DialFailure))
             }
         }
     }
@@ -176,6 +183,16 @@ impl AsyncWrite for BrowserTcpStream {
         let this = self.get_mut();
         if this.write_closed {
             return Poll::Ready(Ok(()));
+        }
+        // A peer may finish a clean close after receiving all our writes but
+        // before the local actor handles the flush command. Preserve success
+        // only when onclose observed no queued writes and bufferedAmount == 0.
+        if this.terminal.closed.load(Ordering::SeqCst) {
+            return Poll::Ready(if this.terminal.flushed_on_close() {
+                Ok(())
+            } else {
+                Err(Error::DialFailure)
+            });
         }
         if this.flushing.is_none() {
             if futures::ready!(Pin::new(&mut this.commands).poll_ready(cx)).is_err() {
@@ -192,11 +209,13 @@ impl AsyncWrite for BrowserTcpStream {
         }
         let result = futures::ready!(Pin::new(this.flushing.as_mut().unwrap()).poll(cx));
         this.flushing = None;
-        Poll::Ready(if matches!(result, Ok(true)) {
-            Ok(())
-        } else {
-            Err(Error::DialFailure)
-        })
+        Poll::Ready(
+            if matches!(result, Ok(true)) || this.terminal.flushed_on_close() {
+                Ok(())
+            } else {
+                Err(Error::DialFailure)
+            },
+        )
     }
 
     fn poll_close(
@@ -258,8 +277,8 @@ async fn run_socket(endpoint: String, reply: oneshot::Sender<Option<BrowserTcpSt
         let state = terminal.clone();
         Closure::new(move |event: MessageEvent| {
             let data = event.data();
-            // Reject text, oversize messages and a saturated queue before
-            // allocating/copying the payload into Rust memory.
+            // Reject text and oversize messages before copying into Rust.
+            // A saturated bounded queue closes the stream instead of growing.
             if let Some(array) = data.dyn_ref::<js_sys::ArrayBuffer>() {
                 if array.byte_length() <= MAX_FRAME as u32
                     && tx
@@ -292,7 +311,14 @@ async fn run_socket(endpoint: String, reply: oneshot::Sender<Option<BrowserTcpSt
     let close = {
         let state = terminal.clone();
         let opened = opened_tx.clone();
+        let ws = ws.clone();
         Closure::new(move |event: CloseEvent| {
+            state.clean_drained.store(
+                event.was_clean()
+                    && ws.buffered_amount() == 0
+                    && state.pending_writes.load(Ordering::SeqCst) == 0,
+                Ordering::SeqCst,
+            );
             state.finish(!event.was_clean());
             if let Some(tx) = opened.borrow_mut().take() {
                 let _ = tx.send(false);
@@ -366,6 +392,7 @@ async fn run_socket(endpoint: String, reply: oneshot::Sender<Option<BrowserTcpSt
                     terminal.finish(true);
                     break;
                 }
+                terminal.pending_writes.fetch_sub(1, Ordering::SeqCst);
             }
             Command::Flush(ack) => {
                 let _ = ack.send(true);

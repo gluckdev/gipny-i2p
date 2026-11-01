@@ -11,6 +11,8 @@ async def handle(socket):
         await socket.close(code=1008)
         return
     target = targets[0]
+    received = 0
+    checksum = 0
     async for data in socket:
         if not isinstance(data, bytes):
             await socket.close(code=1003)
@@ -33,6 +35,12 @@ async def handle(socket):
         elif target == "127.0.0.1:10107":
             for _ in range(32):
                 await socket.send(bytes(16384))
+        elif target == "127.0.0.1:10108":
+            if data == b"done":
+                await socket.send(received.to_bytes(8, "big") + checksum.to_bytes(8, "big"))
+            else:
+                received += len(data)
+                checksum += sum(data)
         else:
             await socket.close(code=1008)
             return
