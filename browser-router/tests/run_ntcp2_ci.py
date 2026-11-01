@@ -8,9 +8,11 @@ import sys
 import time
 
 
-def wait_port(port, seconds=15):
+def wait_port(port, seconds=15, process=None):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            raise RuntimeError(f"fixture exited with code {process.returncode} before opening port {port}")
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=1):
                 return
@@ -35,7 +37,7 @@ def main():
     peer = subprocess.Popen([str(root / "target/release/native-peer"), str(data)], stdout=peer_log, stderr=subprocess.STDOUT)
     forwarder = None
     try:
-        wait_port(19720, 30)
+        wait_port(19720, 30, peer)
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline:
             if peer.poll() is not None:
@@ -49,7 +51,7 @@ def main():
             "--host", "127.0.0.1:18767", "--origin", "http://127.0.0.1:18769",
             "--capability-file", str(capability_file), "--candidates", str(candidates),
             "--allow-fixture-loopback"], cwd=root, stdout=forwarder_log, stderr=subprocess.STDOUT)
-        wait_port(18767)
+        wait_port(18767, process=forwarder)
         environment = dict(os.environ, GIPNY_NTCP2_CANDIDATES=str(candidates),
             GIPNY_FORWARDER_CAPABILITY=capability, WASM_BINDGEN_TEST_ADDRESS="127.0.0.1:18769",
             WASM_BINDGEN_TEST_TIMEOUT="300")

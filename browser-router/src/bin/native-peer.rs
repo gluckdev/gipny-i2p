@@ -9,7 +9,7 @@ fn main() {
             format!("--datadir={directory}"),
             "--notransit".into(),
             "--host=127.0.0.1".into(),
-            "--nat=true".into(),
+            "--nat".into(),
             "--ntcp2.port=19720".into(),
             "--ntcp2.published=true".into(),
             "--ssu2.enabled=false".into(),

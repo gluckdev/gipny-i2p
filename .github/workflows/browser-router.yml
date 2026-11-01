@@ -76,6 +76,7 @@ jobs:
             browser-router/wasm-size.txt
             browser-router/SHA256SUMS.txt
             browser-router/source-commit.txt
+            browser-router/LICENSE-emissary
           if-no-files-found: error
           retention-days: 5
 
