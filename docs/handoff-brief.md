@@ -1269,3 +1269,61 @@ Raw release WASM с экспортом `ntcp2_probe` — 1 451 904 байта. �
 без форка upstream. Следующее — client-only NTCP2 в emissary, exploratory
 pool, затем netDb/bootstrap/память и телефон. В PR обновлены README и план;
 слияние/публикация не выполнялись.
+
+ПРОДОЛЖЕНИЕ 2026-11-01: ПОЛНЫЙ ROUTER В CHROME/WASM И EXPLORATORY
+
+По следующему «go» владельца в том же draft PR #143 запущен настоящий
+`Router<BrowserRuntime>`. Коммит `d18630c`,
+[GitHub run 41277188521](https://github.com/gluckdev/gipny-i2p/actions/runs/41277188521)
+прошёл целиком: core/release WASM с `--locked`, **3 Chrome unit + 10 Chrome
+runtime + 6 Python forwarder + 3 Chrome NTCP2 + 1 Chrome exploratory PASS**.
+Все сборки и исполнение тестов — только GitHub Actions.
+
+Listener-блокер устранён отслеживаемым
+`browser-router/patches/client-only-ntcp2.patch` поверх emissary
+`5e696a90276c316ebc5ec3a1d0815b02f17516ef`. Подготовка исходников —
+`browser-router/scripts/prepare_emissary.py`, manifest — `emissary-source.json`,
+generated checkout — `browser-router/upstream/emissary/`. Скрипт проверяет
+официальный remote, точный HEAD, отсутствие неизвестных файлов и байтовое
+совпадение всего diff с патчем; provenance сохраняется в WASM-артефакте.
+SHA256 патча и diff:
+`4cb5f8fe8971d001905b7b6d029dd0b1a21c5e1b7b0cb7ab69c7835d0fe49b88`.
+Перед Cargo в CI и Rust CodeQL нужно выполнять этот скрипт. Старый соседний
+черновик emissary по-прежнему не используется.
+
+`Runtime::TCP_LISTENER_SUPPORTED` по умолчанию true; браузер задаёт false.
+NTCP2 использует разрешённые IP-семейства независимо от наличия listener,
+локальный RI содержит только ключ без входящего socket/IV, опубликованных
+портов нет. Попытка публикации возвращает ошибку. Криптография и `Send`/`Sync`
+не менялись. Runtime теперь хранит метрики, пустой JoinSet остаётся открытым
+и пробуждает владельца при новых задачах; task scope отменяет дочерние задачи
+при завершении/таймауте и запрещает параллельные router scopes на одном thread.
+Эти свойства проверены регрессиями, включая отказ входящей публикации.
+
+Live exploratory использовал 61 публичный seed RI из свежего verified
+reseed/netDb с повторной проверкой подписей в WASM. Дефолтный pool — 3 inbound
+и 3 outbound по 2 хопа; без transit, SAM/I2CP, SSU2, local IPs и insecure hop
+selection. Receipt `EXPLORATORY_PASS`: router `uo63A6bs`, 10 соединений,
+3 входящих и 3 исходящих туннеля, 7 успешных tunnel roundtrip. Наличие хотя бы
+одного пути в каждую сторону сохранялось 40 секунд; после 30-секундной границы
+обязательно получен ещё один roundtrip. Готовность — 81 298 мс, завершение —
+121 313 мс. Отсчёт после первичной проверки seed RI, перед RouterBuilder:
+загрузка страницы/WASM и получение netDb в него не входят. Линейная память
+в конце — 5 111 808 байт (4,875 МиБ), без JS heap и без измерения пика.
+
+Raw release WASM полного роутера — 3 403 781 байт. Артефакты:
+`browser-router-wasm` (`13070529979`, ZIP 987 085 байт вместе с метаданными),
+`browser-exploratory-evidence` (`13071837628`) и `browser-ntcp2-evidence`
+(`13071847528`). Повторные NTCP2 handshake: native 237 мс, публичный 575 мс
+с первой попытки, аутентифицированные data-phase ответы. Форвардер для полного
+роутера ограничен 24 соединениями / 600 секундами / 32 МиБ на соединение,
+idle 120 секунд; обычные probe defaults остаются 8 / 60 / 8 МиБ.
+Private keys/capability не сохраняются.
+
+Этапы 1 и 2 плана подтверждены. Следующее — доставка снапшота netDb прямо
+в браузер, распаковка/проверка подписей, замеры полного bootstrap и пика
+памяти, затем телефон. Размер raw WASM выше исходного ориентира ~1,9 МБ,
+bootstrap за секунды ещё не подтверждён. Messenger/client pool, обмен двух
+браузеров, OPFS/passkey и PWA lifecycle остаются отдельными этапами.
+PR #143 остаётся draft; слияние/публикация не выполнялись. Исходные локальные
+изменения `third_party/i2pd-android` не затронуты.

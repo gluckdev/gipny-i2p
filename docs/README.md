@@ -20,7 +20,7 @@
 
 | Файл | Что это | Статус | Когда обновлять |
 |---|---|---|---|
-| [Браузерный I2P runtime, 2026-11-01](plans/2026-11-01-browser-router-wasm.md) | План проверки WASM и [отдельный runtime](../browser-router/README.md) для закреплённого emissary-core | `b912f01`: WASM build, 9 runtime + 5 forwarder + 3 NTCP2 tests PASS в GitHub; живой публичный NTCP2 подтверждён, полный Router/exploratory ещё впереди | По результатам client-only Router, exploratory, netDb/bootstrap и мобильных замеров |
+| [Браузерный I2P runtime, 2026-11-01](plans/2026-11-01-browser-router-wasm.md) | План проверки WASM и [отдельный runtime](../browser-router/README.md) для закреплённого emissary-core с проверяемым client-only патчем | `d18630c`, CI `41277188521`: полный Router в Chrome/WASM, exploratory 3+3 по 2 хопа, 40 секунд доступности, 7 roundtrip; 3 unit + 10 runtime + 6 forwarder + 3 NTCP2 + 1 exploratory PASS | Доставка netDb, полный bootstrap/пик памяти и мобильные замеры |
 | [Локальный веб-режим, 2026-10-31](plans/2026-10-31-web-local-mode.md) | Решение владельца, loopback capability и статический Pages UI | Эксперимент от 2026-10-31; реальные браузеры/платформы не подтверждены | При изменении протокола сопряжения, модели доверия и результатов проверок |
 | [today-2026-10-28.md](today-2026-10-28.md) | Состав объединённой ветки, границы реализации и отдельно проверенные результаты | Снимок 2026-10-28; выпущено в v0.4.19 (2026-10-29) | После интеграции, общих проверок и перед выпуском |
 | [localization.md](localization.md) | Полный перевод UI на английский с сохранением русского: выбор языка, состояние, ошибки, проверки | Выпущено в v0.4.19 (2026-10-29) | Вместе с каждым изменением UI и его обещаний |

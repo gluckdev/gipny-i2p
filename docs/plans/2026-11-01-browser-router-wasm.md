@@ -1,9 +1,10 @@
 # Браузерный I2P-роутер: проверка реализуемости (WASM)
 
 Дата: **2026-11-01**. Исследование — `reports/I2P клиент в браузере.md`, заметки —
-`research_notes/I2P клиент в браузере/`. Статус: **runtime реализован в
-`browser-router/`; GitHub CI: WASM build и 9/9 Chrome tests PASS;
-живое NTCP2 проверено, полный браузерный роутер ещё не запущен**.
+`research_notes/I2P клиент в браузере/`. Статус: **этапы 1 и 2 подтверждены
+GitHub CI: полный клиентский Router в Chrome/WASM построил exploratory
+3 inbound + 3 outbound по 2 хопа, удержал доступность 40 секунд и подтвердил
+7 roundtrip. Этап 3 — доставка netDb и мобильный bootstrap — впереди**.
 
 ## Контекст и требование владельца
 
@@ -138,11 +139,52 @@ fixture — 687 аутентифицированных байт/3 блока, 19
 Артефакты run: `browser-ntcp2-evidence` (`13069873728`) и
 `browser-router-wasm` (`13070052907`). Private keys и capability в них нет.
 
-Этап 2 плана ещё не завершён: критерий требует exploratory-туннель.
-Обнаружен отдельный блокер upstream — `Ntcp2Transport::initialize` обязательно
+На checkpoint `b912f01` этап 2 ещё не был завершён: критерий требует
+exploratory-туннель. Блокер upstream — `Ntcp2Transport::initialize` обязательно
 bind'ит listener, а `classify` и `connect` используют его наличие
-как разрешение исходящего транспорта. Поэтому текущий `ntcp2::probe`
-использует публичные crypto API emissary, но не выдаётся за запущенный
-`Router<BrowserRuntime>`. Следующая доработка — явный client-only транспорт,
-затем exploratory и netDb/bootstrap в браузере; интерфейс `Runtime` менять
-ради `Send`/`Sync` до сих пор не потребовалось.
+как разрешение исходящего транспорта. На том этапе `ntcp2::probe`
+использовал публичные crypto API emissary без запуска `Router<BrowserRuntime>`.
+Для полного Router потребовался явный client-only транспорт (следующий
+раздел); менять требования `Send`/`Sync` не потребовалось.
+
+## Полный Router и exploratory: этап 2 пройден (2026-11-01)
+
+Коммит `d18630c`, [GitHub run 41277188521](https://github.com/gluckdev/gipny-i2p/actions/runs/41277188521):
+**3 Chrome unit, 10 Chrome runtime, 6 Python forwarder, 3 Chrome NTCP2 и
+1 Chrome exploratory tests PASS**, сборки core/release WASM с `--locked`.
+Сборки и исполнение тестов выполнялись только в GitHub Actions.
+
+Блокер listener устранён отслеживаемым `client-only-ntcp2.patch` поверх
+emissary `5e696a90276c316ebc5ec3a1d0815b02f17516ef`. Новый default trait const
+`TCP_LISTENER_SUPPORTED=true` сохраняет нативный режим; BrowserRuntime задаёт
+false. Исходящий NTCP2 работает без listener, RI не публикует входящий адрес,
+порты в `ProtocolAddressInfo` отсутствуют, запрос публикации отклоняется.
+Криптография и требования `Send`/`Sync` не менялись. Source preparation
+проверяет полный SHA и точное совпадение diff с патчем, сохраняет provenance;
+SHA256 патча/diff — `4cb5f8fe8971d001905b7b6d029dd0b1a21c5e1b7b0cb7ab69c7835d0fe49b88`.
+
+Роутер использовал 61 публичный seed RI из свежего verified reseed/netDb,
+повторно проверенный в WASM. Дефолтный exploratory pool — 3 inbound и
+3 outbound по 2 хопа; transit, SAM/I2CP, SSU2 и insecure hop selection
+выключены. В конце — 10 соединений, 3 входящих и 3 исходящих туннеля,
+7 реальных tunnel roundtrip. После готовности хотя бы одного пути в каждую
+сторону доступность сохранялась 40 секунд; CI потребовал новый успешный
+roundtrip после 30-секундной границы. Пустой JoinSet теперь остаётся открытым
+и пробуждается при добавлении задач; scoped cancellation отменяет задачи
+роутера при завершении/таймауте. Эти свойства покрыты отдельными регрессиями.
+
+Готовность достигнута за 81 298 мс, проверка завершена за 121 313 мс.
+Таймер стартует после первичной проверки seed RI, перед RouterBuilder;
+он не включает загрузку страницы, WASM и netDb. Линейная WASM memory в
+конце — 5 111 808 байт (4,875 МиБ); пик и JS heap не измерены. Raw WASM
+полного роутера — 3 403 781 байт, что выше исходного ориентира ~1,9 МБ;
+ZIP артефакта вместе с метаданными — 987 085 байт, это не размер загрузки
+готового приложения. Мобильная скорость и bootstrap за секунды ещё не
+подтверждены.
+
+Артефакты: `browser-exploratory-evidence` (`13071837628`),
+`browser-ntcp2-evidence` (`13071847528`), `browser-router-wasm` (`13070529979`).
+Следующий эксперимент — доставка снапшота netDb непосредственно в браузер,
+распаковка/проверка подписей и замеры полного bootstrap и пика памяти,
+затем телефон. Клиентский messenger pool, обмен двух браузеров, OPFS/passkey
+и PWA lifecycle остаются отдельными этапами.
