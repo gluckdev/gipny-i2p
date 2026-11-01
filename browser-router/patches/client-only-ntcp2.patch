@@ -134,8 +134,38 @@ index 427fe88..427d53a 100644
      }
  
      #[tokio::test]
+diff --git a/emissary-core/src/destination/session/context.rs b/emissary-core/src/destination/session/context.rs
+index 977cb30..1c55cfa 100644
+--- a/emissary-core/src/destination/session/context.rs
++++ b/emissary-core/src/destination/session/context.rs
+@@ -243,6 +243,25 @@ pub struct KeyContext<R: Runtime> {
+ }
+ 
+ impl<R: Runtime> KeyContext<R> {
++    /// Whether this destination advertises the remote key's encryption type.
++    pub fn supports_public_key(&self, key: &StaticPublicKey) -> bool {
++        match key {
++            StaticPublicKey::X25519(_) => self.inbound_context.x25519.is_some(),
++            StaticPublicKey::MlKem512X25519(_) => core::matches!(
++                self.inbound_context.ml_kem.as_ref(),
++                Some(MlKemKind::MlKem512X25519 { .. })
++            ),
++            StaticPublicKey::MlKem768X25519(_) => core::matches!(
++                self.inbound_context.ml_kem.as_ref(),
++                Some(MlKemKind::MlKem768X25519 { .. })
++            ),
++            StaticPublicKey::MlKem1024X25519(_) => core::matches!(
++                self.inbound_context.ml_kem.as_ref(),
++                Some(MlKemKind::MlKem1024X25519 { .. })
++            ),
++        }
++    }
++
+     /// Create new `KeyContext` from a private key and supported public keys.
+     ///
+     /// `public_keys` is guaranteed to contain at least one element corresponding to the private key
 diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
-index 0fdce43..6537411 100644
+index 0fdce43..66fdf1e 100644
 --- a/emissary-core/src/destination/session/mod.rs
 +++ b/emissary-core/src/destination/session/mod.rs
 @@ -312,7 +312,22 @@ impl<R: Runtime> SessionManager<R> {
@@ -162,7 +192,7 @@ index 0fdce43..6537411 100644
      }
  
      /// Remove session for `destination_id` from active sessions.
-@@ -786,6 +801,17 @@ impl<R: Runtime> SessionManager<R> {
+@@ -786,6 +801,15 @@ impl<R: Runtime> SessionManager<R> {
                      return Err(SessionError::InvalidKey);
                  }
  
@@ -170,9 +200,7 @@ index 0fdce43..6537411 100644
 +                // Otherwise the first later lookup has no previous key to compare
 +                // against and leaves an active pre-restart ECIES session alive.
 +                if let Some(remote_key) = lease_set.public_keys.iter().find(|remote_key| {
-+                    self.public_keys.iter().any(|local_key| {
-+                        mem::discriminant(*remote_key) == mem::discriminant(local_key)
-+                    })
++                    self.key_context.supports_public_key(remote_key)
 +                }) {
 +                    self.add_remote_destination(destination_id.clone(), remote_key.clone());
 +                }
@@ -180,7 +208,7 @@ index 0fdce43..6537411 100644
                  match self.pending.get_mut(&destination_id) {
                      None => {
                          tracing::debug!(
-@@ -1136,6 +1162,98 @@ mod tests {
+@@ -1136,6 +1160,98 @@ mod tests {
  
      const TEST_THRESHOLD: u16 = 10;
  
