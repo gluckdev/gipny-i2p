@@ -8,12 +8,13 @@ description = "Experimental browser runtime for the emissary I2P router"
 
 # Keep native application dependencies (Tokio, SQLCipher, OpenSSL) out of WASM.
 [workspace]
+exclude = ["upstream/emissary", "upstream/emissary/*"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-emissary-core = { git = "https://github.com/eepnet/emissary", rev = "5e696a90276c316ebc5ec3a1d0815b02f17516ef", default-features = false, features = ["std"] }
+emissary-core = { path = "upstream/emissary/emissary-core", default-features = false, features = ["std", "events"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 futures = "0.3"
 getrandom = { version = "0.4", features = ["wasm_js"] }
@@ -23,7 +24,7 @@ rand = { version = "0.10", features = ["thread_rng"] }
 url = "2.5"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["BinaryType", "CloseEvent", "Event", "MessageEvent", "WebSocket"] }
+web-sys = { version = "0.3", features = ["BinaryType", "CloseEvent", "Event", "MessageEvent", "WebSocket", "console"] }
 web-time = "1.1"
 zeroize = "1"
 
@@ -33,6 +34,7 @@ i2p-embed = { path = "../i2p-embed", optional = true }
 [features]
 native-peer = ["dep:i2p-embed", "dep:cc"]
 ntcp2-live-tests = []
+router-live-tests = []
 
 [[bin]]
 name = "native-peer"

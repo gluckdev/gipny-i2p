@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import argparse
 
 
 def wait_port(port, seconds=15, process=None):
@@ -21,9 +22,9 @@ def wait_port(port, seconds=15, process=None):
     raise RuntimeError(f"port {port} did not become ready")
 
 
-def main():
+def main(router_mode=False):
     root = Path(__file__).resolve().parents[1]
-    output = Path(os.environ["RUNNER_TEMP"]) / "browser-ntcp2"
+    output = Path(os.environ["RUNNER_TEMP"]) / ("browser-router-live" if router_mode else "browser-ntcp2")
     output.mkdir(exist_ok=True)
     data = output / "native-peer"
     candidates = output / "candidates.tsv"
@@ -44,32 +45,34 @@ def main():
             if peer.poll() is not None:
                 raise RuntimeError("native peer exited")
             files = list((data / "netDb").rglob("routerInfo-*.dat"))
-            if len(files) >= 25:
+            if len(files) >= (150 if router_mode else 25):
                 break
             time.sleep(2)
-        subprocess.run([str(root / "target/release/prepare-netdb"), str(data), str(candidates), "12"], check=True)
+        subprocess.run([str(root / "target/release/prepare-netdb"), str(data), str(candidates), "512" if router_mode else "12"], check=True)
+        limits = ["--max-connections", "24", "--session-seconds", "600", "--idle-seconds", "120", "--max-bytes", str(32 * 1024 * 1024)] if router_mode else []
         forwarder = subprocess.Popen([sys.executable, "forwarder/server.py",
             "--host", "127.0.0.1:18767", "--origin", "http://127.0.0.1:18769",
             "--capability-file", str(capability_file), "--candidates", str(candidates),
-            "--allow-fixture-loopback"], cwd=root, stdout=forwarder_log, stderr=subprocess.STDOUT)
+            "--allow-fixture-loopback", *limits], cwd=root, stdout=forwarder_log, stderr=subprocess.STDOUT)
         wait_port(18767, process=forwarder)
         environment = dict(os.environ, GIPNY_NTCP2_CANDIDATES=str(candidates),
             GIPNY_FORWARDER_CAPABILITY=capability, WASM_BINDGEN_TEST_ADDRESS="127.0.0.1:18769",
-            WASM_BINDGEN_TEST_TIMEOUT="300")
+            WASM_BINDGEN_TEST_TIMEOUT="420" if router_mode else "300")
         # Stream to a retained log without printing the capability-bearing env.
-        with (output / "wasm-ntcp2.log").open("w") as log:
+        log_path = output / ("wasm-router.log" if router_mode else "wasm-ntcp2.log")
+        with log_path.open("w") as log:
             process = subprocess.Popen(["wasm-pack", "test", "--headless", "--chrome", "--locked",
-                "--features", "ntcp2-live-tests", "--test", "ntcp2", "--", "--nocapture"],
+                "--features", "router-live-tests" if router_mode else "ntcp2-live-tests", "--test", "router" if router_mode else "ntcp2", "--", "--nocapture"],
                 cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             for line in process.stdout:
                 print(line, end="", flush=True)
                 log.write(line)
             if process.wait() != 0:
-                raise RuntimeError("WASM NTCP2 tests failed")
+                raise RuntimeError("WASM router tests failed" if router_mode else "WASM NTCP2 tests failed")
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
-            summary.write("### Browser NTCP2\n\n")
-            for line in (output / "wasm-ntcp2.log").read_text().splitlines():
-                if "NTCP2_NATIVE_PASS" in line or "NTCP2_PUBLIC_PASS" in line or "test result:" in line:
+            summary.write("### Browser exploratory router\n\n" if router_mode else "### Browser NTCP2\n\n")
+            for line in log_path.read_text().splitlines():
+                if any(marker in line for marker in ["NTCP2_NATIVE_PASS", "NTCP2_PUBLIC_PASS", "EXPLORATORY_PASS", "test result:"]):
                     summary.write(f"{line}\n\n")
     finally:
         if forwarder is not None:
@@ -87,4 +90,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--router", action="store_true")
+    main(parser.parse_args().router)

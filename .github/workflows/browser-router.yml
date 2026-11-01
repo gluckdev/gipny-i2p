@@ -23,6 +23,8 @@ jobs:
         working-directory: browser-router
     steps:
       - uses: actions/checkout@v6
+      - name: Prepare pinned emissary and reviewed client-only patch
+        run: python3 scripts/prepare_emissary.py
       - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: wasm32-unknown-unknown
@@ -65,6 +67,7 @@ jobs:
           wasm-pack test --headless --chrome --locked
       - name: Record artifact size and source
         run: |
+          python3 scripts/prepare_emissary.py
           wc -c target/wasm32-unknown-unknown/release/gipny_browser_router.wasm | tee wasm-size.txt
           sha256sum Cargo.lock target/wasm32-unknown-unknown/release/gipny_browser_router.wasm > SHA256SUMS.txt
           printf '%s\n' "$GITHUB_SHA" > source-commit.txt
@@ -77,15 +80,18 @@ jobs:
             browser-router/SHA256SUMS.txt
             browser-router/source-commit.txt
             browser-router/LICENSE-emissary
+            browser-router/emissary-provenance.json
           if-no-files-found: error
           retention-days: 5
 
   ntcp2:
-    name: NTCP2 browser to native and public I2P
+    name: Browser NTCP2 and exploratory tunnels
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
+      - name: Prepare pinned emissary and reviewed client-only patch
+        run: python3 browser-router/scripts/prepare_emissary.py
       - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: wasm32-unknown-unknown
@@ -111,6 +117,10 @@ jobs:
         run: python3 -m pip install websockets==15.0.1
       - name: Real NTCP2 handshakes from WASM in Chrome
         run: python3 browser-router/tests/run_ntcp2_ci.py
+      - name: Full browser router and two-hop exploratory roundtrips
+        run: python3 browser-router/tests/run_ntcp2_ci.py --router
+      - name: Verify source provenance after tests
+        run: python3 browser-router/scripts/prepare_emissary.py
       - name: Keep public protocol evidence and diagnostics
         if: always()
         uses: actions/upload-artifact@v7
@@ -122,5 +132,18 @@ jobs:
             ${{ runner.temp }}/browser-ntcp2/native-peer-stdout.log
             ${{ runner.temp }}/browser-ntcp2/native-peer/i2pd.log
             ${{ runner.temp }}/browser-ntcp2/candidates.tsv
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Keep exploratory evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-exploratory-evidence
+          path: |
+            ${{ runner.temp }}/browser-router-live/wasm-router.log
+            ${{ runner.temp }}/browser-router-live/forwarder.log
+            ${{ runner.temp }}/browser-router-live/native-peer-stdout.log
+            ${{ runner.temp }}/browser-router-live/candidates.tsv
+            browser-router/emissary-provenance.json
           if-no-files-found: warn
           retention-days: 5

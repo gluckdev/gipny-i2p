@@ -439,7 +439,6 @@ dependencies = [
 [[package]]
 name = "emissary-core"
 version = "0.4.0"
-source = "git+https://github.com/eepnet/emissary?rev=5e696a90276c316ebc5ec3a1d0815b02f17516ef#5e696a90276c316ebc5ec3a1d0815b02f17516ef"
 dependencies = [
  "aes",
  "bytes",

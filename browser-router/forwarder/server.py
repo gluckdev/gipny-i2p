@@ -46,16 +46,24 @@ class Lease:
 
 
 class Forwarder:
-    def __init__(self, capability, hosts, origins, targets, *, max_connections=8):
+    def __init__(self, capability, hosts, origins, targets, *, max_connections=8,
+                 session_seconds=60, idle_seconds=30, max_bytes=MAX_BYTES):
         if not re.fullmatch(r"[A-Za-z0-9_-]{43}", capability):
             raise ValueError("invalid capability format")
         if not hosts or not origins or not targets:
             raise ValueError("Host, Origin and target allowlists must be explicit")
+        if not (1 <= max_connections <= 32 and 1 <= session_seconds <= 600
+                and 1 <= idle_seconds <= min(session_seconds, 300)
+                and 1 <= max_bytes <= 64 * 1024 * 1024):
+            raise ValueError("invalid bounded session limits")
         self.protocol = PROTOCOL_PREFIX + capability
         self.hosts = frozenset(hosts)
         self.origins = frozenset(origins)
         self.targets = dict(targets)  # canonical address -> Unix expiry
         self.max_connections = max_connections
+        self.session_seconds = session_seconds
+        self.idle_seconds = idle_seconds
+        self.max_bytes = max_bytes
         self.leases = {}
         self.watchers = set()
         self.tokens = 32.0
@@ -148,7 +156,7 @@ class Forwarder:
                     await connection.close(1003, "binary messages required")
                     return
                 lease.received += len(message)
-                if lease.received + lease.sent > MAX_BYTES:
+                if lease.received + lease.sent > self.max_bytes:
                     await connection.close(1009, "session byte limit")
                     return
                 lease.writer.write(message)
@@ -156,18 +164,18 @@ class Forwarder:
 
         async def to_browser():
             while True:
-                chunk = await asyncio.wait_for(connection.ntcp_reader.read(16384), 30)
+                chunk = await asyncio.wait_for(connection.ntcp_reader.read(16384), self.idle_seconds)
                 if not chunk:
                     return
                 lease.sent += len(chunk)
-                if lease.received + lease.sent > MAX_BYTES:
+                if lease.received + lease.sent > self.max_bytes:
                     await connection.close(1009, "session byte limit")
                     return
                 await asyncio.wait_for(connection.send(chunk), 15)
 
         tasks = [asyncio.create_task(from_browser()), asyncio.create_task(to_browser())]
         try:
-            done, _ = await asyncio.wait(tasks, timeout=60, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(tasks, timeout=self.session_seconds, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
         except Exception:
@@ -217,7 +225,9 @@ async def main(args):
         tls.load_cert_chain(args.tls_cert, args.tls_key)
     capability = Path(args.capability_file).read_text().strip()
     forwarder = Forwarder(capability, args.host, args.origin,
-        load_targets(args.candidates, args.allow_fixture_loopback))
+        load_targets(args.candidates, args.allow_fixture_loopback),
+        max_connections=args.max_connections, session_seconds=args.session_seconds,
+        idle_seconds=args.idle_seconds, max_bytes=args.max_bytes)
     # Library debug handshake logs contain request headers, so never enable
     # them for a capability-bearing endpoint.
     logging.getLogger("websockets").setLevel(logging.CRITICAL)
@@ -234,6 +244,10 @@ if __name__ == "__main__":
     parser.add_argument("--capability-file", required=True)
     parser.add_argument("--candidates", required=True)
     parser.add_argument("--allow-fixture-loopback", action="store_true")
+    parser.add_argument("--max-connections", type=int, default=8)
+    parser.add_argument("--session-seconds", type=int, default=60)
+    parser.add_argument("--idle-seconds", type=int, default=30)
+    parser.add_argument("--max-bytes", type=int, default=MAX_BYTES)
     parser.add_argument("--tls-cert")
     parser.add_argument("--tls-key")
     asyncio.run(main(parser.parse_args()))

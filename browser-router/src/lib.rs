@@ -1,10 +1,13 @@
 //! Feasibility runtime, not a shipping router. JS handles remain on the local
 //! browser executor; only channels cross emissary's Send/Sync boundaries.
 
+mod metrics;
 #[cfg(all(feature = "native-peer", not(target_arch = "wasm32")))]
 pub mod native_fixture;
 pub mod ntcp2;
+pub mod router;
 mod socket;
+mod tasks;
 mod unsupported;
 
 use std::{
@@ -15,14 +18,12 @@ use std::{
     time::Duration,
 };
 
-use emissary_core::runtime::{
-    Counter, Gauge, Histogram, Instant as RuntimeInstant, JoinSet, MetricType, MetricsHandle,
-    Runtime,
-};
+use emissary_core::runtime::{Instant as RuntimeInstant, JoinSet, MetricType, Runtime};
 use futures::{channel::oneshot, future::BoxFuture, stream::FuturesUnordered, Stream};
 use rand::{CryptoRng, RngExt};
 use wasm_bindgen::prelude::*;
 
+pub use metrics::{metrics_snapshot, BrowserMetrics, MetricsSnapshot};
 pub use socket::{configure_forwarder, configure_forwarder_authenticated, BrowserTcpStream};
 pub use unsupported::{BrowserTcpListener, BrowserUdpSocket};
 
@@ -32,23 +33,33 @@ pub const MAX_GZIP_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Clone, Copy, Default)]
 pub struct BrowserRuntime;
 
-pub struct BrowserJoinSet<T>(FuturesUnordered<BoxFuture<'static, T>>);
+pub struct BrowserJoinSet<T> {
+    inner: FuturesUnordered<BoxFuture<'static, T>>,
+    waker: Option<std::task::Waker>,
+}
 
 impl<T: Send + 'static> Stream for BrowserJoinSet<T> {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        Pin::new(&mut self.get_mut().0).poll_next(cx)
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_next(cx) {
+            Poll::Ready(Some(value)) => Poll::Ready(Some(value)),
+            _ => {
+                this.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
     }
 }
 
 impl<T: Send + 'static> JoinSet<T> for BrowserJoinSet<T> {
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.inner.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.0.len()
+        self.inner.len()
     }
 
     fn push<F>(&mut self, future: F)
@@ -56,7 +67,10 @@ impl<T: Send + 'static> JoinSet<T> for BrowserJoinSet<T> {
         F: Future<Output = T> + Send + 'static,
         F::Output: Send,
     {
-        self.0.push(Box::pin(future));
+        self.inner.push(Box::pin(future));
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -81,11 +95,12 @@ impl Future for BrowserTimer {
 }
 
 impl Runtime for BrowserRuntime {
+    const TCP_LISTENER_SUPPORTED: bool = false;
     type TcpStream = BrowserTcpStream;
     type UdpSocket = BrowserUdpSocket;
     type TcpListener = BrowserTcpListener;
     type JoinSet<T: Send + 'static> = BrowserJoinSet<T>;
-    type MetricsHandle = NoopMetrics;
+    type MetricsHandle = BrowserMetrics;
     type Instant = BrowserInstant;
     type Timer = BrowserTimer;
 
@@ -94,9 +109,7 @@ impl Runtime for BrowserRuntime {
         F: Future + Send + 'static,
         F::Output: Send,
     {
-        wasm_bindgen_futures::spawn_local(async move {
-            future.await;
-        });
+        tasks::spawn(future);
     }
 
     fn time_since_epoch() -> Duration {
@@ -114,11 +127,14 @@ impl Runtime for BrowserRuntime {
     }
 
     fn join_set<T: Send + 'static>() -> Self::JoinSet<T> {
-        BrowserJoinSet(FuturesUnordered::new())
+        BrowserJoinSet {
+            inner: FuturesUnordered::new(),
+            waker: None,
+        }
     }
 
-    fn register_metrics(_: Vec<MetricType>, _: Option<u16>) -> NoopMetrics {
-        NoopMetrics
+    fn register_metrics(_: Vec<MetricType>, _: Option<u16>) -> BrowserMetrics {
+        metrics::register()
     }
 
     fn timer(duration: Duration) -> BrowserTimer {
@@ -164,34 +180,6 @@ impl Runtime for BrowserRuntime {
         let mut out = Vec::new();
         decoder.read_to_end(&mut out).ok()?;
         (out.len() <= MAX_GZIP_BYTES).then_some(out)
-    }
-}
-
-/// Metrics intentionally have no exporter during this runtime-only spike.
-#[derive(Clone)]
-pub struct NoopMetrics;
-pub struct NoopMetric;
-
-impl Counter for NoopMetric {
-    fn increment(&mut self, _: usize) {}
-    fn increment_with_label(&mut self, _: usize, _: &'static str, _: &'static str) {}
-}
-impl Gauge for NoopMetric {
-    fn increment(&mut self, _: usize) {}
-    fn decrement(&mut self, _: usize) {}
-}
-impl Histogram for NoopMetric {
-    fn record(&mut self, _: f64) {}
-}
-impl MetricsHandle for NoopMetrics {
-    fn counter(&self, _: &'static str) -> impl Counter {
-        NoopMetric
-    }
-    fn gauge(&self, _: &'static str) -> impl Gauge {
-        NoopMetric
-    }
-    fn histogram(&self, _: &'static str) -> impl Histogram {
-        NoopMetric
     }
 }
 

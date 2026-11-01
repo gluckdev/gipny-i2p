@@ -95,6 +95,14 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
                 await client.recv()
             self.assertEqual(result.exception.rcvd.code, 1003)
 
+    async def test_session_deadline_closes_the_tcp_lease(self):
+        self.policy.session_seconds = 0.1
+        async with self.client() as client:
+            with self.assertRaises(ConnectionClosed):
+                await asyncio.wait_for(client.recv(), 2)
+        await asyncio.sleep(0)
+        self.assertFalse(self.policy.leases)
+
     async def test_private_targets_need_explicit_fixture_exception(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "candidates.tsv"

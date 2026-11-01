@@ -66,12 +66,50 @@ async fn timers_tasks_clocks_and_entropy_work_in_browser() {
     });
     assert_eq!(tasks.len(), 2);
     let mut values = Vec::new();
-    while let Some(value) = tasks.next().await {
-        values.push(value);
+    for _ in 0..2 {
+        values.push(tasks.next().await.unwrap());
     }
     values.sort();
     assert_eq!(values, [1, 2]);
     assert!(tasks.is_empty());
+}
+
+#[wasm_bindgen_test]
+async fn idle_join_set_remains_open_and_wakes_when_reused() {
+    use futures::{
+        task::{waker, ArcWake},
+        Stream,
+    };
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll},
+    };
+    struct WakeCount(AtomicUsize);
+    impl ArcWake for WakeCount {
+        fn wake_by_ref(this: &Arc<Self>) {
+            this.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let count = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let waker = waker(count.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut tasks = BrowserRuntime::join_set();
+    assert!(matches!(
+        Pin::new(&mut tasks).poll_next(&mut context),
+        Poll::Pending
+    ));
+    tasks.push(async { 1 });
+    assert!(count.0.load(Ordering::SeqCst) > 0);
+    assert_eq!(tasks.next().await, Some(1));
+    assert!(matches!(
+        Pin::new(&mut tasks).poll_next(&mut context),
+        Poll::Pending
+    ));
+    tasks.push(async { 2 });
+    assert_eq!(tasks.next().await, Some(2));
 }
 
 #[wasm_bindgen_test]
