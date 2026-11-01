@@ -1392,3 +1392,22 @@ pool, обмен двух браузеров, OPFS/passkey и PWA lifecycle. Д�
 физическому устройству не предоставлен; поиск BrowserStack через
 plugin-management не нашёл интеграции. Публичный хостинг не разворачивался,
 PR #143 остаётся draft, исходный dirty Android submodule не затронут.
+
+ПОДГОТОВКА СЛИЯНИЯ #143, 2026-11-01: ИТОГОВАЯ CODEQL-АННОТАЦИЯ
+
+При разрешённом владельцем слиянии обнаружено уточнение к статусам выше:
+успех джоб workflow CodeQL на `6b37dc2`/`646ad94` не означал отсутствие
+security findings. Отдельный итоговый check `CodeQL` содержал critical
+alert #250 `rust/hard-coded-cryptographic-value` на nonce=1 в NTCP2-probe.
+При дальнейших проверках смотреть не только conclusion workflow, но и
+PR statusCheckRollup / annotations / code-scanning alerts.
+
+NTCP2 требует nonce=0 для SessionCreated и следующий nonce=1 для
+SessionConfirmed part 1 под тем же session key; это подтверждено
+[спецификацией](https://i2p.net/en/docs/specs/ntcp2/#encryption-for-for-handshake-message-3-part-1-using-message-2-kdf)
+и pinned emissary initiator. Вместо восстановления cipher с числовым
+nonce probe теперь сохраняет один ChaChaPoly CipherState от расшифровки
+SessionCreated до шифрования SessionConfirmed part 1. Счётчик продвигает
+сама реализация cipher. Правила CodeQL не отключаются, alert вручную
+не dismiss'ится. До слияния требуется повторный GitHub CI с native/public
+NTCP2 и проверка итоговой аннотации CodeQL на новом head.

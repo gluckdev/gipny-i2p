@@ -187,7 +187,8 @@ async fn handshake(peer: VerifiedPeer) -> Result<ProbeReceipt, ProbeError> {
     noise.mix_hash(y);
     let key = Zeroizing::new(noise.mix_key(&ephemeral, &remote_ephemeral));
     let mut options = created[32..].to_vec();
-    ChaChaPoly::new(key.as_ref())
+    let mut handshake_cipher = ChaChaPoly::new(key.as_ref());
+    handshake_cipher
         .decrypt_with_ad(noise.state(), &mut options)
         .map_err(|_| ProbeError::Authentication("SessionCreated"))?;
     if options.len() != 16 {
@@ -206,9 +207,13 @@ async fn handshake(peer: VerifiedPeer) -> Result<ProbeReceipt, ProbeError> {
     read_exact(&mut stream, &mut padding).await?;
     noise.mix_hash(&created[32..]).mix_hash(padding);
     let mut confirmed = local_static.public().to_vec();
-    ChaChaPoly::with_nonce(key.as_ref(), 1)
+    // Continue the same Noise CipherState: SessionCreated consumed nonce 0,
+    // so SessionConfirmed part 1 uses the next nonce with the same key.
+    // https://i2p.net/en/docs/specs/ntcp2/#encryption-for-for-handshake-message-3-part-1-using-message-2-kdf
+    handshake_cipher
         .encrypt_with_ad_new(noise.state(), &mut confirmed)
         .map_err(|_| ProbeError::Authentication("local static key"))?;
+    drop(handshake_cipher);
     noise.mix_hash(&confirmed);
     let key = Zeroizing::new(noise.mix_key(&local_static, &remote_ephemeral));
     let mut info_block = vec![2];
