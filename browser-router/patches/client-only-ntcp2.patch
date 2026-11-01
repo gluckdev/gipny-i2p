@@ -9,7 +9,7 @@ index b9a3cf3..2ccc0a9 100644
  version = "0.4.0"
  edition.workspace = true
 diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
-index 427fe88..427d53a 100644
+index 427fe88..cd4aa2d 100644
 --- a/emissary-core/src/destination/mod.rs
 +++ b/emissary-core/src/destination/mod.rs
 @@ -207,6 +207,9 @@ pub struct Destination<R: Runtime> {
@@ -72,7 +72,40 @@ index 427fe88..427d53a 100644
              );
          }
  
-@@ -860,6 +884,7 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -672,6 +696,14 @@ impl<R: Runtime> Destination<R> {
+                                 "store lease set for remote destination",
+                             );
+ 
++                            if self.remote_destinations.get(&destination_id).is_some_and(|current| {
++                                current.lease_set.header.published > lease_set.header.published
++                            }) {
++                                R::client_event("client_stale_garlic_lease_ignored", 1);
++                                return None;
++                            }
++
++                            self.stale_destinations.remove(&destination_id);
+                             self.routing_path_manager
+                                 .register_leases(&destination_id, Ok(lease_set.leases.clone()));
+ 
+@@ -847,6 +879,17 @@ impl<R: Runtime> Stream for Destination<R> {
+             Poll::Pending => {}
+             Poll::Ready(None) => return Poll::Ready(None),
+             Poll::Ready(Some((destination_id, result))) => {
++                // A delayed floodfill reply must not roll back a newer signed
++                // LeaseSet already learned from a peer's inbound garlic message.
++                let result = result.map(|lease_set| {
++                    match self.remote_destinations.get(&destination_id) {
++                        Some(current) if current.lease_set.header.published > lease_set.header.published => {
++                            R::client_event("client_stale_lease_query_ignored", 1);
++                            current.lease_set.clone()
++                        }
++                        _ => lease_set,
++                    }
++                });
+                 // always register lease set query result, regardless of its status as one or more
+                 // routing paths might've initiated the query and need to know whether it succeeded
+                 // or not
+@@ -860,6 +903,7 @@ impl<R: Runtime> Stream for Destination<R> {
  
                  match result {
                      Err(error) => {
@@ -80,7 +113,7 @@ index 427fe88..427d53a 100644
                          self.pending_queries.remove(&destination_id);
  
                          return Poll::Ready(Some(DestinationEvent::LeaseSetNotFound {
-@@ -868,6 +893,14 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -868,6 +912,14 @@ impl<R: Runtime> Stream for Destination<R> {
                          }));
                      }
                      Ok(lease_set) => {
@@ -95,15 +128,17 @@ index 427fe88..427d53a 100644
                          self.pending_queries.remove(&destination_id);
  
                          match lease_set.public_keys.iter().find(|&remote_key| {
-@@ -878,6 +911,7 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -877,7 +929,8 @@ impl<R: Runtime> Stream for Destination<R> {
+                         }) {
                              Some(key) => {
                                  self.session_manager
-                                     .add_remote_destination(destination_id.clone(), key.clone());
+-                                    .add_remote_destination(destination_id.clone(), key.clone());
++                                    .observe_remote_key(destination_id.clone(), key.clone(), lease_set.header.published);
 +                                self.stale_destinations.remove(&destination_id);
                              }
                              None => {
                                  tracing::warn!(
-@@ -1008,7 +1042,7 @@ mod tests {
+@@ -1008,7 +1061,7 @@ mod tests {
  
      #[tokio::test]
      async fn query_lease_set_found() {
@@ -112,14 +147,27 @@ index 427fe88..427d53a 100644
          let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
          let private_key = StaticPrivateKey::random(MockRuntime::rng());
          let mut destination = Destination::<MockRuntime>::new(
-@@ -1038,6 +1072,21 @@ mod tests {
+@@ -1027,6 +1080,11 @@ mod tests {
+         // insert dummy lease set for `remote` into `Destination`
+         let remote = DestinationId::random();
+         let (lease_set, _) = LeaseSet2::random();
++        let expected_published = lease_set.header.published;
++        let expected_key = lease_set.public_keys[0].to_vec();
++        let mut delayed = lease_set.clone();
++        delayed.header.published = delayed.header.published.saturating_sub(1);
++        delayed.public_keys = vec![StaticPrivateKey::random(MockRuntime::rng()).public()];
+         destination.remote_destinations.insert(
+             remote.clone(),
+             DestinationContext {
+@@ -1038,6 +1096,33 @@ mod tests {
  
          // query lease set and verify it exists
          assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
 +        assert!(destination.query_futures.is_empty(), "ordinary lookup should use its cache");
 +        // LeaseSetManager registers the local destination during construction.
 +        // Drain those startup actions before examining the remote lookup.
-+        while rx.try_recv().is_ok() {}
++        let mut startup_actions = Vec::new();
++        while let Ok(action) = rx.try_recv() { startup_actions.push(action); }
 +
 +        // A failed handshake must be able to bypass an unexpired stale address.
 +        assert_eq!(destination.refresh_lease_set(&remote), LeaseSetStatus::NotFound);
@@ -127,10 +175,21 @@ index 427fe88..427d53a 100644
 +        assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Pending);
 +        assert_eq!(destination.query_futures.len(), 1, "refresh must coalesce");
 +        assert!(destination.remote_destinations.contains_key(&remote));
-+        match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap() {
-+            NetDbAction::QueryLeaseSet2 { key, .. } => assert_eq!(key.to_vec(), remote.to_vec()),
-+            _ => panic!("expected a fresh LeaseSet lookup"),
-+        }
++        let (key, tx) = tokio::time::timeout(Duration::from_secs(2), async {
++            loop {
++                match rx.recv().await.unwrap() {
++                    NetDbAction::QueryLeaseSet2 { key, tx } => break (key, tx),
++                    startup => startup_actions.push(startup),
++                }
++            }
++        }).await.unwrap();
++        assert_eq!(key.to_vec(), remote.to_vec());
++        assert!(tx.send(Ok(delayed)).is_ok());
++        let event = tokio::time::timeout(Duration::from_secs(2), destination.next())
++            .await.unwrap().unwrap();
++        assert!(core::matches!(event, DestinationEvent::LeaseSetFound { .. }));
++        assert_eq!(destination.lease_set(&remote).header.published, expected_published);
++        assert_eq!(destination.lease_set(&remote).public_keys[0].to_vec(), expected_key);
      }
  
      #[tokio::test]
@@ -165,10 +224,43 @@ index 977cb30..1c55cfa 100644
      ///
      /// `public_keys` is guaranteed to contain at least one element corresponding to the private key
 diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
-index 0fdce43..fc61eac 100644
+index 0fdce43..45e14f2 100644
 --- a/emissary-core/src/destination/session/mod.rs
 +++ b/emissary-core/src/destination/session/mod.rs
-@@ -312,7 +312,22 @@ impl<R: Runtime> SessionManager<R> {
+@@ -218,6 +218,9 @@ pub struct SessionManager<R: Runtime> {
+     /// Known remote destinations and their public keys.
+     remote_destinations: HashMap<DestinationId, StaticPublicKey>,
+ 
++    /// Newest signed publication observed for each remote encryption key.
++    remote_key_epochs: HashMap<DestinationId, u32>,
++
+     /// Waker.
+     waker: Option<Waker>,
+ 
+@@ -263,6 +266,7 @@ impl<R: Runtime> SessionManager<R> {
+             pending_events: VecDeque::new(),
+             pending: HashMap::new(),
+             remote_destinations: HashMap::new(),
++            remote_key_epochs: HashMap::new(),
+             waker: None,
+             ratchet_threshold,
+         }
+@@ -307,12 +311,37 @@ impl<R: Runtime> SessionManager<R> {
+     ///
+     /// Calling `SessionManager::encrypt()` presupposes that the public key of remote destination
+     /// has been added to [`SessionManager`], otherwise the call will fail.
++    /// Observe a key from a verified LeaseSet, rejecting delayed older records.
++    pub fn observe_remote_key(&mut self, destination_id: DestinationId, key: StaticPublicKey, published: u32) {
++        if self.remote_key_epochs.get(&destination_id).is_some_and(|previous| *previous > published) {
++            R::client_event("client_stale_encryption_key_ignored", 1);
++            return;
++        }
++        self.remote_key_epochs.insert(destination_id.clone(), published);
++        self.add_remote_destination(destination_id, key);
++    }
++
+     pub fn add_remote_destination(
+         &mut self,
          destination_id: DestinationId,
          public_key: StaticPublicKey,
      ) {
@@ -192,7 +284,7 @@ index 0fdce43..fc61eac 100644
      }
  
      /// Remove session for `destination_id` from active sessions.
-@@ -786,6 +801,15 @@ impl<R: Runtime> SessionManager<R> {
+@@ -786,6 +815,15 @@ impl<R: Runtime> SessionManager<R> {
                      return Err(SessionError::InvalidKey);
                  }
  
@@ -202,13 +294,13 @@ index 0fdce43..fc61eac 100644
 +                if let Some(remote_key) = lease_set.public_keys.iter().find(|remote_key| {
 +                    self.key_context.supports_public_key(remote_key)
 +                }) {
-+                    self.add_remote_destination(destination_id.clone(), remote_key.clone());
++                    self.observe_remote_key(destination_id.clone(), remote_key.clone(), lease_set.header.published);
 +                }
 +
                  match self.pending.get_mut(&destination_id) {
                      None => {
                          tracing::debug!(
-@@ -1136,6 +1160,98 @@ mod tests {
+@@ -1136,6 +1174,108 @@ mod tests {
  
      const TEST_THRESHOLD: u16 = 10;
  
@@ -263,6 +355,7 @@ index 0fdce43..fc61eac 100644
 +        let receiver_key = StaticPrivateKey::random(MockRuntime::rng());
 +        let (mut sender_ls, sender_sign) = LeaseSet2::random();
 +        sender_ls.public_keys = vec![sender_key.public()];
++        sender_ls.header.published = sender_ls.header.published.saturating_sub(1);
 +        let sender_id = sender_ls.header.destination.id();
 +        let (mut receiver_ls, receiver_sign) = LeaseSet2::random();
 +        receiver_ls.public_keys = vec![receiver_key.public()];
@@ -288,6 +381,8 @@ index 0fdce43..fc61eac 100644
 +        // The receiver remains alive; its peer restarts on the same signed
 +        // destination identity but a new LeaseSet encryption key and no tags.
 +        let reboot_key = StaticPrivateKey::random(MockRuntime::rng());
++        let old_epoch = sender_ls.header.published;
++        sender_ls.header.published += 1;
 +        sender_ls.public_keys = vec![reboot_key.public()];
 +        let mut rebooted = SessionManager::<MockRuntime>::new(
 +            sender_id.clone(), reboot_key.clone(), vec![reboot_key.public()],
@@ -302,6 +397,13 @@ index 0fdce43..fc61eac 100644
 +        let mut cloves = rebooted.decrypt(Message { payload: message, ..Default::default() }).unwrap();
 +        let data = cloves.find(|clove| core::matches!(clove.message_type, MessageType::Data)).unwrap();
 +        assert_eq!(&data.message_body[4..], &[5]);
++        drop(cloves);
++        let was_pending = receiver.pending.contains_key(&sender_id);
++        let was_active = receiver.active.contains_key(&sender_id);
++        receiver.observe_remote_key(sender_id.clone(), sender_key.public(), old_epoch);
++        assert_eq!(receiver.remote_destinations[&sender_id].to_vec(), reboot_key.public().to_vec());
++        assert_eq!(receiver.pending.contains_key(&sender_id), was_pending);
++        assert_eq!(receiver.active.contains_key(&sender_id), was_active);
 +    }
 +
      /// Decrypt `message` using `session` and verify the inbound `Data` message

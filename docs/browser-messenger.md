@@ -112,6 +112,15 @@ fails to retire the old active ECIES session. A new regression keeps the
 receiver alive while its peer restarts, and verifies the reply to the fresh
 session. The complete native session test module now runs in CI as well.
 
+At `3e0ab82`, the three recovery regressions, all 89 native session tests,
+46 WASM tests and both cold profiles passed. Live restart delivery still
+failed. Numeric diagnostics showed two encryption-key changes at the sender
+and repeated non-newer lookup results. The next fix preserves a newer signed
+LeaseSet/key learned from inbound traffic when an older lookup or garlic
+record arrives. Its regressions check that delayed older records cannot roll
+back the cached route or destroy the restarted session. Full live acceptance
+remains pending.
+
 The earlier intermediate `e6709dd` run passed all 46 WASM tests, but stopped at the new
 native regression: its initial empty-queue assertion mistook local-destination
 registration for a remote lookup. That assertion is corrected in source.
