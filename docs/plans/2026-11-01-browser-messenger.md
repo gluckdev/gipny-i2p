@@ -51,11 +51,11 @@
 
 ## Матрица статуса (Done / In Progress / External Blocked)
 
-Последний завершённый прогон — `bee4456`: 46 WASM-тестов, 89 нативных session-тестов
-и обе холодные загрузки PASS. Приём конверта релеем завершился таймаутом до
-проверки восстановления; исправление выбора старых маршрутов ожидает CI.
-Более ранние результаты ниже привязаны к своим SHA.
-Полный live acceptance ещё не пройден.
+Проверенный код — `fa60b02`, [run 41329839707](https://github.com/gluckdev/gipny-i2p/actions/runs/41329839707):
+полный двухбраузерный CI acceptance, восстановление очереди и offline-история PASS.
+Прошли 46 WASM, 89 session и 14 routing-path тестов, обе холодные загрузки,
+платформенные проверки и CodeQL. Последующие правки документации фиксируют
+этот проверенный SHA. Физические телефоны и публичный хостинг не проверены.
 
 | Компонент / Задача | Статус | Проверяемый факт / Ссылка |
 |---|---|---|
@@ -67,12 +67,13 @@
 | **Worker UI Adapter & Outbox** | **DONE** | `ui/src/browser-core/backend.ts`: персистентность ratchet до отправки, exact ciphertext retry. |
 | **PWA Cache & Offline Shell** | **DONE** | `ui/vite.browser.config.ts`: генерация `browser-sw.js` без кэширования сетевого конфига/снапшотов. |
 | **Пин нативного i2pd** | **DONE** | Зафиксирован `62c013003233df3cc8ab6563563848ff3c316330`, проверка через `.github/scripts/assert-i2pd-pin.sh`. |
-| **CI: Security fast & UI typecheck** | **DONE** | На `bb0578e`: 5 платформ security fast + UI typecheck PASS. |
+| **CI: Security fast & UI typecheck** | **DONE** | На `fa60b02`: security fast и UI typecheck PASS. |
 | **CI: WASM Release compilation** | **DONE** | `wasm-pack build --target web --release --locked` компилируется без ошибок. |
 | **CI: Real NTCP2 Handshake** | **DONE** | Реальное рукопожатие NTCP2 в Chrome headless PASS. |
-| **CI: EngineTests** | **DONE** | `bee4456`: 9/9 engine tests, всего 46/46 WASM tests PASS. |
-| **CI: Cold Bootstrap** | **DONE** | На `bee4456` desktop и constrained PASS. Длительность зависит от публичной сети; результаты одного прогона не задают SLA. |
-| **CI: 2-Browser Live Integration** | **IN PROGRESS** | `bee4456`: живой обмен, квитанции, содержимое вложения и PRF PASS. Приём следующего конверта завершился timeout; восстановление и offline shell фазы не достигнуты. [Подробные результаты](../browser-messenger.md#validation-and-artifacts). |
+| **CI: EngineTests** | **DONE** | `fa60b02`: 9/9 engine tests, всего 46/46 WASM tests PASS. |
+| **CI: Transport recovery** | **DONE** | `fa60b02`: 3 явные регрессии LeaseSet/ключей, все 89 session и 14 routing-path тестов PASS. |
+| **CI: Cold Bootstrap** | **DONE** | На `fa60b02` desktop и constrained PASS (38,31 / 145,07 с до готовности). Длительность зависит от публичной сети; результаты одного прогона не задают SLA. |
+| **CI: 2-Browser Live Integration** | **DONE** | `fa60b02`: все 7 assertions PASS, включая доставку очереди после восстановления без дубликатов и offline-историю при выключенном HTTP-сервере. [Подробные результаты](../browser-messenger.md#validation-and-artifacts). |
 | **Физические мобильные устройства** | **EXTERNAL BLOCKED** | Проверка на физических телефонах iOS Safari и Android Chrome не проводилась (десктопная эмуляция не заменяет устройство). |
 | **Публичный хостинг форвардера и netDb** | **EXTERNAL BLOCKED** | Требуются серверная инфраструктура, домен, TLS-сертификаты и безопасный подписанный источник снапшотов netDb. |
 
@@ -81,12 +82,12 @@
 
 ---
 
-## Оставшиеся критерии готовности (Acceptance Gates)
+## Критерии готовности (Acceptance Gates)
 
 До выполнения следующих условий браузерный мессенджер **не объявляется готовым продуктом или релизом**:
 
-1. **WASM & Engine Tests Gate — PASS на `bb0578e`:** 9/9 engine и 45/45 WASM-тестов; новые изменения требуют проверки своего коммита.
-2. **Cold Bootstrap Gate — PASS на `bb0578e`:** оба профиля. Более ранний `e22a800` не прошёл constrained-прогон; это сохраняет ограничение стабильности живой сети.
-3. **Two-Browser Live Acceptance Gate:** Автоматизированный сценарий `run_messenger_ci.py` в GitHub Actions подтверждает сквозной обмен сообщениями и корректное восстановление профилей между двумя независимыми изолированными браузерами через реальную сеть I2P.
-4. **Physical Mobile Device Gate:** Подтверждение работоспособности, криптографической производительности и жизненного цикла вкладки на реальных физических устройствах iOS (Safari) и Android (Chrome), а не в CDP-эмуляции.
-5. **Infrastructure & Hosting Gate:** Развёртывание защищённого WSS-форвардера с ограничениями ресурсов и валидацией RouterInfo allowlist, а также доверенного источника снапшотов netDb.
+1. **WASM & Engine Tests Gate — PASS на `fa60b02`:** 9/9 engine и 46/46 WASM-тестов; новые изменения кода требуют проверки своего коммита.
+2. **Cold Bootstrap Gate — PASS на `fa60b02`:** оба профиля. Более ранние сбои остаются в истории и сохраняют ограничение стабильности живой сети.
+3. **Two-Browser Live Acceptance Gate — PASS на `fa60b02`:** `run_messenger_ci.py` подтвердил обмен, восстановление профиля/очереди и offline-историю между двумя независимыми Chrome через реальную сеть I2P.
+4. **Physical Mobile Device Gate — EXTERNAL BLOCKED:** Требуется проверка работоспособности, криптографической производительности и жизненного цикла вкладки на физических iOS Safari и Android Chrome.
+5. **Infrastructure & Hosting Gate — EXTERNAL BLOCKED:** Требуются сервер, домен/TLS и развёртывание защищённого WSS-форвардера с RouterInfo allowlist и доверенным источником снапшотов netDb. Инструкция подготовлена; публичное размещение не выполнено.

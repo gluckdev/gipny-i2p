@@ -337,7 +337,7 @@ See the live [e2e workflow](.github/workflows/e2e-i2pd.yml) and
 | Relay/DHT | Ciphertext, sealed `from`, TTL and quotas | Authentication metadata, timing, size classes, drop/eviction and Sybil remain |
 | Network | I2P application transport; no local bridge/proxy | Router IP transports and the application's shared crash boundary remain |
 | Updates | TLS/webpki and required SHA256 in 0.4.19 | A hash and asset from one release are not an independent publisher signature |
-| Browser messenger | OPFS (dual-slot XChaCha20-Poly1305, Argon2id, WebAuthn PRF passkey), TLS WSS forwarder to verified RI IPv4 allowlist | No `mlock`/`mprotect` in JS/browser RAM; OPFS quota (profile up to 16 MiB); keys never leave browser, but forwarder is mandatory. Acceptance in progress ([PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) |
+| Browser messenger | OPFS (dual-slot XChaCha20-Poly1305, Argon2id, WebAuthn PRF passkey), TLS WSS forwarder to verified RI IPv4 allowlist | No `mlock`/`mprotect` in JS/browser RAM; OPFS quota (profile up to 16 MiB); keys never leave browser, but forwarder is mandatory. CI acceptance passed; physical phones and hosting remain unverified ([PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) |
 
 [OS binding and migration limits](docs/device-bound-storage.md): Android
 requires a TEE/StrongBox provider, Windows binds the key to user and machine,
@@ -362,7 +362,7 @@ checks. Installation is platform-specific: `.deb` requires a person, Android
 requires permission for that source and the system installer. Host/stub tests
 alone do not establish live I2P, complete native packaging or device installation.
 See the [dated CI evidence](docs/today-2026-10-28.md) for individual results.
-The autonomous browser messenger (`ui/browser.html`, draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) runs client-only (2-hop exploratory and client pools, emissary WASM) and forwards NTCP2 bytes over WSS to verified IPv4 RouterInfo peers. It lacks `mlock`/`mprotect` RAM boundaries, is subject to OPFS storage quotas (16 MiB max profile, 1 MiB inline attachments), and omits DHT offline mail, the agent console, large chunked file transfers, transit tunnels, and native duress wiping. End-to-end acceptance in CI is in progress (see [current evidence](docs/browser-messenger.md#validation-and-artifacts)); physical mobile browsers and public hosting are not tested or deployed.
+The autonomous browser messenger (`ui/browser.html`, draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) runs client-only (2-hop exploratory and client pools, emissary WASM) and forwards NTCP2 bytes over WSS to verified IPv4 RouterInfo peers. It lacks `mlock`/`mprotect` RAM boundaries, is subject to OPFS storage quotas (16 MiB max profile, 1 MiB inline attachments), and omits DHT offline mail, the agent console, large chunked file transfers, transit tunnels, and native duress wiping. End-to-end CI acceptance passed at `fa60b02` (see [evidence](docs/browser-messenger.md#validation-and-artifacts)); physical mobile browsers and public hosting are not tested or deployed.
 
 ## Backups and another device
 
@@ -415,11 +415,11 @@ The project distinguishes three separate web surfaces:
      was merged to `main` (`318b2d5`). Full browser messenger development is in progress in draft
      [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144) (branch `feat/browser-messenger`).
      The BrowserEngine, WASM Worker, OPFS encrypted slots, passkey PRF, UI adapter, and PWA
-     are implemented, but live acceptance has **not yet passed**. Release PWA/WASM, all 46 WASM tests,
-     live bidirectional messages, receipts, attachment contents and PRF unlock passed.
-     The latest completed run, `bee4456`, passed both cold bootstrap profiles, 89 native
-     session tests, platform checks and CodeQL. Live acceptance stopped at a relay deposit
-     timeout before restart validation. The superseded-route selection fix awaits CI.
+     are implemented. **Full CI acceptance passed at `fa60b02`**: bidirectional messages,
+     receipts, attachment contents, PRF, contact blocking, queued delivery after profile
+     restoration and offline history with the HTTP server stopped. All 46 WASM tests,
+     89 session tests, 14 routing-path tests, both cold bootstrap profiles, platform checks
+     and CodeQL passed. This checkpoint uses desktop Chrome in GitHub Actions.
      Physical devices and public hosting
      remain unverified. See [CI evidence](docs/browser-messenger.md#validation-and-artifacts).
    - **Builds and artifacts:** Builds and tests run **strictly in GitHub Actions**.

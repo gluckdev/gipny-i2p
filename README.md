@@ -528,7 +528,7 @@ GIPNY_FAST=1 GIPNY_FAST_HOPS=0 ./gipny
 | Релей/DHT | Ciphertext, sealed `from`, TTL и квоты | Аутентификация соединений, время, размеры, drop/eviction и Sybil остаются |
 | Сеть | I2P; нет локального bridge/proxy | Роутер использует IP и делит процесс с приложением; crash завершает процесс |
 | Обновления | TLS/webpki и обязательный SHA256 в 0.4.19 | Один Release для файла и hash не заменяет независимую подпись |
-| Браузерный мессенджер | OPFS (2 слота, XChaCha20-Poly1305, Argon2id или WebAuthn PRF passkey), TLS WSS-форвардер к verified RI IPv4 allowlist | Нет `mlock`/`mprotect` в JS/RAM браузера; квота OPFS (профиль до 16 МиБ); ключи не отдаются форвардеру, но форвардер обязателен для транспорта. Acceptance в процессе ([PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) |
+| Браузерный мессенджер | OPFS (2 слота, XChaCha20-Poly1305, Argon2id или WebAuthn PRF passkey), TLS WSS-форвардер к verified RI IPv4 allowlist | Нет `mlock`/`mprotect` в JS/RAM браузера; квота OPFS (профиль до 16 МиБ); ключи не отдаются форвардеру, но форвардер обязателен для транспорта. CI acceptance пройден; физические телефоны и хостинг не проверены ([PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) |
 
 [Контракт OS binding и миграционные ограничения](docs/device-bound-storage.md):
 Android требует TEE/StrongBox provider, Windows связывает key с user и machine,
@@ -547,7 +547,7 @@ macOS использует локальный системный Keychain вне
 5. Корреляция времени/объёма, компрометация endpoint и publisher остаются рисками. Wipe и исчезающие сообщения не отзывают чужие копии.
 6. Android Doze, Wi-Fi/LTE, installer и разные прошивки требуют проверок на устройствах. Host/stub tests этого не доказывают.
 7. Обновления идут к GitHub через I2P outproxy (`exit.stormycloud.i2p`), без прямого fallback. Его доступность и shared rate limits влияют на работу. `.deb` требует действия пользователя, Android — разрешения источника и системного installer.
-8. Браузерный мессенджер (`ui/browser.html`, draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) работает в режиме client-only (2 хопа для exploratory и client pools, emissary WASM) и передаёт байты NTCP2 через WSS-форвардер к проверенным IPv4 RouterInfo. В нём нет защиты памяти `mlock`/`mprotect`, действуют квоты OPFS (хранилище до 16 МиБ, вложения до 1 МиБ на сообщение), нет DHT/offline mail, удалённой консоли агента, больших многотомных файлов, транзита и нативного duress-вайпа. Сквозной acceptance в CI ещё не завершён (актуальные результаты — в [руководстве](docs/browser-messenger.md#validation-and-artifacts)); физические мобильные браузеры и публичный хостинг не проверены и не развёрнуты.
+8. Браузерный мессенджер (`ui/browser.html`, draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)) работает в режиме client-only (2 хопа для exploratory и client pools, emissary WASM) и передаёт байты NTCP2 через WSS-форвардер к проверенным IPv4 RouterInfo. В нём нет защиты памяти `mlock`/`mprotect`, действуют квоты OPFS (хранилище до 16 МиБ, вложения до 1 МиБ на сообщение), нет DHT/offline mail, удалённой консоли агента, больших многотомных файлов, транзита и нативного duress-вайпа. Сквозной acceptance в CI пройден на `fa60b02` (результаты — в [руководстве](docs/browser-messenger.md#validation-and-artifacts)); физические мобильные браузеры и публичный хостинг не проверены и не развёрнуты.
 
 ## Backup и перенос на другое устройство
 
@@ -600,12 +600,11 @@ macOS использует локальный системный Keychain вне
      успешно слит в `main` (`318b2d5`). Реализация полноценного браузерного мессенджера
      находится в разработке в draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)
      (ветка `feat/browser-messenger`). Код BrowserEngine, WASM Worker, OPFS encrypted slots,
-     passkey PRF, UI adapter и PWA реализован, но живой acceptance мессенджера ещё **не пройден**.
-     Подтверждены release PWA/WASM, 46 WASM-тестов, живой обмен двух браузеров,
-     квитанции, содержимое вложения и passkey PRF. На последнем завершённом прогоне
-     `bee4456` прошли обе холодные загрузки, 89 нативных session-тестов, платформенные
-     проверки и CodeQL. Live-прогон остановился на таймауте приёма конверта релеем
-     до проверки восстановления. Исправление выбора старых маршрутов ожидает CI.
+     passkey PRF, UI adapter и PWA реализован. На `fa60b02` **полный CI acceptance пройден**:
+     живой обмен двух браузеров, квитанции, вложение, PRF, блокировка контакта,
+     доставка очереди после восстановления и offline-история при выключенном HTTP-сервере.
+     Прошли 46 WASM-тестов, 89 session и 14 routing-path тестов, обе холодные загрузки,
+     платформенные проверки и CodeQL. Это проверка desktop Chrome в GitHub Actions.
      Физические устройства и публичный хостинг ещё не проверены.
      Подробные [результаты CI](docs/browser-messenger.md#validation-and-artifacts).
    - **Сборка и артефакты:** Сборка и тесты выполняются **исключительно в GitHub Actions**.

@@ -3,7 +3,8 @@
 The browser entry is `ui/browser.html`. It uses the existing Gipny screens with
 a Dedicated Worker and a Rust WASM core. It does not pair with a native client.
 The feature is under review in [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144).
-The live messenger acceptance run must pass before this is treated as ready.
+Automated live acceptance passed at `fa60b02`. Physical mobile validation and
+public deployment remain pending; the feature is not a production release.
 
 ## Runtime and storage
 
@@ -59,6 +60,11 @@ the peer's encryption key independently of the application's ratchet. I2P uses
 the one-second `published` field to version LeaseSet2 records; a LeaseSet2
 contains the destination's currently authorized leases.
 See the [I2P structure specification](https://i2p.net/en/docs/specs/common-structures/#leaseset2header).
+The routing cache replaces that full set and retires superseded inbound paths
+in existing and new stream handles. Identical lookups preserve failure tracking.
+Bounded authenticated Ping/Pong probes to known contacts after network startup
+help peers learn the restored destination's fresh signed LeaseSet; these probes
+do not send chat text or advance the application ratchet.
 
 Expired history is pruned while the profile is open and when it is reopened.
 Local history/group removal discards unprepared letters and removes their
@@ -97,44 +103,51 @@ out-of-order messages and fixed-integer bincode compatibility. Vault tests check
 wrong credentials, password rotation, passkey wrapping and torn-slot recovery.
 An emulated or virtual authenticator test is not physical mobile validation.
 
-Latest completed run: `bee4456`,
-[41326667198](https://github.com/gluckdev/gipny-i2p/actions/runs/41326667198).
-The three recovery regressions, all 89 native session tests, 46 WASM tests,
-real NTCP2 and both cold bootstrap profiles passed (180.31 / 88.47 s from
-navigation to ready, 32 / 31 s held, 5 / 3 roundtrips, 153 verified RouterInfo
-records). All native platform/build checks and CodeQL passed. Live bidirectional
-messages, receipts, attachment name and bytes, and PRF passed. The next blocked
-contact mailbox deposit timed out after 120 s, before restart or offline-shell
-checks. The sender reported `CANT_REACH_PEER`, three rejected SYN handshakes
-and one newer LeaseSet lookup while both clients still had active tunnels.
+Latest validated code: `fa60b02`, 2026-11-01,
+[run 41329839707](https://github.com/gluckdev/gipny-i2p/actions/runs/41329839707).
+The complete automated two-browser acceptance passed in 464.10 s.
+All native platform/build checks and CodeQL also passed; there were no open
+CodeQL alerts for PR #144 at this checkpoint. Documentation-only follow-ups
+record this tested code SHA rather than claiming a new code validation.
 
-The implementation now probes known contact relays with bounded authenticated
-Ping/Pong streams after network recovery. It does not send chat text or advance
-the application's ratchet. The inbound-first path records the peer's signed
-LeaseSet encryption key so that a later key change retires the old ECIES
-session. These changes passed the native regressions but have not yet resolved
-live restart delivery.
+| Check | Result at `fa60b02` |
+|---|---|
+| Production PWA/WASM, UI tests and typecheck | PASS |
+| WASM tests | 46/46 PASS, including 9/9 engine tests |
+| Native recovery regressions, SessionManager and routing-path modules | 3 explicit regressions, 89 session tests and 14 routing-path tests PASS |
+| Real NTCP2 handshakes | 3/3 PASS |
+| Cold desktop / constrained Chrome | Both PASS: 38.31 / 145.07 s from navigation to ready, 32 / 32 s held, 3 / 3 roundtrips, 245 verified RouterInfo records |
+| Live bidirectional messages, receipts and attachment name/bytes | PASS in two independent Chrome processes |
+| Actual WebAuthn PRF enrollment/unlock with virtual CTAP2 authenticator | PASS |
+| Blocked contact and unblocking exact-ciphertext retry | PASS |
+| Password rotation, both-slot wrappers, old-password rejection, restored identity/destination/history/ratchet | PASS |
+| Pending-message delivery after recipient restart, end-to-end receipt and duplicate-history check | PASS |
+| Offline root navigation, cached WASM worker and rendered history with the HTTP server stopped | PASS; network config excluded from caches |
+| Physical devices / public deployment | Not performed |
 
-The `bee4456` fix preserves a newer signed LeaseSet/key learned from inbound
-traffic when an older lookup or garlic record arrives. Its regressions check
-that delayed older records cannot roll back the cached route or destroy the
-restarted session. That run did not reach the live restart assertion.
-
-The following route-cache fix treats an accepted LeaseSet as a complete set:
-superseded inbound tunnels are removed from existing and new routing handles,
-and repeated identical lookups preserve known failure status. Native tests
-cover those transitions and duplicate-cache prevention; the complete routing
-path module is added to CI. This change awaits its first CI result.
-Full live acceptance remains pending.
-
-The `bee4456` WASM/PWA job passed. Its
-[`browser-messenger-pwa` ZIP](https://github.com/gluckdev/gipny-i2p/actions/runs/41326667198/artifacts/13091328428)
-is 1,982,419 bytes; GitHub artifact SHA256:
-`f475d09eac0463865339ee0a3e5872c9da0793b7368c64b08e536744d59791e4`.
+The public
+[`browser-messenger-evidence` receipt](https://github.com/gluckdev/gipny-i2p/actions/runs/41329839707/artifacts/13093552039)
+records all seven acceptance assertions with `stage: passed`.
+The
+[`browser-messenger-pwa` ZIP](https://github.com/gluckdev/gipny-i2p/actions/runs/41329839707/artifacts/13093200119)
+is 1,982,901 bytes; GitHub artifact SHA256:
+`64f3d0462ba2061ce0db47d2cb5fd75740daa4efd0db5a47c5ed8ddd38bdad8f`.
 The verified emissary patch SHA256 is
-`6567de72b7cb79894bc802d1b3a68efb54699a49e122231ac96c8863c1c627a9`.
-These identify that compiled artifact and source patch; the failed live job
-remains a separate acceptance gate.
+`1ba0d7861a647ced678a93e00c8e0efdf236fb6c3273f94f832f02451568e553`.
+This is a successful desktop CI checkpoint, not physical mobile validation
+or a public deployment. Earlier failures remain part of the evidence below.
+
+Earlier run `bee4456`,
+[41326667198](https://github.com/gluckdev/gipny-i2p/actions/runs/41326667198),
+passed 46 WASM tests, three recovery regressions, 89 session tests, NTCP2,
+both cold profiles and the native platform/CodeQL checks. Cold readiness was
+180.31 / 88.47 s with 153 verified RouterInfo records. Live bidirectional
+messages, receipts, attachment bytes and PRF passed; the next blocked-contact
+mailbox deposit timed out after 120 s, before restart and offline checks.
+The sender reported `CANT_REACH_PEER` and a newer LeaseSet lookup while both
+clients still had tunnels. `fa60b02` then fixed the route-cache mismatch:
+superseded unexpired leases had remained eligible after the destination cache
+was replaced with a newer complete set.
 
 Earlier run `3e0ab82`,
 [41322770968](https://github.com/gluckdev/gipny-i2p/actions/runs/41322770968),
@@ -179,7 +192,8 @@ Earlier live evidence: `f72d7f4`, 2026-11-01,
 The recovery implementation refreshes a cached remote LeaseSet after a failed streaming
 handshake. A peer can restart on the same destination keys with different
 inbound tunnels while its previous LeaseSet is still unexpired. This source
-change passed its native regression in later runs; full live acceptance remains open.
+change passed its native regression in later runs; the full automated live
+acceptance subsequently passed at `fa60b02` above.
 Failed refresh queries also keep the cache marked stale until a valid lookup
 succeeds, rather than immediately reusing the old unexpired address.
 
@@ -207,8 +221,8 @@ Router-only bootstrap memory figures exclude the 64 MiB password-KDF workspace
 and unlocked conversation state. They are not measurements of full messenger RAM.
 
 The acceptance scenario must also reach offline history after stopping the HTTP
-server. A partly successful run does not confirm that final phase. Later commits
-must be checked against their own runs.
+server. `fa60b02` reached and passed that final phase. Later code changes must
+be checked against their own runs.
 
 ### Recovery diagnostics
 
