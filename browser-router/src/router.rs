@@ -10,10 +10,7 @@ use emissary_core::{
     runtime::Runtime,
     Config, MetricsConfig, Ntcp2Config,
 };
-use futures::{
-    future::{select, Either},
-    FutureExt, StreamExt,
-};
+use futures::future::{select, Either};
 use rand::RngExt;
 use std::{num::NonZeroUsize, time::Duration};
 use wasm_bindgen::{prelude::*, JsCast};
@@ -66,6 +63,7 @@ fn verify_no_listener(
         || info.ssu2_port.is_some()
         || info.i2cp.is_some()
         || info.sam_tcp.is_some()
+        || info.sam_udp.is_some()
     {
         return Err("client router unexpectedly exposed a listening protocol".into());
     }
@@ -126,7 +124,7 @@ pub async fn run_exploratory(
             }
             Either::Right(_) => {}
         }
-        while let Some(Some(event)) = events.next().now_or_never() {
+        while let Some(event) = events.router_status() {
             if let Event::RouterStatus { transport, .. } = event {
                 connections = transport.num_connected_routers;
             }
