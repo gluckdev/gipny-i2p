@@ -1,5 +1,6 @@
 pub mod core;
 pub mod web_server;
+pub mod data_lock;
 mod notify;
 mod sanitizer;
 #[cfg(any(target_os = "android", test))]
@@ -290,6 +291,14 @@ pub fn run() {
             // before they are read. std::env::temp_dir() is /data/local/tmp on
             // Android, which an app cannot write to.
             use tauri::Manager;
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                let ctx = app.state::<AppCtx>();
+                match data_lock::DataDirLock::acquire(&ctx.base_dir) {
+                    Ok(lock) => { app.manage(lock); }
+                    Err(error) => eprintln!("WARNING: {error} Continuing desktop startup without the advisory lock."),
+                }
+            }
             if let Ok(dir) = app.path().app_cache_dir() {
                 #[cfg(target_os = "android")]
                 update_staging::configure_cache(dir.clone());
@@ -321,7 +330,7 @@ pub fn run() {
         .expect("tauri run");
 }
 
-fn resolve_base_dir() -> PathBuf {
+pub fn resolve_base_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         let base = std::env::var_os("XDG_DATA_HOME")
@@ -1175,7 +1184,7 @@ async fn list_unreachable_contacts(ctx: State<'_, AppCtx>) -> Result<Vec<i64>, S
 
 const SETTING_ATTACHMENT_PRIVACY: &str = "attachment_privacy";
 
-fn attachment_privacy_enabled(db: &gipny_libcore::db::Db) -> Result<bool, String> {
+pub(crate) fn attachment_privacy_enabled(db: &gipny_libcore::db::Db) -> Result<bool, String> {
     Ok(!matches!(
         db.get_setting(SETTING_ATTACHMENT_PRIVACY).map_err(err)?.as_deref(),
         Some(b"0"),
@@ -1446,7 +1455,7 @@ async fn send_message_paths(
 /// cleaned of metadata (photos, PDF).
 const MAX_ATTACHMENT_BYTES: u64 = 512 * 1024 * 1024;
 
-fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<PendingAttachment, String> {
+pub(crate) fn prepare_attachment(name: String, data: Vec<u8>, sanitize: bool) -> Result<PendingAttachment, String> {
     if sanitize {
         let (name, data) = sanitizer::sanitize_attachment_data(&name, &data)?;
         Ok(PendingAttachment { name, data, from: None })

@@ -2,6 +2,14 @@ import type { ru } from './ru.ts';
 
 /** English UI messages. Technical payloads and user content are never translated. */
 export const en = {
+  "web.title": "Connect to local gipny",
+  "web.description": "Experimental web mode needs gipny-web running on this machine. Enter the port and token from its printed launch URL. Keys and crypto stay in the native process.",
+  "web.port": "Local port",
+  "web.token": "Launch token",
+  "web.connect": "Connect",
+  "web.failed": "Connection refused. Check the port, token, allowed origin and browser local-network permission.",
+  "web.desktop_only": "This operation needs the desktop app in this experimental mode.",
+  "web.notifications": "Browser notifications are unavailable or denied. Incoming messages will appear in the app.",
   "card.encode_error": "Could not create a contact card. Check the addresses and shorten the name.",
   "common.close": "Close",
   "common.cancel": "Cancel",

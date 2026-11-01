@@ -809,3 +809,10 @@ mod backup_resource_tests {
         }
     }
 }
+
+/// A fresh launch capability for the loopback UI. Uses the existing OS RNG
+/// and base64 dependencies; no additional runtime dependency in the app.
+pub fn web_launch_token() -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(crate::crypto::random_array::<32>())
+}

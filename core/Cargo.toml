@@ -17,12 +17,13 @@ path = "src/web_main.rs"
 required-features = ["web-gateway"]
 
 [features]
-# The server gateway is a separate deployment, never a desktop app sidecar.
+# The browser launcher is a separate opt-in binary, never a desktop sidecar.
 # Tauri also uses required-features when choosing which binaries to bundle.
 web-gateway = []
 
 [dev-dependencies]
 tempfile = "3"
+tokio-tungstenite = "=0.29.0"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

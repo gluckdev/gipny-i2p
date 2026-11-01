@@ -1,99 +1,13 @@
+import { WebTransportClient } from './web-transport';
+import { browserAttachments } from './browser-files';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 
-class WebTransportClient {
-  private ws: WebSocket | null = null;
-  private reqId = 0;
-  private pending = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
-  private listeners = new Map<string, Set<(event: { payload: any }) => void>>();
-  private connectPromise: Promise<void> | null = null;
-
-  connect(): Promise<void> {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return this.connectPromise || Promise.resolve();
-    }
-    this.connectPromise = new Promise((resolve) => {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${proto}//${location.host}/ws`;
-      try {
-        this.ws = new WebSocket(url);
-      } catch (e) {
-        console.error('[WebTransport] WebSocket creation error:', e);
-        resolve();
-        return;
-      }
-
-      this.ws.onopen = () => {
-        resolve();
-      };
-
-      this.ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.id !== undefined && this.pending.has(msg.id)) {
-            const { resolve, reject } = this.pending.get(msg.id)!;
-            this.pending.delete(msg.id);
-            if (msg.error) {
-              reject(msg.error);
-            } else {
-              resolve(msg.result);
-            }
-          } else if (msg.event) {
-            const handlers = this.listeners.get(msg.event);
-            if (handlers) {
-              const eventObj = { payload: msg.payload };
-              handlers.forEach((h) => h(eventObj));
-            }
-          }
-        } catch (e) {
-          console.error('[WebTransport] parse error', e);
-        }
-      };
-
-      this.ws.onclose = () => {
-        this.ws = null;
-        this.connectPromise = null;
-        setTimeout(() => this.connect(), 2000);
-      };
-
-      this.ws.onerror = () => {
-        resolve();
-      };
-    });
-    return this.connectPromise;
-  }
-
-  async invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      const id = ++this.reqId;
-      this.pending.set(id, { resolve, reject });
-      const payload = JSON.stringify({ id, method: cmd, params: args ?? {} });
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(payload);
-      } else {
-        this.pending.delete(id);
-        reject('WebSocket disconnected');
-      }
-    });
-  }
-
-  async listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, new Set());
-    }
-    const set = this.listeners.get(event)!;
-    set.add(handler as any);
-    this.connect();
-    return () => {
-      set.delete(handler as any);
-    };
-  }
-}
-
 const webClient = new WebTransportClient();
+export function configureWebTransport(endpoint: string | null): void { webClient.configure(endpoint); }
+export function connectWebTransport(): Promise<void> { return webClient.connect(); }
 
 export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri) {
@@ -562,6 +476,7 @@ export class Api {
     return invoke('send_message', { contactId, body, attachments, ttlSecs, replyTo });
   }
   static sendMessagePaths(contactId: number, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+    if (!isTauri) return browserAttachments(paths).then((attachments) => Api.sendMessage(contactId, body, attachments, ttlSecs, replyTo));
     return invoke('send_message_paths', { contactId, body, paths, ttlSecs, replyTo });
   }
   static sendEdit(contactId: number, messageId: number, newBody: string): Promise<void> {
@@ -660,7 +575,7 @@ export class Api {
   static playNotifySound(name?: string | null): Promise<void> {
     if (!isTauri) {
       try {
-        const audio = new Audio(`/sounds/${name || 'msg-in'}.wav`);
+        const audio = new Audio(`${import.meta.env.BASE_URL ?? '/'}notify.wav`);
         audio.play().catch(() => {});
       } catch (_) {}
       return Promise.resolve();
@@ -723,6 +638,7 @@ export class Api {
     return invoke('send_group_message', { groupId, body, attachments, ttlSecs, replyTo });
   }
   static sendGroupMessagePaths(groupId: string, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+    if (!isTauri) return browserAttachments(paths).then((attachments) => Api.sendGroupMessage(groupId, body, attachments, ttlSecs, replyTo));
     return invoke('send_group_message_paths', { groupId, body, paths, ttlSecs, replyTo });
   }
   static saveAttachment(attachmentId: number, destPath: string): Promise<void> {

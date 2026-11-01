@@ -53,13 +53,13 @@ test('both languages cover every rendered string and accessible label', () => {
     assert.equal(match[1], messages.ru[match[2]], `Russian accessible name differs for ${match[2]}`);
   }
   assert.match(html, /<html lang="ru">/);
-  assert.match(messages.en.browserStatus, /not available/i);
-  assert.match(messages.ru.browserStatus, /недоступно/i);
+  assert.match(messages.en.browserStatus, /Experimental/i);
+  assert.match(messages.ru.browserStatus, /Эксперимент/i);
   assert.match(messages.en.browserBoundary, /does not send or receive messages/);
   assert.match(messages.ru.browserBoundary, /не отправляет и не принимает сообщения/);
-  assert.match(messages.ru.browserStatus, /В разработке/);
-  assert.match(messages.ru.browserTimeline, /Планируем.*до весны 2027/);
-  assert.match(messages.en.browserTimeline, /plan.*before spring 2027/);
+  assert.match(messages.ru.browserLocal, /127\.0\.0\.1.*Chrome.*Firefox/);
+  assert.match(messages.ru.browserTimeline, /эксперимент.*не выпущенный/);
+  assert.match(messages.en.browserTimeline, /experiment.*not a released/);
 });
 
 test('future chat policy and contact consent are visibly planned, while current history and separate-copy limits remain explicit', () => {
@@ -183,7 +183,9 @@ test('local resources and section links work below a GitHub project prefix', asy
       assert.ok(target.startsWith('./'), `resource must be relative: ${target}`);
       const url = new URL(target, 'https://example.test/gipny-i2p/');
       assert.ok(url.pathname.startsWith('/gipny-i2p/'));
-      await readFile(resolve(root, target));
+      // app/ is supplied by the UI build in Pages CI, not the landing builder.
+      if (target === './app/') assert.equal(url.pathname, '/gipny-i2p/app/');
+      else await readFile(resolve(root, target));
     }
   }
 });
@@ -368,4 +370,17 @@ test('Pages workflow validates PRs and only deploys the reviewed main branch', a
   assert.match(workflow, /actions\/upload-pages-artifact@v5/);
   assert.match(workflow, /actions\/deploy-pages@v5/);
   assert.doesNotMatch(workflow.split('\n  deploy:')[0], /pages: write|id-token: write/);
+});
+
+
+test('experimental app is packaged separately without changing the landing CSP', async () => {
+  assert.match(html, /href="\.\/app\/"/);
+  for (const lang of ['ru', 'en']) {
+    assert.match(messages[lang].browserBody, /Pages/);
+    assert.match(messages[lang].browserLocal, /127\.0\.0\.1/);
+  }
+  const workflow = await readFile(resolve(root, '../.github/workflows/pages.yml'), 'utf8');
+  assert.match(workflow, /VITE_BASE: \/gipny-i2p\/app\//);
+  assert.match(workflow, /cp -R ui\/dist\/\. _site\/app\//);
+  assert.match(workflow, /npm test --prefix ui/);
 });

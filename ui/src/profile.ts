@@ -2,7 +2,7 @@ import { errorText } from './error-text';
 import { languagePicker } from './language-picker';
 import { t as tr } from './i18n';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Api } from './api';
+import { Api, isTauri } from './api';
 import type { Store } from './state';
 import { View, h, logo } from './view';
 import type { App } from './app';
@@ -39,6 +39,7 @@ export class ProfileSelect extends View {
   }
 
   private async startImport(): Promise<void> {
+    if (!isTauri) { this.store.showToast(tr('web.desktop_only'), true); return; }
     let backupPath: string;
     try {
       const sel = await open({ multiple: false, filters: [{ name: tr('profile.gipny_backup'), extensions: ['bin'] }] });

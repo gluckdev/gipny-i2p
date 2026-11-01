@@ -156,16 +156,17 @@ jobs:
   # Android: libi2pd.so as release.yml builds it (libi2pd + shim, ndk-build),
   # then a Rust binary linked against it — the live test built for the phone,
   # which proves the shim is exported and resolves. Not run: no device here.
-  # boost/OpenSSL come from release.yml's cache (written on main); cold, they
-  # are built, which takes most of an hour.
+  # Boost sources and OpenSSL builds come from release.yml's cache (written on
+  # main); Boost program_options is compiled with the router on every run.
   android:
     name: i2p-embed for Android (arm64, libi2pd.so + link)
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     env:
+      # Keep the NDK and dependency steps in sync with release.yml's android-router.
       NDK_VERSION: 27.3.13750724
-      BOOST_FOR_ANDROID_REV: 7943955c4d11a5bd61381a8b200c28619323eb0f
       ABI: arm64-v8a
+      ARCH: arm64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -183,30 +184,41 @@ jobs:
       - uses: android-actions/setup-android@v4
         with: { packages: 'platform-tools ndk;27.3.13750724' }
       - name: resolve NDK
-        run: echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+        run: |
+          NDK_DIR="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          test -d "$NDK_DIR" || { echo "NDK $NDK_VERSION is not installed; check setup-android packages"; exit 1; }
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
       - name: align the vendored sources
         working-directory: third_party/i2pd-android/binary/jni
         run: |
           git -C i2pd fetch --quiet origin "$I2PD_REV" || git -C i2pd fetch --quiet --tags origin
           git -C i2pd checkout --quiet "$I2PD_REV"
           bash "$GITHUB_WORKSPACE/scripts/apply-i2pd-memory-patches.sh" "$PWD/i2pd"
-          git -C boost fetch --depth 1 origin "$BOOST_FOR_ANDROID_REV"
-          git -C boost checkout FETCH_HEAD
-          sed -i 's/\bAPI=16\b/API=21/g' build_boost.sh build_openssl.sh
-      - name: restore cached dependencies (boost, openssl)
+      - name: restore cached dependencies (boost sources, openssl)
         id: deps
         uses: actions/cache/restore@v6
         with:
           path: |
-            third_party/i2pd-android/binary/jni/boost/build/out/${{ env.ABI }}
-            third_party/i2pd-android/binary/jni/openssl/out/${{ env.ABI }}
-          key: android-deps-${{ env.ABI }}-ndk${{ env.NDK_VERSION }}-boost${{ env.BOOST_FOR_ANDROID_REV }}-scripts${{ steps.pins.outputs.i2pd_android }}
-      - name: build dependencies (boost, openssl)
+            third_party/i2pd-android/binary/jni/deps/boost
+            third_party/i2pd-android/binary/jni/deps/openssl/out/${{ env.ABI }}
+            third_party/i2pd-android/binary/jni/deps/*.tar.gz
+          key: android-deps-${{ env.ABI }}-ndk${{ env.NDK_VERSION }}-i2pd-android${{ steps.pins.outputs.i2pd_android }}-scripts${{ hashFiles('third_party/i2pd-android/binary/jni/fetch_deps.sh', 'third_party/i2pd-android/binary/jni/build_openssl.sh') }}
+      - name: prepare dependencies (fetch sources, build openssl)
         if: steps.deps.outputs.cache-hit != 'true'
         working-directory: third_party/i2pd-android/binary/jni
         run: |
-          ./build_boost.sh arm64
-          ./build_openssl.sh arm64
+          ./fetch_deps.sh
+          ./build_openssl.sh "$ARCH"
+      - name: verify dependency inputs
+        working-directory: third_party/i2pd-android/binary/jni
+        run: |
+          test -s deps/boost/.version
+          compgen -G 'deps/boost/libs/program_options/src/*.cpp' > /dev/null \
+            || { echo "Boost program_options sources are missing"; exit 1; }
+          for lib in libcrypto.a libssl.a; do
+            test -s "deps/openssl/out/$ABI/lib/$lib" \
+              || { echo "OpenSSL built nothing: $lib is missing for $ABI"; exit 1; }
+          done
       - name: build libi2pd.so
         run: |
           "$ANDROID_NDK_HOME/ndk-build" -C android-router/jni -j"$(nproc)" \

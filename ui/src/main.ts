@@ -1,3 +1,6 @@
+import { isTauri } from './api';
+import { pairWeb } from './pairing';
+import { clearBrowserFiles } from './browser-files';
 import { Store } from './state';
 import { App } from './app';
 import { SearchModal } from './search';
@@ -9,12 +12,27 @@ applyTheme();
 const root = document.getElementById('app');
 if (!root) throw new Error('no #app');
 
-const store = new Store();
-const app = new App(store);
-root.appendChild(app.el);
-store.bootstrap();
+let store: Store;
+let app: App;
+async function start(): Promise<void> {
+  if (!isTauri) await pairWeb(root!);
+  store = new Store();
+  app = new App(store);
+  root!.replaceChildren(app.el);
+  await store.bootstrap();
+}
+void start();
+window.addEventListener('gipny-pairing-required', () => {
+  // The pairing form owns failures until bootstrap; never reload its inputs.
+  if (!store) return;
+  // Reload discards the old UI/listeners and any rendered plaintext.
+  clearBrowserFiles();
+  try { window.sessionStorage.removeItem('gipny.web.pairing'); } catch { /* storage may be blocked */ }
+  window.location.reload();
+});
 
 window.addEventListener('keydown', (e) => {
+  if (!store || !app) return;
   if (e.key === 'F5' || (e.ctrlKey && (e.key === 'r' || e.key === 'R'))) {
     e.preventDefault();
     e.stopPropagation();

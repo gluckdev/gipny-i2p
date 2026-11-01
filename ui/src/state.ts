@@ -9,7 +9,8 @@ const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, C
 function isConsoleEvent(kind: number | null): boolean {
   return kind != null && CONSOLE_KINDS.has(kind);
 }
-import { Api } from './api';
+import { Api, isTauri } from './api';
+import { registerBrowserFile, clearBrowserFiles } from './browser-files';
 import {
   isPermissionGranted,
   requestPermission,
@@ -186,10 +187,11 @@ export class Store {
   private unsubEvents: (() => void) | null = null;
   private unsubTrayBadge: (() => void) | null = null;
   private notifyGranted: boolean = false;
+  private browserNotifyRequested = false;
   /** Last known console grant per contact, so only the handing-over and the
    * taking-back move a pane. See reconcileConsolePanes. */
   private grantedSeen = new Map<string, boolean>();
-  private readonly linuxDesktop: boolean = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+  private readonly linuxDesktop: boolean = isTauri && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
   private scrollNonce: number = 0;
   private watchdogTimer: number | null = null;
   private bootTimer: number | null = null;
@@ -340,8 +342,11 @@ export class Store {
   }
 
   private playNotify(name?: string | null): void {
+    // Remote sound names must never become URLs on the static UI host.
+    if (!isTauri) name = null;
     const epoch = this.profileEpoch;
-    const url = name ? `/sounds/${name}.wav` : '/notify.wav';
+    const base = import.meta.env.BASE_URL ?? '/';
+    const url = name ? `${base}sounds/${name}.wav` : `${base}notify.wav`;
     void this.playViaAudioContext(url).then((ok) => {
       if (epoch !== this.profileEpoch || this.contentLocked) return;
       if (ok) { this.audioPathOk = true; return; }
@@ -357,7 +362,20 @@ export class Store {
     });
   }
 
-  private async ensureNotifyPermission(): Promise<void> {
+  private async ensureNotifyPermission(userGesture = false): Promise<void> {
+    if (!isTauri) {
+      if (typeof Notification === 'undefined') return;
+      this.notifyGranted = Notification.permission === 'granted';
+      if (!userGesture || this.browserNotifyRequested || this.notifyGranted) return;
+      this.browserNotifyRequested = true;
+      try {
+        const permission = Notification.permission === 'default'
+          ? await Notification.requestPermission() : Notification.permission;
+        this.notifyGranted = permission === 'granted';
+        if (permission === 'denied') this.showToast(tr('web.notifications'));
+      } catch { this.notifyGranted = false; }
+      return;
+    }
     if (this.linuxDesktop) {
       try {
         const report = await Api.notifyProbe();
@@ -406,7 +424,8 @@ export class Store {
   private pluginNotify(title: string, body: string): boolean {
     if (!this.notifyGranted) return false;
     try {
-      sendNotification({ title, body, channelId: 'gipny_messages' });
+      if (isTauri) sendNotification({ title, body, channelId: 'gipny_messages' });
+      else new Notification(title, { body });
       return true;
     } catch (e) { console.error('[notify] err', e); return false; }
   }
@@ -789,6 +808,7 @@ export class Store {
     const wasProfile = this.currentProfile.get();
     this.profileEpoch++;
     this.contentLocked = true;
+    if (!isTauri) clearBrowserFiles();
     this.contentEpoch++;
     this.selectedChat.set(null);
     this.messages.set(new Map());
@@ -1078,6 +1098,8 @@ export class Store {
     ttlSecs: number | null = null,
     replyTo: number | null = null,
   ): Promise<void> {
+    // The send button supplies the gesture browsers require for permission.
+    if (!isTauri) void this.ensureNotifyPermission(true);
     if (target.kind === 'contact') {
       await Api.sendMessagePaths(target.id, body, paths, ttlSecs, replyTo);
     } else {
@@ -1546,6 +1568,7 @@ export class Store {
 }
 
 export async function pasteFileToTempPath(file: File): Promise<string> {
+  if (!isTauri) return registerBrowserFile(file);
   const buf = await file.arrayBuffer();
   const bytes = Array.from(new Uint8Array(buf));
   return Api.savePasteTemp(file.name || `paste-${Date.now()}.bin`, bytes);

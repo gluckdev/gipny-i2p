@@ -1,7 +1,8 @@
 import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import { save } from '@tauri-apps/plugin-dialog';
-import { Api, type MediaItem } from './api';
+import { downloadBrowserFile } from './browser-files';
+import { Api, isTauri, type MediaItem } from './api';
 import type { Store, ChatTarget } from './state';
 import { h, fmtDate, fmtTime, humanSize, mimeFromName } from './view';
 
@@ -81,6 +82,11 @@ export class MediaModal {
         onClick: async (ev: Event) => {
           ev.stopPropagation();
           try {
+            if (!isTauri) {
+              const data = await Api.loadAttachment(it.id);
+              if (!this.closed) downloadBrowserFile(data, it.name);
+              return;
+            }
             const dest = await save({ defaultPath: it.name });
             if (!dest || this.closed) return;
             await Api.saveAttachment(it.id, dest as string);
