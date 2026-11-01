@@ -1,0 +1,36 @@
+[package]
+name = "gipny-browser-router"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Experimental browser runtime for the emissary I2P router"
+
+# Keep native application dependencies (Tokio, SQLCipher, OpenSSL) out of WASM.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+emissary-core = { git = "https://github.com/eepnet/emissary", rev = "5e696a90276c316ebc5ec3a1d0815b02f17516ef", default-features = false, features = ["std"] }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+futures = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
+rand = { version = "0.10", features = ["thread_rng"] }
+url = "2.5"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["BinaryType", "CloseEvent", "Event", "MessageEvent", "WebSocket"] }
+web-time = "1.1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
