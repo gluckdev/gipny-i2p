@@ -1327,3 +1327,68 @@ bootstrap за секунды ещё не подтверждён. Messenger/clie
 браузеров, OPFS/passkey и PWA lifecycle остаются отдельными этапами.
 PR #143 остаётся draft; слияние/публикация не выполнялись. Исходные локальные
 изменения `third_party/i2pd-android` не затронуты.
+
+ПРОДОЛЖЕНИЕ 2026-11-01: HTTP NETDB И ПОЛНЫЙ ХОЛОДНЫЙ BOOTSTRAP
+
+По «делай» владельца добавлены `browser-router/src/bootstrap.rs`,
+`collect-netdb`, упаковка snapshot в `prepare-netdb`, тестовая страница
+`tests/bootstrap-page/` и CI orchestration `tests/run_bootstrap_ci.py`.
+Коммит `6b37dc2`, [run 41281997598](https://github.com/gluckdev/gipny-i2p/actions/runs/41281997598)
+прошёл целиком: core/release WASM build, **3 unit + 10 runtime + 5 snapshot
+и 6 forwarder + 3 NTCP2 tests**, затем **2 холодных live bootstrap PASS**.
+Все сборки и исполнение тестов — только GitHub Actions.
+CodeQL на том же SHA прошёл целиком (`41281997545`).
+
+Важное уточнение предыдущей записи: повтор на документационном `953014f`
+(`41278342212`) прошёл runtime/NTCP2, но exploratory завершился по таймауту:
+74 seed RI, 3 построенных туннеля, 0 успешных roundtrip. CodeQL на том SHA
+прошёл (`41278342141`). Положительный `d18630c` остаётся действительным
+доказательством возможности; устойчивость времени bootstrap не заявляется.
+
+Новый cold bootstrap загружает JS/WASM и tar.gz netDb по HTTP с пустым Chrome
+profile/без кеша; seed RI не встроены в WASM этого сценария. Snapshot
+производит отдельный pinned i2pd с verified reseed. В браузере fetch
+ограничен 4 МиБ/45 секундами, redirect/credentials/referrer отключены;
+после SHA256 gzip ограничен 16 МиБ, tar — 4096 entries, принятый набор —
+2048 RI по 16 КиБ. Без извлечения на диск, links/parent paths отклоняются.
+Подписи/свежесть/netId/public IPv4 classic NTCP2 проверяются независимо
+от digest; дубликаты удаляются, между партиями проверок уступается event loop.
+
+Подтверждённый snapshot: 303 RI, 168 043 байта gzip / 542 208 байт tar,
+SHA256 `c3e13e03fb84b8cc53934c356814238e867b4a708762cfcde1b9e91b1fad08d9`.
+Chrome `156.0.8078.47`. Обычный холодный профиль: модуль готов за 67,8 мс,
+архив скачан за 4 мс, digest 2 мс, распаковка 5 мс, tar/проверка RI с
+уступкой event loop 87 мс. Готовые оба направления с roundtrip за
+197 328 мс от навигации, завершение за 229 338 мс: 12 соединений,
+2 inbound / 3 outbound, 5 roundtrip, 32 секунды удержания. Линейная WASM
+memory максимум 5 898 240 байт, sampled JS heap максимум 2 116 520 байт.
+
+Второй профиль — desktop Chrome с CPU ×4, viewport 390×844 и HTTP
+200 КиБ/с download / 100 КиБ/с upload / latency 80 мс. Модуль готов за
+10 369,6 мс, netDb скачан за 906 мс, digest 10 мс, распаковка 16 мс,
+tar/проверка 255 мс. Готовность за 107 202 мс от навигации, завершение
+за 141 239 мс: 17 соединений, 2 inbound / 3 outbound, 5 roundtrip,
+34 секунды удержания. WASM memory максимум 6 619 136 байт,
+sampled JS heap максимум 2 338 692 байта. Интервал 100-мс heartbeat доходил
+до 155,9 / 544,8 мс соответственно. JS heap семплируется CDP примерно
+раз в секунду, линейная память — её ёмкость, не RSS процесса/устройства.
+Эмуляция не проверяет физический телефон или Android/Safari engine.
+
+Подгружаемый wasm-bindgen модуль: 2 012 452 байта WASM + 29 579 байт JS.
+Raw release WASM до обработки — 3 603 680 байт. Артефакты:
+`browser-bootstrap-evidence` (`13074456534`: snapshot/manifest/receipts),
+`browser-bootstrap-module` (`13074327101`, ZIP 776 196 байт),
+`browser-router-wasm` (`13073487160`), `browser-ntcp2-evidence` (`13074067958`).
+HTTP-сжатие не включалось; ZIP не означает размер HTTP-загрузки.
+Source pin/patch SHA256 emissary не менялись. Private keys, capability и
+Chrome profile не сохраняются. NTCP2 повторно подтверждён: native 80 мс,
+public 349 мс со второй попытки с аутентифицированными data-phase ответами.
+
+Основное время занимает построение путей в живой I2P. Два запуска не дают
+основания заключать, что замедленный CPU ускоряет сеть; цель «секунды до
+туннеля на среднем телефоне» не достигнута. Следующее — реальный мобильный
+браузер и исследование времени построения путей, затем client/messenger
+pool, обмен двух браузеров, OPFS/passkey и PWA lifecycle. Доступ к
+физическому устройству не предоставлен; поиск BrowserStack через
+plugin-management не нашёл интеграции. Публичный хостинг не разворачивался,
+PR #143 остаётся draft, исходный dirty Android submodule не затронут.
