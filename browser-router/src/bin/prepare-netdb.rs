@@ -42,10 +42,15 @@ fn main() {
     let mut records = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut public = 0;
+    let mut rejected = std::collections::BTreeMap::<String, usize>::new();
     for path in paths {
         let Ok(bytes) = fs::read(&path) else { continue };
-        let Ok(peer) = verified_peer(&bytes) else {
-            continue;
+        let peer = match verified_peer(&bytes) {
+            Ok(peer) => peer,
+            Err(error) => {
+                *rejected.entry(format!("{error:?}")).or_default() += 1;
+                continue;
+            }
         };
         let fixture = path == root.join("router.info");
         if fixture && !peer.address.ip().is_loopback() {
@@ -74,11 +79,10 @@ fn main() {
             peer.router.published.date() / 1000
         ));
     }
-    assert!(
-        snapshot_mode || rows.iter().any(|row| row.contains("\tfixture\t")),
-        "no signed local fixture RouterInfo"
-    );
-    assert!(public > 0, "no verified public NTCP2 peers in fresh netDb");
+    if (!snapshot_mode && !rows.iter().any(|row| row.contains("\tfixture\t"))) || public == 0 {
+        eprintln!("NETDB_NOT_READY public={public} rejected={rejected:?}");
+        std::process::exit(2);
+    }
     fs::write(&args[2], rows.join("\n") + "\n").expect("candidates TSV");
     if snapshot_mode {
         assert!(public >= 16, "snapshot needs at least 16 public peers");
@@ -116,7 +120,7 @@ fn main() {
         let manifest = serde_json::json!({
             "sha256": digest, "compressed_bytes": bytes.len(), "records": records.len(),
             "created_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
-            "i2pd_revision": "6b214f74d2c1b9d892cda29119f0942097cbfd85",
+            "i2pd_revision": env!("GIPNY_BROWSER_I2PD_REVISION"),
         });
         fs::write(
             format!("{}.json", args[4]),

@@ -2,6 +2,15 @@
 
 Крейт `gipny`. Rust-часть приложения: `Core` (логика клиента поверх `libcore`), команды для интерфейса из `ui/`, запуск профиля. Рядом лежат `relay/` (выделенный релей, свой README) и `gen/android/` (Android-обёртка, свой README).
 
+## Автономный браузерный режим
+
+`ui/browser.html` использует отдельный `BrowserEngine` в Rust/WASM Worker и
+client-only emissary. Он не запускает Tauri `Core` и не требует `gipny-web`.
+Общие протоколы находятся в `libcore`; JPEG/PNG/WebP sanitizer переиспользуется
+из `core/src/sanitizer.rs`. Нативная очистка PDF сохраняется; WASM отклоняет PDF
+при включённом фильтре метаданных. Архитектура, ограничения и CI:
+[руководство браузерного мессенджера](../docs/browser-messenger.md).
+
 ## gipny-web
 
 Состояние на **2026-10-31**, уточнено **2026-11-01** после review T9b: экспериментальный локальный веб-режим, отдельный
@@ -198,10 +207,10 @@ Web-вложения передаются inline base64. Пределы axum Web
 
 ## Как проверить
 
-```
-env -u CC -u CXX cargo check -p gipny
-env -u CC -u CXX cargo test -p gipny --lib
-cd ui && npx tsc --noEmit
-```
-
-Интерфейс без бэкенда: `cd ui && npm run dev`, затем http://127.0.0.1:5173/dev/preview.html. Установщики и APK собирает только GitHub (`build.yml`, `release.yml`).
+Сборки и выполнение тестов этой работы проводятся только в GitHub Actions:
+[build.yml](../.github/workflows/build.yml),
+[security-fast.yml](../.github/workflows/security-fast.yml),
+[e2e-i2pd.yml](../.github/workflows/e2e-i2pd.yml).
+Браузерный WASM и production PWA проверяет
+[browser-router.yml](../.github/workflows/browser-router.yml).
+Установщики и APK формируются в build/release workflows.

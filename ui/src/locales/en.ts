@@ -2,6 +2,14 @@ import type { ru } from './ru.ts';
 
 /** English UI messages. Technical payloads and user content are never translated. */
 export const en = {
+  "browser.about.transport": "Keys, encryption and the I2P router run in your browser. A WSS forwarder is required to carry encrypted NTCP2 traffic; it sees your IP address, connection timing and traffic volume.",
+  "browser.about.storage": "Your profile is stored in encrypted OPFS files for this site. The password uses Argon2id (64 MiB); passkeys require WebAuthn PRF support. Clearing site data removes the profile. Keep your password as a recovery method.",
+  "browser.about.memory": "Locking or leaving the page terminates the worker and closes the profile. Browsers do not provide native mlock/mprotect protection or guarantee physical erasure of all RAM. Trust the app host and browser extensions: they can access unlocked data.",
+  "browser.about.contacts": "Exchange contact cards and verify key fingerprints over a trusted channel. Your identity and I2P address persist when you reopen the profile.",
+  "browser.about.delivery": "Both profiles must be open and connected to I2P for delivery. The sender keeps an encrypted outbox and retries while the profile is open. Delivered means the recipient acknowledged decryption. Browser DHT mail is unavailable.",
+  "browser.about.offline": "After the app shell has been cached, you can open saved history offline. Returning after a lock requires your password or passkey; connectivity and background tabs depend on browser limits.",
+  "browser.about.limits": "Attachments are limited to 1 MiB per message; encrypted profiles to 16 MiB and the browser storage quota. The agent console, large multipart files, native backup import/export, duress and attempt-counter wiping are unavailable.",
+  "browser.about.updates": "Application code is loaded from this site. A shell update activates after old app windows close. Compromised code from the host could expose data after you unlock.",
   "web.title": "Connect to local gipny",
   "web.description": "Experimental web mode needs gipny-web running on this machine. Enter the port and token from its printed launch URL. Keys and crypto stay in the native process.",
   "web.port": "Local port",
@@ -688,5 +696,10 @@ export const en = {
   "chat.mode_chat": "chat",
   "chat.mode_console": "console",
   "settings.attempt_limit_updated": "Attempt limit updated",
-  "media.file_count": "Files: {n}"
+  "media.file_count": "Files: {n}",
+  "browser.unlock_passkey": "Open with a passkey",
+  "browser.add_passkey": "Add a passkey",
+  "browser.passkey": "Passkey",
+  "browser.passkey_added": "Passkey added",
+  "browser.passkey_hint": "Your browser and passkey must support PRF. Keep your profile password for recovery."
 } as const satisfies Record<keyof typeof ru, string>;

@@ -18,7 +18,7 @@ use emissary_core::{
 use futures::{
     channel::{mpsc, oneshot},
     task::AtomicWaker,
-    Sink, Stream, StreamExt,
+    Sink, SinkExt, Stream, StreamExt,
 };
 use wasm_bindgen::{closure::Closure, JsCast};
 use web_sys::{CloseEvent, Event, MessageEvent, WebSocket};
@@ -108,6 +108,78 @@ pub struct BrowserTcpStream {
     cursor: usize,
     flushing: Option<oneshot::Receiver<bool>>,
     write_closed: bool,
+}
+
+impl BrowserTcpStream {
+    /// Bounded byte pipe for an application inside the WASM process. This never
+    /// opens a WebSocket, TCP listener, or UDP socket.
+    pub fn memory_pair() -> (Self, Self) {
+        let (commands_a, receiver_a) = mpsc::channel(QUEUE_DEPTH);
+        let (commands_b, receiver_b) = mpsc::channel(QUEUE_DEPTH);
+        let (incoming_a, frames_a) = mpsc::channel(QUEUE_DEPTH);
+        let (incoming_b, frames_b) = mpsc::channel(QUEUE_DEPTH);
+        let terminal_a = Arc::new(Terminal::default());
+        let terminal_b = Arc::new(Terminal::default());
+        crate::tasks::spawn(memory_driver(
+            receiver_a,
+            incoming_b,
+            terminal_a.clone(),
+            terminal_b.clone(),
+        ));
+        crate::tasks::spawn(memory_driver(
+            receiver_b,
+            incoming_a,
+            terminal_b.clone(),
+            terminal_a.clone(),
+        ));
+        let endpoint = |commands, incoming, terminal| Self {
+            commands,
+            incoming,
+            terminal,
+            buffered: Vec::new(),
+            cursor: 0,
+            flushing: None,
+            write_closed: false,
+        };
+        (
+            endpoint(commands_a, frames_a, terminal_a),
+            endpoint(commands_b, frames_b, terminal_b),
+        )
+    }
+}
+
+struct MemoryClose(Arc<Terminal>);
+impl Drop for MemoryClose {
+    fn drop(&mut self) {
+        self.0.clean_drained.store(
+            self.0.pending_writes.load(Ordering::SeqCst) == 0,
+            Ordering::SeqCst,
+        );
+        self.0.finish(false);
+    }
+}
+
+async fn memory_driver(
+    mut receiver: mpsc::Receiver<Command>,
+    mut peer: mpsc::Sender<Vec<u8>>,
+    own: Arc<Terminal>,
+    remote: Arc<Terminal>,
+) {
+    let _closed = MemoryClose(remote);
+    while let Some(command) = receiver.next().await {
+        match command {
+            Command::Write(bytes) => {
+                if peer.send(bytes).await.is_err() {
+                    own.finish(true);
+                    return;
+                }
+                own.pending_writes.fetch_sub(1, Ordering::SeqCst);
+            }
+            Command::Flush(ack) => {
+                let _ = ack.send(true);
+            }
+        }
+    }
 }
 
 impl TcpStream for BrowserTcpStream {
@@ -248,6 +320,62 @@ impl AsyncWrite for BrowserTcpStream {
         self.write_closed = true;
         self.commands.close_channel();
         Poll::Ready(Ok(()))
+    }
+}
+
+impl futures::io::AsyncRead for BrowserTcpStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match emissary_core::runtime::AsyncRead::poll_read(self, cx, buf) {
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl futures::io::AsyncWrite for BrowserTcpStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match emissary_core::runtime::AsyncWrite::poll_write(self, cx, buf) {
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match emissary_core::runtime::AsyncWrite::poll_flush(self, cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match emissary_core::runtime::AsyncWrite::poll_close(self, cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("{e:?}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
     }
 }
 

@@ -34,6 +34,16 @@ zeroize = "1"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 i2p-embed = { path = "../i2p-embed", optional = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gipny-libcore = { path = "../libcore" }
+argon2 = { version = "0.6", features = ["zeroize"] }
+chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
+hkdf = "0.13"
+sha2 = "0.11"
+bincode = "1.3"
+base64 = "0.23"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+
 [features]
 native-peer = ["dep:i2p-embed", "dep:cc"]
 ntcp2-live-tests = []
@@ -49,6 +59,11 @@ name = "collect-netdb"
 path = "src/bin/collect-netdb.rs"
 required-features = ["native-peer"]
 
+[[bin]]
+name = "prepare-netdb"
+path = "src/bin/prepare-netdb.rs"
+required-features = ["native-peer"]
+
 [build-dependencies]
 cc = { version = "1", optional = true }
 
@@ -60,3 +75,13 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[profile.release.package.argon2]
+opt-level = 3
+[profile.release.package.blake2]
+opt-level = 3
+
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

@@ -42,6 +42,21 @@ pub fn metrics_snapshot() -> MetricsSnapshot {
     CURRENT.with(|current| current.borrow().lock().unwrap().clone())
 }
 
+pub(crate) fn client_event(name: &'static str, value: usize) {
+    CURRENT.with(|current| {
+        let state = current.borrow();
+        let mut snapshot = state.lock().unwrap();
+        let count = snapshot.counters.entry(name).or_default();
+        *count = count.saturating_add(value as u64);
+    });
+}
+
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn public_network_metrics() -> String {
+    let snapshot = metrics_snapshot();
+    serde_json::json!({ "counters": snapshot.counters, "gauges": snapshot.gauges }).to_string()
+}
+
 impl Counter for Metric {
     fn increment(&mut self, value: usize) {
         let mut state = self.state.lock().unwrap();

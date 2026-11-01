@@ -2,9 +2,10 @@ name: Browser router WASM
 
 on:
   push:
-    paths: ['browser-router/**', '.github/workflows/browser-router.yml']
+    branches: [main]
+    paths: ['browser-router/**', 'libcore/**', 'ui/**', 'core/src/sanitizer.rs', 'Cargo.toml', 'Cargo.lock', 'third_party/i2pd', '.github/workflows/browser-router.yml']
   pull_request:
-    paths: ['browser-router/**', '.github/workflows/browser-router.yml']
+    paths: ['browser-router/**', 'libcore/**', 'ui/**', 'core/src/sanitizer.rs', 'Cargo.toml', 'Cargo.lock', 'third_party/i2pd', '.github/workflows/browser-router.yml']
   workflow_dispatch:
 
 permissions:
@@ -39,9 +40,39 @@ jobs:
         run: |
           cargo build --locked --target wasm32-unknown-unknown -p emissary-core
           cargo build --locked --release --target wasm32-unknown-unknown
+      - name: Verify the WASM graph has no native application dependencies
+        run: |
+          cargo tree --locked --target wasm32-unknown-unknown -e normal --prefix none --format '{p}' > "$RUNNER_TEMP/browser-wasm-dependencies.txt"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          forbidden = {'tokio', 'rusqlite', 'openssl-sys', 'i2p-embed', 'libsqlite3-sys', 'ring'}
+          packages = {line.split()[0] for line in (Path(os.environ['RUNNER_TEMP']) / 'browser-wasm-dependencies.txt').read_text().splitlines() if line.strip()}
+          found = sorted(packages & forbidden)
+          if found:
+              raise SystemExit(f'native-only dependencies entered WASM: {found}')
+          print('WASM uses the portable crypto/wire core without native transport/database libraries')
+          PY
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build the browser messenger with its generated WASM worker
+        run: |
+          wasm-pack build --target web --release --locked
+          npm ci --prefix ../ui
+          npm run build:browser --prefix ../ui
+          npm test --prefix ../ui
+      - uses: actions/upload-artifact@v7
+        with:
+          name: browser-messenger-pwa
+          path: ui/browser-dist/
+          if-no-files-found: error
+          retention-days: 5
       - name: Install WebSocket fixture
         run: python3 -m pip install websockets==15.0.1
       - name: Forwarder boundary tests
@@ -87,7 +118,7 @@ jobs:
   ntcp2:
     name: Browser NTCP2 and exploratory tunnels
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - name: Prepare pinned emissary and reviewed client-only patch
@@ -110,6 +141,14 @@ jobs:
       - name: Build native i2pd peer and RouterInfo verifier from source
         working-directory: browser-router
         run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb --bin collect-netdb
+      - name: Requery cached LeaseSet after a failed streaming handshake
+        working-directory: browser-router/upstream/emissary
+        run: |
+          cargo test --locked -p emissary-core --lib destination::tests::query_lease_set_found -- --exact
+          cargo test --locked -p emissary-core --lib destination::session::tests::remote_encryption_key_change_restarts_garlic_session -- --exact
+          cargo test --locked -p emissary-core --lib destination::session::tests::inbound_peer_restart_replaces_existing_session -- --exact
+          cargo test --locked -p emissary-core --lib destination::session::tests
+          cargo test --locked -p emissary-core --lib destination::routing_path::tests
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
@@ -118,10 +157,26 @@ jobs:
       - name: Real NTCP2 handshakes from WASM in Chrome
         run: python3 browser-router/tests/run_ntcp2_ci.py
       - name: Build loadable browser module from source
+        id: browser_module
         working-directory: browser-router
         run: wasm-pack build --target web --release --locked
       - name: Cold browser bootstrap from a downloaded netDb snapshot
         run: python3 browser-router/tests/run_bootstrap_ci.py
+      - uses: actions/setup-node@v6
+        if: ${{ !cancelled() && steps.browser_module.outcome == 'success' }}
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build browser messenger for live integration
+        if: ${{ !cancelled() && steps.browser_module.outcome == 'success' }}
+        id: messenger_build
+        run: |
+          npm ci --prefix ui
+          npm run build:browser --prefix ui
+      - name: Two independent browsers exchange messages and recover their profiles
+        if: ${{ !cancelled() && steps.messenger_build.outcome == 'success' }}
+        run: python3 browser-router/tests/run_messenger_ci.py
       - name: Verify source provenance after tests
         run: python3 browser-router/scripts/prepare_emissary.py
       - name: Keep public protocol evidence and diagnostics
@@ -151,6 +206,17 @@ jobs:
             ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz
             ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz.json
             browser-router/emissary-provenance.json
+          if-no-files-found: warn
+          retention-days: 5
+      - name: Keep browser messenger public receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-messenger-evidence
+          path: |
+            ${{ runner.temp }}/browser-messenger/receipt.json
+            ${{ runner.temp }}/browser-messenger/forwarder.log
+            ${{ runner.temp }}/browser-messenger/chrome-*.log
           if-no-files-found: warn
           retention-days: 5
       - name: Keep loadable browser module

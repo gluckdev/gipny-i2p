@@ -1,7 +1,7 @@
 import { errorText } from './error-text';
 import { languagePicker } from './language-picker';
 import { t as tr } from './i18n';
-import { Api } from './api';
+import { Api, usesBrowserCore } from './api';
 import type { Store, BootStep, BootStepId } from './state';
 import { View, h, busy, logo } from './view';
 
@@ -28,7 +28,7 @@ export class AuthCreate extends View {
     this.confirmI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.confirm_passphrase') });
     this.duressI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.duress_passphrase_optional') });
     this.wipeC = h('input', { type: 'checkbox', checked: true });
-    this.attemptsI = h('input', { class: 'input', type: 'number', value: '10', min: '0', max: '100' });
+    this.attemptsI = h('input', { class: 'input', type: 'number', value: usesBrowserCore() ? '0' : '10', min: '0', max: '100' });
     this.err = h('div', { class: 'err' });
 
     const hasProfiles = store.profiles.get().length > 0;
@@ -49,13 +49,13 @@ export class AuthCreate extends View {
         ),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
         h('div', { class: 'field' }, h('label', null, tr('auth.confirm_pass')), this.confirmI),
-        h('div', { class: 'divider-text' }, tr('auth.duress_title')),
-        h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
+        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('auth.duress_title')),
+        !usesBrowserCore() && h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
           h('div', { class: 'hint' }, tr('auth.duress_pass_hint'))),
-        h('label', { class: 'chk', style: { marginBottom: '14px' } },
+        !usesBrowserCore() && h('label', { class: 'chk', style: { marginBottom: '14px' } },
           this.wipeC, h('span', { class: 'box' }),
           h('span', null, tr('auth.duress_wipe'))),
-        h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
+        !usesBrowserCore() && h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
         this.err,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           hasProfiles && h('button', {
@@ -136,6 +136,10 @@ export class AuthUnlock extends View {
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
         this.err,
         this.net,
+        usesBrowserCore() && (() => {
+          const button = h('button', { class: 'btn btn-ghost btn-block', onClick: () => busy(button as HTMLButtonElement, () => this.unlockPasskey()) }, tr('browser.unlock_passkey'));
+          return button;
+        })(),
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           h('button', {
             class: 'btn btn-ghost',
@@ -183,6 +187,19 @@ export class AuthUnlock extends View {
       if (msg.includes('wiped')) this.store.showToast(tr('auth.profile_wiped'), true);
       else if (msg.includes('invalid passphrase')) this.store.showToast(tr('auth.wrong_pass'), true);
       else this.store.showToast(errorText(msg), true);
+    }
+  }
+
+  private async unlockPasskey(): Promise<void> {
+    const profile = this.store.currentProfile.get();
+    if (!profile) return;
+    await this.store.beginBoot(profile);
+    try {
+      await new Promise<void>((resolve, reject) => window.dispatchEvent(new CustomEvent('gipny-unlock-passkey', { detail: { profile, done: (error?: unknown) => error ? reject(error) : resolve() } })));
+      await this.store.onUnlocked(profile);
+    } catch (error) {
+      this.store.endBoot(); this.store.view.set('auth-unlock');
+      this.store.showToast(errorText(error), true);
     }
   }
 }

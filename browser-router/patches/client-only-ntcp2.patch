@@ -8,6 +8,607 @@ index b9a3cf3..2ccc0a9 100644
  name = "emissary-core"
  version = "0.4.0"
  edition.workspace = true
+diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
+index 427fe88..316e1f9 100644
+--- a/emissary-core/src/destination/mod.rs
++++ b/emissary-core/src/destination/mod.rs
+@@ -207,6 +207,9 @@ pub struct Destination<R: Runtime> {
+     /// Pending lease set queries:
+     pending_queries: HashSet<DestinationId>,
+ 
++    /// Cached destinations that failed a streaming handshake.
++    stale_destinations: HashSet<DestinationId>,
++
+     /// Public keys.
+     public_keys: Vec<StaticPublicKey>,
+ 
+@@ -263,6 +266,7 @@ impl<R: Runtime> Destination<R> {
+             lease_set_prune_timer: R::timer(LEASE_SET_PRUNE_INTERVAL),
+             netdb_handle,
+             pending_queries: HashSet::new(),
++            stale_destinations: HashSet::new(),
+             public_keys: public_keys.clone(),
+             query_futures: R::join_set(),
+             remote_destinations: HashMap::new(),
+@@ -292,19 +296,39 @@ impl<R: Runtime> Destination<R> {
+     /// [`DestinationEvent::LeaseSetFound`], indicating that a lease set is foun and the remote
+     /// destination is reachable.
+     pub fn query_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
++        self.query_lease_set_inner(destination_id, false)
++    }
++
++    /// Refresh a reachable-looking address after a failed streaming handshake.
++    /// A restarted peer retains its destination but replaces its inbound tunnels;
++    /// their previously signed LeaseSet can remain unexpired for several minutes.
++    pub(crate) fn refresh_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
++        R::client_event("client_lease_refresh_requested", 1);
++        self.stale_destinations.insert(destination_id.clone());
++        self.query_lease_set_inner(destination_id, true)
++    }
++
++    fn query_lease_set_inner(
++        &mut self,
++        destination_id: &DestinationId,
++        force_refresh: bool,
++    ) -> LeaseSetStatus {
+         if self.pending_queries.contains(destination_id) {
+             return LeaseSetStatus::Pending;
+         }
+ 
+         if let Some(context) = self.remote_destinations.get(destination_id) {
+-            if !context.lease_set.is_expired::<R>() {
++            if !force_refresh
++                && !self.stale_destinations.contains(destination_id)
++                && !context.lease_set.is_expired::<R>()
++            {
+                 return LeaseSetStatus::Found;
+             }
+ 
+             tracing::debug!(
+                 target: LOG_TARGET,
+                 %destination_id,
+-                "lease set found but it's expired",
++                "lease set is expired or explicitly being refreshed",
+             );
+         }
+ 
+@@ -478,6 +502,7 @@ impl<R: Runtime> Destination<R> {
+                         }
+                     }
+                     None => {
++                        R::client_event("client_selected_lease_missing", 1);
+                         tracing::warn!(
+                             target: LOG_TARGET,
+                             %destination_id,
+@@ -672,6 +697,14 @@ impl<R: Runtime> Destination<R> {
+                                 "store lease set for remote destination",
+                             );
+ 
++                            if self.remote_destinations.get(&destination_id).is_some_and(|current| {
++                                current.lease_set.header.published > lease_set.header.published
++                            }) {
++                                R::client_event("client_stale_garlic_lease_ignored", 1);
++                                return None;
++                            }
++
++                            self.stale_destinations.remove(&destination_id);
+                             self.routing_path_manager
+                                 .register_leases(&destination_id, Ok(lease_set.leases.clone()));
+ 
+@@ -847,6 +880,17 @@ impl<R: Runtime> Stream for Destination<R> {
+             Poll::Pending => {}
+             Poll::Ready(None) => return Poll::Ready(None),
+             Poll::Ready(Some((destination_id, result))) => {
++                // A delayed floodfill reply must not roll back a newer signed
++                // LeaseSet already learned from a peer's inbound garlic message.
++                let result = result.map(|lease_set| {
++                    match self.remote_destinations.get(&destination_id) {
++                        Some(current) if current.lease_set.header.published > lease_set.header.published => {
++                            R::client_event("client_stale_lease_query_ignored", 1);
++                            current.lease_set.clone()
++                        }
++                        _ => lease_set,
++                    }
++                });
+                 // always register lease set query result, regardless of its status as one or more
+                 // routing paths might've initiated the query and need to know whether it succeeded
+                 // or not
+@@ -860,6 +904,7 @@ impl<R: Runtime> Stream for Destination<R> {
+ 
+                 match result {
+                     Err(error) => {
++                        R::client_event("client_lease_query_failure", 1);
+                         self.pending_queries.remove(&destination_id);
+ 
+                         return Poll::Ready(Some(DestinationEvent::LeaseSetNotFound {
+@@ -868,6 +913,14 @@ impl<R: Runtime> Stream for Destination<R> {
+                         }));
+                     }
+                     Ok(lease_set) => {
++                        R::client_event("client_lease_query_success", 1);
++                        if let Some(previous) = self.remote_destinations.get(&destination_id) {
++                            R::client_event(if lease_set.header.published > previous.lease_set.header.published {
++                                "client_newer_lease_received"
++                            } else {
++                                "client_unchanged_lease_received"
++                            }, 1);
++                        }
+                         self.pending_queries.remove(&destination_id);
+ 
+                         match lease_set.public_keys.iter().find(|&remote_key| {
+@@ -877,7 +930,8 @@ impl<R: Runtime> Stream for Destination<R> {
+                         }) {
+                             Some(key) => {
+                                 self.session_manager
+-                                    .add_remote_destination(destination_id.clone(), key.clone());
++                                    .observe_remote_key(destination_id.clone(), key.clone(), lease_set.header.published);
++                                self.stale_destinations.remove(&destination_id);
+                             }
+                             None => {
+                                 tracing::warn!(
+@@ -1008,7 +1062,7 @@ mod tests {
+ 
+     #[tokio::test]
+     async fn query_lease_set_found() {
+-        let (netdb_handle, _rx) = NetDbHandle::create();
++        let (netdb_handle, rx) = NetDbHandle::create();
+         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
+         let private_key = StaticPrivateKey::random(MockRuntime::rng());
+         let mut destination = Destination::<MockRuntime>::new(
+@@ -1027,6 +1081,11 @@ mod tests {
+         // insert dummy lease set for `remote` into `Destination`
+         let remote = DestinationId::random();
+         let (lease_set, _) = LeaseSet2::random();
++        let expected_published = lease_set.header.published;
++        let expected_key = lease_set.public_keys[0].to_vec();
++        let mut delayed = lease_set.clone();
++        delayed.header.published = delayed.header.published.saturating_sub(1);
++        delayed.public_keys = vec![StaticPrivateKey::random(MockRuntime::rng()).public()];
+         destination.remote_destinations.insert(
+             remote.clone(),
+             DestinationContext {
+@@ -1038,6 +1097,33 @@ mod tests {
+ 
+         // query lease set and verify it exists
+         assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
++        assert!(destination.query_futures.is_empty(), "ordinary lookup should use its cache");
++        // LeaseSetManager registers the local destination during construction.
++        // Drain those startup actions before examining the remote lookup.
++        let mut startup_actions = Vec::new();
++        while let Ok(action) = rx.try_recv() { startup_actions.push(action); }
++
++        // A failed handshake must be able to bypass an unexpired stale address.
++        assert_eq!(destination.refresh_lease_set(&remote), LeaseSetStatus::NotFound);
++        assert_eq!(destination.refresh_lease_set(&remote), LeaseSetStatus::Pending);
++        assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Pending);
++        assert_eq!(destination.query_futures.len(), 1, "refresh must coalesce");
++        assert!(destination.remote_destinations.contains_key(&remote));
++        let (key, tx) = tokio::time::timeout(Duration::from_secs(2), async {
++            loop {
++                match rx.recv().await.unwrap() {
++                    NetDbAction::QueryLeaseSet2 { key, tx } => break (key, tx),
++                    startup => startup_actions.push(startup),
++                }
++            }
++        }).await.unwrap();
++        assert_eq!(key.to_vec(), remote.to_vec());
++        assert!(tx.send(Ok(delayed)).is_ok());
++        let event = tokio::time::timeout(Duration::from_secs(2), destination.next())
++            .await.unwrap().unwrap();
++        assert!(core::matches!(event, DestinationEvent::LeaseSetFound { .. }));
++        assert_eq!(destination.lease_set(&remote).header.published, expected_published);
++        assert_eq!(destination.lease_set(&remote).public_keys[0].to_vec(), expected_key);
+     }
+ 
+     #[tokio::test]
+diff --git a/emissary-core/src/destination/routing_path.rs b/emissary-core/src/destination/routing_path.rs
+index 2da85b2..3adf175 100644
+--- a/emissary-core/src/destination/routing_path.rs
++++ b/emissary-core/src/destination/routing_path.rs
+@@ -447,8 +447,10 @@ impl<R: Runtime> RoutingPathManager<R> {
+             );
+         }
+ 
+-        // extend the current set of `destination_id`'s leases and prune all expired leases
+-        current_leases.extend(leases.clone());
++        // A verified LeaseSet is the complete currently authorized set, not
++        // an incremental announcement. Superseded leases may still be
++        // unexpired even though their destination has restarted.
++        *current_leases = leases.clone();
+         current_leases.retain(|lease| lease.expires > R::time_since_epoch());
+ 
+         if let Some(subscribers) = self.subscribers.get_mut(destination_id) {
+@@ -1076,12 +1078,17 @@ impl<R: Runtime> Future for RoutingPathHandle<R> {
+                 None => return Poll::Ready(()),
+                 Some(event) => match event {
+                     RoutingPathEvent::InboundTunnelBuilt { tunnels } => {
+-                        // invalidate current routing path if it uses failing tunnel
++                        let authorized =
++                            tunnels.iter().map(|(tunnel_id, _)| *tunnel_id).collect::<HashSet<_>>();
++                        // Retire a path whose inbound tunnel was superseded,
++                        // as well as paths already known to be failing.
+                         if let Some(RoutingPath { inbound, .. }) = &self.routing_path {
+-                            if core::matches!(
+-                                self.tunnels.get(inbound),
+-                                Some(TunnelKind::FailingInbound { .. })
+-                            ) {
++                            if !authorized.contains(inbound)
++                                || core::matches!(
++                                    self.tunnels.get(inbound),
++                                    Some(TunnelKind::FailingInbound { .. })
++                                )
++                            {
+                                 tracing::debug!(
+                                     target: LOG_TARGET,
+                                     destination_id = %self.destination_id,
+@@ -1094,28 +1101,28 @@ impl<R: Runtime> Future for RoutingPathHandle<R> {
+                             }
+                         }
+                         let now = R::time_since_epoch();
+-                        let routing_path_inbound_tunnel =
+-                            self.routing_path.as_ref().map(|path| path.inbound);
+-
+-                        tunnels.into_iter().for_each(|(tunnel_id, expires)| {
+-                            self.tunnels
+-                                .insert(tunnel_id, TunnelKind::Inbound { tunnel_id, expires });
+-                        });
+-
+-                        self.tunnels.retain(|tunnel_id, kind| {
+-                            // don't remove tunnel currently used by the routing path
+-                            if let Some(inbound) = routing_path_inbound_tunnel {
+-                                if *tunnel_id == inbound {
+-                                    return true;
+-                                }
++                        self.tunnels.retain(|tunnel_id, kind| match kind {
++                            TunnelKind::Inbound { expires, .. }
++                            | TunnelKind::FailingInbound { expires, .. } => {
++                                authorized.contains(tunnel_id) && *expires > now
+                             }
+-
+-                            match kind {
+-                                TunnelKind::Inbound { expires, .. } => *expires > now,
+-                                TunnelKind::FailingInbound { expires, .. } => *expires > now,
+-                                _ => true,
+-                            }
+-                        })
++                            _ => true,
++                        });
++                        for (tunnel_id, expires) in
++                            tunnels.into_iter().filter(|(_, expires)| *expires > now)
++                        {
++                            // An identical lookup must not make a known failed
++                            // tunnel healthy again on every refresh.
++                            let kind = if core::matches!(
++                                self.tunnels.get(&tunnel_id),
++                                Some(TunnelKind::FailingInbound { .. })
++                            ) {
++                                TunnelKind::FailingInbound { tunnel_id, expires }
++                            } else {
++                                TunnelKind::Inbound { tunnel_id, expires }
++                            };
++                            self.tunnels.insert(tunnel_id, kind);
++                        }
+                     }
+                     RoutingPathEvent::OutboundTunnelBuilt { tunnel_id } => {
+                         // invalidate current routing path if it uses expiring/failing tunnel
+@@ -1197,6 +1204,62 @@ mod tests {
+     use crate::{primitives::RouterId, runtime::mock::MockRuntime};
+     use futures::StreamExt;
+ 
++    #[tokio::test(start_paused = true)]
++    async fn new_lease_set_retires_superseded_routes() {
++        let remote = DestinationId::random();
++        let outbound = TunnelId::random();
++        let old = Lease::random();
++        let fresh = Lease::random();
++        let mut manager =
++            RoutingPathManager::<MockRuntime>::new(DestinationId::random(), vec![outbound]);
++        manager.register_leases(&remote, Ok(vec![old.clone()]));
++        let mut existing = manager.handle(remote.clone());
++        assert_eq!(existing.routing_path().unwrap().inbound, old.tunnel_id);
++
++        manager.register_leases(&remote, Ok(vec![fresh.clone()]));
++        assert!((&mut existing).now_or_never().is_none());
++        assert!(
++            existing.routing_path.is_none(),
++            "even a healthy old route must be retired"
++        );
++        assert!(!existing.tunnels.contains_key(&old.tunnel_id));
++        assert_eq!(existing.routing_path().unwrap().inbound, fresh.tunnel_id);
++        assert!(existing.tunnels.contains_key(&outbound));
++
++        let mut new_handle = manager.handle(remote.clone());
++        assert!(!new_handle.tunnels.contains_key(&old.tunnel_id));
++        assert_eq!(new_handle.routing_path().unwrap().inbound, fresh.tunnel_id);
++        for _ in 0..3 {
++            manager.register_leases(&remote, Ok(vec![fresh.clone()]));
++            assert!((&mut existing).now_or_never().is_none());
++            assert!((&mut new_handle).now_or_never().is_none());
++        }
++        assert_eq!(
++            manager.inbound_tunnels.get(&remote).unwrap().len(),
++            1,
++            "identical query results must not accumulate duplicate leases"
++        );
++    }
++
++    #[tokio::test(start_paused = true)]
++    async fn identical_lease_set_preserves_failure_tracking() {
++        let remote = DestinationId::random();
++        let outbound = TunnelId::random();
++        let lease = Lease::random();
++        let mut manager =
++            RoutingPathManager::<MockRuntime>::new(DestinationId::random(), vec![outbound]);
++        manager.register_leases(&remote, Ok(vec![lease.clone()]));
++        let mut handle = manager.handle(remote.clone());
++        assert!(handle.routing_path().is_some());
++        assert!(handle.recreate_routing_path().is_some());
++        manager.register_leases(&remote, Ok(vec![lease.clone()]));
++        assert!((&mut handle).now_or_never().is_none());
++        assert!(core::matches!(
++            handle.tunnels.get(&lease.tunnel_id),
++            Some(TunnelKind::FailingInbound { .. })
++        ));
++    }
++
+     #[tokio::test]
+     async fn make_routing_path() {
+         let remote = DestinationId::random();
+@@ -1746,7 +1809,7 @@ mod tests {
+                 .iter()
+                 .filter(|(_, kind)| core::matches!(kind, TunnelKind::FailingInbound { .. }))
+                 .count(),
+-            1
++            0
+         );
+         assert_eq!(
+             handle
+@@ -1812,7 +1875,7 @@ mod tests {
+         let inbound2 = Lease::random();
+ 
+         manager.register_outbound_tunnel_built(outbound1);
+-        manager.register_leases(&remote, Ok(vec![inbound1]));
++        manager.register_leases(&remote, Ok(vec![lease.clone(), inbound1.clone()]));
+         assert!(tokio::time::timeout(Duration::from_secs(2), &mut handle).await.is_err());
+ 
+         // verify that the routing path hasn't changed
+@@ -1854,7 +1917,7 @@ mod tests {
+ 
+             // register two more tunnels and verify that both handles get the updates
+             manager.register_outbound_tunnel_built(outbound2);
+-            manager.register_leases(&remote_dest, Ok(vec![inbound2]));
++            manager.register_leases(&remote_dest, Ok(vec![lease, inbound1, inbound2]));
+ 
+             loop {
+                 tokio::time::sleep(Duration::from_secs(10)).await;
+diff --git a/emissary-core/src/destination/session/context.rs b/emissary-core/src/destination/session/context.rs
+index 977cb30..1c55cfa 100644
+--- a/emissary-core/src/destination/session/context.rs
++++ b/emissary-core/src/destination/session/context.rs
+@@ -243,6 +243,25 @@ pub struct KeyContext<R: Runtime> {
+ }
+ 
+ impl<R: Runtime> KeyContext<R> {
++    /// Whether this destination advertises the remote key's encryption type.
++    pub fn supports_public_key(&self, key: &StaticPublicKey) -> bool {
++        match key {
++            StaticPublicKey::X25519(_) => self.inbound_context.x25519.is_some(),
++            StaticPublicKey::MlKem512X25519(_) => core::matches!(
++                self.inbound_context.ml_kem.as_ref(),
++                Some(MlKemKind::MlKem512X25519 { .. })
++            ),
++            StaticPublicKey::MlKem768X25519(_) => core::matches!(
++                self.inbound_context.ml_kem.as_ref(),
++                Some(MlKemKind::MlKem768X25519 { .. })
++            ),
++            StaticPublicKey::MlKem1024X25519(_) => core::matches!(
++                self.inbound_context.ml_kem.as_ref(),
++                Some(MlKemKind::MlKem1024X25519 { .. })
++            ),
++        }
++    }
++
+     /// Create new `KeyContext` from a private key and supported public keys.
+     ///
+     /// `public_keys` is guaranteed to contain at least one element corresponding to the private key
+diff --git a/emissary-core/src/destination/session/mod.rs b/emissary-core/src/destination/session/mod.rs
+index 0fdce43..45e14f2 100644
+--- a/emissary-core/src/destination/session/mod.rs
++++ b/emissary-core/src/destination/session/mod.rs
+@@ -218,6 +218,9 @@ pub struct SessionManager<R: Runtime> {
+     /// Known remote destinations and their public keys.
+     remote_destinations: HashMap<DestinationId, StaticPublicKey>,
+ 
++    /// Newest signed publication observed for each remote encryption key.
++    remote_key_epochs: HashMap<DestinationId, u32>,
++
+     /// Waker.
+     waker: Option<Waker>,
+ 
+@@ -263,6 +266,7 @@ impl<R: Runtime> SessionManager<R> {
+             pending_events: VecDeque::new(),
+             pending: HashMap::new(),
+             remote_destinations: HashMap::new(),
++            remote_key_epochs: HashMap::new(),
+             waker: None,
+             ratchet_threshold,
+         }
+@@ -307,12 +311,37 @@ impl<R: Runtime> SessionManager<R> {
+     ///
+     /// Calling `SessionManager::encrypt()` presupposes that the public key of remote destination
+     /// has been added to [`SessionManager`], otherwise the call will fail.
++    /// Observe a key from a verified LeaseSet, rejecting delayed older records.
++    pub fn observe_remote_key(&mut self, destination_id: DestinationId, key: StaticPublicKey, published: u32) {
++        if self.remote_key_epochs.get(&destination_id).is_some_and(|previous| *previous > published) {
++            R::client_event("client_stale_encryption_key_ignored", 1);
++            return;
++        }
++        self.remote_key_epochs.insert(destination_id.clone(), published);
++        self.add_remote_destination(destination_id, key);
++    }
++
+     pub fn add_remote_destination(
+         &mut self,
+         destination_id: DestinationId,
+         public_key: StaticPublicKey,
+     ) {
+-        self.remote_destinations.insert(destination_id, public_key);
++        let previous = self.remote_destinations.insert(destination_id.clone(), public_key.clone());
++        let changed = previous.as_ref().is_some_and(|old| {
++            mem::discriminant(old) != mem::discriminant(&public_key)
++                || old.to_vec() != public_key.to_vec()
++        });
++        if changed {
++            R::client_event("client_lease_encryption_key_changed", 1);
++            // A restarted destination publishes a fresh LeaseSet encryption
++            // key. Its previous ECIES tags and pending handshakes are gone.
++            // Preserve application keys; only replace this transport session.
++            if let Some(active) = self.active.remove(&destination_id) {
++                active.session.destroy();
++            }
++            self.pending.remove(&destination_id);
++            self.garlic_tags.write().retain(|_, remote| *remote != destination_id);
++        }
+     }
+ 
+     /// Remove session for `destination_id` from active sessions.
+@@ -786,6 +815,15 @@ impl<R: Runtime> SessionManager<R> {
+                     return Err(SessionError::InvalidKey);
+                 }
+ 
++                // Record the signed encryption key for inbound-first peers too.
++                // Otherwise the first later lookup has no previous key to compare
++                // against and leaves an active pre-restart ECIES session alive.
++                if let Some(remote_key) = lease_set.public_keys.iter().find(|remote_key| {
++                    self.key_context.supports_public_key(remote_key)
++                }) {
++                    self.observe_remote_key(destination_id.clone(), remote_key.clone(), lease_set.header.published);
++                }
++
+                 match self.pending.get_mut(&destination_id) {
+                     None => {
+                         tracing::debug!(
+@@ -1136,6 +1174,108 @@ mod tests {
+ 
+     const TEST_THRESHOLD: u16 = 10;
+ 
++    #[tokio::test]
++    async fn remote_encryption_key_change_restarts_garlic_session() {
++        let sender_key = StaticPrivateKey::random(MockRuntime::rng());
++        let old_key = StaticPrivateKey::random(MockRuntime::rng());
++        let (sender_ls, sender_sign) = LeaseSet2::random();
++        let sender_id = sender_ls.header.destination.id();
++        let (receiver_ls, receiver_sign) = LeaseSet2::random();
++        let receiver_id = receiver_ls.header.destination.id();
++        let receiver_bytes = Bytes::from(receiver_ls.serialize(&receiver_sign));
++        let mut sender = SessionManager::<MockRuntime>::new(
++            sender_id, sender_key.clone(), vec![sender_key.public()],
++            Bytes::from(sender_ls.serialize(&sender_sign)),
++        );
++        let mut receiver = SessionManager::<MockRuntime>::new(
++            receiver_id.clone(), old_key.clone(), vec![old_key.public()], receiver_bytes.clone(),
++        );
++        sender.add_remote_destination(receiver_id.clone(), old_key.public());
++        let first = sender.encrypt(&receiver_id, vec![1]).unwrap();
++        receiver.decrypt(Message { payload: first, ..Default::default() }).unwrap();
++        let reply = receiver.encrypt(&sender.destination_id, vec![2]).unwrap();
++        sender.decrypt(Message { payload: reply, ..Default::default() }).unwrap();
++        let confirm = sender.encrypt(&receiver_id, vec![3]).unwrap();
++        receiver.decrypt(Message { payload: confirm, ..Default::default() }).unwrap();
++        assert!(sender.active.contains_key(&receiver_id));
++        sender.add_remote_destination(receiver_id.clone(), old_key.public());
++        assert!(sender.active.contains_key(&receiver_id), "ordinary lease renewal must preserve keys");
++
++        let new_key = StaticPrivateKey::random(MockRuntime::rng());
++        let mut restarted = SessionManager::<MockRuntime>::new(
++            receiver_id.clone(), new_key.clone(), vec![new_key.public()], receiver_bytes,
++        );
++        sender.add_remote_destination(receiver_id.clone(), new_key.public());
++        assert!(!sender.active.contains_key(&receiver_id));
++        let fresh = sender.encrypt(&receiver_id, vec![4]).unwrap();
++        let mut cloves = restarted.decrypt(Message { payload: fresh, ..Default::default() }).unwrap();
++        let data = cloves.find(|clove| core::matches!(clove.message_type, MessageType::Data)).unwrap();
++        assert_eq!(&data.message_body[4..], &[4]);
++        assert!(sender.pending.contains_key(&receiver_id));
++        sender.add_remote_destination(receiver_id.clone(), new_key.public());
++        assert!(sender.pending.contains_key(&receiver_id));
++        sender.add_remote_destination(receiver_id.clone(), StaticPrivateKey::random(MockRuntime::rng()).public());
++        assert!(!sender.pending.contains_key(&receiver_id));
++    }
++
++
++    #[tokio::test]
++    async fn inbound_peer_restart_replaces_existing_session() {
++        let sender_key = StaticPrivateKey::random(MockRuntime::rng());
++        let receiver_key = StaticPrivateKey::random(MockRuntime::rng());
++        let (mut sender_ls, sender_sign) = LeaseSet2::random();
++        sender_ls.public_keys = vec![sender_key.public()];
++        sender_ls.header.published = sender_ls.header.published.saturating_sub(1);
++        let sender_id = sender_ls.header.destination.id();
++        let (mut receiver_ls, receiver_sign) = LeaseSet2::random();
++        receiver_ls.public_keys = vec![receiver_key.public()];
++        let receiver_id = receiver_ls.header.destination.id();
++        let mut sender = SessionManager::<MockRuntime>::new(
++            sender_id.clone(), sender_key.clone(), vec![sender_key.public()],
++            Bytes::from(sender_ls.clone().serialize(&sender_sign)),
++        );
++        let mut receiver = SessionManager::<MockRuntime>::new(
++            receiver_id.clone(), receiver_key.clone(), vec![receiver_key.public()],
++            Bytes::from(receiver_ls.serialize(&receiver_sign)),
++        );
++        sender.add_remote_destination(receiver_id.clone(), receiver_key.public());
++        let message = sender.encrypt(&receiver_id, vec![1]).unwrap();
++        receiver.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        assert_eq!(receiver.remote_destinations[&sender_id].to_vec(), sender_key.public().to_vec());
++        let message = receiver.encrypt(&sender_id, vec![2]).unwrap();
++        sender.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        let message = sender.encrypt(&receiver_id, vec![3]).unwrap();
++        receiver.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        assert!(receiver.active.contains_key(&sender_id));
++
++        // The receiver remains alive; its peer restarts on the same signed
++        // destination identity but a new LeaseSet encryption key and no tags.
++        let reboot_key = StaticPrivateKey::random(MockRuntime::rng());
++        let old_epoch = sender_ls.header.published;
++        sender_ls.header.published += 1;
++        sender_ls.public_keys = vec![reboot_key.public()];
++        let mut rebooted = SessionManager::<MockRuntime>::new(
++            sender_id.clone(), reboot_key.clone(), vec![reboot_key.public()],
++            Bytes::from(sender_ls.serialize(&sender_sign)),
++        );
++        rebooted.add_remote_destination(receiver_id.clone(), receiver_key.public());
++        let message = rebooted.encrypt(&receiver_id, vec![4]).unwrap();
++        receiver.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        assert!(!receiver.active.contains_key(&sender_id));
++        assert!(receiver.pending.contains_key(&sender_id));
++        let message = receiver.encrypt(&sender_id, vec![5]).unwrap();
++        let mut cloves = rebooted.decrypt(Message { payload: message, ..Default::default() }).unwrap();
++        let data = cloves.find(|clove| core::matches!(clove.message_type, MessageType::Data)).unwrap();
++        assert_eq!(&data.message_body[4..], &[5]);
++        drop(cloves);
++        let was_pending = receiver.pending.contains_key(&sender_id);
++        let was_active = receiver.active.contains_key(&sender_id);
++        receiver.observe_remote_key(sender_id.clone(), sender_key.public(), old_epoch);
++        assert_eq!(receiver.remote_destinations[&sender_id].to_vec(), reboot_key.public().to_vec());
++        assert_eq!(receiver.pending.contains_key(&sender_id), was_pending);
++        assert_eq!(receiver.active.contains_key(&sender_id), was_active);
++    }
++
+     /// Decrypt `message` using `session` and verify the inbound `Data` message
+     /// inside the garlic message matches `diff`
+     macro_rules! decrypt_and_verify {
+diff --git a/emissary-core/src/lib.rs b/emissary-core/src/lib.rs
+index fec3635..999657a 100644
+--- a/emissary-core/src/lib.rs
++++ b/emissary-core/src/lib.rs
+@@ -42,6 +42,7 @@ pub use config::{
+ };
+ pub use error::Error;
+ pub use profile::Profile;
++pub use sam::embedded::{ClientHandle, ClientIdentity, ClientSession};
+ 
+ #[cfg(feature = "fuzz")]
+ pub use {
 diff --git a/emissary-core/src/primitives/router_address.rs b/emissary-core/src/primitives/router_address.rs
 index 3d3bb5e..e69eced 100644
 --- a/emissary-core/src/primitives/router_address.rs
@@ -38,10 +639,31 @@ index 3d3bb5e..e69eced 100644
      }
  
 diff --git a/emissary-core/src/router/mod.rs b/emissary-core/src/router/mod.rs
-index 322456b..2f48a06 100644
+index 322456b..c66d66c 100644
 --- a/emissary-core/src/router/mod.rs
 +++ b/emissary-core/src/router/mod.rs
-@@ -410,7 +410,7 @@ impl<R: Runtime> Router<R> {
+@@ -126,6 +126,8 @@ impl<R: Runtime> RouterBuilder<R> {
+ 
+ /// Router.
+ pub struct Router<R: Runtime> {
++    /// Direct application API; independent of SAM/I2CP network servers.
++    client_handle: crate::ClientHandle<R>,
+     /// Protocol address information.
+     address_info: ProtocolAddressInfo,
+ 
+@@ -369,6 +371,11 @@ impl<R: Runtime> Router<R> {
+         // router info when, e.g., it goes stale or a new external address is discovered
+         transport_manager_builder.register_netdb_handle(netdb_handle.clone());
+ 
++        let client_handle = crate::ClientHandle::new(
++            netdb_handle.clone(), tunnel_manager_handle.clone(),
++            profile_storage.clone(), sam_event_handle.clone(),
++        );
++
+         // initialize i2cp server if it was enabled
+         if let Some(I2cpConfig { host, port }) = i2cp_config {
+             let i2cp_server = I2cpServer::<R>::new(
+@@ -410,7 +417,7 @@ impl<R: Runtime> Router<R> {
          }
  
          if let Some(context) = ntcp2_context {
@@ -50,20 +672,226 @@ index 322456b..2f48a06 100644
              transport_manager_builder.register_ntcp2(context);
          }
  
+@@ -421,6 +428,7 @@ impl<R: Runtime> Router<R> {
+ 
+         Ok((
+             Self {
++                client_handle,
+                 address_info,
+                 event_manager,
+                 router_id,
+@@ -434,6 +442,9 @@ impl<R: Runtime> Router<R> {
+         ))
+     }
+ 
++    /// Access the in-process client API without binding SAM or I2CP sockets.
++    pub fn client_handle(&self) -> crate::ClientHandle<R> { self.client_handle.clone() }
++
+     /// Shut down the router.
+     ///
+     /// The first request to shutdown the router starts a graceful shutdown and TOOD
 diff --git a/emissary-core/src/runtime/mod.rs b/emissary-core/src/runtime/mod.rs
-index 488d668..417c1a7 100644
+index 488d668..6e5fa24 100644
 --- a/emissary-core/src/runtime/mod.rs
 +++ b/emissary-core/src/runtime/mod.rs
-@@ -170,6 +170,9 @@ pub enum MetricType {
+@@ -170,6 +170,16 @@ pub enum MetricType {
  }
  
  pub trait Runtime: Clone + Unpin + Send + 'static {
 +    /// Whether TCP listeners are supported; outbound streams may still work.
 +    const TCP_LISTENER_SUPPORTED: bool = true;
 +
++    /// Optional bounded byte pipe for clients embedded in the router process.
++    /// Neither endpoint is a listening network socket.
++    fn memory_stream_pair() -> Option<(Self::TcpStream, Self::TcpStream)> { None }
++
++    /// Bounded public client lifecycle counters; never keys or protocol data.
++    fn client_event(_name: &'static str, _value: usize) {}
++
      type TcpStream: TcpStream;
      type UdpSocket: UdpSocket;
      type TcpListener: TcpListener<Self::TcpStream>;
+diff --git a/emissary-core/src/sam/mod.rs b/emissary-core/src/sam/mod.rs
+index cd3b4a4..279885e 100644
+--- a/emissary-core/src/sam/mod.rs
++++ b/emissary-core/src/sam/mod.rs
+@@ -74,6 +74,159 @@ pub use {
+     protocol::streaming::Packet,
+ };
+ 
++/// Typed application access to the existing destination/streaming engine.
++/// No SAM listener, UDP socket, or external control connection is created.
++pub mod embedded {
++    use super::{parser::{DestinationContext, SessionKind}, pending::session::PendingSamSession,
++        session::SamSession, socket::SamSocket, types::{SamSessionCommand, SamSessionCommandRecycle}};
++    use crate::{crypto::{base32_decode, base64_decode, base64_encode, SigningPrivateKey},
++        events::EventHandle, netdb::NetDbHandle, primitives::{Destination, DestinationId, Str},
++        profile::ProfileStorage, runtime::{AsyncRead, Runtime}, tunnel::{TunnelManagerHandle, TunnelPoolConfig}, Error};
++    use alloc::{boxed::Box, string::{String, ToString}, sync::Arc, vec, vec::Vec};
++    use core::pin::Pin;
++    use futures::future::poll_fn;
++    use hashbrown::HashMap;
++    use rand::Rng;
++    use thingbuf::mpsc::{channel, with_recycle, Sender};
++
++    /// Persistent destination identity. Keep exported private bytes encrypted.
++    pub struct ClientIdentity(DestinationContext);
++
++    impl ClientIdentity {
++        pub fn generate<R: Runtime>() -> Self {
++            let signing_key = SigningPrivateKey::random(R::rng());
++            let destination = Destination::new::<R>(signing_key.public());
++            // The wire certificate deliberately advertises the legacy
++            // encryption type for Java streaming compatibility. Parse that
++            // descriptor to use its canonical private-key size on export.
++            let destination = Destination::parse(destination.serialize()).expect("generated destination");
++            let mut private_key = vec![0; destination.private_key_length()];
++            R::rng().fill_bytes(&mut private_key);
++            Self(DestinationContext { destination, private_key, signing_key: Box::new(signing_key) })
++        }
++
++        pub fn from_bytes(bytes: &[u8]) -> crate::Result<Self> {
++            if bytes.len() > 2048 { return Err(Error::NotSupported); }
++            let (rest, destination) = Destination::parse_frame(bytes).map_err(|_| Error::NotSupported)?;
++            let key_len = destination.private_key_length();
++            if destination.signing_key_length() != 32 || rest.len() != key_len + 32 {
++                return Err(Error::NotSupported);
++            }
++            let signing_key = SigningPrivateKey::from_bytes(&rest[key_len..]).ok_or(Error::NotSupported)?;
++            if signing_key.public().as_ref() != destination.verifying_key().as_ref() {
++                return Err(Error::NotSupported);
++            }
++            Ok(Self(DestinationContext { destination, private_key: rest[..key_len].to_vec(), signing_key: Box::new(signing_key) }))
++        }
++
++        pub fn to_bytes(&self) -> Vec<u8> {
++            let mut bytes = self.0.destination.serialize().to_vec();
++            bytes.extend_from_slice(&self.0.private_key);
++            bytes.extend_from_slice(self.0.signing_key.as_ref().as_ref());
++            bytes
++        }
++
++        pub fn destination(&self) -> &Destination { &self.0.destination }
++    }
++
++    /// Factory for application destinations. It shares the router's real
++    /// NetDb/tunnel manager and never exposes a network control protocol.
++    #[derive(Clone)]
++    pub struct ClientHandle<R: Runtime> {
++        netdb: NetDbHandle,
++        tunnels: TunnelManagerHandle,
++        profiles: ProfileStorage<R>,
++        events: EventHandle<R>,
++    }
++
++    impl<R: Runtime> ClientHandle<R> {
++        pub(crate) fn new(netdb: NetDbHandle, tunnels: TunnelManagerHandle, profiles: ProfileStorage<R>, events: EventHandle<R>) -> Self {
++            Self { netdb, tunnels, profiles, events }
++        }
++
++        pub async fn create(&self, identity: &ClientIdentity) -> crate::Result<ClientSession<R>> {
++            let (mut control, driver_control) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
++            let session_id: Arc<str> = Arc::from(base64_encode(identity.destination().id().to_vec()));
++            let config = TunnelPoolConfig { name: Str::from(Arc::clone(&session_id)), ..TunnelPoolConfig::default() };
++            let future = self.tunnels.create_tunnel_pool(config).map_err(|_| Error::EssentialTaskClosed)?;
++            let (sender, receiver) = with_recycle(32, SamSessionCommandRecycle::default());
++            let (datagram_tx, datagram_rx) = channel(1);
++            let options = HashMap::from_iter([("i2cp.leaseSetEncType".to_string(), "4".to_string())]);
++            let context = PendingSamSession::new(
++                Box::new(SamSocket::new(driver_control)), identity.0.clone(), session_id.clone(),
++                SessionKind::Stream, options, receiver, datagram_tx, Box::pin(future), self.netdb.clone(),
++                None, self.events.clone(), self.profiles.clone(), None,
++            ).run().await?;
++            R::spawn(async move { SamSession::new(context).await; drop(datagram_rx); });
++            let ready = read_line::<R>(&mut control).await?;
++            if !ready.starts_with(b"SESSION STATUS RESULT=OK ") { return Err(Error::NotSupported); }
++            Ok(ClientSession { destination: identity.destination().clone(), session_id, sender, _control: control })
++        }
++    }
++
++    /// Application destination and its private client pool. Dropping this
++    /// handle closes its control pipe and shuts down the session.
++    pub struct ClientSession<R: Runtime> {
++        destination: Destination,
++        session_id: Arc<str>,
++        sender: Sender<SamSessionCommand<R>, SamSessionCommandRecycle>,
++        _control: R::TcpStream,
++    }
++
++    impl<R: Runtime> ClientSession<R> {
++        pub fn destination(&self) -> &Destination { &self.destination }
++
++        pub async fn connect(&self, address: &str, port: u16) -> crate::Result<R::TcpStream> {
++            let destination_id = if let Some(host) = address.strip_suffix(".b32.i2p") {
++                let bytes = base32_decode(host).ok_or(Error::NotSupported)?;
++                if bytes.len() != 32 { return Err(Error::NotSupported); }
++                DestinationId::from(bytes)
++            } else {
++                let bytes = base64_decode(address).ok_or(Error::NotSupported)?;
++                Destination::parse(bytes).map_err(|_| Error::NotSupported)?.id()
++            };
++            let (mut stream, driver_stream) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
++            self.sender.send(SamSessionCommand::Connect {
++                socket: Box::new(SamSocket::new(driver_stream)), destination_id,
++                options: HashMap::from_iter([("TO_PORT".to_string(), port.to_string())]),
++                session_id: self.session_id.clone(),
++            }).await.map_err(|_| Error::EssentialTaskClosed)?;
++            let status = read_line::<R>(&mut stream).await?;
++            if status != b"STREAM STATUS RESULT=OK\n" {
++                return Err(Error::Custom(format!("stream connect status: {}", String::from_utf8_lossy(&status).trim())));
++            }
++            Ok(stream)
++        }
++
++        pub async fn accept(&self) -> crate::Result<(R::TcpStream, Destination)> {
++            let (mut stream, driver_stream) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
++            self.sender.send(SamSessionCommand::Accept {
++                socket: Box::new(SamSocket::new(driver_stream)), options: HashMap::new(),
++                session_id: self.session_id.clone(),
++            }).await.map_err(|_| Error::EssentialTaskClosed)?;
++            if read_line::<R>(&mut stream).await? != b"STREAM STATUS RESULT=OK\n" { return Err(Error::DialFailure); }
++            let line = read_line::<R>(&mut stream).await?;
++            let bytes = base64_decode(&line[..line.len() - 1]).ok_or(Error::NotSupported)?;
++            let destination = Destination::parse(bytes).map_err(|_| Error::NotSupported)?;
++            Ok((stream, destination))
++        }
++    }
++
++    // Consume engine-internal acknowledgements inside bounded memory pipes.
++    // Application callers only receive typed streams and destinations.
++    async fn read_line<R: Runtime>(stream: &mut R::TcpStream) -> crate::Result<Vec<u8>> {
++        let mut line = Vec::new();
++        while line.len() < 4096 {
++            let mut byte = [0];
++            let read = poll_fn(|cx| Pin::new(&mut *stream).poll_read(cx, &mut byte)).await?;
++            if read == 0 { return Err(Error::EssentialTaskClosed); }
++            line.push(byte[0]);
++            if byte[0] == b'\n' { return Ok(line); }
++        }
++        Err(Error::NotSupported)
++    }
++}
++
+ /// Logging target for the file.
+ const LOG_TARGET: &str = "emissary::sam";
+ 
+diff --git a/emissary-core/src/sam/session.rs b/emissary-core/src/sam/session.rs
+index 76ba296..2f7553f 100644
+--- a/emissary-core/src/sam/session.rs
++++ b/emissary-core/src/sam/session.rs
+@@ -1279,7 +1279,12 @@ impl<R: Runtime> Future for SamSession<R> {
+                     }
+                 },
+                 Poll::Ready(Some(StreamManagerEvent::StreamRejected { destination_id })) => {
++                    R::client_event("client_stream_syn_rejected", 1);
+                     self.pending_outbound.remove(&destination_id);
++                    // A peer may have restarted on the same destination keys.
++                    // Query fresh leases instead of retrying its dead tunnels
++                    // until the old LeaseSet eventually expires.
++                    self.destination.refresh_lease_set(&destination_id);
+                 }
+                 Poll::Ready(Some(StreamManagerEvent::StreamClosed { destination_id })) => {
+                     tracing::debug!(
 diff --git a/emissary-core/src/transport/ntcp2/mod.rs b/emissary-core/src/transport/ntcp2/mod.rs
 index 544a0ad..dfb1664 100644
 --- a/emissary-core/src/transport/ntcp2/mod.rs

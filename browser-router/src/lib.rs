@@ -2,6 +2,14 @@
 //! browser executor; only channels cross emissary's Send/Sync boundaries.
 
 pub mod bootstrap;
+#[cfg(target_arch = "wasm32")]
+pub mod engine;
+#[cfg(target_arch = "wasm32")]
+pub use engine::BrowserEngine;
+#[cfg(target_arch = "wasm32")]
+pub mod network;
+#[cfg(target_arch = "wasm32")]
+pub use network::*;
 mod metrics;
 #[cfg(all(feature = "native-peer", not(target_arch = "wasm32")))]
 pub mod native_fixture;
@@ -9,7 +17,19 @@ pub mod ntcp2;
 pub mod router;
 mod socket;
 mod tasks;
+#[cfg(target_arch = "wasm32")]
+mod ui_helpers;
+#[cfg(target_arch = "wasm32")]
+#[path = "../../core/src/sanitizer.rs"]
+#[rustfmt::skip]
+mod sanitizer;
 mod unsupported;
+#[cfg(target_arch = "wasm32")]
+mod vault;
+#[cfg(target_arch = "wasm32")]
+pub use ui_helpers::clean_attachment;
+#[cfg(target_arch = "wasm32")]
+pub use ui_helpers::contact_qr_svg;
 
 use std::{
     future::Future,
@@ -24,7 +44,7 @@ use futures::{channel::oneshot, future::BoxFuture, stream::FuturesUnordered, Str
 use rand::{CryptoRng, RngExt};
 use wasm_bindgen::prelude::*;
 
-pub use metrics::{metrics_snapshot, BrowserMetrics, MetricsSnapshot};
+pub use metrics::{metrics_snapshot, public_network_metrics, BrowserMetrics, MetricsSnapshot};
 pub use socket::{configure_forwarder, configure_forwarder_authenticated, BrowserTcpStream};
 pub use unsupported::{BrowserTcpListener, BrowserUdpSocket};
 
@@ -97,6 +117,9 @@ impl Future for BrowserTimer {
 
 impl Runtime for BrowserRuntime {
     const TCP_LISTENER_SUPPORTED: bool = false;
+    fn memory_stream_pair() -> Option<(Self::TcpStream, Self::TcpStream)> {
+        Some(BrowserTcpStream::memory_pair())
+    }
     type TcpStream = BrowserTcpStream;
     type UdpSocket = BrowserUdpSocket;
     type TcpListener = BrowserTcpListener;
@@ -136,6 +159,10 @@ impl Runtime for BrowserRuntime {
 
     fn register_metrics(_: Vec<MetricType>, _: Option<u16>) -> BrowserMetrics {
         metrics::register()
+    }
+
+    fn client_event(name: &'static str, value: usize) {
+        metrics::client_event(name, value);
     }
 
     fn timer(duration: Duration) -> BrowserTimer {

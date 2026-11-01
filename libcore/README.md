@@ -1,6 +1,26 @@
 # libcore — общее ядро gipny: криптография, сессии, база, релей, роутер, агент, автообновление
 
-Крейт `gipny-libcore` используют приложение (`core/`), агент (`agent/`), боты (`bot-sdk/`) и e2e-харнесс. Он собирается в том числе в APK под Android.
+Крейт `gipny-libcore` используют приложение (`core/`), агент (`agent/`), боты (`bot-sdk/`) и e2e-харнесс. Он собирается в том числе в APK под Android. Портативные криптография, карточки
+и wire-форматы также используются в `browser-router` под `wasm32-unknown-unknown`.
+
+## Портативная часть для WASM
+
+`crypto.rs` и `card.rs` общие для нативного клиента и браузера.
+`message_wire.rs`, `relay_wire.rs` и `dm_reference.rs` содержат вынесенные
+без изменения wire-позиций типы и кодеки; нативные session/relay/db включают
+те же исходники. Правки `WirePayload` и enum релея вносятся в эти общие файлы.
+
+При `cfg(target_arch = "wasm32")` модули session/relay/db экспортируют только
+портативные форматы. SQLCipher, Tokio, libi2pd, нативные файлы, DHT, updater и
+агент исключены. `memory_browser.rs` предоставляет `Sealed`/`SecretGuard` на
+`Arc<Zeroizing<_>>`, без `mlock`/`mprotect`; это отдельная граница памяти.
+Хранилище и асинхронные сессии браузера реализованы в `browser-router` и Worker,
+а не в нативных `Db`/`SessionManager`.
+
+WASM-граф и совместимость проверяет
+[Browser router WASM](../.github/workflows/browser-router.yml).
+[Руководство браузерного мессенджера](../docs/browser-messenger.md) описывает
+OPFS, passkey и актуальные результаты CI.
 
 ## Что здесь
 
@@ -29,8 +49,8 @@
 
 | Задача | Где |
 |---|---|
-| Новое поле в сообщении | `session.rs`: поле в конец `WirePayload` с `#[serde(default)]`, условие в `encode_payload`, `None` во всех `From<WireVn>` и литералах в `core/src/core.rs` и `session.rs` |
-| Новый кадр протокола релея | `relay.rs`: вариант в **конец** `ClientToRelay`/`RelayToClient` + golden-тест + то же в `core/relay/src/proto.rs` |
+| Новое поле в сообщении | `message_wire.rs`: поле в конец `WirePayload` с `#[serde(default)]`, условие в `encode_payload`, `None` во всех `From<WireVn>` и литералах в `core/src/core.rs` и `session.rs` |
+| Новый кадр протокола релея | `relay_wire.rs`: вариант в **конец** `ClientToRelay`/`RelayToClient` + golden-тест + то же в `core/relay/src/proto.rs` |
 | Правила входа на релей | `relay.rs` (`handshake`, `predates_auth_v2`), `relay_server.rs` (`handle_client`, `client_loop`) |
 | Сколько и как долго встроенный релей держит почту | `relay_server.rs`: `MemStoreLimits` |
 | Политика повторной отправки | `db.rs`: `RETRY_TTL_MS`, `list_unacked_outgoing`, `pending_outbound_for_recipient`; бэкофф — константы `RETRY_*` в `core.rs`/`session.rs` |
@@ -52,13 +72,13 @@
 ## Что менять вместе
 
 - **`session.rs` ↔ `core/src/core.rs`.** Это две копии одной логики доставки. Исправление приёма или отправки почти всегда нужно в обоих файлах.
-- **`relay.rs` ↔ `core/relay/src/proto.rs`.** Протокол описан дважды. Порядок вариантов — это номер на проводе, поэтому golden-тесты стоят в обоих крейтах.
+- **`relay_wire.rs` ↔ `core/relay/src/proto.rs`.** Протокол описан дважды. Порядок вариантов — это номер на проводе, поэтому golden-тесты стоят в обоих крейтах.
 - **`card.rs` ↔ `ui/src/contact-card.ts`** — формат карточки и общие golden fixtures.
 - **`update.rs` ↔ `.github/workflows/release.yml`** — имена ассетов релиза.
 
 ## Инварианты и грабли
 
-- **bincode остаётся 1.x.** Версионирование `WirePayload` держится на том, что bincode 1 игнорирует лишние байты в конце. Мажорное обновление — это смена протокола, dependabot его блокирует.
+- **bincode остаётся 1.x.** Legacy-декодер `WirePayload` сохраняет совместимость прежних версий; строгие внешние relay/engine-фреймы используют fixed-int codec и отклоняют хвостовые байты. Мажорное обновление — это смена протокола, dependabot его блокирует.
 - **Новые поля и варианты — только в конец.** Старые клиенты декодируют по позиции.
 - **Письмо не больше 4 МБ** (`MAX_PAYLOAD_BYTES`): следующая корзина паддинга, 16 МБ, вместе с заголовком ratchet уже не проходит `MAX_FRAME` релея. Всё больше 128 КБ идёт частями (`files.rs`), превышение — `MessageFailed`, а не «отправлено».
 - **Части — только через релей получателя**, не через сеть релеев (там 64 записи / 16 МБ на ключ). Повтор частей — только по дыре в `file_ack` или, если получатель подавал признаки жизни, по таймеру раз в 30 мин; иначе офлайн-получатель стоил бы гигабайт дублей на релее. Частей в полёте — сколько даёт окно собеседника (`files::Flow`, от 4 до `WINDOW`), считая повторы, на все файлы к нему; дыра в ack повторяется, только когда её часть старше таймаута: по нескольким полосам части обгоняют друг друга, и дыра чаще всего — часть в пути. Полос столько, сколько нужно окну (`lanes_for`, по 4 части).

@@ -1,3 +1,5 @@
+# Historical server-gateway template; see scripts/deploy/README.md.
+# Autonomous browser profiles do not run in this service.
 [Unit]
 Description=Gipny Web Messenger Backend Gateway (1-Hop I2P)
 After=network.target network-online.target

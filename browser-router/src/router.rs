@@ -15,7 +15,7 @@ use rand::RngExt;
 use std::{num::NonZeroUsize, time::Duration};
 use wasm_bindgen::{prelude::*, JsCast};
 
-fn client_config(routers: Vec<Vec<u8>>) -> Config {
+pub(crate) fn client_config(routers: Vec<Vec<u8>>) -> Config {
     Config {
         ntcp2: Some(Ntcp2Config {
             disable_pq: true,
@@ -29,7 +29,7 @@ fn client_config(routers: Vec<Vec<u8>>) -> Config {
             port: 0,
             publish_ipv4: false,
             publish_ipv6: false,
-            max_connections: NonZeroUsize::new(24),
+            max_connections: NonZeroUsize::new(16),
         }),
         routers,
         net_id: Some(2),
@@ -55,7 +55,7 @@ pub struct ExploratoryReceipt {
     pub wasm_memory_bytes: u64,
 }
 
-fn verify_no_listener(
+pub(crate) fn verify_no_listener(
     info: &emissary_core::router::ProtocolAddressInfo,
     bytes: &[u8],
 ) -> Result<(), String> {

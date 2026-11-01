@@ -194,7 +194,8 @@ mod browser {
         expected_digest(digest)?;
         let parsed = url::Url::parse(url).map_err(|_| "invalid snapshot URL")?;
         let loopback = matches!(parsed.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback())
-            || matches!(parsed.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback());
+            || matches!(parsed.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback())
+            || parsed.host_str() == Some("localhost");
         if !(parsed.scheme() == "https" || (parsed.scheme() == "http" && loopback))
             || !parsed.username().is_empty()
             || parsed.password().is_some()
@@ -217,8 +218,17 @@ mod browser {
             .map_err(|_| "snapshot request")?;
         let started = web_time::Instant::now();
         let work = Box::pin(async {
-            let window = web_sys::window().ok_or("snapshot requires a browser window")?;
-            let response = JsFuture::from(window.fetch_with_request(&request))
+            let global = js_sys::global();
+            let fetch = js_sys::Reflect::get(&global, &"fetch".into())
+                .map_err(|_| "snapshot fetch unavailable")?
+                .dyn_into::<js_sys::Function>()
+                .map_err(|_| "snapshot fetch unavailable")?;
+            let promise = fetch
+                .call1(&global, &request)
+                .map_err(|_| "snapshot fetch failed")?
+                .dyn_into::<js_sys::Promise>()
+                .map_err(|_| "snapshot fetch response")?;
+            let response = JsFuture::from(promise)
                 .await
                 .map_err(|_| "snapshot fetch failed")?
                 .dyn_into::<web_sys::Response>()
