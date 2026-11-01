@@ -87,7 +87,7 @@ jobs:
   ntcp2:
     name: Browser NTCP2 and exploratory tunnels
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
       - name: Prepare pinned emissary and reviewed client-only patch
@@ -109,7 +109,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build native i2pd peer and RouterInfo verifier from source
         working-directory: browser-router
-        run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb
+        run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb --bin collect-netdb
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
@@ -117,8 +117,11 @@ jobs:
         run: python3 -m pip install websockets==15.0.1
       - name: Real NTCP2 handshakes from WASM in Chrome
         run: python3 browser-router/tests/run_ntcp2_ci.py
-      - name: Full browser router and two-hop exploratory roundtrips
-        run: python3 browser-router/tests/run_ntcp2_ci.py --router
+      - name: Build loadable browser module from source
+        working-directory: browser-router
+        run: wasm-pack build --target web --release --locked
+      - name: Cold browser bootstrap from a downloaded netDb snapshot
+        run: python3 browser-router/tests/run_bootstrap_ci.py
       - name: Verify source provenance after tests
         run: python3 browser-router/scripts/prepare_emissary.py
       - name: Keep public protocol evidence and diagnostics
@@ -134,16 +137,32 @@ jobs:
             ${{ runner.temp }}/browser-ntcp2/candidates.tsv
           if-no-files-found: warn
           retention-days: 5
-      - name: Keep exploratory evidence
+      - name: Keep bootstrap and exploratory evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-exploratory-evidence
+          name: browser-bootstrap-evidence
           path: |
-            ${{ runner.temp }}/browser-router-live/wasm-router.log
-            ${{ runner.temp }}/browser-router-live/forwarder.log
-            ${{ runner.temp }}/browser-router-live/native-peer-stdout.log
-            ${{ runner.temp }}/browser-router-live/candidates.tsv
+            ${{ runner.temp }}/browser-bootstrap/receipt-*.json
+            ${{ runner.temp }}/browser-bootstrap/forwarder-*.log
+            ${{ runner.temp }}/browser-bootstrap/chrome-*.log
+            ${{ runner.temp }}/browser-bootstrap/snapshot-source.log
+            ${{ runner.temp }}/browser-bootstrap/candidates.tsv
+            ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz
+            ${{ runner.temp }}/browser-bootstrap/snapshot.tar.gz.json
             browser-router/emissary-provenance.json
           if-no-files-found: warn
+          retention-days: 5
+      - name: Keep loadable browser module
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-bootstrap-module
+          path: |
+            browser-router/pkg/*.js
+            browser-router/pkg/*.wasm
+            browser-router/pkg/package.json
+            browser-router/tests/bootstrap-page/
+            browser-router/LICENSE-emissary
+            browser-router/emissary-provenance.json
+          if-no-files-found: error
           retention-days: 5

@@ -21,10 +21,13 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 rand = { version = "0.10", features = ["thread_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tar = { version = "0.4", default-features = false }
 url = "2.5"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["BinaryType", "CloseEvent", "Event", "MessageEvent", "WebSocket", "console"] }
+web-sys = { version = "0.3", features = ["AbortController", "AbortSignal", "BinaryType", "CloseEvent", "Event", "Headers", "MessageEvent", "ReadableStream", "ReadableStreamDefaultReader", "Request", "RequestCache", "RequestCredentials", "RequestInit", "RequestMode", "RequestRedirect", "ReferrerPolicy", "Response", "WebSocket", "Window", "console"] }
 web-time = "1.1"
 zeroize = "1"
 
@@ -39,6 +42,11 @@ router-live-tests = []
 [[bin]]
 name = "native-peer"
 path = "src/bin/native-peer.rs"
+required-features = ["native-peer"]
+
+[[bin]]
+name = "collect-netdb"
+path = "src/bin/collect-netdb.rs"
 required-features = ["native-peer"]
 
 [build-dependencies]

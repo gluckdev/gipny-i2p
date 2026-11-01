@@ -1,6 +1,7 @@
 //! Feasibility runtime, not a shipping router. JS handles remain on the local
 //! browser executor; only channels cross emissary's Send/Sync boundaries.
 
+pub mod bootstrap;
 mod metrics;
 #[cfg(all(feature = "native-peer", not(target_arch = "wasm32")))]
 pub mod native_fixture;

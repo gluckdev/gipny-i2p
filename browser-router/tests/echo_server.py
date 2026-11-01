@@ -47,9 +47,41 @@ async def handle(socket):
 
 
 async def main():
-    async with serve(handle, "127.0.0.1", 18765):
+    http = await asyncio.start_server(snapshot_http, "127.0.0.1", 18766)
+    async with http, serve(handle, "127.0.0.1", 18765):
         print("READY", flush=True)
         await asyncio.Future()
+
+
+async def snapshot_http(reader, writer):
+    try:
+        request = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 3)
+        path = request.split(b" ")[1]
+        common = b"Access-Control-Allow-Origin: *\r\nConnection: close\r\n"
+        if path == b"/oversize":
+            writer.write(b"HTTP/1.1 200 OK\r\n" + common + b"Content-Length: 4194305\r\n\r\n")
+        elif path == b"/stream-oversize":
+            writer.write(b"HTTP/1.1 200 OK\r\n" + common + b"\r\n")
+            for _ in range(65):
+                writer.write(bytes(65536))
+                await writer.drain()
+        elif path == b"/redirect":
+            writer.write(b"HTTP/1.1 302 Found\r\n" + common + b"Location: /bad-gzip\r\nContent-Length: 0\r\n\r\n")
+        elif path == b"/bad-gzip":
+            writer.write(b"HTTP/1.1 200 OK\r\n" + common + b"Content-Length: 3\r\n\r\nbad")
+        elif path == b"/truncated":
+            writer.write(b"HTTP/1.1 200 OK\r\n" + common + b"Content-Length: 100\r\n\r\nbad")
+        else:
+            writer.write(b"HTTP/1.1 404 Not Found\r\n" + common + b"Content-Length: 0\r\n\r\n")
+        await writer.drain()
+    except (ConnectionError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, TimeoutError):
+        pass
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except ConnectionError:
+            pass
 
 
 if __name__ == "__main__":

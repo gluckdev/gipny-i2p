@@ -41,7 +41,7 @@ fn client_config(routers: Vec<Vec<u8>>) -> Config {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ExploratoryReceipt {
     pub router_id: String,
     pub seed_routers: usize,
@@ -185,7 +185,7 @@ pub async fn run_exploratory(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn wasm_memory_bytes() -> u64 {
+pub(crate) fn wasm_memory_bytes() -> u64 {
     let memory: js_sys::WebAssembly::Memory = wasm_bindgen::memory().unchecked_into();
     js_sys::Reflect::get(&memory.buffer(), &JsValue::from_str("byteLength"))
         .ok()
@@ -193,7 +193,7 @@ fn wasm_memory_bytes() -> u64 {
         .unwrap_or(0.0) as u64
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn wasm_memory_bytes() -> u64 {
+pub(crate) fn wasm_memory_bytes() -> u64 {
     0
 }
 
