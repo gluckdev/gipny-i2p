@@ -601,10 +601,11 @@ macOS использует локальный системный Keychain вне
      находится в разработке в draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)
      (ветка `feat/browser-messenger`). Код BrowserEngine, WASM Worker, OPFS encrypted slots,
      passkey PRF, UI adapter и PWA реализован, но живой acceptance мессенджера ещё **не пройден**.
-     На коммите `bb0578e` release WASM/PWA, 45 WASM-тестов (все 9 тестов движка),
-     NTCP2 и оба холодных старта прошли. Сквозной сценарий остановился на проверке URL
-     localhost; исправление ожидает CI. Физические мобильные браузеры и публичный хостинг
-     ещё не проверены. Подробные [результаты CI](docs/browser-messenger.md#validation-and-artifacts).
+     На `f72d7f4` release PWA/WASM, все 46 WASM-тестов, нативные проверки и CodeQL прошли.
+     Подтверждены живой обмен двух браузеров, квитанции, вложение и passkey PRF; доставка
+     после восстановления профиля завершилась таймаутом. Холодный desktop-прогон прошёл,
+     constrained — нет. Физические устройства и публичный хостинг ещё не проверены.
+     Подробные [результаты CI](docs/browser-messenger.md#validation-and-artifacts).
    - **Сборка и артефакты:** Сборка и тесты выполняются **исключительно в GitHub Actions**.
      Готовый артефакт `browser-messenger-pwa` формируется в workflow
      [Browser router WASM](.github/workflows/browser-router.yml); локальные инструкции

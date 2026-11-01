@@ -1,4 +1,5 @@
 import { t as tr } from './i18n';
+import { usesBrowserCore } from './api';
 import { h, type Child } from './view';
 import { icon, networkArt } from './icons';
 
@@ -24,6 +25,34 @@ export class AboutModal {
       h('ol', { class: 'about-steps' }, ...items.map(([t, d]) => h('li', null, h('b', null, t), ' ', d)));
     const list = (...items: Child[]): HTMLElement =>
       h('ul', { class: 'about-list' }, ...items.map((i) => h('li', null, i)));
+
+    if (usesBrowserCore()) {
+      this.el = h('div', { class: 'modal modal-wide about' },
+        h('div', { class: 'modal-header' },
+          h('div', { class: 'modal-title' }, tr('sidebar.about')),
+          h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
+        ),
+        h('div', { class: 'modal-body' },
+          card('🔑', tr('about.your_network_identity'),
+            p(tr('about.creating_a_profile_generates_an_ed25519_signing_key')),
+            p(tr('browser.about.contacts'))),
+          card('✉️', tr('about.how_a_message_is_delivered'),
+            p(tr('about.the_first_message_establishes_an_x3dh_session_double')),
+            p(tr('browser.about.transport')), p(tr('browser.about.delivery'))),
+          card('🛡️', tr('about.protection_on_your_device'),
+            p(tr('browser.about.storage')), p(tr('browser.about.memory')),
+            p(tr('browser.about.offline'))),
+          card('⬆️', tr('about.updates'), p(tr('browser.about.updates'))),
+          card('⚖️', tr('about.known_limitations'),
+            p(tr('browser.about.limits')),
+            p(tr('about.there_has_been_no_independent_code_or_cryptography')),
+            p(tr('about.an_observer_with_visibility_over_the_whole_network'))),
+        ),
+        h('div', { class: 'modal-footer' },
+          h('button', { class: 'btn', onClick: close }, tr('about.got_it'))),
+      );
+      return;
+    }
 
     this.el = h('div', { class: 'modal modal-wide about' },
       h('div', { class: 'modal-header' },

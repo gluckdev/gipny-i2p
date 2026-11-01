@@ -8,6 +8,75 @@ index b9a3cf3..2ccc0a9 100644
  name = "emissary-core"
  version = "0.4.0"
  edition.workspace = true
+diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
+index 427fe88..5c5b2d7 100644
+--- a/emissary-core/src/destination/mod.rs
++++ b/emissary-core/src/destination/mod.rs
+@@ -292,19 +292,34 @@ impl<R: Runtime> Destination<R> {
+     /// [`DestinationEvent::LeaseSetFound`], indicating that a lease set is foun and the remote
+     /// destination is reachable.
+     pub fn query_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
++        self.query_lease_set_inner(destination_id, false)
++    }
++
++    /// Refresh a reachable-looking address after a failed streaming handshake.
++    /// A restarted peer retains its destination but replaces its inbound tunnels;
++    /// their previously signed LeaseSet can remain unexpired for several minutes.
++    pub(crate) fn refresh_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
++        self.query_lease_set_inner(destination_id, true)
++    }
++
++    fn query_lease_set_inner(
++        &mut self,
++        destination_id: &DestinationId,
++        force_refresh: bool,
++    ) -> LeaseSetStatus {
+         if self.pending_queries.contains(destination_id) {
+             return LeaseSetStatus::Pending;
+         }
+ 
+         if let Some(context) = self.remote_destinations.get(destination_id) {
+-            if !context.lease_set.is_expired::<R>() {
++            if !force_refresh && !context.lease_set.is_expired::<R>() {
+                 return LeaseSetStatus::Found;
+             }
+ 
+             tracing::debug!(
+                 target: LOG_TARGET,
+                 %destination_id,
+-                "lease set found but it's expired",
++                "lease set is expired or explicitly being refreshed",
+             );
+         }
+ 
+@@ -1008,7 +1023,7 @@ mod tests {
+ 
+     #[tokio::test]
+     async fn query_lease_set_found() {
+-        let (netdb_handle, _rx) = NetDbHandle::create();
++        let (netdb_handle, rx) = NetDbHandle::create();
+         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
+         let private_key = StaticPrivateKey::random(MockRuntime::rng());
+         let mut destination = Destination::<MockRuntime>::new(
+@@ -1038,6 +1053,18 @@ mod tests {
+ 
+         // query lease set and verify it exists
+         assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
++        assert!(rx.try_recv().is_err(), "ordinary lookup should use its cache");
++
++        // A failed handshake must be able to bypass an unexpired stale address.
++        assert_eq!(destination.refresh_lease_set(&remote), LeaseSetStatus::NotFound);
++        assert_eq!(destination.refresh_lease_set(&remote), LeaseSetStatus::Pending);
++        assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Pending);
++        assert_eq!(destination.query_futures.len(), 1, "refresh must coalesce");
++        assert!(destination.remote_destinations.contains_key(&remote));
++        match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap().unwrap() {
++            NetDbAction::QueryLeaseSet2 { key, .. } => assert_eq!(key.to_vec(), remote.to_vec()),
++            _ => panic!("expected a fresh LeaseSet lookup"),
++        }
+     }
+ 
+     #[tokio::test]
 diff --git a/emissary-core/src/lib.rs b/emissary-core/src/lib.rs
 index fec3635..999657a 100644
 --- a/emissary-core/src/lib.rs
@@ -280,6 +349,21 @@ index cd3b4a4..9728ed3 100644
  /// Logging target for the file.
  const LOG_TARGET: &str = "emissary::sam";
  
+diff --git a/emissary-core/src/sam/session.rs b/emissary-core/src/sam/session.rs
+index 76ba296..9388d4c 100644
+--- a/emissary-core/src/sam/session.rs
++++ b/emissary-core/src/sam/session.rs
+@@ -1280,6 +1280,10 @@ impl<R: Runtime> Future for SamSession<R> {
+                 },
+                 Poll::Ready(Some(StreamManagerEvent::StreamRejected { destination_id })) => {
+                     self.pending_outbound.remove(&destination_id);
++                    // A peer may have restarted on the same destination keys.
++                    // Query fresh leases instead of retrying its dead tunnels
++                    // until the old LeaseSet eventually expires.
++                    self.destination.refresh_lease_set(&destination_id);
+                 }
+                 Poll::Ready(Some(StreamManagerEvent::StreamClosed { destination_id })) => {
+                     tracing::debug!(
 diff --git a/emissary-core/src/transport/ntcp2/mod.rs b/emissary-core/src/transport/ntcp2/mod.rs
 index 544a0ad..dfb1664 100644
 --- a/emissary-core/src/transport/ntcp2/mod.rs

@@ -60,6 +60,17 @@ export function payload(identity: PublicIdentity, name: string): WirePayload {
 export function sameScope(message: StoredMessage, contactId: number | null, groupId: string | null): boolean { return message.contact_id === contactId && message.group_id === groupId; }
 export function visible(message: StoredMessage): boolean { return message.deleted_at == null && (message.expires_at == null || message.expires_at > Date.now()); }
 
+/** Local history removal must not retain plaintext or tear a prepared ratchet
+ * chain. A ciphertext already committed to that chain still needs delivery. */
+export function pruneMessageOutbox(state: BrowserState, ids: ReadonlySet<number>): void {
+  state.outbox = state.outbox.filter(item => {
+    if (item.row === null || !ids.has(item.row)) return true;
+    if (item.blob === null) return false;
+    item.payload = null; item.row = null;
+    return true;
+  });
+}
+
 /** Remove expired plaintext, keeping a prepared ciphertext only long enough
  * to finish its ratchet chain. Unencrypted queued letters can be discarded. */
 export function expireHistory(state: BrowserState, now = Date.now()): boolean {
@@ -77,11 +88,6 @@ export function expireHistory(state: BrowserState, now = Date.now()): boolean {
   if (!expired.size) return false;
   state.attachments = state.attachments.filter(file => !expired.has(file.message_id));
   state.pinnedMessages = state.pinnedMessages.filter(id => !expired.has(id));
-  state.outbox = state.outbox.filter(item => {
-    if (item.row === null || !expired.has(item.row)) return true;
-    if (item.blob === null) return false;
-    item.payload = null; item.row = null;
-    return true;
-  });
+  pruneMessageOutbox(state, expired);
   return true;
 }

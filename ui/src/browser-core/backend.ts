@@ -4,7 +4,7 @@ import { isValidI2pAddress } from '../contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './storage';
 import { BrowserRelay } from './relay';
 import {
-  allocate, base64, expireHistory, hex, loadState, newState, payload, sameScope, unbase64, unhex, visible,
+  allocate, base64, expireHistory, hex, loadState, newState, payload, pruneMessageOutbox, sameScope, unbase64, unhex, visible,
   type BrowserState, type Outbox, type PublicIdentity, type StoredMessage, type WireGroup, type WirePayload,
 } from './model';
 
@@ -368,7 +368,7 @@ export class BrowserBackend {
     const key = `${peer}:${reference.origin}:${reference.sent_at}`;
     if (!state.tombstones.includes(key)) state.tombstones.push(key);
     const row = state.messages.find(value => value.contact_id === contact.id && !value.outgoing && value.author === peer && value.origin === reference.origin && value.sent_at === reference.sent_at);
-    if (row) { row.body = ''; row.deleted_at = Date.now(); state.attachments = state.attachments.filter(value => value.message_id !== row.id); events.push({ MessageDeleted: { contact_id: contact.id, message_id: row.id, deleted_at: row.deleted_at, pending: false } }); }
+    if (row) { row.body = ''; row.buttons = null; row.console = null; row.reply_to = null; row.deleted_at = Date.now(); state.attachments = state.attachments.filter(value => value.message_id !== row.id); events.push({ MessageDeleted: { contact_id: contact.id, message_id: row.id, deleted_at: row.deleted_at, pending: false } }); }
     const ack = payload(this.identity!, state.displayName); ack.dm = { kind: 2, reference };
     return ack;
   }
@@ -480,7 +480,7 @@ export class BrowserBackend {
       return state.attachments.filter(value => messages.some(message => message.id === value.message_id)).slice(-100).map(({ data: _, ...attachment }) => ({ ...attachment, sent_at: messages.find(message => message.id === attachment.message_id)!.sent_at }));
     }
     if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).reverse().findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
-    const replaceRecovery = ['change_passphrase', 'delete_message', 'delete_contact', 'decline_contact_request', 'delete_group', 'clear_dm_chat', 'clear_message_history'].includes(command);
+    const replaceRecovery = ['change_passphrase', 'enroll_passkey', 'delete_message', 'delete_contact', 'decline_contact_request', 'delete_group', 'clear_dm_chat', 'clear_message_history'].includes(command);
     const result = await this.transact((next, core) => this.mutate(command, args, next, core), replaceRecovery);
     if (command === 'add_contact' && typeof result === 'number') this.event({ ContactAdded: { contact_id: result } });
     if (command === 'update_contact' || command === 'set_contact_bot' || command === 'accept_contact_request') this.event({ ContactUpdated: { contact_id: number(args, 'id') } });
@@ -532,7 +532,7 @@ export class BrowserBackend {
         const letter = payload(this.identity!, state.displayName); letter.dm = { kind: 1, reference: { author: unhex(row.author), origin: row.origin, sent_at: row.sent_at } };
         this.enqueue(state, this.getContact(state, row.contact_id).sign_pk, letter, null);
       }
-      row.body = ''; row.deleted_at = Date.now(); row.delete_pending = false;
+      row.body = ''; row.buttons = null; row.console = null; row.reply_to = null; row.deleted_at = Date.now(); row.delete_pending = false;
       state.attachments = state.attachments.filter(value => value.message_id !== row.id);
       // A locally cancelled, never deposited message must not later send.
       state.outbox = state.outbox.filter(value => value.row !== row.id);
@@ -541,7 +541,7 @@ export class BrowserBackend {
     if (command === 'clear_dm_chat' || command === 'clear_message_history') {
       const ids = new Set(state.messages.filter(value => command === 'clear_message_history' || value.contact_id === args.contactId).map(value => value.id));
       for (const row of state.messages) if (ids.has(row.id) && row.group_id === null) { const tombstone = `${row.author}:${row.origin}:${row.sent_at}`; if (!state.tombstones.includes(tombstone)) state.tombstones.push(tombstone); }
-      state.messages = state.messages.filter(value => !ids.has(value.id)); state.attachments = state.attachments.filter(value => !ids.has(value.message_id)); for (const letter of state.outbox) if (letter.row !== null && ids.has(letter.row)) letter.row = null; return null;
+      state.messages = state.messages.filter(value => !ids.has(value.id)); state.attachments = state.attachments.filter(value => !ids.has(value.message_id)); state.pinnedMessages = state.pinnedMessages.filter(id => !ids.has(id)); pruneMessageOutbox(state, ids); return null;
     }
     if (command === 'create_group') {
       const ids = args.memberContactIds as number[];
@@ -577,7 +577,7 @@ export class BrowserBackend {
       const attachments = state.attachments.filter(value => value.message_id === source.id).map(value => ({ name: value.name, data: value.data }));
       return this.send(state, { ...args, body: source.body, attachments, ttlSecs: null, replyTo: null }, typeof args.groupId === 'string');
     }
-    if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); state.outbox = state.outbox.filter(value => value.row === null || !rows.has(value.row)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
+    if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); pruneMessageOutbox(state, rows); state.pinnedMessages = state.pinnedMessages.filter(id => !rows.has(id)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
     if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? this.getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
     if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; return null; }
     if (command === 'set_relay_mode') { if (args.mode !== 'builtin') throw new Error('This browser uses its own I2P destination'); return null; }

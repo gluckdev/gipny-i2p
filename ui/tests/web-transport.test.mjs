@@ -59,6 +59,24 @@ test('browser expiry preserves prepared ratchet ciphertext and discards unencryp
   assert.equal(state.outbox[1].payload.body, 'live');
 });
 
+test('clearing local history removes pending plaintext without abandoning a prepared ratchet chain', () => {
+  const state = ui.newBrowserState('Alice');
+  const ciphertext = [7, 8, 9];
+  state.outbox = [
+    { key: 'prepared', row: 1, blob: ciphertext, payload: { body: 'removed history' } },
+    { key: 'unprepared', row: 2, blob: null, payload: { body: 'cancelled history' } },
+    { key: 'control', row: null, blob: null, payload: { ack_for: 10 } },
+    { key: 'retained', row: 3, blob: null, payload: { body: 'retained history' } },
+  ];
+  ui.pruneMessageOutbox(state, new Set([1, 2]));
+  assert.deepEqual(state.outbox.map(item => item.key), ['prepared', 'control', 'retained']);
+  assert.equal(state.outbox[0].blob, ciphertext);
+  assert.equal(state.outbox[0].row, null);
+  assert.equal(state.outbox[0].payload, null);
+  assert.equal(state.outbox[1].payload.ack_for, 10);
+  assert.equal(state.outbox[2].payload.body, 'retained history');
+});
+
 test('loopback token uses current host; Pages credentials always target native loopback', () => {
   assert.equal(ui.resolveWebEndpoint(page(`http://127.0.0.1:3456/#token=${token}`)), `ws://127.0.0.1:3456/ws?token=${token}`);
   assert.equal(ui.resolveWebEndpoint(page(`http://localhost:3456/#token=${token}`)), `ws://localhost:3456/ws?token=${token}`);

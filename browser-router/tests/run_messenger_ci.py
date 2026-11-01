@@ -68,10 +68,16 @@ BRIDGE = r"""
   const OriginalWorker = globalThis.Worker;
   let worker, url, options, next = -1;
   const pending = new Map();
+  globalThis.__coreFailures = [];
   const attach = target => {
     worker = target;
     target.addEventListener('message', event => {
       const message = event.data;
+      const failure = message.event === 'core_event' && message.payload?.MessageFailed?.reason;
+      if (typeof failure === 'string') {
+        globalThis.__coreFailures.push(failure.slice(0, 300));
+        globalThis.__coreFailures = globalThis.__coreFailures.slice(-6);
+      }
       const waiter = pending.get(message.id);
       if (!waiter) return;
       pending.delete(message.id);
@@ -183,7 +189,7 @@ def main():
     cap_file.write_text(capability)
     cap_file.chmod(0o600)
     receipt = dict(stage='starting', physical_phone=False, independent_browser_profiles=2, assertions=[])
-    browsers, sockets, logs = [], [], []
+    browsers, sockets, logs, clients = [], [], [], []
     forwarder = server = None
     started = time.monotonic()
     try:
@@ -287,7 +293,9 @@ def main():
             unlock_ui(alice, 'alice', password_new, wrong_password=password_a)
             if rpc(alice, 'my_b32') != alice_address or rpc(alice, 'my_card') != alice_card:
                 raise RuntimeError('destination or identity changed after worker restart')
+            receipt['assertions'].append('password rotation mirrored across OPFS slots; old password rejected; identity and destination restored after page/worker restart')
             wait_for(lambda: ready(alice), 330, 'restored client destination')
+            print('MESSENGER_PROGRESS restored client destination ready', flush=True)
             wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 180, 'offline outbox recovered recipient')
             wait_for(lambda: any(row['id'] == offline and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'offline message delivery receipt')
             rows = rpc(alice, 'list_messages', contactId=alice_contact)
@@ -318,6 +326,14 @@ def main():
     except Exception as error:
         receipt['stage'] = 'failed'
         receipt['error'] = str(error)[:500]
+        # Only bounded public transport failure strings, never RPC arguments,
+        # plaintext, credentials or protocol/network dumps.
+        receipt['transport_failures'] = []
+        for client in clients:
+            try:
+                receipt['transport_failures'].append(evaluate(client, 'globalThis.__coreFailures || []'))
+            except Exception:
+                receipt['transport_failures'].append(['diagnostics unavailable'])
         raise
     finally:
         for socket in sockets:

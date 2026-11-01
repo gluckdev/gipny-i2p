@@ -13,6 +13,21 @@ There are no SAM/I2CP TCP listeners and no transit service. NTCP2 remains
 encrypted between the browser router and I2P peers; the WSS forwarder transports
 bounded byte streams to addresses verified from RouterInfo records.
 
+```mermaid
+flowchart LR
+  subgraph Browser["Browser: trusted origin code"]
+    UI["Existing UI + WebAuthn PRF"] <-->|"RPC and display plaintext"| Worker["Worker: BrowserEngine + emissary"]
+    Worker <-->|"Encrypted records, flush before send"| OPFS[("OPFS profile slots")]
+  end
+  Host["HTTPS app hosting"] -->|"JS, WASM, config and snapshot"| Browser
+  Worker <-->|"NTCP2 bytes over WSS"| Forwarder["Allowlisted byte forwarder"]
+  Forwarder <-->|"TCP carrying NTCP2"| Peer["Public I2P peer"]
+  Peer <-->|"I2P tunnels"| Recipient["Peer messenger destination"]
+```
+
+The origin supplies executable code and is trusted with unlocked data. The
+forwarder carries encrypted NTCP2 but observes browser IPs, timing and volume.
+
 The Rust core owns the messenger identity, signed/one-time prekeys, destination
 private keys and ratchet state. X3DH, Double Ratchet, message padding and native
 relay/message formats are shared with `libcore`. JavaScript receives public
@@ -35,6 +50,13 @@ An outgoing ratchet advance and its exact ciphertext outbox entry are encrypted,
 written and flushed before sending. Incoming messages and receipts are flushed
 before acknowledging the deposit. A failed write stops the profile and requires
 reopening it; the old ratchet is never reused after an ambiguous write.
+
+Expired history is pruned while the profile is open and when it is reopened.
+Local history/group removal discards unprepared letters and removes their
+plaintext retry payloads. Already prepared ciphertext remains queued so that
+removing history cannot break the ratchet chain. Successful credential changes
+and logical erasure replace both live OPFS slots. This does not erase previously
+copied backups or guarantee physical removal from the browser's storage media.
 
 Locking stops the network, closes storage and terminates the worker. Navigation
 and page freeze also terminate it. Returning to a retained page reloads the
@@ -66,7 +88,29 @@ out-of-order messages and fixed-integer bincode compatibility. Vault tests check
 wrong credentials, password rotation, passkey wrapping and torn-slot recovery.
 An emulated or virtual authenticator test is not physical mobile validation.
 
-Recorded evidence for `bb0578e`, 2026-11-01:
+Latest completed evidence: `f72d7f4`, 2026-11-01,
+[Actions run 41309131811](https://github.com/gluckdev/gipny-i2p/actions/runs/41309131811).
+
+| Check | Result |
+|---|---|
+| Release PWA/WASM, UI tests and typecheck | PASS |
+| WASM tests | 46/46 PASS, including 9/9 engine tests |
+| Native fast/security matrix, build and CodeQL | PASS |
+| Live destinations, bidirectional messages, receipts and attachment | PASS in two independent Chrome processes |
+| Actual WebAuthn PRF helper with virtual CTAP2 authenticator | PASS |
+| Blocked contact and unblocking exact-ciphertext retry | PASS |
+| Password rotation, both-slot wrappers, old-password rejection and restored identity/address | Passed before the later delivery timeout |
+| Delivery after recipient restart | FAILED: pending message did not arrive within 180 s after the restored destination became ready |
+| Cold desktop / constrained bootstrap | Desktop PASS (230.29 s to ready, 32 s held, 3 roundtrips); constrained FAILED (no inbound tunnel by deadline) |
+| Offline shell with HTTP server stopped | Not reached |
+| Physical devices / public deployment | Not performed |
+
+The restart fix now refreshes a cached remote LeaseSet after a failed streaming
+handshake. A peer can restart on the same destination keys with different
+inbound tunnels while its previous LeaseSet is still unexpired. This source
+change and its CI regression await a new run; the full acceptance remains open.
+
+Earlier baseline: `bb0578e`, 2026-11-01:
 
 | Check | Result |
 |---|---|
@@ -86,12 +130,12 @@ The `browser-messenger-pwa` artifact ZIP was 1,977,472 bytes with SHA256
 These are measurements of that commit, not promises for every network or device.
 The earlier constrained run at `e22a800` timed out; live I2P startup varies.
 The successful WASM job does not make the failed integration workflow green.
+Router-only bootstrap memory figures exclude the 64 MiB password-KDF workspace
+and unlocked conversation state. They are not measurements of full messenger RAM.
 
-The acceptance scenario also covers password rotation through the production UI,
-old-password rejection after worker restart, PRF enrollment/unlock through the
-main-thread helper, blocked-contact handling, and offline history after stopping
-the HTTP server. These assertions remain unconfirmed until the entire scenario
-passes in Actions. Later commits must be checked against their own runs.
+The acceptance scenario must also reach offline history after stopping the HTTP
+server. A partly successful run does not confirm that final phase. Later commits
+must be checked against their own runs.
 
 ## Hosting preparation
 
@@ -144,6 +188,8 @@ RouterInfo targets are rejected. A stale allowlist is not a permanent service.
 A public server/domain, certificate access and physical mobile browsers still
 need to be supplied for deployment and device acceptance. This branch prepares
 the code and artifacts; it does not publish a public service.
+The older [`scripts/deploy` templates](../scripts/deploy/README.md) describe a
+server-side `gipny-web` gateway and do not deploy this browser architecture.
 
 The first browser transport supports direct messages, group fanout and inline
 attachments up to 1 MiB per message within a 16 MiB encrypted profile. Native

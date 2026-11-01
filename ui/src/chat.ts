@@ -2,7 +2,7 @@ import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { downloadBrowserFile, forgetBrowserFiles } from './browser-files';
-import { Api, isTauri, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
+import { Api, isTauri, usesBrowserCore, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 import type { Message, LinkStats } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
@@ -1545,7 +1545,7 @@ export class ChatView extends View {
     }
     this.turboTitle.textContent = tr('chat.caffeine_enabled');
     this.turboHint.textContent = tr('chat.screen_stays_awake_chat_stays_selected');
-    this.fastBtn.classList.remove('hidden');
+    this.fastBtn.classList.toggle('hidden', usesBrowserCore());
   }
 
   private async leaveCaffeine(): Promise<void> {

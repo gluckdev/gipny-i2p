@@ -9,6 +9,17 @@ AiBlow, а не сборок приложения. Локальные резул
 
 ## Что собирается
 
+Автономный браузерный клиент собирается отдельным workflow
+[browser-router.yml](../.github/workflows/browser-router.yml), а не нативным
+`release.yml`. Артефакт `browser-messenger-pwa` содержит production UI, WASM,
+Worker, manifest и Service Worker для HTTPS-хостинга. Подготовка emissary
+проверяет закреплённый исходный SHA и SHA256 client-only патча; WASM-граф
+не содержит нативных libi2pd/SQLCipher/Tokio. Snapshot packer записывает
+фактический committed i2pd pin и отвергает несовпадающий checkout коллектора.
+CI-артефакт не означает публичное развёртывание или нативный подписанный релиз.
+Конфигурация WSS, снимки netDb и серверные сертификаты предоставляются отдельно;
+[руководство и проверенные результаты](browser-messenger.md) описывают границы.
+
 `release.yml` компилирует код текущего публичного commit, pinned submodules и
 зависимости из публичных исходников. Готовые внешние `gipny`, `gipny-agent`,
 `gipny-relay`, `i2pd` или `libi2pd.so` как замена source build не скачиваются.

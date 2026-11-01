@@ -3,6 +3,8 @@ set -euo pipefail
 
 # ==============================================================================
 # Gipny Web Deployment Script for GCP Compute Engine (deusexxx.online)
+# Historical server-gateway template. See README.md before use; this does not
+# deploy the autonomous browser PWA or its NTCP2 byte forwarder.
 # ==============================================================================
 
 echo "=== [1/6] Installing System Dependencies (Nginx, SSL tools) ==="

@@ -141,6 +141,9 @@ jobs:
       - name: Build native i2pd peer and RouterInfo verifier from source
         working-directory: browser-router
         run: cargo build --locked --release --features native-peer --bin native-peer --bin prepare-netdb --bin collect-netdb
+      - name: Requery cached LeaseSet after a failed streaming handshake
+        working-directory: browser-router/upstream/emissary
+        run: cargo test --locked -p emissary-core --lib destination::tests::query_lease_set_found -- --exact
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
