@@ -13,7 +13,13 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$cache_dir/target}"
 export CARGO_BUILD_JOBS="${GIPNY_OPENWRT_JOBS:-2}" CARGO_INCREMENTAL=0
 cargo build --locked --release -p gipny-agent --target "$target"
 binary="$CARGO_TARGET_DIR/$target/release/gipny-agent"
-python3 "$repo_dir/.github/scripts/check-openwrt-elf.py" "$target" "$binary"
+developer_log=()
+case "${GIPNY_RELEASE_LOGS:-}" in
+  '') ;;
+  full) developer_log=(--developer-log) ;;
+  *) echo "GIPNY_RELEASE_LOGS must be empty or full" >&2; exit 1 ;;
+esac
+python3 "$repo_dir/.github/scripts/check-openwrt-elf.py" "$target" "$binary" "${developer_log[@]}"
 python3 "$repo_dir/.github/scripts/check-openwrt-elf.py" "$target" "$cache_dir/native-probe"
 runner=()
 if [ -n "$GIPNY_OPENWRT_QEMU" ]; then runner=("$GIPNY_OPENWRT_QEMU" -cpu "$GIPNY_OPENWRT_QEMU_CPU"); fi

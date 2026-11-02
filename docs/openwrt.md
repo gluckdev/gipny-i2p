@@ -156,7 +156,8 @@ prebuilt router в `openwrt-build.sh` запрещены. Нужен C++20. GCC 
 
 Обязательные gates: ELF machine/разрядность/little endian, отсутствие
 `PT_INTERP` и `DT_NEEDED`, отсутствие hard-float ARM ABI, production release
-traces и отдельный diagnostics probe. Native C++ probe проверяет `time_t`,
+traces (в пре-релизе с `GIPNY_RELEASE_LOGS=full` — наоборот, их наличие) и
+отдельный diagnostics probe. Native C++ probe проверяет `time_t`,
 floating-point ABI, атомики, Boost, SHA256 OpenSSL и round-trip zlib; затем
 бинарник агента исполняет `--help` под QEMU соответствующего CPU (x86_64 —
 на runner). Это не живой I2P-тест и не замер памяти на роутере.

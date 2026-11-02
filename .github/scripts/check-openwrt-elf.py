@@ -13,7 +13,7 @@ TARGETS = {
 }
 
 
-def check(target, path):
+def check(target, path, developer_log=False):
     expected_class, expected_machine = TARGETS[target]
     data = Path(path).read_bytes()
     assert data[:4] == b"\x7fELF", "not ELF"
@@ -42,11 +42,19 @@ def check(target, path):
         assert "Tag_ABI_VFP_args: VFP registers" not in attributes, "ARM hard-float calling convention"
         print(attributes, end="")
     # Native log messages remain compiled for runtime filtering; these are Rust
-    # production trace call sites that must disappear from an optimized release.
+    # production trace call sites that must disappear from an optimized stable
+    # release. A prerelease (GIPNY_RELEASE_LOGS=full) carries the developer log
+    # by design, and its manifest says so: there they must be present.
     for trace in [b"[relay-wire] recv ", b"[agent] executing command with "]:
-        assert trace not in data, "developer trace survived in the release binary"
-    print(f"{target}: static little-endian ELF, correct CPU/ABI, no release traces: PASS")
+        if developer_log:
+            assert trace in data, "developer log missing from the prerelease binary"
+        else:
+            assert trace not in data, "developer trace survived in the release binary"
+    traces = "developer log present" if developer_log else "no release traces"
+    print(f"{target}: static little-endian ELF, correct CPU/ABI, {traces}: PASS")
 
 
 if __name__ == "__main__":
-    check(sys.argv[1], sys.argv[2])
+    if len(sys.argv) not in (3, 4) or sys.argv[3:] not in ([], ["--developer-log"]):
+        sys.exit("usage: check-openwrt-elf.py TARGET BINARY [--developer-log]")
+    check(sys.argv[1], sys.argv[2], sys.argv[3:] == ["--developer-log"])

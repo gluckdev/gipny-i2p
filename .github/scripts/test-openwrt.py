@@ -89,8 +89,22 @@ class ElfVerification(unittest.TestCase):
             binary.write_bytes(data)
             with self.assertRaisesRegex(AssertionError, 'DT_NEEDED'):
                 CHECK('x86_64-unknown-linux-musl', str(binary))
+            source.write_text('int main(void) { return 0; }\n')
+            subprocess.run(['cc', '-static', str(source), '-o', str(binary)], check=True, capture_output=True)
+            with self.assertRaisesRegex(AssertionError, 'developer log missing'):
+                CHECK('x86_64-unknown-linux-musl', str(binary), developer_log=True)
             source.write_text('#include <stdio.h>\nint main(void) { puts("[relay-wire] recv trace"); }\n')
             subprocess.run(['cc', '-static', str(source), '-o', str(binary)], check=True, capture_output=True)
+            with self.assertRaisesRegex(AssertionError, 'trace survived'):
+                CHECK('x86_64-unknown-linux-musl', str(binary))
+            # A prerelease must carry every trace, not just one of them.
+            with self.assertRaisesRegex(AssertionError, 'developer log missing'):
+                CHECK('x86_64-unknown-linux-musl', str(binary), developer_log=True)
+            source.write_text('#include <stdio.h>\nint main(void) { puts("[relay-wire] recv trace");'
+                              ' puts("[agent] executing command with 1 file(s)"); }\n')
+            subprocess.run(['cc', '-static', str(source), '-o', str(binary)], check=True, capture_output=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                CHECK('x86_64-unknown-linux-musl', str(binary), developer_log=True)
             with self.assertRaisesRegex(AssertionError, 'trace survived'):
                 CHECK('x86_64-unknown-linux-musl', str(binary))
 

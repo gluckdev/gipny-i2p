@@ -95,6 +95,12 @@ Android APK получают его как `GIPNY_RELEASE_LOGS`. `build-provenan
   `BUILD-MANIFEST.json` на странице релиза;
 - отказывает в публикации, если сборки одного релиза расходятся по этому полю.
 
+ELF-проверка OpenWrt (`check-openwrt-elf.py`) в стабильном релизе требует, чтобы
+строк `[relay-wire] recv ` и `[agent] executing command with ` в бинарнике агента
+не было, а в пре-релизе (`--developer-log`, его передаёт `openwrt-build.sh` при
+`GIPNY_RELEASE_LOGS=full`) — чтобы были обе: манифест не может заявить журнал,
+которого в бинарнике нет.
+
 Что пишет пре-релиз: `debug.log`/`debug.prev.log` в каталоге приложения
 (Linux, macOS, Android), `i2pd.log` встроенного роутера, stderr агента и
 выделенного релея (journald, консоль). Там есть идентификаторы контактов и
