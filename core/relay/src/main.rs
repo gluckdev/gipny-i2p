@@ -208,7 +208,7 @@ async fn main() -> anyhow::Result<()> {
         tick.tick().await;
         loop {
             tick.tick().await;
-            if let Err(e) = storage_gc.gc() { eprintln!("[relay] gc err: {}", e); }
+            if let Err(e) = storage_gc.gc() { i2p_embed::debug_error!("[relay] gc err: {}", e); }
             if let Ok((b, m)) = storage_gc.stats() {
                 i2p_embed::debug_trace!("[relay] stats: bundles={} pending_messages={}", b, m);
             }
@@ -361,7 +361,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                     }
                 }
             }
-            Err(e) => eprintln!("[relay] pending_for err: {}", e),
+            Err(e) => i2p_embed::debug_error!("[relay] pending_for err: {}", e),
         }
     });
 
@@ -413,7 +413,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
             } else if let Some(low) = given.iter().min() {
                 match storage.pending_above(&sign_pk, low - 1) {
                     Ok(pending) => redeal(lanes, &pending, &given),
-                    Err(e) => eprintln!("[relay] pending_above err: {}", e),
+                    Err(e) => i2p_embed::debug_error!("[relay] pending_above err: {}", e),
                 }
             }
         }
@@ -554,7 +554,7 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
                                     }
                                 }
                             }
-                            Err(e) => eprintln!("[relay] pending_above err: {}", e),
+                            Err(e) => i2p_embed::debug_error!("[relay] pending_above err: {}", e),
                         }
                     }
                     ClientToRelay::Ping => {

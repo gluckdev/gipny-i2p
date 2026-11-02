@@ -30,6 +30,19 @@
 отключает LTO и снятие символов. Workflow выпуска продолжает использовать
 `--release`; профиль `diagnostics` не публикуется как релиз.
 
+## Режимы разработческого лога
+
+Для разработки и диагностических сборок действуют два режима уровня лога:
+
+| Режим | Уровень | Что пишет |
+|---|---|---|
+| Debug period | `Full` | Все действия, каждая строка с обязательным timestamp (`HH:MM:SS.mmm`, capture в `debug.log`); ошибки идут через `debug_error!` |
+| Release / выключено | `Null` | Журнал не пишется |
+
+`LogLevel` объявлен в `i2p-embed/src/diagnostics.rs`; дефолт — `Full` при
+`cfg!(any(debug_assertions, test))`, `Null` в релизе. Переключение из кода —
+`gipny_libcore::diagnostics::set_log_level(LogLevel::Full | LogLevel::Null)`.
+
 ## Где применяется политика
 
 `i2p-embed/src/diagnostics.rs` содержит общую политику и макрос `debug_trace!`;

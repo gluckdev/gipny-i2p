@@ -44,7 +44,7 @@ pub mod session;
 pub mod update;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use i2p_embed::{debug_trace, diagnostics};
+pub use i2p_embed::{debug_error, debug_trace, diagnostics};
 
 pub use crypto::{Identity, IdentityCard, PreKeyBundle, PreKeyPair, RatchetState, X3dhInitial, CryptoError};
 #[cfg(not(target_arch = "wasm32"))]

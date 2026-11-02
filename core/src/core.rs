@@ -727,11 +727,11 @@ impl Core {
                 match result {
                     Ok(Ok(())) => this.note_relay_reach(None),
                     Ok(Err(e)) => {
-                        eprintln!("[relay-hosted] not reachable from the network: {e:?}");
+                        gipny_libcore::debug_error!("[relay-hosted] not reachable from the network: {e:?}");
                         this.note_relay_reach(Some(format!("{e:?}")));
                     }
                     Err(_) => {
-                        eprintln!("[relay-hosted] not reachable from the network: no answer in {PEER_RELAY_CONNECT_TIMEOUT:?}");
+                        gipny_libcore::debug_error!("[relay-hosted] not reachable from the network: no answer in {PEER_RELAY_CONNECT_TIMEOUT:?}");
                         this.note_relay_reach(Some(format!("no answer in {PEER_RELAY_CONNECT_TIMEOUT:?}")));
                     }
                 }
@@ -837,7 +837,7 @@ impl Core {
                     relay.claim(owner, Some(dht_client::handler(&self.dht)));
                     return Ok(relay);
                 }
-                Ok(Err(e)) => eprintln!("[relay-hosted] the relay built before unlock failed: {e:?}; building one now"),
+                Ok(Err(e)) => gipny_libcore::debug_error!("[relay-hosted] the relay built before unlock failed: {e:?}; building one now"),
                 Err(_) => {}
             }
         }
@@ -894,7 +894,7 @@ impl Core {
                     return;
                 }
                 Err(e) => {
-                    eprintln!("[relay-hosted] could not start: {e:?}; retrying in {wait:?}");
+                    gipny_libcore::debug_error!("[relay-hosted] could not start: {e:?}; retrying in {wait:?}");
                     self.set_hosted_state(HostedRelayState::Failed { reason: format!("{e:?}") });
                     tokio::time::sleep(wait).await;
                     wait = (wait * 2).min(Duration::from_secs(300));
@@ -1122,7 +1122,7 @@ impl Core {
             .collect();
         match self.send_console(master.contact_id, reply.body, reply.console, atts).await {
             Ok(_) => { let _ = self.events.try_send(CoreEvent::ConsoleActivity { contact_id: master.contact_id }); }
-            Err(e) => eprintln!("[agent] reply failed: {e}"),
+            Err(e) => gipny_libcore::debug_error!("[agent] reply failed: {e}"),
         }
     }
 
@@ -1871,7 +1871,7 @@ impl Core {
         let outcome = match self.updater.check_detailed(env!("CARGO_PKG_VERSION")).await {
             Ok(o) => o,
             Err(e) => {
-                eprintln!("[update] check err: {:?}", e);
+                gipny_libcore::debug_error!("[update] check err: {:?}", e);
                 return Err(e.into());
             }
         };
@@ -1957,7 +1957,7 @@ impl Core {
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&apk_path);
-                    eprintln!("[update] Android APK install failed: {e}");
+                    gipny_libcore::debug_error!("[update] Android APK install failed: {e}");
                     let _ = ev.send(CoreEvent::UpdateFailed { reason: format!("APK install failed: {e}") }).await;
                     return Err(CoreError::Update(gipny_libcore::update::UpdateError::Unsupported(e)));
                 }
@@ -2168,7 +2168,7 @@ impl Core {
             let contact = match self.db.get_contact(recipient) {
                 Ok(Some(contact)) if contact.trust != TrustLevel::Blocked => contact,
                 Err(error) => {
-                    eprintln!("[relay-client] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
+                    gipny_libcore::debug_error!("[relay-client] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
                     continue;
                 }
                 _ => continue,
@@ -3371,7 +3371,7 @@ impl Core {
                     _ = tick.tick() => {}
                 }
                 if let Err(e) = this.flush_all_pending().await {
-                    eprintln!("[relay-client] flush err: {:?}", e);
+                    gipny_libcore::debug_error!("[relay-client] flush err: {:?}", e);
                 }
             }
         });
@@ -3721,7 +3721,7 @@ impl Core {
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
         let raw = encode_payload(payload)?;
         if raw.len() > MAX_PAYLOAD_BYTES {
-            eprintln!("[relay-client] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
+            gipny_libcore::debug_error!("[relay-client] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
             if payload.origin_msg_id > 0 {
                 let _ = self.db.mark_sent(payload.origin_msg_id as i64);
                 let _ = self.events.try_send(CoreEvent::MessageFailed { message_id: payload.origin_msg_id as i64, reason: "too large for one letter".into() });

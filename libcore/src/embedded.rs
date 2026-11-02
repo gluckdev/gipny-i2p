@@ -33,7 +33,7 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
         match seeded {
             Ok(0) => {}
             Ok(n) => crate::debug_trace!("[i2p] laid out {n} known routers from the bundled snapshot"),
-            Err(e) => eprintln!("[i2p] bundled network snapshot not used: {e}"),
+            Err(e) => crate::debug_error!("[i2p] bundled network snapshot not used: {e}"),
         }
     }
     // What router.rs passes the child, less SAM and the HTTP proxy: nothing

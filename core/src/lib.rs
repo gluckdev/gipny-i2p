@@ -296,7 +296,7 @@ pub fn run() {
                 let ctx = app.state::<AppCtx>();
                 match data_lock::DataDirLock::acquire(&ctx.base_dir) {
                     Ok(lock) => { app.manage(lock); }
-                    Err(error) => eprintln!("WARNING: {error} Continuing desktop startup without the advisory lock."),
+                    Err(error) => gipny_libcore::debug_error!("WARNING: {error} Continuing desktop startup without the advisory lock."),
                 }
             }
             if let Ok(dir) = app.path().app_cache_dir() {
@@ -2246,8 +2246,8 @@ fn clear_history_on_exit(app: &tauri::AppHandle) {
             // Nobody is left to tell, but stderr remains available: a person who
             // asked for this and finds the history still there should be able
             // to see that it was tried and failed, not wonder whether it ran.
-            Ok(Err(e)) => eprintln!("[clear-on-exit] could not clear the transcript: {e}"),
-            Err(_) => eprintln!("[clear-on-exit] gave up waiting for the vault; the app is closing"),
+            Ok(Err(e)) => gipny_libcore::debug_error!("[clear-on-exit] could not clear the transcript: {e}"),
+            Err(_) => gipny_libcore::debug_error!("[clear-on-exit] gave up waiting for the vault; the app is closing"),
         }
     });
 }

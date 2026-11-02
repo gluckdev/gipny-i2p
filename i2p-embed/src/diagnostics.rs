@@ -3,6 +3,82 @@
 
 pub const AVAILABLE: bool = cfg!(any(debug_assertions, test));
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// Developer log level. Release builds pin to [`LogLevel::Null`]; developer
+/// builds default to [`LogLevel::Full`], the debug period: every action is
+/// logged, each line stamped by the stderr capture (`HH:MM:SS.mmm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    /// Log everything: every action, with a mandatory timestamp.
+    Full,
+    /// Logging off.
+    Null,
+}
+
+impl LogLevel {
+    pub const FULL: Self = Self::Full;
+    pub const NULL: Self = Self::Null;
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Null => "null",
+        }
+    }
+
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Full => 1,
+            Self::Null => 0,
+        }
+    }
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        if AVAILABLE { Self::Full } else { Self::Null }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for LogLevel {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "full" | "trace" | "all" => Ok(Self::Full),
+            "null" | "off" | "none" => Ok(Self::Null),
+            _ => Err(format!("unknown log level: {value}")),
+        }
+    }
+}
+
+static LEVEL: AtomicU8 = AtomicU8::new(if AVAILABLE { LogLevel::Full.rank() } else { LogLevel::Null.rank() });
+
+/// The developer log level in effect: Full in developer/test builds, Null in
+/// release; [`set_log_level`] overrides it from code.
+pub fn current_level() -> LogLevel {
+    match LEVEL.load(Ordering::Relaxed) {
+        0 => LogLevel::Null,
+        _ => LogLevel::Full,
+    }
+}
+
+/// Set the developer log level at runtime — the debug period: Full, off: Null.
+pub fn set_log_level(level: LogLevel) {
+    LEVEL.store(level.rank(), Ordering::Relaxed);
+}
+
+/// Whether the developer log level allows output: the debug period (`Full`).
+pub fn is_enabled() -> bool {
+    current_level() == LogLevel::Full
+}
+
 pub fn capture_enabled(environment: Option<&str>, persisted: Option<&str>) -> bool {
     capture_for(AVAILABLE, environment, persisted)
 }
@@ -55,7 +131,27 @@ fn router_options_for(available: bool, options: &[String], environment: Option<&
 macro_rules! debug_trace {
     ($($argument:tt)*) => {{
         #[cfg(any(debug_assertions, test))]
-        { eprintln!($($argument)*); }
+        {
+            if $crate::diagnostics::is_enabled() {
+                eprintln!($($argument)*);
+            }
+        }
+        #[cfg(not(any(debug_assertions, test)))]
+        { if false { let _ = format_args!($($argument)*); } }
+    }};
+}
+
+/// Error-level logs of the action stream: emitted only while the developer
+/// level allows output (the debug period, `Full`).
+#[macro_export]
+macro_rules! debug_error {
+    ($($argument:tt)*) => {{
+        #[cfg(any(debug_assertions, test))]
+        {
+            if $crate::diagnostics::is_enabled() {
+                eprintln!($($argument)*);
+            }
+        }
         #[cfg(not(any(debug_assertions, test)))]
         { if false { let _ = format_args!($($argument)*); } }
     }};
@@ -64,6 +160,7 @@ macro_rules! debug_trace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn release_capture_cannot_be_enabled_by_legacy_settings_or_environment() {
@@ -100,5 +197,29 @@ mod tests {
         let observed = std::cell::Cell::new(false);
         debug_trace!("diagnostics test: {}", { observed.set(true); "enabled" });
         assert!(observed.get());
+    }
+
+    #[test]
+    fn developer_default_level_is_full_and_release_pins_null() {
+        assert_eq!(LogLevel::default(), LogLevel::Full);
+        assert_eq!(LogLevel::FULL, LogLevel::Full);
+        assert_eq!(LogLevel::NULL, LogLevel::Null);
+        assert_eq!(LogLevel::Full.as_str(), "full");
+        assert_eq!(LogLevel::Null.as_str(), "null");
+        assert_eq!(LogLevel::from_str("FULL").unwrap(), LogLevel::Full);
+        assert_eq!(LogLevel::from_str("full").unwrap(), LogLevel::Full);
+        assert_eq!(LogLevel::from_str("null").unwrap(), LogLevel::Null);
+        assert!(LogLevel::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn level_filter_accepts_full_and_falls_to_null() {
+        let previous = current_level();
+        set_log_level(LogLevel::Null);
+        assert!(!is_enabled());
+        set_log_level(LogLevel::Full);
+        assert!(is_enabled());
+        set_log_level(previous);
+        assert_eq!(current_level(), LogLevel::Full);
     }
 }

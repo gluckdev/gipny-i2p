@@ -149,7 +149,7 @@ impl RelayTransport {
             Err(e) => {
                 let failed = self.failures.fetch_add(1, Ordering::Relaxed) + 1;
                 if failed >= REBUILD_AFTER_FAILURES {
-                    eprintln!("[dht] {failed} dial(s) failed in a row ({e}); a new outgoing destination");
+                    i2p_embed::debug_error!("[dht] {failed} dial(s) failed in a row ({e}); a new outgoing destination");
                     self.failures.store(0, Ordering::Relaxed);
                     *self.dest.lock().await = None;
                 }

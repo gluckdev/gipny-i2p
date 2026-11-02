@@ -280,17 +280,17 @@ impl Bot {
                     SessionEvent::ContactUpdated { contact_id } => gipny_libcore::debug_trace!("[bot] contact updated id={}", contact_id),
                     SessionEvent::ContactWiped { contact_id } => gipny_libcore::debug_trace!("[bot] contact {} deleted us; chat removed", contact_id),
                     SessionEvent::MessageDelivered { message_id } => gipny_libcore::debug_trace!("[bot] delivered mid={}", message_id),
-                    SessionEvent::MessageFailed { message_id, reason } => eprintln!("[bot] not sent mid={}: {}", message_id, reason),
+                    SessionEvent::MessageFailed { message_id, reason } => gipny_libcore::debug_error!("[bot] not sent mid={}: {}", message_id, reason),
                     SessionEvent::FileProgress { .. } => {}
                     SessionEvent::FileReceived { message_id, attachment_id } => gipny_libcore::debug_trace!("[bot] file whole mid={} att={}", message_id, attachment_id),
-                    SessionEvent::FileFailed { message_id, reason, .. } => eprintln!("[bot] file mid={}: {}", message_id, reason),
+                    SessionEvent::FileFailed { message_id, reason, .. } => gipny_libcore::debug_error!("[bot] file mid={}: {}", message_id, reason),
                     SessionEvent::MessageEdited { message_id, .. } => gipny_libcore::debug_trace!("[bot] edited mid={}", message_id),
                     SessionEvent::MessageDeleted { message_id, .. } => {
                         held.remove(message_id);
                     }
                     SessionEvent::MessagePinned { message_id, .. } => gipny_libcore::debug_trace!("[bot] pinned mid={}", message_id),
                     SessionEvent::MessageUnpinned { message_id, .. } => gipny_libcore::debug_trace!("[bot] unpinned mid={}", message_id),
-                    SessionEvent::RelayError { reason } => eprintln!("[bot] relay error: {}", reason),
+                    SessionEvent::RelayError { reason } => gipny_libcore::debug_error!("[bot] relay error: {}", reason),
                     SessionEvent::IncomingPayload { contact_id, payload, message_id } =>
                         gipny_libcore::debug_trace!("[bot] incoming contact={} mid={} group={} atts={} buttons={}",
                             contact_id, message_id,
@@ -374,7 +374,7 @@ impl Bot {
                     }
                 };
                 if let Err(e) = tx.send(dispatch).await {
-                    eprintln!("[bot] chat queue dropped: {}", e);
+                    gipny_libcore::debug_error!("[bot] chat queue dropped: {}", e);
                 }
             }
             Ok(())
@@ -433,7 +433,7 @@ async fn run_with_retry(
                 return;
             }
             Ok(false) => { let _ = session.db.record_callback_seen(sender_sign_pk, *sent_at, data); }
-            Err(e) => eprintln!("[bot] callback_seen err: {:?}", e),
+            Err(e) => gipny_libcore::debug_error!("[bot] callback_seen err: {:?}", e),
         }
     }
 
@@ -448,7 +448,7 @@ async fn run_with_retry(
                 // Handler errors are arbitrary user code and can contain the
                 // received message or callback data. Keep details encrypted in
                 // the dead-letter record; never copy them to diagnostics.
-                eprintln!("[bot] handler failed ({}): attempt {} of {}", kind, attempt, HANDLER_MAX_ATTEMPTS);
+                gipny_libcore::debug_error!("[bot] handler failed ({}): attempt {} of {}", kind, attempt, HANDLER_MAX_ATTEMPTS);
                 if attempt >= HANDLER_MAX_ATTEMPTS {
                     save_dead_letter(session, key, &item, &format!("{:?}", e));
                     return;

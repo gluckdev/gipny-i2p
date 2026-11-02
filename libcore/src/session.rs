@@ -585,7 +585,7 @@ impl SessionManager {
             let contact = match self.db.get_contact(recipient) {
                 Ok(Some(contact)) if contact.trust != TrustLevel::Blocked => contact,
                 Err(error) => {
-                    eprintln!("[session] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
+                    crate::debug_error!("[session] group msg {msg_id} queued; contact {recipient} lookup failed: {error:?}");
                     continue;
                 }
                 _ => continue,
@@ -1707,7 +1707,7 @@ impl SessionManager {
                     _ = tick.tick() => {}
                 }
                 if let Err(e) = this.flush_all_pending().await {
-                    eprintln!("[session] flush err: {:?}", e);
+                    crate::debug_error!("[session] flush err: {:?}", e);
                 }
             }
         });
@@ -1938,7 +1938,7 @@ impl SessionManager {
         let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
         let raw = encode_payload(payload)?;
         if raw.len() > MAX_PAYLOAD_BYTES {
-            eprintln!("[session] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
+            crate::debug_error!("[session] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
             if payload.origin_msg_id > 0 {
                 let _ = self.db.mark_sent(payload.origin_msg_id as i64);
                 let _ = self.events.send(SessionEvent::MessageFailed { message_id: payload.origin_msg_id as i64, reason: "too large for one letter".into() }).await;

@@ -811,7 +811,7 @@ impl EphemeralRelay {
                                         let _ = d.ready(Duration::from_secs(600)).await;
                                         dest = Some(d);
                                     }
-                                    Err(e) => eprintln!("[relay-server] rebuild failed: {e}"),
+                                    Err(e) => crate::debug_error!("[relay-server] rebuild failed: {e}"),
                                 }
                                 break;
                             }

@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if local {
         std::env::remove_var("GIPNY_SERVER_HOPS");
     } else {
-        eprintln!("WARNING: non-loopback --listen selects a HOSTED GATEWAY, not local web mode. Keys and data live on this host; token/Origin/Host protections are disabled. Do not expose it to untrusted clients.");
+        gipny_libcore::debug_error!("WARNING: non-loopback --listen selects a HOSTED GATEWAY, not local web mode. Keys and data live on this host; token/Origin/Host protections are disabled. Do not expose it to untrusted clients.");
         std::env::set_var("GIPNY_SERVER_HOPS", hops);
     }
     let data_dir = data_dir.unwrap_or_else(|| if local { resolve_base_dir() } else { PathBuf::from("./data") });
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             None => format!("http://127.0.0.1:{port}/#token={token}"),
         };
         eprintln!("Local gipny UI (capability; keep private): {url}");
-        if !no_open { if let Err(error) = open_browser(&url) { eprintln!("Could not open browser: {error}. Open the printed URL manually."); } }
+        if !no_open { if let Err(error) = open_browser(&url) { gipny_libcore::debug_error!("Could not open browser: {error}. Open the printed URL manually."); } }
         Some(LocalPolicy { port, token, allowed_origins })
     } else { None };
     let ctx = Arc::new(AppCtx::new(data_dir));

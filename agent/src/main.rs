@@ -86,7 +86,7 @@ fn parse_args() -> Args {
             "--cwd"     => a.cwd         = it.next().map(PathBuf::from),
             "--timeout" => a.timeout_secs = it.next().and_then(|s| s.parse().ok()),
             "--help" | "-h" => usage(),
-            other => { eprintln!("unknown flag: {other}"); usage(); }
+            other => { gipny_libcore::debug_error!("unknown flag: {other}"); usage(); }
         }
     }
     a
@@ -169,18 +169,18 @@ fn load_relay(args: &Args, data: &Path) -> Result<Option<String>> {
 fn load_attachments(db: &Db, data_dir: &Path, msg_id: i64) -> Vec<(String, Vec<u8>)> {
     let atts = match db.list_attachments(msg_id) {
         Ok(a) => a,
-        Err(e) => { eprintln!("[agent] list_attachments({msg_id}): {e}"); return vec![]; }
+        Err(e) => { gipny_libcore::debug_error!("[agent] list_attachments({msg_id}): {e}"); return vec![]; }
     };
     let mut out = Vec::with_capacity(atts.len());
     for a in atts {
         let key: [u8; 32] = match a.key.as_slice().try_into() {
             Ok(k) => k,
-            Err(_) => { eprintln!("[agent] bad attachment key"); continue; }
+            Err(_) => { gipny_libcore::debug_error!("[agent] bad attachment key"); continue; }
         };
         let path = data_dir.join("attachments").join(&a.path);
         match gipny_libcore::files::read_attachment(&path, key, a.size as u64, a.chunk_size) {
             Ok(data) => out.push((a.name, data)),
-            Err(e) => eprintln!("[agent] read {}: {e}", path.display()),
+            Err(e) => gipny_libcore::debug_error!("[agent] read {}: {e}", path.display()),
         }
     }
     out
@@ -365,7 +365,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
                     .send_console(master_id, reply.body, reply.console, reply.attachments)
                     .await
                 {
-                    eprintln!("[agent] reply failed: {e}");
+                    gipny_libcore::debug_error!("[agent] reply failed: {e}");
                 }
             }
         }
@@ -398,14 +398,14 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
         tokio::select! {
             _ = async { tokio::select! { _ = signal::ctrl_c() => {}, _ = terminate => {} } } => {
                 if stopping.is_some() {
-                    eprintln!("[agent] interrupted again — exiting now");
+                    gipny_libcore::debug_error!("[agent] interrupted again — exiting now");
                     break;
                 }
-                eprintln!("[agent] interrupted — telling the master, then exiting");
+                gipny_libcore::debug_error!("[agent] interrupted — telling the master, then exiting");
                 stopping = Some(begin_stop(&session, master_id).await);
             }
             _ = deadline => {
-                eprintln!("[agent] the master did not confirm the REVOKE in {}s — exiting anyway", REVOKE_WAIT.as_secs());
+                gipny_libcore::debug_error!("[agent] the master did not confirm the REVOKE in {}s — exiting anyway", REVOKE_WAIT.as_secs());
                 break;
             }
             ev = events.recv() => {
@@ -432,7 +432,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
                             }
                             CONSOLE_OFF => {
                                 if stopping.is_none() {
-                                    eprintln!("[agent] master switched the agent off");
+                                    gipny_libcore::debug_error!("[agent] master switched the agent off");
                                     stopping = Some(begin_stop(&session, master_id).await);
                                 }
                             }
@@ -484,7 +484,7 @@ async fn run_update_loop(db: Arc<Db>, data_dir: PathBuf, node: Arc<I2pNode>) {
     let updater = Updater::new(node, UpdateComponent::Agent);
     let exe = match std::env::current_exe() {
         Ok(path) => path,
-        Err(error) => { eprintln!("[agent] cannot resolve our executable for updates: {error}"); return; }
+        Err(error) => { gipny_libcore::debug_error!("[agent] cannot resolve our executable for updates: {error}"); return; }
     };
     // Only this running process remembers a successful replacement/stage. The
     // persistent dismissal belongs to the person, not an installer handoff.
@@ -522,7 +522,7 @@ async fn run_update_loop(db: Arc<Db>, data_dir: PathBuf, node: Arc<I2pNode>) {
         let wait = match attempt {
             Ok(()) => { failures = 0; UPDATE_CHECK_INTERVAL_SECS }
             Err(error) => {
-                eprintln!("[agent] update failed: {error:#}");
+                gipny_libcore::debug_error!("[agent] update failed: {error:#}");
                 let waits = [60, 300, 1_200, 3_600];
                 let wait = waits[failures.min(waits.len() - 1)];
                 failures += 1;
@@ -563,7 +563,7 @@ async fn begin_stop(session: &SessionManager, master_id: i64) -> (i64, tokio::ti
         .await
     {
         Ok(id) => id,
-        Err(e) => { eprintln!("[agent] could not queue REVOKE: {e}"); -1 }
+        Err(e) => { gipny_libcore::debug_error!("[agent] could not queue REVOKE: {e}"); -1 }
     };
     (id, tokio::time::Instant::now() + REVOKE_WAIT)
 }
