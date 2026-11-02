@@ -468,7 +468,7 @@ export class BrowserBackend {
     }
     if (command === 'prewarm_network') return null;
     if (command === 'prewarm_status') return 'off';
-    if (command === 'current_version') return '0.4.19-browser';
+    if (command === 'current_version') return '0.5.0-rc1-browser';
     if (command === 'update_configured' || command === 'get_auto_update' || command === 'update_installs_itself' || command === 'update_asks_for_root') return false;
     if (command === 'check_update' || command === 'get_agent_mode') return null;
     if (command === 'browser_diagnostics') return { ...JSON.parse(public_network_metrics()), relay_probes: { ...this.relayProbes } };
