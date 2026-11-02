@@ -583,11 +583,25 @@ where F: FnMut(u64, u64) + Send,
     Ok(())
 }
 
+/// `candidate` is always a stable release (`/releases/latest` never returns a
+/// prerelease). The running build may be a prerelease, which sorts below its
+/// own stable version: `0.5.0-rc1` is offered `0.5.0`.
 fn version_newer(candidate: &str, current: &str) -> bool {
-    match (release_version(candidate), release_version(current)) {
-        (Some(candidate), Some(current)) => candidate > current,
+    match (release_version(candidate), installed_version(current)) {
+        (Some(candidate), Some((current, prerelease))) => candidate > current || (prerelease && candidate == current),
         _ => false,
     }
+}
+
+/// The running build's version: `X.Y.Z` or a prerelease `X.Y.Z-rc1`, with
+/// whether it is a prerelease.
+fn installed_version(value: &str) -> Option<([u64; 3], bool)> {
+    let Some((base, prerelease)) = value.split_once('-') else {
+        return Some((release_version(value)?, false));
+    };
+    let valid = prerelease.split('.')
+        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'));
+    valid.then_some((release_version(base)?, true))
 }
 
 fn release_version(value: &str) -> Option<[u64; 3]> {
@@ -771,7 +785,7 @@ fn launch_pending_windows_installer(
     let directory = data_dir.join(PENDING_DIR);
     if !directory.exists() { return Ok(false); }
     let version = std::fs::read_to_string(directory.join("VERSION"))?;
-    if release_version(version.trim()).is_none() || release_version(current_version).is_none() {
+    if release_version(version.trim()).is_none() || installed_version(current_version).is_none() {
         return Err(UpdateError::Unsupported("invalid staged/current Windows update version".into()));
     }
     if !version_newer(version.trim(), current_version) {
@@ -1197,6 +1211,30 @@ mod tests {
         assert!(version_newer("0.4.2", "0.4.1"));
         assert!(!version_newer("0.4.1", "0.4.2"));
         assert!(!version_newer("0.4.1", "0.4.1"));
+    }
+
+    #[test]
+    fn a_prerelease_build_is_offered_its_stable_release_and_nothing_older() {
+        assert!(version_newer("0.5.0", "0.5.0-rc1"));
+        assert!(version_newer("v0.5.0", "0.5.0-rc.2"));
+        assert!(version_newer("0.5.1", "0.5.0-rc1"));
+        assert!(!version_newer("0.4.19", "0.5.0-rc1"));
+        assert!(!version_newer("0.5.0", "0.5.0"));
+        // Candidates come from /releases/latest and must be stable.
+        assert!(!version_newer("0.5.0-rc2", "0.5.0-rc1"));
+        for malformed in ["0.5.0-", "0.5.0-rc..1", "0.5.0-rc_1", "0.5-rc1", "05.0.0-rc1"] {
+            assert!(installed_version(malformed).is_none(), "{malformed}");
+            assert!(!version_newer("0.5.0", malformed), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn windows_prerelease_install_hands_over_to_its_stable_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("gipny-i2p_0.5.0_x64-setup.exe");
+        std::fs::write(&source, b"verified installer").unwrap();
+        stage_windows_installer(&source, dir.path()).unwrap();
+        assert!(launch_pending_windows_installer(dir.path(), "0.5.0-rc1", |_| Ok(())).unwrap());
     }
 
     #[test]

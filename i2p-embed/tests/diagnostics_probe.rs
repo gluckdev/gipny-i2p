@@ -6,7 +6,7 @@ fn main() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let observed = AtomicUsize::new(0);
     debug_trace!("GIPNY_PRIVATE_TRACE_SENTINEL_20261028 {}", observed.fetch_add(1, Ordering::SeqCst));
-    let available = cfg!(debug_assertions);
+    let available = cfg!(debug_assertions) || option_env!("GIPNY_RELEASE_LOGS") == Some("full");
     assert_eq!(diagnostics::AVAILABLE, available);
     assert_eq!(observed.load(Ordering::SeqCst), usize::from(available));
     for persisted in [None, Some("debug"), Some("off")] {

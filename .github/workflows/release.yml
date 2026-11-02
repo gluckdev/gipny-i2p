@@ -62,6 +62,7 @@ jobs:
     outputs:
       version: ${{ steps.compare.outputs.version }}
       publish: ${{ steps.compare.outputs.publish }}
+      release_logs: ${{ steps.compare.outputs.release_logs }}
     steps:
       - uses: actions/checkout@v7
       - name: Release eligibility and draft integrity regressions
@@ -84,6 +85,13 @@ jobs:
           done
           $ok
           echo "version=$want" >> "$GITHUB_OUTPUT"
+          # A prerelease (0.5.0-rc1) is a build for testers and carries the
+          # developer log (docs/release-diagnostics.md); a stable one never
+          # does, and build-provenance.py refuses the combination.
+          case "$want" in
+            *-*) echo "release_logs=full" >> "$GITHUB_OUTPUT" ;;
+            *) echo "release_logs=" >> "$GITHUB_OUTPUT" ;;
+          esac
           # An ordinary manual run remains a preview. Explicit publishing is
           # main-only; API/auth/network errors never mean that a tag is absent.
           python3 .github/scripts/release-guard.py eligibility --tag "v$want" \
@@ -158,7 +166,9 @@ jobs:
   # ---------------------------------------------------------------------------
   desktop:
     name: desktop (${{ matrix.os }})
-    needs: [netdb-seed]
+    needs: [version, netdb-seed]
+    env:
+      GIPNY_RELEASE_LOGS: ${{ needs.version.outputs.release_logs }}
     strategy:
       fail-fast: false
       matrix:
@@ -363,6 +373,8 @@ jobs:
   relay:
     name: relay (linux ${{ matrix.arch }})
     needs: [version, netdb-seed]
+    env:
+      GIPNY_RELEASE_LOGS: ${{ needs.version.outputs.release_logs }}
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -435,6 +447,8 @@ jobs:
   agent:
     name: agent (linux ${{ matrix.arch }})
     needs: [version, netdb-seed]
+    env:
+      GIPNY_RELEASE_LOGS: ${{ needs.version.outputs.release_logs }}
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -597,6 +611,7 @@ jobs:
     with:
       include-seed: true
       version: ${{ needs.version.outputs.version }}
+      release-logs: ${{ needs.version.outputs.release_logs }}
 
   # ---------------------------------------------------------------------------
   # 2d. Android router: i2pd built as the JNI library GipnyService loads, for
@@ -616,6 +631,7 @@ jobs:
           - { abi: arm64-v8a, arch: arm64 }
           - { abi: armeabi-v7a, arch: arm }
     env:
+      GIPNY_RELEASE_LOGS: ${{ needs.version.outputs.release_logs }}
       # Keep the NDK and dependency steps in sync with i2p-embed.yml's android job.
       NDK_VERSION: 27.3.13750724
       ABI: ${{ matrix.abi }}
@@ -737,8 +753,10 @@ jobs:
   # (~15 minutes), and they share nothing: two ABIs, two toolchains, two APKs.
   android:
     name: android (${{ matrix.abi }})
-    needs: [android-router, netdb-seed]
+    needs: [version, android-router, netdb-seed]
     runs-on: ubuntu-22.04
+    env:
+      GIPNY_RELEASE_LOGS: ${{ needs.version.outputs.release_logs }}
     strategy:
       fail-fast: false
       matrix:

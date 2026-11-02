@@ -82,6 +82,30 @@ class ArtifactIntegrity(unittest.TestCase):
         with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}, clear=True):
             provenance.guard()
 
+    def test_developer_log_only_in_a_prerelease_and_only_as_full(self):
+        for version, value, allowed in [('0.5.0-rc1', 'full', True), ('0.5.0-rc1', '', True), ('0.5.0', '', True),
+                                        ('0.5.0', 'full', False), ('0.5.0-rc1', 'yes', False), ('0.5.0-rc1', 'FULL', False)]:
+            with patch.object(provenance, 'app_version', return_value=version), \
+                    patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'GIPNY_RELEASE_LOGS': value}, clear=True):
+                if allowed:
+                    provenance.guard()
+                    self.assertIs(provenance.developer_log(), value == 'full')
+                else:
+                    with self.assertRaises(ValueError):
+                        provenance.guard()
+
+    def test_builds_with_different_developer_log_never_form_one_release(self):
+        other = self.inputs / 'other.tar.gz'
+        other.write_bytes(b'second synthetic package fixture')
+        provenance.write_json(self.inputs / 'build-manifest-fixture.json', dict(self.manifest, developer_log=True))
+        provenance.write_json(self.inputs / 'build-manifest-other.json',
+                              dict(self.manifest, artifacts=[self.asset(other)], developer_log=False))
+        with self.assertRaisesRegex(ValueError, 'developer log'):
+            self.collect()
+        provenance.write_json(self.inputs / 'build-manifest-other.json',
+                              dict(self.manifest, artifacts=[self.asset(other)], developer_log=True))
+        self.collect()
+
 
 class ReviewedLockfiles(unittest.TestCase):
     def setUp(self):

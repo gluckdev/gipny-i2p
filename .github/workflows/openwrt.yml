@@ -9,6 +9,10 @@ on:
       version:
         type: string
         default: ''
+      # `full` for a prerelease: the developer log (release.yml decides).
+      release-logs:
+        type: string
+        default: ''
   workflow_dispatch:
   pull_request:
     paths:
@@ -42,6 +46,7 @@ jobs:
           - i686-unknown-linux-musl
     env:
       GIPNY_DHT_SEEDS: ${{ vars.GIPNY_DHT_SEEDS }}
+      GIPNY_RELEASE_LOGS: ${{ inputs.release-logs }}
       GIPNY_OPENWRT_JOBS: 2
       OPENWRT_WORK: ${{ github.workspace }}/.openwrt-cross/${{ matrix.target }}
     steps:

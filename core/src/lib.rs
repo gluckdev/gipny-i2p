@@ -91,8 +91,8 @@ fn log_level_path(base_dir: &std::path::Path) -> std::path::PathBuf {
     base_dir.join("log.conf")
 }
 
-/// Capture is a developer/test capability. Release ignores old settings and
-/// environment overrides, including an existing `log.conf` from an older app.
+/// Capture is a developer/test/prerelease capability. A stable release ignores
+/// old settings and environment overrides, including an existing `log.conf`.
 fn log_enabled(base_dir: &std::path::Path) -> bool {
     if !gipny_libcore::diagnostics::AVAILABLE { return false; }
     let environment = std::env::var("GIPNY_DEBUG_LOG").ok();
@@ -109,7 +109,7 @@ fn log_enabled(base_dir: &std::path::Path) -> bool {
 /// file so every line can be stamped — without that, a log of "relay failed"
 /// and "router ready" says nothing about *when*, which is most of what one
 /// needs from it.
-#[cfg(all(unix, any(debug_assertions, test)))]
+#[cfg(unix)]
 fn install_log_capture(base_dir: &std::path::Path) {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::io::FromRawFd;
@@ -150,7 +150,7 @@ fn install_log_capture(base_dir: &std::path::Path) {
 
 /// `HH:MM:SS.mmm` in local time — enough to line our log up against i2pd's,
 /// which stamps the same way, without dragging in a date library.
-#[cfg(all(unix, any(debug_assertions, test)))]
+#[cfg(unix)]
 fn log_stamp() -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs() as i64;
@@ -161,7 +161,7 @@ fn log_stamp() -> String {
 }
 
 /// The offset `localtime_r` reports for now, in seconds.
-#[cfg(all(unix, any(debug_assertions, test)))]
+#[cfg(unix)]
 fn local_utc_offset_secs() -> i64 {
     unsafe {
         let mut t: libc::time_t = 0;
@@ -214,9 +214,11 @@ pub fn run() {
     gipny_libcore::security::harden_process().expect("process dump protection unavailable");
     let base_dir = resolve_base_dir();
     std::fs::create_dir_all(&base_dir).ok();
-    // Plaintext stderr capture is compiled only into developer/test builds.
-    // No environment variable, saved setting or UI command enables release.
-    #[cfg(all(unix, any(debug_assertions, test)))]
+    // Plaintext stderr capture exists only in developer/test builds and in
+    // prerelease builds made with GIPNY_RELEASE_LOGS=full. In a stable release
+    // `log_enabled` is a constant false: no environment variable, saved
+    // setting or UI command turns it on, and the capture code is optimised out.
+    #[cfg(unix)]
     if log_enabled(&base_dir) {
         install_log_capture(&base_dir);
     }

@@ -169,7 +169,9 @@ fn shell_command(cmd: &str) -> Command {
 /// to send back and never retries the shell.
 pub async fn run_command(cmd: &str, o: &ExecOptions) -> ExecResult {
     let started = Instant::now();
-    crate::debug_trace!("[agent] run_command: {cmd}");
+    // The command text can carry secrets: logged by size only, even in Full
+    // (docs/release-diagnostics.md).
+    crate::debug_trace!("[agent] run_command: {} bytes", cmd.len());
     let mut command = shell_command(cmd);
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     if let Some(dir) = o.base_dir() {
@@ -386,7 +388,6 @@ pub async fn handle_console_request(
             if body.trim().is_empty() {
                 return ConsoleReply::plain(lines, 0);
             }
-            crate::debug_trace!("[agent] console command: {}", body.trim());
             let r = run_command(body, o).await;
             ConsoleReply {
                 body: format!("{lines}{}", r.output),

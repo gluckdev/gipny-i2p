@@ -1,12 +1,26 @@
 //! Compile-time diagnostics policy shared by the app and embedded router.
-//! No environment variable or persisted setting can enable a release build.
+//! No runtime environment variable or persisted setting can enable a stable
+//! release build. Only the compile-time `GIPNY_RELEASE_LOGS=full` does, and
+//! release.yml sets it for prerelease versions (`0.5.0-rc1`) alone.
 
-pub const AVAILABLE: bool = cfg!(any(debug_assertions, test));
+/// The developer log compiled into an optimised prerelease build for testers.
+/// build-provenance.py refuses it in a stable version.
+pub const RELEASE_LOGS: bool = release_logs_requested(option_env!("GIPNY_RELEASE_LOGS"));
+
+pub const AVAILABLE: bool = cfg!(any(debug_assertions, test)) || RELEASE_LOGS;
+
+const fn release_logs_requested(value: Option<&str>) -> bool {
+    match value {
+        Some(value) => matches!(value.as_bytes(), b"full"),
+        None => false,
+    }
+}
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Developer log level. Release builds pin to [`LogLevel::Null`]; developer
-/// builds default to [`LogLevel::Full`], the debug period: every action is
+/// Developer log level. Stable release builds pin to [`LogLevel::Null`];
+/// developer and prerelease builds ([`AVAILABLE`]) default to
+/// [`LogLevel::Full`], the debug period: every action is
 /// logged, each line stamped by the stderr capture (`HH:MM:SS.mmm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -60,8 +74,8 @@ impl std::str::FromStr for LogLevel {
 
 static LEVEL: AtomicU8 = AtomicU8::new(if AVAILABLE { LogLevel::Full.rank() } else { LogLevel::Null.rank() });
 
-/// The developer log level in effect: Full in developer/test builds, Null in
-/// release; [`set_log_level`] overrides it from code.
+/// The developer log level in effect: Full in developer/test/prerelease builds,
+/// Null in a stable release; [`set_log_level`] overrides it from code.
 pub fn current_level() -> LogLevel {
     match LEVEL.load(Ordering::Relaxed) {
         0 => LogLevel::Null,
@@ -125,19 +139,16 @@ fn router_options_for(available: bool, options: &[String], environment: Option<&
     out
 }
 
-/// Low-level app/router traces are absent from release code, including the
-/// formatting arguments. Operational warnings/errors deliberately use stderr.
+/// Low-level app/router traces are absent from stable release code, including
+/// the formatting arguments: `AVAILABLE` is a constant `false` there and the
+/// branch is removed at compile time. A `#[cfg]` here would be evaluated in the
+/// calling crate and could not see `GIPNY_RELEASE_LOGS`.
 #[macro_export]
 macro_rules! debug_trace {
     ($($argument:tt)*) => {{
-        #[cfg(any(debug_assertions, test))]
-        {
-            if $crate::diagnostics::is_enabled() {
-                eprintln!($($argument)*);
-            }
+        if $crate::diagnostics::AVAILABLE && $crate::diagnostics::is_enabled() {
+            eprintln!($($argument)*);
         }
-        #[cfg(not(any(debug_assertions, test)))]
-        { if false { let _ = format_args!($($argument)*); } }
     }};
 }
 
@@ -146,14 +157,9 @@ macro_rules! debug_trace {
 #[macro_export]
 macro_rules! debug_error {
     ($($argument:tt)*) => {{
-        #[cfg(any(debug_assertions, test))]
-        {
-            if $crate::diagnostics::is_enabled() {
-                eprintln!($($argument)*);
-            }
+        if $crate::diagnostics::AVAILABLE && $crate::diagnostics::is_enabled() {
+            eprintln!($($argument)*);
         }
-        #[cfg(not(any(debug_assertions, test)))]
-        { if false { let _ = format_args!($($argument)*); } }
     }};
 }
 
@@ -192,8 +198,20 @@ mod tests {
         assert_eq!(router_options_for(true, &[], Some("invalid")), ["--loglevel=info"]);
     }
 
+    /// The level is process-global and tests run in parallel threads.
+    static LEVEL_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn prerelease_log_switch_accepts_only_full() {
+        assert!(release_logs_requested(Some("full")));
+        for value in [None, Some(""), Some("null"), Some("FULL"), Some("1"), Some("full ")] {
+            assert!(!release_logs_requested(value));
+        }
+    }
+
     #[test]
     fn developer_trace_evaluates_arguments_in_tests() {
+        let _level = LEVEL_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let observed = std::cell::Cell::new(false);
         debug_trace!("diagnostics test: {}", { observed.set(true); "enabled" });
         assert!(observed.get());
@@ -214,6 +232,7 @@ mod tests {
 
     #[test]
     fn level_filter_accepts_full_and_falls_to_null() {
+        let _level = LEVEL_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = current_level();
         set_log_level(LogLevel::Null);
         assert!(!is_enabled());

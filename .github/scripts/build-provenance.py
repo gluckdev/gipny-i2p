@@ -96,6 +96,21 @@ def guard():
             raise ValueError(f'{name} is forbidden in shipping builds')
     if os.environ.get('CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS', 'false').lower() not in ('false', '0', ''):
         raise ValueError('release debug assertions are forbidden')
+    developer_log()
+
+
+def app_version():
+    return json.loads((ROOT / 'core/tauri.conf.json').read_text())['version']
+
+
+def developer_log():
+    """GIPNY_RELEASE_LOGS=full compiles the developer log into a prerelease for testers."""
+    value = os.environ.get('GIPNY_RELEASE_LOGS', '')
+    if value not in ('', 'full'):
+        raise ValueError('GIPNY_RELEASE_LOGS must be empty or full')
+    if value and '-' not in app_version():
+        raise ValueError('the developer log is allowed only in a prerelease version')
+    return bool(value)
 
 
 def source_archive(output):
@@ -103,7 +118,7 @@ def source_archive(output):
     identity = source_identity()
     if any(item['commit'] != item['gitlink'] for item in identity['submodules']):
         raise ValueError('source package must use exactly the pinned public gitlinks')
-    version = json.loads((ROOT / 'core/tauri.conf.json').read_text())['version']
+    version = app_version()
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f'gipny-source_{version}_{identity["commit"]}.tar.gz'
     epoch = int(git('show', '-s', '--format=%ct', 'HEAD'))
@@ -172,7 +187,7 @@ def record(output, target, patterns, input_manifests, inputs):
                 inputs_list.append({'name': str(path.relative_to(directory)), 'sha256': digest(path), 'size': path.stat().st_size})
     locks = reviewed_lockfiles()
     write_json(output, {
-        'schema': 1, 'source': source_identity(), 'target': target,
+        'schema': 1, 'source': source_identity(), 'target': target, 'developer_log': developer_log(),
         'builder': {'service': 'GitHub Actions', 'workflow': os.environ.get('GITHUB_WORKFLOW_REF'),
                     'run': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
                     'attempt': os.environ.get('GITHUB_RUN_ATTEMPT'), 'job': os.environ.get('GITHUB_JOB'),
@@ -215,6 +230,10 @@ def collect(directory, output):
             raise ValueError(f'unexpected JSON release input: {path.name}')
     if source is None or source['commit'] != expected_sha or not manifests:
         raise ValueError('source/build provenance missing or from another source SHA')
+    # One release, one log policy: a job that missed GIPNY_RELEASE_LOGS would
+    # otherwise ship silent binaries next to logging ones.
+    if len({manifest.get('developer_log', False) for manifest in manifests}) != 1:
+        raise ValueError('builds disagree on the developer log')
     indexed[source['archive']['name']] = source['archive']
     remaining = dict(indexed)
     for path in sorted(directory.rglob('*')):
