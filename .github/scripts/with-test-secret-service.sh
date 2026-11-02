@@ -36,6 +36,25 @@ dbus-run-session -- bash -euo pipefail -c '
     exit "$status"
   }
   trap stop_daemon EXIT
+  # The unlocked daemon must own org.freedesktop.secrets before the first
+  # client call: otherwise D-Bus activates a second, locked daemon without a
+  # login collection, and secret-tool fails on a prompt that has no display.
+  owner=
+  for _ in $(seq 1 100); do
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+      cat "$GIPNY_CI_SECRET_STATE/daemon.log" >&2
+      exit 1
+    fi
+    owner=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+      org.freedesktop.DBus.GetConnectionUnixProcessID string:org.freedesktop.secrets 2>/dev/null \
+      | awk "/uint32/ {print \$2}") || true
+    [ -z "$owner" ] || break
+    sleep 0.2
+  done
+  if [ "$owner" != "$daemon_pid" ]; then
+    echo "Secret Service is not owned by the unlocked test daemon (owner: ${owner:-none})" >&2
+    exit 1
+  fi
   # Native Secret Service registration/read/write must work before spending
   # time bootstrapping I2P. These are public probe bytes, not app credentials.
   printf "%s" synthetic-provider-probe | timeout 20s secret-tool store \
