@@ -3,7 +3,9 @@
 Two Chrome data directories own independent OPFS profiles and WASM routers.
 CDP calls the production worker RPC; no test bridge ships in the application.
 Only public assertions/timings enter artifacts, never passwords, configuration,
-private browser directories or CDP/network dumps.
+private browser directories or CDP/network dumps. A failure also keeps file
+part counters and each core's own scrubbed action log (local ids, sizes and
+states; no text, names, keys or addresses).
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
@@ -145,6 +147,10 @@ def files_complete(cdp, message_id):
     return bool(progress) and all(item['status'] == 'complete' for item in progress)
 
 
+def file_progress(cdp, message_id):
+    return [[item['status'], item['done'], item['total']] for item in rpc(cdp, 'files_progress', messageId=message_id)]
+
+
 def create_ui(cdp, profile, password):
     # Exercise the shipped auth form and Store/API adapter as well as RPC.
     values = json.dumps([profile, profile, password, password])
@@ -199,6 +205,7 @@ def main():
     cap_file.chmod(0o600)
     receipt = dict(transport=transport, turn_relay_tested=False, stage='starting', physical_phone=False, independent_browser_profiles=2, assertions=[])
     browsers, sockets, logs, clients = [], [], [], []
+    watched = {}
     forwarder = server = None
     started = time.monotonic()
     try:
@@ -260,10 +267,12 @@ def main():
             # A file-only introduction must retain its offer before Bob accepts,
             # without downloading the file or prematurely reporting delivery.
             introduction = evaluate(alice, '(async()=>{const data=new Uint8Array(262151).fill(73);return __coreCall("send_message",{contactId:' + str(alice_contact) + ',body:"",browserFiles:[new File([data],"introduction.bin")],ttlSecs:null,replyTo:null})})()')
+            watched['introduction sender'] = (alice, introduction)
             wait_for(lambda: any(c['sign_pk'] == alice_card['sign_pk'] and c['request'] == 'incoming' for c in rpc(bob, 'list_contacts')), 150, 'incoming contact request with a file')
             bob_contact = next(c['id'] for c in rpc(bob, 'list_contacts') if c['sign_pk'] == alice_card['sign_pk'])
             wait_for(lambda: any(row['body'] == '' for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'file-only introduction retained')
             received_intro = next(row['id'] for row in rpc(bob, 'list_messages', contactId=bob_contact) if row['body'] == '')
+            watched['introduction receiver'] = (bob, received_intro)
             # The UI-facing status of an offer held until acceptance is
             # 'waiting' (the internal transfer state is 'offered').
             if rpc(bob, 'list_attachments', messageId=received_intro) or not any(item['status'] == 'waiting' for item in rpc(bob, 'files_progress', messageId=received_intro)):
@@ -294,7 +303,17 @@ def main():
             large_id = evaluate(bob, '(async()=>{const data=new Uint8Array(' + str(large_size) + ');for(let i=0;i<data.length;i++)data[i]=i%251;return __coreCall("send_message",{contactId:' + str(bob_contact) + ',body:"multipart fixture",browserFiles:[new File([data],"fixture.bin")],ttlSecs:null,replyTo:null})})()')
             wait_for(lambda: any(row['body'] == 'multipart fixture' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 150, 'multipart offer delivered')
             incoming_large = next(row for row in rpc(alice, 'list_messages', contactId=alice_contact) if row['body'] == 'multipart fixture')['id']
-            wait_for(lambda: len(rpc(alice, 'list_attachments', messageId=incoming_large)) == 1, 300, 'multipart file verified and saved')
+            watched['large sender'], watched['large receiver'] = (bob, large_id), (alice, incoming_large)
+            # Live throughput varies widely on CI: sample how far the parts got.
+            samples = receipt['large_file_samples'] = []
+            def large_saved():
+                elapsed = time.monotonic() - sampled_from
+                if elapsed >= 20 * len(samples):
+                    samples.append([round(elapsed)] + [file_progress(*watched[side]) for side in ('large sender', 'large receiver')])
+                    print('MESSENGER_PROGRESS large file', json.dumps(samples[-1]), flush=True)
+                return len(rpc(alice, 'list_attachments', messageId=incoming_large)) == 1
+            sampled_from = time.monotonic()
+            wait_for(large_saved, 300, 'multipart file verified and saved')
             large_attachment = rpc(alice, 'list_attachments', messageId=incoming_large)[0]
             expected_digest = hashlib.sha256(bytes(i % 251 for i in range(large_size))).hexdigest()
             actual_digest = evaluate(alice, '(async()=>{const text=await __coreCall("load_attachment",{attachmentId:' + str(large_attachment['id']) + '});const bytes=Uint8Array.from(atob(text),c=>c.charCodeAt(0));return [...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map(b=>b.toString(16).padStart(2,"0")).join("")})()')
@@ -407,12 +426,22 @@ def main():
         # plaintext, credentials or protocol/network dumps.
         receipt['transport_failures'] = []
         receipt['network_metrics'] = []
-        for client in clients:
+        for name, client in zip(('alice', 'bob'), clients):
             try:
                 receipt['transport_failures'].append(evaluate(client, 'globalThis.__coreFailures || []'))
                 receipt['network_metrics'].append(rpc(client, 'browser_diagnostics'))
             except Exception:
                 receipt['transport_failures'].append(['diagnostics unavailable'])
+            try:
+                (output / f'core-{name}.log').write_text(rpc(client, 'read_debug_log'))
+            except Exception:
+                pass
+        receipt['file_progress'] = {}
+        for label, (client, message_id) in watched.items():
+            try:
+                receipt['file_progress'][label] = file_progress(client, message_id)
+            except Exception:
+                receipt['file_progress'][label] = 'unavailable'
         raise
     finally:
         for socket in sockets:

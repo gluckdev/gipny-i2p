@@ -250,9 +250,11 @@ jobs:
             ${{ runner.temp }}/browser-messenger/receipt.json
             ${{ runner.temp }}/browser-messenger/forwarder.log
             ${{ runner.temp }}/browser-messenger/chrome-*.log
+            ${{ runner.temp }}/browser-messenger/core-*.log
             ${{ runner.temp }}/browser-messenger-webrtc/receipt.json
             ${{ runner.temp }}/browser-messenger-webrtc/forwarder.log
             ${{ runner.temp }}/browser-messenger-webrtc/chrome-*.log
+            ${{ runner.temp }}/browser-messenger-webrtc/core-*.log
           if-no-files-found: warn
           retention-days: 5
       - name: Keep loadable browser module
