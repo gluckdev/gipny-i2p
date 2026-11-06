@@ -3,6 +3,7 @@ import {
   encode_client_frame, decode_client_frame, encode_relay_frame, decode_relay_frame,
 } from '../../../browser-router/pkg/gipny_browser_router.js';
 import { hex, unhex, type PublicIdentity } from './model';
+import { answerWithin } from './deadline';
 
 type ClientFrame = 'Ping' | { AuthV2: { sign_pk: number[]; signature: number[] } }
   | { GetBundle: { pk: number[] } } | { Send: { to: number[]; blob: number[] } }
@@ -101,13 +102,25 @@ export class BrowserRelay {
     if (this.closed) { stream.close(); stream.free(); throw new Error('Router is locked'); }
     this.streams.add(stream);
     try {
-      const challenge = await this.readRelay(stream);
-      if (typeof challenge !== 'object' || !('Challenge' in challenge) || challenge.Challenge.length !== 32) throw new Error('Relay did not challenge');
-      const signature = this.engine.sign_auth(address, new Uint8Array(challenge.Challenge));
-      await this.writeClient(stream, { AuthV2: { sign_pk: unhex(this.identity.sign_pk), signature: [...signature] } });
-      if (await this.readRelay(stream) !== 'AuthOk') throw new Error('Relay authentication failed');
+      await answerWithin((async () => {
+        const challenge = await this.readRelay(stream);
+        if (typeof challenge !== 'object' || !('Challenge' in challenge) || challenge.Challenge.length !== 32) throw new Error('Relay did not challenge');
+        const signature = this.engine.sign_auth(address, new Uint8Array(challenge.Challenge));
+        await this.writeClient(stream, { AuthV2: { sign_pk: unhex(this.identity.sign_pk), signature: [...signature] } });
+        if (await this.readRelay(stream) !== 'AuthOk') throw new Error('Relay authentication failed');
+      })());
       return stream;
     } catch (error) { this.release(stream); throw error; }
+  }
+  /** One request and its answer; a stream that fails or stays silent is closed. */
+  private async exchange<T>(address: string, run: (stream: BrowserStream) => Promise<T>): Promise<T> {
+    const stream = await this.authenticated(address);
+    let ok = false;
+    try {
+      const value = await answerWithin(run(stream));
+      ok = true;
+      return value;
+    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
   }
   private reuse(address: string, stream: BrowserStream): void {
     if (this.closed || this.idle.length >= 8 || this.idle.filter(entry => entry.address === address).length >= 4) { this.release(stream); return; }
@@ -118,33 +131,24 @@ export class BrowserRelay {
     this.idle.push({ address, stream, timer });
   }
   async bundle(address: string, peer: string): Promise<Uint8Array> {
-    const stream = await this.authenticated(address);
-    let ok = false;
-    try {
+    return this.exchange(address, async stream => {
       await this.writeClient(stream, { GetBundle: { pk: unhex(peer) } });
       const frame = await this.readRelay(stream);
       if (typeof frame !== 'object' || !('Bundle' in frame) || hex(frame.Bundle.pk) !== peer || !frame.Bundle.bundle) throw new Error('Peer bundle is unavailable');
-      ok = true;
       return new Uint8Array(frame.Bundle.bundle);
-    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
+    });
   }
   async ping(address: string): Promise<void> {
-    const stream = await this.authenticated(address);
-    let ok = false;
-    try {
+    return this.exchange(address, async stream => {
       await this.writeClient(stream, 'Ping');
       if (await this.readRelay(stream) !== 'Pong') throw new Error('Relay did not answer ping');
-      ok = true;
-    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
+    });
   }
   async deposit(address: string, peer: string, blob: Uint8Array): Promise<void> {
-    const stream = await this.authenticated(address);
-    let ok = false;
-    try {
+    return this.exchange(address, async stream => {
       await this.writeClient(stream, { Send: { to: unhex(peer), blob: Array.from(blob) } });
       const frame = await this.readRelay(stream);
       if (typeof frame !== 'object' || !('Deposited' in frame)) throw new Error('Relay did not acknowledge deposit');
-      ok = true;
-    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
+    });
   }
 }

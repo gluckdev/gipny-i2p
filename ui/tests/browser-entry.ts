@@ -13,6 +13,7 @@ export {
   OUTBOX_LIMIT, RECEIPT_RESERVE, SEALED_PART_LIMIT, RESEND_TTL_MS,
 } from '../src/browser-core/model';
 export { scrubLog } from '../src/browser-core/log';
+export { answerWithin, RELAY_ANSWER_MS } from '../src/browser-core/deadline';
 export { deletionRuns } from '../src/deletion-notices';
 export { ProfileSelect } from '../src/profile';
 export { AuthBooting } from '../src/auth';

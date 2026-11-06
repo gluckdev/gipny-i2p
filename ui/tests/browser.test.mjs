@@ -634,6 +634,13 @@ test('a letter being sent is not picked twice and does not stall its peer', () =
   assert.ok(!ui.dueLetters(f.state, later).some(item => item.peer === a && item.blob === null));
 });
 
+test('a silent relay stream is given up well before the transport timeouts', async () => {
+  assert.ok(ui.RELAY_ANSWER_MS <= 60_000, 'shorter than write (60 s) plus read (120 s)');
+  assert.equal(await ui.answerWithin(Promise.resolve('Deposited'), 50), 'Deposited');
+  await assert.rejects(ui.answerWithin(new Promise(() => {}), 20), /did not answer in time/);
+  await assert.rejects(ui.answerWithin(Promise.reject(new Error('closed')), 50), /closed/);
+});
+
 test('one offline or blocked recipient does not hold the others; silent transfers fail', async () => {
   const [a, b, c] = ['0a'.repeat(32), '0b'.repeat(32), '0c'.repeat(32)];
   const f = outgoingFixture(40, [a, b, c]);

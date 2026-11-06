@@ -335,7 +335,9 @@ def main():
             if any(row['body'] == 'held while blocked' for row in rpc(bob, 'list_messages', contactId=bob_contact)):
                 raise RuntimeError('blocked incoming contact entered history')
             rpc(bob, 'update_contact', id=bob_contact, name='Alice', trust=1)
-            wait_for(lambda: any(row['id'] == held and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), 120, 'unblocked exact ciphertext retry')
+            # The blocked mailbox answered Deposited and dropped the letter, so
+            # Alice encrypts it again only after resendDelay(0) = 120 s.
+            wait_for(lambda: any(row['id'] == held and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), 300, 'unblocked exact ciphertext retry')
             receipt['assertions'].append('blocked contacts cannot send or enter history; unblocking resumes exact ciphertext delivery')
             rpc(alice, 'change_passphrase', **{'old': password_a, 'new': password_new})
             # Stop Alice's whole worker: this discards WASM memory and sockets.
@@ -389,6 +391,10 @@ def main():
                   if(requests.length!==1 || !/\/__gipny-public-netdb\/v1\/[0-9a-f]{64}$/i.test(new URL(requests[0].url).pathname)) return false;
                   if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return false;
                   peers=true;
+                } else if(key==='gipny-public-netdb-live-v1') {
+                  // Optional until the router first saves what it learned.
+                  if(requests.length!==1 || new URL(requests[0].url).pathname!=='/__gipny-public-netdb/live/v1') return false;
+                  if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return false;
                 } else if(!key.startsWith('gipny-shell-')) return false;
                 else if(requests.some(request=>/browser-config|snapshot|vault|attachments/.test(new URL(request.url).pathname))) return false;
               }

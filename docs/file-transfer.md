@@ -70,7 +70,10 @@ multipart-байты принимаются после согласия. Веб-
 В браузере до четырёх сетевых операций выполняются параллельно; исправные
 соединения к релею переиспользуются. Медленное соединение занимает только своё
 место: освободившееся сразу получает следующее письмо, поэтому подтверждения и
-новые части не ждут самой долгой отправки. Служебные подтверждения имеют приоритет.
+новые части не ждут самой долгой отправки. Релей, молчащий 60 секунд после
+открытия потока, считается мёртвым: поток закрывается, письмо уходит повтором по
+новому, не дожидаясь транспортных таймаутов записи и чтения (60 + 120 секунд).
+Служебные подтверждения имеют приоритет.
 Шифрование и фиксация состояния ratchet остаются последовательными.
 Это не переключение на прямой IP-транспорт: части по-прежнему идут через I2P.
 
@@ -196,8 +199,10 @@ the retained offer and sends the content acknowledgement.
 The browser overlaps at most four network operations, reuses authenticated relay
 streams and prioritizes controls while keeping ratchet commits sequential. A slow
 stream holds only its own slot: a freed slot takes the next letter at once, so
-receipts and further parts never wait for the slowest send. File parts continue
-through I2P.
+receipts and further parts never wait for the slowest send. A relay silent for
+60 s after the stream opened is treated as dead: the stream is closed and the
+letter goes again on a fresh one instead of waiting out the transport write and
+read timeouts (60 + 120 s). File parts continue through I2P.
 
 Browser retransmission and queue bounds:
 
