@@ -21,6 +21,8 @@ use zeroize::Zeroizing;
 pub mod fast;
 pub mod diagnostics;
 pub mod process_security;
+#[cfg(gipny_upnp)]
+mod upnp;
 
 mod ffi {
     use super::*;
@@ -54,6 +56,7 @@ mod ffi {
         ) -> *mut GipnyDest;
         pub fn gipny_dest_destroy(dest: *mut GipnyDest);
         pub fn gipny_dest_is_ready(dest: *const GipnyDest) -> c_int;
+        pub fn gipny_dest_tunnel_directions(dest: *const GipnyDest) -> c_int;
         pub fn gipny_dest_address(dest: *const GipnyDest) -> *mut c_char;
         pub fn gipny_dest_connect(dest: *mut GipnyDest, remote: *const c_char, port: u16, cb: StreamCb, ctx: *mut c_void) -> c_int;
         pub fn gipny_dest_accept(dest: *mut GipnyDest, cb: StreamCb, ctx: *mut c_void);
@@ -159,6 +162,8 @@ impl Router {
         }
         let log = diagnostics::router_log_path(log_path).map(|p| CString::new(p).unwrap_or_default());
         unsafe { ffi::gipny_router_start(log.as_ref().map_or(std::ptr::null(), |l| l.as_ptr())) };
+        #[cfg(gipny_upnp)]
+        upnp::start(datadir.map(std::path::Path::new));
         Ok(Self { _private: () })
     }
 
@@ -177,10 +182,9 @@ impl Router {
 
     /// How many router infos the netDb holds, or `None` if the router is not up.
     ///
-    /// Empty is the answer to "is plain IP getting us anywhere": an empty netDb
-    /// means no reseed came through, so the network was never reached. Which is
-    /// what a Yggdrasil fallback is decided on — not on a guess, and not by
-    /// reading the log.
+    /// Empty is the answer to "is the network reachable at all": an empty netDb
+    /// means no reseed came through, so the network was never reached — known
+    /// from the router itself, not guessed or read from a log.
     pub fn netdb_routers(&self) -> Option<usize> {
         let n = unsafe { ffi::gipny_router_netdb_routers() };
         (n >= 0).then_some(n as usize)
@@ -314,6 +318,12 @@ impl Destination {
 
     pub fn is_ready(&self) -> bool {
         unsafe { ffi::gipny_dest_is_ready(self.raw) != 0 }
+    }
+
+    /// Actual pool state. Directions may build in parallel or become unavailable.
+    pub fn tunnel_directions_ready(&self) -> (bool, bool) {
+        let state = unsafe { ffi::gipny_dest_tunnel_directions(self.raw) };
+        (state & 1 != 0, state & 2 != 0)
     }
 
     /// Until the LeaseSet is up and there are outbound tunnels. i2pd has no

@@ -16,6 +16,9 @@ LOCAL_STATIC_LIBRARIES := \
 	boost_program_options \
 	crypto \
 	ssl
+# Rust calls miniupnpc through this shared object. C++ does not reference its
+# symbols, so ordinary static-library linking would silently omit the library.
+LOCAL_WHOLE_STATIC_LIBRARIES := miniupnpc
 LOCAL_LDLIBS := -lz
 
 LOCAL_SRC_FILES := \
@@ -26,6 +29,14 @@ LOCAL_SRC_FILES := \
 	$(wildcard $(LIB_SRC_PATH)/*.cpp)
 
 include $(BUILD_SHARED_LIBRARY)
+
+LOCAL_PATH := $(call my-dir)
+include $(CLEAR_VARS)
+LOCAL_MODULE := miniupnpc
+LOCAL_SRC_FILES := $(wildcard $(MINIUPNPC_PATH)/src/*.c)
+LOCAL_C_INCLUDES := $(MINIUPNPC_PATH)/include $(MINIUPNPC_PATH)/src $(SHIM_PATH)
+LOCAL_CFLAGS := -DMINIUPNP_STATICLIB -DMINIUPNPC_SET_SOCKET_TIMEOUT -DMINIUPNPC_CONNECT_TIMEOUT_IN_MS=2000 -DMINIUPNPC_GET_SRC_ADDR -D_BSD_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600
+include $(BUILD_STATIC_LIBRARY)
 
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)

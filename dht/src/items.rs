@@ -581,8 +581,6 @@ mod tests {
         assert_eq!(open_bundle_record(&alice.sign_pk(), &alice.dh_pk(), &[item.value], NOW).unwrap(), b"prekeys");
     }
 
-    fn one(values: Vec<Vec<u8>>) -> Vec<Vec<u8>> { values }
-
     fn claimed(values: &[Vec<u8>]) -> AliasState {
         alias_state("moon", values, NOW)
     }

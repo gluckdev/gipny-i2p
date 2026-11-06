@@ -373,74 +373,31 @@ class MainView extends View {
     // settings and lock, are not on screen at all.
     this.sub(store.caffeine, (on) => main.classList.toggle('caffeine', !!on), true);
 
-    // Relay status. Nothing in the UI used to show it at all, so a client that
-    // could not send looked identical to one that could — and with no relay
-    // configured it cannot send to anyone. The banner says which of the two it
-    // is and where to fix it.
-    const banner = h('div', { class: 'relay-banner' });
-    const paintBanner = (): void => {
-      const unconfigured = store.relayUnconfigured.get();
-      const connected = store.relayConnected.get();
+    // Ambient connection feedback never takes pointer events or focus.
+    const networkText = h('span', { class: 'network-ambient-label', role: 'status', 'aria-live': 'polite' });
+    const network = h('div', { class: 'network-ambient hidden' },
+      h('div', { class: 'network-ambient-lines', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
+      networkText);
+    const paintNetwork = (): void => {
       const info = store.relayInfo.get();
-      // Our own relay is read over a pipe, so "connected" says nothing about
-      // whether anyone else can reach it. Two failed checks in a row from the
-      // network (one can be a LeaseSet still spreading) and we say so.
-      const unreachable = (info?.dial?.unreachable_checks ?? 0) >= 2;
-      banner.classList.toggle('hidden', connected && !unreachable);
-      banner.classList.toggle('warn', unconfigured || (connected && unreachable));
-      if (connected) {
-        // Our relay is up, but the relay network is what makes us findable and
-        // able to look people up. If we reached nobody, the banner says so:
-        // "connected" here means our own relay answered, not that we are in
-        // the network, and the difference is what someone is actually stuck on.
-        const dht = store.dhtReached.get();
-        if (dht === false) {
-          const peers = store.dhtPeers.get();
-          banner.replaceChildren(
-            peers > 0
-              ? tr('app.your_relay_is_running_but_no_i2p_network')
-              : tr('app.your_relay_is_running_but_we_have_not')
-          );
-        } else if (unreachable) {
-          const why = info?.dial?.unreachable_error ? ` (${info.dial.unreachable_error.slice(0, 120)})` : '';
-          banner.replaceChildren(
-            tr('app.your_relay_cannot_currently_be_reached_from_i2p', { p0: (info?.dial?.unreachable_checks ?? 0), p1: (why) })
-          );
-        }
-        return;
-      }
-      const builtin = info?.mode === 'builtin';
-      banner.classList.toggle('warn', unconfigured || (builtin && info?.hosted.state === 'failed'));
-      // When the relay itself is up and we still cannot reach it, say what is
-      // actually happening. A line that never changes ("нет связи с релеем")
-      // is indistinguishable from a frozen app, and on a phone there is no
-      // log to open — so the attempt count and the transport's own words go
-      // on screen.
-      const dial = info?.dial;
-      const attempts = dial?.attempts ?? 0;
-      const why = dial?.last_error ? ` (${dial.last_error.slice(0, 120)})` : '';
-      const stuck = attempts > 0
-        ? tr('app.cannot_connect_to_your_relay_attempt_messages_are', { p0: (attempts), p1: (why) })
-        : tr('app.no_relay_connection_messages_will_be_sent_when');
-      banner.replaceChildren(
-        unconfigured
-          ? tr('app.external_relay_selected_without_an_address_sending_is')
-          : builtin && info?.hosted.state === 'failed'
-            ? tr('app.built_in_relay_failed_to_start_retrying_messages', { p0: (info.hosted.reason ? ` (${info.hosted.reason.slice(0, 120)})` : '') })
-            : builtin && info?.hosted.state !== 'ready'
-              ? tr('app.built_in_relay_is_starting_usually_1_2')
-              : stuck
-      );
+      const discovery = store.bootSteps.get().find(step => step.id === 'dht')?.state;
+      const failed = info?.hosted.state === 'failed' || (info?.dial?.unreachable_checks ?? 0) >= 2 || discovery === 'failed';
+      const ready = store.relayConnected.get() && (store.dhtReached.get() === true || discovery === 'skipped' || store.contacts.get().length === 0) && !failed;
+      const offline = store.relayUnconfigured.get();
+      network.classList.toggle('hidden', ready);
+      network.classList.toggle('is-retrying', failed);
+      network.classList.toggle('is-offline', offline);
+      networkText.textContent = tr(offline ? 'app.network_offline' : failed ? 'app.network_retry' : 'app.network_connecting');
     };
-    this.subs.push(store.relayConnected.subscribe(paintBanner, true));
-    this.subs.push(store.relayUnconfigured.subscribe(paintBanner, true));
-    this.subs.push(store.relayInfo.subscribe(paintBanner, false));
-    this.subs.push(store.dhtReached.subscribe(paintBanner, false));
-    this.subs.push(store.dhtPeers.subscribe(paintBanner, false));
-    main.insertBefore(banner, main.firstChild);
+    this.sub(store.relayConnected, paintNetwork);
+    this.sub(store.relayUnconfigured, paintNetwork);
+    this.sub(store.relayInfo, paintNetwork);
+    this.sub(store.dhtReached, paintNetwork);
+    this.sub(store.bootSteps, paintNetwork);
+    this.sub(store.contacts, paintNetwork);
+    main.appendChild(network);
 
-    // Agent mode is intentionally visible in the same always-on strip as relay
-    // health. A remote shell should never be easy to forget or accidentally
+    // Agent mode remains an explicit, actionable safety control. A remote shell should never be easy to forget or accidentally
     // leave enabled after the user returns to an ordinary chat.
     const agentBanner = h('div', { class: 'agent-banner hidden' });
     const paintAgentBanner = (): void => {

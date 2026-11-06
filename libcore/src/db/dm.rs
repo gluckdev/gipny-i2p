@@ -3,6 +3,8 @@ use super::*;
 use serde::{Deserialize, Serialize};
 
 include!("../dm_reference.rs");
+include!("deletion_notice.rs");
+include!("peer_events.rs");
 
 #[derive(Clone, Debug)]
 pub struct DmDelete {
@@ -30,10 +32,12 @@ struct DmBackup {
     files: Vec<(i64,i64,[u8;16])>,
     blocked: Vec<(i64,[u8;16])>,
     counters: Vec<(i64,i64)>,
+    notices: Vec<(i64,Option<i64>,Option<i64>,bool,bool)>,
+    notice_pending: Vec<(i64,DmReference)>,
 }
 
 impl Db {
-    pub const DM_BACKUP_KEY: &'static str = "dm_state_v1";
+    pub const DM_BACKUP_KEY: &'static str = "dm_state_v2";
 
     /// Metadata only: no body, filename, file key or ciphertext is duplicated.
     /// The existing encrypted backup's settings vector carries this sidecar.
@@ -54,7 +58,11 @@ impl Db {
                 .query_map([],|r|Ok((r.get(0)?,blob16(r.get(1)?)?)))?.collect_rows()?;
             let counters=conn.prepare("SELECT contact_id,next_seq FROM dm_counters")?
                 .query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect_rows()?;
-            bincode::serialize(&DmBackup {contacts,messages,tombstones,pending,files,blocked,counters}).map_err(|_|DbError::State)
+            let notices=conn.prepare("SELECT message_id,local_at,remote_at,local_seen,remote_seen FROM dm_deletion_notices")?
+                .query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?.collect_rows()?;
+            let notice_pending=conn.prepare("SELECT contact_id,author,origin,sent_at FROM dm_notice_outbox")?
+                .query_map([],|r|Ok((r.get(0)?,DmReference {author:blob32(r.get(1)?)?,origin:r.get::<_,i64>(2)? as u64,sent_at:r.get(3)?})))?.collect_rows()?;
+            bincode::serialize(&DmBackup {contacts,messages,tombstones,pending,files,blocked,counters,notices,notice_pending}).map_err(|_|DbError::State)
         })
     }
 
@@ -82,7 +90,7 @@ impl Db {
                 tx.execute("UPDATE messages SET contact_id=?2,sender_sign_pk=?3,origin_msg_id=?4,dm_seq=?5
                     WHERE id=?1 AND group_id IS NULL",params![id,contact(old)?,author,origin,sequence])?;
                 if deleted_at.is_some() {
-                    delete_dm_tx(tx,*id,false)?;
+                    delete_dm_tx(tx,*id,false,deleted_at.unwrap())?;
                     tx.execute("UPDATE messages SET deleted_at=?2 WHERE id=?1",params![id,deleted_at])?;
                 }
             }
@@ -106,6 +114,15 @@ impl Db {
             for (old,next) in &backup.counters {
                 tx.execute("INSERT INTO dm_counters(contact_id,next_seq) VALUES(?1,?2)
                     ON CONFLICT(contact_id) DO UPDATE SET next_seq=MAX(next_seq,excluded.next_seq)",params![contact(old)?,next])?;
+            }
+            for (id,local,remote,local_seen,remote_seen) in &backup.notices {
+                tx.execute("INSERT OR REPLACE INTO dm_deletion_notices(message_id,local_at,remote_at,local_seen,remote_seen)
+                    VALUES(?1,?2,?3,?4,?5)",params![id,local,remote,local_seen,remote_seen])?;
+            }
+            for (old,reference) in &backup.notice_pending {
+                validate_reference(reference)?;
+                tx.execute("INSERT OR IGNORE INTO dm_notice_outbox(contact_id,author,origin,sent_at) VALUES(?1,?2,?3,?4)",
+                    params![contact(old)?,reference.author.as_slice(),reference.origin as i64,reference.sent_at])?;
             }
             tx.execute("DELETE FROM settings WHERE k=?1",params![Self::DM_BACKUP_KEY])?;
             Ok(())
@@ -138,6 +155,17 @@ impl Db {
                 attempts INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(contact_id, author, origin, sent_at)
             );
+            CREATE TABLE IF NOT EXISTS dm_deletion_notices (
+                message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                local_at INTEGER, remote_at INTEGER,
+                local_seen INTEGER NOT NULL DEFAULT 0, remote_seen INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS dm_notice_outbox (
+                contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                author BLOB NOT NULL, origin INTEGER NOT NULL, sent_at INTEGER NOT NULL,
+                last_attempt_at INTEGER, attempts INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(contact_id,author,origin,sent_at)
+            );
             CREATE TABLE IF NOT EXISTS dm_message_files (
                 message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
                 contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -158,6 +186,18 @@ impl Db {
                 PRIMARY KEY(contact_id,file_id)
             );
             CREATE TABLE IF NOT EXISTS deleted_file_cleanup (path TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS file_completed (
+                file_id BLOB NOT NULL, contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                attachment_id INTEGER NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+                total INTEGER NOT NULL, PRIMARY KEY(file_id,contact_id)
+            );
+            CREATE TABLE IF NOT EXISTS file_failures (
+                file_id BLOB NOT NULL, contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                name TEXT NOT NULL, size INTEGER NOT NULL, status TEXT NOT NULL,
+                PRIMARY KEY(file_id,contact_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_dm_tombstone_message ON dm_tombstones(message_id);
             CREATE TRIGGER IF NOT EXISTS tr_dm_number AFTER INSERT ON messages
                 WHEN NEW.contact_id IS NOT NULL AND NEW.group_id IS NULL
@@ -188,6 +228,7 @@ impl Db {
                 WHERE contact_id IS NOT NULL AND group_id IS NULL GROUP BY contact_id
                 ON CONFLICT(contact_id) DO UPDATE SET next_seq = MAX(next_seq, excluded.next_seq);
         ")?;
+        Self::migrate_peer_events(conn)?;
         Ok(())
     }
 
@@ -237,19 +278,24 @@ impl Db {
 
     pub fn delete_dm_message(&self, message_id: i64) -> Result<DmDelete> {
         let _files = self.file_mutations.lock().map_err(|_| DbError::State)?;
-        self.with_tx(|tx| delete_dm_tx(tx, message_id, true))
+        self.with_tx(|tx| delete_dm_tx(tx, message_id, true, now_ms()))
     }
 
     /// Only invoke for an E2E-authenticated, non-group control from contact_id.
     pub fn receive_dm_delete(&self, contact_id: i64, reference: &DmReference) -> Result<DmDelete> {
-        self.apply_dm_delete(contact_id,reference,false)
+        self.receive_dm_delete_at(contact_id,reference,now_ms())
+    }
+
+    pub fn receive_dm_delete_at(&self, contact_id:i64, reference:&DmReference, at:i64) -> Result<DmDelete> {
+        if !(0..=8_640_000_000_000_000).contains(&at) { return Err(DbError::State); }
+        self.apply_dm_delete(contact_id,reference,false,at)
     }
 
     pub fn expire_incoming_dm(&self, contact_id:i64, reference:&DmReference) -> Result<DmDelete> {
-        self.apply_dm_delete(contact_id,reference,true)
+        self.apply_dm_delete(contact_id,reference,true,now_ms())
     }
 
-    fn apply_dm_delete(&self, contact_id: i64, reference: &DmReference, queue:bool) -> Result<DmDelete> {
+    fn apply_dm_delete(&self, contact_id: i64, reference: &DmReference, queue:bool, at:i64) -> Result<DmDelete> {
         validate_reference(reference)?;
         let _files = self.file_mutations.lock().map_err(|_| DbError::State)?;
         self.with_tx(|tx| {
@@ -272,7 +318,7 @@ impl Db {
                 }
                 None => return Err(DbError::State),
             };
-            delete_dm_tx(tx, id, queue)
+            delete_dm_tx(tx, id, queue, at)
         })
     }
 
@@ -318,7 +364,7 @@ impl Db {
             let ids = tx.prepare(&format!("SELECT id FROM messages WHERE contact_id IS NOT NULL
                 AND group_id IS NULL AND deleted_at IS NULL AND ({condition}) ORDER BY id"))?
                 .query_map(params![argument], |r| r.get::<_,i64>(0))?.collect_rows()?;
-            ids.into_iter().map(|id| delete_dm_tx(tx,id,true)).collect()
+            ids.into_iter().map(|id| delete_dm_tx(tx,id,true,now_ms())).collect()
         })
     }
 
@@ -381,6 +427,9 @@ impl Db {
         reference:Option<&DmReference>, attachment_dir:&Path, before_write:impl FnOnce()) -> Result<Option<DmFileUpdate>> {
         let _files=self.file_mutations.lock().map_err(|_| DbError::State)?;
         self.with_tx(|tx| {
+            let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM contacts
+                WHERE id=?1 AND trust!=2 AND request_state!=1)",params![contact_id],|r|r.get(0))?;
+            if !allowed {return Ok(None);}
             let blocked:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM dm_deleted_files WHERE contact_id=?1 AND file_id=?2)",
                 params![contact_id,chunk.file_id.as_slice()],|r|r.get(0))?;
             if blocked { return Ok(None); }
@@ -395,6 +444,19 @@ impl Db {
                     SELECT 1 FROM messages WHERE id=file_in.message_id AND deleted_at IS NULL)",
                 params![chunk.file_id.as_slice(),contact_id],Self::map_file_in).optional()?;
             let Some(fin)=fin else {
+                let complete:Option<(i64,i64,u32)>=tx.query_row("SELECT f.message_id,f.attachment_id,f.total FROM file_completed f
+                    JOIN messages m ON m.id=f.message_id WHERE f.file_id=?1 AND f.contact_id=?2 AND m.deleted_at IS NULL",
+                    params![chunk.file_id.as_slice(),contact_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+                if let Some((message_id,attachment_id,total))=complete {
+                    if let Some(reference)=reference {
+                        if dm_reference_conn(tx,message_id)? != *reference {return Err(DbError::State);}
+                    }
+                    if chunk.index>=total {return Err(DbError::State);}
+                    return Ok(Some(DmFileUpdate {message_id,attachment_id:Some(attachment_id),total,
+                        received:crate::files::Received::completed(total),fresh:false,broken:false}));
+                }
+                let staged:u32=tx.query_row("SELECT COUNT(*) FROM file_early WHERE contact_id=?1",params![contact_id],|r|r.get(0))?;
+                if staged>=64 || chunk.index>=crate::files::MAX_PARTS {return Ok(None);}
                 if chunk.data.len() <= crate::files::CHUNK_SIZE as usize {
                     if let Some(reference)=reference {
                         tx.execute("INSERT OR IGNORE INTO dm_early_files(contact_id,author,origin,sent_at,file_id)
@@ -405,6 +467,9 @@ impl Db {
                 }
                 return Ok(None);
             };
+            if let Some(reference)=reference {
+                if dm_reference_conn(tx,fin.message_id)? != *reference {return Err(DbError::State);}
+            }
             let total=crate::files::chunk_count(fin.size,fin.chunk_size);
             let mut received=crate::files::Received::from_bits(fin.bits.clone(),total);
             let path=attachment_dir.join(&fin.path);
@@ -422,11 +487,18 @@ impl Db {
             let mut broken=false;
             if received.complete() {
                 broken=crate::files::open_to(&path,&cipher,fin.size,fin.chunk_size,&mut std::io::sink())? != fin.sha256;
-                if broken { let _=fs::remove_file(path); }
+                if broken {
+                    tx.execute("INSERT OR REPLACE INTO file_failures(file_id,contact_id,message_id,name,size,status) VALUES(?1,?2,?3,?4,?5,'failed')",
+                        params![fin.file_id.as_slice(),contact_id,fin.message_id,fin.name,fin.size as i64])?;
+                    tx.execute("INSERT OR IGNORE INTO dm_deleted_files(contact_id,file_id) VALUES(?1,?2)",params![contact_id,fin.file_id.as_slice()])?;
+                    tx.execute("INSERT OR IGNORE INTO deleted_file_cleanup(path) VALUES(?1)",params![fin.path])?;
+                }
                 else {
                     tx.execute("INSERT INTO attachments(message_id,name,size,key,path,chunk_size) VALUES(?1,?2,?3,?4,?5,?6)",
                         params![fin.message_id,fin.name,fin.size as i64,fin.key,fin.path,fin.chunk_size])?;
                     attachment_id=Some(tx.last_insert_rowid());
+                    tx.execute("INSERT INTO file_completed(file_id,contact_id,message_id,attachment_id,total) VALUES(?1,?2,?3,?4,?5)",
+                        params![fin.file_id.as_slice(),contact_id,fin.message_id,attachment_id,total])?;
                 }
                 tx.execute("DELETE FROM file_in WHERE file_id=?1 AND contact_id=?2",params![fin.file_id.as_slice(),contact_id])?;
             }
@@ -456,15 +528,20 @@ fn dm_reference_conn(conn: &Connection, id:i64) -> Result<DmReference> {
     Ok(DmReference { author:row.0.try_into().map_err(|_| DbError::State)?, origin:origin as u64, sent_at:row.2 })
 }
 
-fn delete_dm_tx(tx: &Transaction<'_>, id:i64, queue:bool) -> Result<DmDelete> {
+fn delete_dm_tx(tx: &Transaction<'_>, id:i64, queue:bool, at:i64) -> Result<DmDelete> {
     let reference = dm_reference_conn(tx,id)?;
     let (contact_id, already): (i64,Option<i64>) = tx.query_row("SELECT contact_id,deleted_at FROM messages WHERE id=?1", params![id], |r| Ok((r.get(0)?,r.get(1)?)))?;
     let mut files:Vec<[u8;16]> = tx.prepare("SELECT file_id FROM file_out WHERE message_id=?1
         UNION SELECT file_id FROM file_in WHERE message_id=?1
+        UNION SELECT file_id FROM file_completed WHERE message_id=?1
+        UNION SELECT file_id FROM file_failures WHERE message_id=?1
         UNION SELECT file_id FROM dm_message_files WHERE message_id=?1
         UNION SELECT file_id FROM dm_early_files WHERE contact_id=?2 AND author=?3 AND origin=?4 AND sent_at=?5")?
         .query_map(params![id,contact_id,reference.author.as_slice(),reference.origin as i64,reference.sent_at], |r| blob16(r.get(0)?))?.collect_rows()?;
     files.sort(); files.dedup();
+    tx.execute("INSERT INTO dm_deletion_notices(message_id,local_at,remote_at) VALUES(?1,?2,?3)
+        ON CONFLICT(message_id) DO UPDATE SET local_at=COALESCE(local_at,excluded.local_at),remote_at=COALESCE(remote_at,excluded.remote_at)",
+        params![id,if queue {Some(at)} else {None},if queue {None} else {Some(at)}])?;
     if already.is_some() { return Ok(DmDelete { message_id:id,contact_id,changed:false,files }); }
     let now=now_ms();
     tx.execute("INSERT OR IGNORE INTO dm_tombstones(contact_id,author,origin,sent_at,message_id,created_at)
@@ -480,11 +557,14 @@ fn delete_dm_tx(tx: &Transaction<'_>, id:i64, queue:bool) -> Result<DmDelete> {
     }
     tx.execute("DELETE FROM file_out WHERE message_id=?1",params![id])?;
     tx.execute("DELETE FROM file_in WHERE message_id=?1",params![id])?;
+    tx.execute("DELETE FROM file_failures WHERE message_id=?1",params![id])?;
     tx.execute("DELETE FROM dm_early_files WHERE contact_id=?1 AND author=?2 AND origin=?3 AND sent_at=?4",
         params![contact_id,reference.author.as_slice(),reference.origin as i64,reference.sent_at])?;
     tx.execute("DELETE FROM attachments WHERE message_id=?1",params![id])?;
     tx.execute("DELETE FROM pending_outbound WHERE msg_id=?1",params![id])?;
     tx.execute("DELETE FROM pinned_messages WHERE message_id=?1",params![id])?;
+    tx.execute("DELETE FROM dm_peer_events WHERE message_id=?1",params![id])?;
+    tx.execute("DELETE FROM dm_peer_event_outbox WHERE message_id=?1",params![id])?;
     tx.execute("DELETE FROM settings WHERE k IN ('buttons_'||?1,'sound_'||?1,'console_'||?1,'console_pending_'||?1)",params![id])?;
     tx.execute("UPDATE messages SET body='',read=1,sent=1,expires_at=NULL,reply_to=NULL,deleted_at=?2 WHERE id=?1",params![id,now])?;
     Ok(DmDelete { message_id:id,contact_id,changed:true,files })

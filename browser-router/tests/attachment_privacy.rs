@@ -11,11 +11,13 @@ fn shared_image_cleaner_removes_appended_metadata_before_sending() {
         .unwrap();
     let original = image.clone();
     image.extend_from_slice(b"GPS and private author metadata");
-    let result: serde_json::Value =
-        serde_json::from_str(&clean_attachment("IMG_20261101.png", &image).unwrap()).unwrap();
-    let data: Vec<u8> = serde_json::from_value(result["data"].clone()).unwrap();
-    assert_eq!(data, original);
-    assert!(result["name"].as_str().unwrap().starts_with("photo_"));
+    let mut result = clean_attachment("IMG_20261101.png", &image).unwrap();
+    assert!(result.name().starts_with("photo_"));
+    assert_eq!(result.take_data().to_vec(), original);
+    assert!(
+        result.take_data().to_vec().is_empty(),
+        "bytes cross to JS once"
+    );
 }
 
 #[wasm_bindgen_test]

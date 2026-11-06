@@ -29,6 +29,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(gipny_upnp)");
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let i2pd = env::var_os("I2P_EMBED_I2PD_SRC")
         .map(PathBuf::from)
@@ -51,6 +52,7 @@ fn main() {
         cc::Build::new().include(manifest.join("shim")).file(manifest.join("shim/stub.c")).compile("gipny_i2pd_stub");
         return;
     }
+    println!("cargo:rustc-cfg=gipny_upnp");
     // Android: libi2pd and the shim are one shared library built by ndk-build
     // (android-router/jni, with the NDK's own boost and OpenSSL), packaged
     // beside ours; link against it instead of compiling anything here.
@@ -80,6 +82,7 @@ fn main() {
     }
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    build_miniupnpc(&manifest, &target_os);
     let mut build = cc::Build::new();
     build
         .cpp(true)
@@ -166,6 +169,28 @@ fn main() {
         }
         _ => {}
     }
+}
+
+fn build_miniupnpc(manifest: &std::path::Path, target_os: &str) {
+    let source = manifest.join("vendor/miniupnpc");
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!("cargo:rerun-if-changed=miniupnpc-source.json");
+    let mut build = cc::Build::new();
+    build.include(source.join("include")).include(source.join("src")).include(manifest.join("shim"))
+        .define("MINIUPNP_STATICLIB", None).define("MINIUPNPC_SET_SOCKET_TIMEOUT", None)
+        .define("MINIUPNPC_CONNECT_TIMEOUT_IN_MS", "2000").warnings(false);
+    for file in ["igd_desc_parse", "miniupnpc", "minixml", "minisoap", "minissdpc", "miniwget", "upnpcommands", "upnpdev", "upnpreplyparse", "upnperrors", "connecthostport", "portlistingparse", "receivedata", "addr_is_reserved"] {
+        build.file(source.join("src").join(format!("{file}.c")));
+    }
+    if target_os == "windows" {
+        build.define("_WIN32_WINNT", "0x0A00").define("WIN32_LEAN_AND_MEAN", None)
+            .define("_CRT_SECURE_NO_WARNINGS", None).define("_WINSOCK_DEPRECATED_NO_WARNINGS", None);
+    } else {
+        build.define("MINIUPNPC_GET_SRC_ADDR", None).define("_BSD_SOURCE", None).define("_DEFAULT_SOURCE", None);
+        if target_os == "macos" { build.define("_DARWIN_C_SOURCE", None); }
+        else { build.define("_XOPEN_SOURCE", "600"); }
+    }
+    build.compile("gipny_miniupnpc");
 }
 
 /// i2pd's reseed and family certificates, compiled into the binary: the

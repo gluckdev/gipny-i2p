@@ -59,14 +59,17 @@ pub struct WirePayload {
 /// empty controls. They never acknowledge an operation they do not support.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct WireDm {
-    /// 0: content/chunk identity, 1: delete, 2: deletion ACK.
+    /// 0: content/chunk identity, 1: delete, 2: deletion ACK,
+    /// 3: the other participant explicitly pressed OK, 4: receipt for that OK,
+    /// 5/6/7: the other participant copied the text / saved an attachment /
+    /// pressed a screenshot shortcut on this message, 8/9/10: receipts for 5/6/7.
     pub kind: u8,
     pub reference: crate::db::DmReference,
 }
 
 impl WireDm {
     pub fn is_control_payload(&self, payload:&WirePayload) -> bool {
-        matches!(self.kind,1|2) && payload.group.is_none() && payload.origin_msg_id==0
+        matches!(self.kind,1..=10) && payload.group.is_none() && payload.origin_msg_id==0
             && payload.body.is_empty() && payload.attachments.is_empty() && payload.files.is_empty()
             && payload.file_chunk.is_none() && payload.file_ack.is_none() && payload.file_cancel.is_none()
             && payload.edit_of.is_none() && payload.wipe.is_none() && payload.console.is_none()

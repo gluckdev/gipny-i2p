@@ -1,10 +1,12 @@
 # ui — интерфейс gipny на TypeScript без фреймворка
 
-Всё, что видит пользователь. Одна кодовая база для десктопа, Android, loopback WebUI и автономного браузерного режима. Нативный бэкенд вызывается через Tauri (`invoke`), события приходят как `core_event`; браузерный адаптер сохраняет тот же API. Сборка — Vite (`npm run build` = `tsc --noEmit && vite build`).
+## Русский
+
+Всё, что видит пользователь. Одна кодовая база для десктопа, Android и автономного браузерного режима. Нативный бэкенд вызывается через Tauri (`invoke`), события приходят как `core_event`; браузерный адаптер сохраняет тот же API. Сборка — Vite (`npm run build` = `tsc --noEmit && vite build`).
 
 ## Точки входа и браузерное ядро
 
-`index.html` / `src/main.ts` обслуживают Tauri и loopback `gipny-web`.
+`index.html` / `src/main.ts` обслуживают Tauri.
 `browser.html` / `src/browser-main.ts` запускают автономный PWA без нативного
 процесса. Worker содержит Rust WASM `BrowserEngine` и client-only I2P-роутер.
 
@@ -29,6 +31,8 @@
 - **Транзакции и долговечность:** Запись в хранилище OPFS защищена Web Locks. Новые данные
   и продвижение ключей сессии Double Ratchet сбрасываются на диск (`flush`) **до** отправки
   сообщения в сеть. Входящие сообщения и квитанции фиксируются в OPFS **до** подтверждения их получения.
+  Шифротекст, принятый релеем получателя, повторно не отправляется: потерянная часть файла
+  или неподтверждённое сообщение шифруются заново (`files.ts`, `model.ts`).
 - **Двухслотовая схема и смена пароля:** Профиль хранится в двух чередующихся зашифрованных слотах.
   Операция смены пароля (`change_password`) последовательно записывает и flush-ит новый wrapper в оба слота,
   исключая откат к старому паролю через восстановительный слот.
@@ -37,16 +41,18 @@
 - **Очистка метаданных:** Реализована на чистом коде в WASM для JPEG, PNG и WebP.
   Очистка документов PDF в браузере отклоняется из соображений приватности; пользователь может
   явно отключить фильтр метаданных в настройках для отправки исходного файла.
-- **Ограничения по объёму:** Инлайн-вложения ограничены 1 МиБ на сообщение; общий размер профиля
-  в OPFS ограничен 16 МиБ.
+- **Ограничения по объёму:** Файлы передаются частями до 2 ГиБ и хранятся отдельно в OPFS;
+  резерв для профиля и оболочки — 64 МиБ. Метаданные профиля ограничены 16 МиБ,
+  очистка изображений и предпросмотр в памяти — 32 МиБ.
 - **Жизненный цикл вкладки:** События `pagehide` и `freeze` немедленно завершают работу воркера,
   сбрасывают доступное UI состояние и блокируют интерфейс; возвращение на страницу через `pageshow`/`resume`
   вызывает перезагрузку окна для повторного ввода учетных данных. Это не гарантия физического стирания RAM браузера.
 - **Кеширование Service Worker:** Оффлайн-кеш Service Worker содержит только неизменяемый
-  статический шелл приложения (HTML, JS, CSS, WASM). Сетевая конфигурация `browser-config.json`,
-  снапшоты NetDb и данные пользователей строго исключены из кеша.
-- **Неподдерживаемые функции в браузере:** Консоль выполнения команд агента, передача крупных
-  многосегментных файлов, нативный узел DHT, транзитные туннели и duress-пароли требуют будущей реализации.
+  статический шелл приложения (HTML, JS, CSS, WASM). Отдельные кэши приложения
+  хранят публичную конфигурацию и проверенный netDb для запуска при отказе хостинга.
+  Подписи/свежесть узлов перепроверяются; профили и переписка не кэшируются там.
+- **Неподдерживаемые функции в браузере:** Консоль выполнения команд агента, экспорт/импорт профиля,
+  нативный узел DHT, транзитные туннели и duress-пароли требуют будущей реализации.
 
 Подробное руководство по развёртыванию веб-версии: [docs/browser-messenger.md](../docs/browser-messenger.md).
 
@@ -62,7 +68,7 @@
 | `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
 | `src/view.ts` | Основа: `View` (подписки `sub`), `h()` для создания элементов, `avatar()` (инициалы и цвет от ключа), форматтеры (`fmtTime`, `fmtAgo`, `short`, `humanSize`, `trustLabel`…), `logo` |
 | `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal` |
-| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootLog`/`bootCanEnter` в `state.ts` — данные |
+| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные |
 | `src/profile.ts` | Выбор профиля `ProfileSelect` |
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
@@ -71,7 +77,7 @@
 | `src/qr-scan.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением |
 | `src/group.ts` | `GroupModal`, `CreateGroupModal` |
 | `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
-| `src/settings.ts` | `SettingsModal`: релей, роутер, приватность вложений, автообновление, агент, бэкап, отладочный лог |
+| `src/settings.ts` | `SettingsModal`: доступные настройки приватности, профиля и платформы; Relay/Relay network/APK/log удалены |
 | `src/about.ts` | `AboutModal` — «О gipny и безопасности». Каждое утверждение должно совпадать с кодом (ссылки в комментарии к классу) |
 | `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `avatarNames()` |
 | `src/icons.ts` | SVG-иконки `icon(name)` и иллюстрации (`emptyChatArt`, `networkArt`) |
@@ -152,3 +158,43 @@ UI поддерживает необязательные поля `totp_enabled`
 `PeerHistorySaving: { contact_id, save_history }`. Пока backend не передал
 выбор, статус остаётся неизвестным. Текущий протокол не передаёт это поле;
 срок жизни последнего сообщения не используется вместо выбора собеседника.
+
+## English
+
+This framework-free TypeScript UI is shared by desktop, Android and the standalone
+WASM client. `index.html`/`main.ts` target Tauri; `browser.html`/`browser-main.ts`
+start the PWA and its dedicated Rust/WASM Worker. There is no local gateway or
+phone-pairing requirement. `api.ts` owns commands/DTOs, `state.ts` handles events,
+and the tables above map views, helpers, mocks and browser modules.
+
+The browser backend stores encrypted profile records in two OPFS slots under a
+Web Lock. Files stream separately, up to 2 GiB within origin quota with a 64 MiB
+reserve; profile metadata is limited to 16 MiB. Previews and JPEG/PNG/WebP cleaning
+use a 32 MiB memory bound; PDF cleaning is native-only. Download streams use a
+one-use Service Worker URL without plaintext caching. A ciphertext accepted by
+the peer's relay is never resent; lost parts are encrypted again, with an
+8-part window per recipient and bounded replay records. Password changes rewrite
+both profile slots. Passkeys require actual WebAuthn PRF, not credential IDs or
+signatures used as encryption keys.
+
+Profile selection/create uses local leather/walnut/brass styling. Unlock/loading
+keep the green terminal style; chats open on local relay readiness while further
+network connections animate in the background. Settings omit Relay, Relay network,
+APK info and log controls. Stable diagnostics are absent (a stable build deletes
+an earlier prerelease's stored log copy); prerelease diagnostics are always
+enabled and keep an unencrypted IndexedDB copy of the last session that names
+contact numbers only. File cards show separate waiting/sending/receiving/failure
+states; green motion signifies sending. Consecutive deletion notices group by
+participant and require the other participant's explicit green OK to disappear.
+
+The shell cache contains public app assets. Separate bounded caches hold public
+transport settings and revalidated netDb, never conversation/profile data. The
+bridge, I2P and fresh peer records are still needed for online use. Locking,
+pagehide and freeze terminate the Worker; browser memory does not offer native
+mlock/mprotect or guaranteed physical erasure. Browser profile export, native
+agent commands, DHT and duress are not implemented.
+
+Keep RU/EN dictionaries, DTOs, events, Store handlers and mocks consistent across
+clients. App builds, UI execution and real-browser scenarios run in GitHub Actions;
+new source changes still need their own results. See the [browser guide](../docs/browser-messenger.md)
+and [file-transfer contract](../docs/file-transfer.md) for operating limits.

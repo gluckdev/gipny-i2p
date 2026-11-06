@@ -60,7 +60,7 @@ def main(router_mode=False):
         if not prepared:
             raise RuntimeError('fresh netDb did not provide verified public NTCP2 peers before deadline')
         limits = ["--max-connections", "24", "--session-seconds", "600", "--idle-seconds", "120", "--max-bytes", str(32 * 1024 * 1024)] if router_mode else []
-        forwarder = subprocess.Popen([sys.executable, "forwarder/server.py",
+        forwarder = subprocess.Popen([str(root / "forwarder/target/release/gipny-forwarder"),
             "--host", "127.0.0.1:18767", "--origin", "http://127.0.0.1:18769",
             "--capability-file", str(capability_file), "--candidates", str(candidates),
             "--allow-fixture-loopback", *limits], cwd=root, stdout=forwarder_log, stderr=subprocess.STDOUT)

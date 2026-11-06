@@ -161,12 +161,24 @@ async function ready(language) {
 
 async function snapshot(width, language) {
   const name = `${width}-${language}`;
+  const choices = await cdp.evaluate(`(() => {
+    const select = document.querySelector('#download-system');
+    if (!select) return null;
+    const initial = select.value, button = document.querySelector('#download-primary');
+    const checks = [...select.options].filter(option => option.value).map(option => {
+      select.value = option.value; select.dispatchEvent(new Event('change'));
+      return !button.hidden && button.href === option.value && button.textContent.includes(option.dataset.platform);
+    });
+    select.value = initial || [...select.options].find(option => option.value)?.value || '';
+    select.dispatchEvent(new Event('change'));
+    return { count: checks.length, passed: checks.every(Boolean) };
+  })()`);
+  if (choices) assert(choices.count > 0 && choices.passed, `${name}: native package selection is broken`);
   const data = await cdp.evaluate(`(() => {
     const visible = node => { const rect = node.getBoundingClientRect(); const css = getComputedStyle(node);
       return rect.width > 0 && rect.height > 0 && css.visibility !== 'hidden' && css.display !== 'none'; };
-    const links = [...document.querySelectorAll('a[data-download-asset]')].map(node => ({
-      name: node.dataset.downloadAsset, href: node.href, visible: visible(node),
-      advanced: !!node.closest('details:not([open])'), text: node.textContent.trim() }));
+    const links = [...document.querySelectorAll('#download-primary:not([hidden])')].map(node => ({
+      href: node.href, visible: visible(node), text: node.textContent.trim() }));
     return { language: document.documentElement.lang, title: document.title, url: location.href,
       viewport: innerWidth, scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
       fonts: document.fonts.status, brokenImages: [...document.images].filter(image => !image.complete || image.naturalWidth === 0).length,
@@ -184,6 +196,7 @@ async function snapshot(width, language) {
   assert.equal(data.language, language);
   assert(data.hero && data.fonts === 'loaded' && data.brokenImages === 0, `${name}: content/fonts/images are not ready`);
   assert(data.scrollWidth <= data.viewport + 1, `${name}: horizontal overflow (${data.scrollWidth} > ${data.viewport})`);
+  assert.equal(data.downloads.length, choices ? 1 : 0, `${name}: expected one selected download`);
   const normalMotion = await cdp.evaluate(pathMotion);
   report.checks.at(-1).normalMotion = normalMotion;
   assert(normalMotion.some(item => item.name !== 'none' && item.duration.split(',').some(value => parseFloat(value) > 0)
@@ -192,7 +205,7 @@ async function snapshot(width, language) {
     const url = new URL(link.href);
     assert(url.protocol === 'https:' && url.hostname === 'github.com'
       && /^\/gluckdev\/gipny-i2p\/releases\/download\//.test(url.pathname), `${name}: invalid download URL ${link.href}`);
-    if (!link.advanced) assert(link.visible && link.text, `${name}: hidden/empty download link ${link.name}`);
+    assert(link.visible && link.text, `${name}: hidden/empty download link`);
   }
   await cdp.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   await cdp.evaluate('new Promise(yes => requestAnimationFrame(() => requestAnimationFrame(yes)))');

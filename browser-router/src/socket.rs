@@ -20,16 +20,20 @@ use futures::{
     task::AtomicWaker,
     Sink, SinkExt, Stream, StreamExt,
 };
-use wasm_bindgen::{closure::Closure, JsCast};
+use wasm_bindgen::{closure::Closure, prelude::wasm_bindgen, JsCast, JsValue};
 use web_sys::{CloseEvent, Event, MessageEvent, WebSocket};
 
 pub const MAX_FRAME: usize = 64 * 1024;
 const QUEUE_DEPTH: usize = 8;
+/// Bytes handed to JS but not yet written: a write waits above
+/// MAX_BUFFERED - MAX_FRAME, so at most 128 KiB is outstanding. The WebRTC
+/// adapter (`ui/src/browser-core/rtc-transport.ts`, SEND_BUDGET) enforces the
+/// same byte budget in both the Worker and the Window.
 const MAX_BUFFERED: u32 = 2 * MAX_FRAME as u32;
 const IO_TIMEOUT_MS: f64 = 30_000.0;
 
 thread_local! {
-    static FORWARDER: RefCell<Option<(url::Url, Option<String>)>> = const { RefCell::new(None) };
+    static FORWARDER: RefCell<Option<(url::Url, Option<String>, bool)>> = const { RefCell::new(None) };
 }
 
 /// Authenticate through a WebSocket subprotocol, keeping the capability out of
@@ -47,7 +51,7 @@ pub fn configure_forwarder_authenticated(
     }
     configure_forwarder(endpoint)?;
     FORWARDER.with(|value| {
-        if let Some((_, protocol)) = value.borrow_mut().as_mut() {
+        if let Some((_, protocol, _)) = value.borrow_mut().as_mut() {
             *protocol = Some(format!("gipny.ntcp2.v1.{capability}"));
         }
     });
@@ -66,8 +70,107 @@ pub fn configure_forwarder(endpoint: &str) -> Result<(), &'static str> {
     if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
         return Err("credentials and fragments are not supported");
     }
-    FORWARDER.with(|value| *value.borrow_mut() = Some((url, None)));
+    FORWARDER.with(|value| *value.borrow_mut() = Some((url, None, false)));
     Ok(())
+}
+
+// Called only from the wasm-only `network` module.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn configure_transport(
+    endpoint: &str,
+    capability: &str,
+    transport: &str,
+) -> Result<(), &'static str> {
+    if !matches!(transport, "wss" | "webrtc") {
+        return Err("unknown browser transport");
+    }
+    configure_forwarder_authenticated(endpoint, capability)?;
+    FORWARDER.with(|value| {
+        if let Some((_, _, rtc)) = value.borrow_mut().as_mut() {
+            *rtc = transport == "webrtc";
+        }
+    });
+    Ok(())
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[derive(Clone)]
+    type RtcSocket;
+    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = gipnyRtcSocket)]
+    fn create_rtc_socket(endpoint: &str, protocol: &str) -> Result<RtcSocket, JsValue>;
+    #[wasm_bindgen(method, setter, js_name = onopen)]
+    fn rtc_onopen(this: &RtcSocket, value: Option<&js_sys::Function>);
+    #[wasm_bindgen(method, setter, js_name = onmessage)]
+    fn rtc_onmessage(this: &RtcSocket, value: Option<&js_sys::Function>);
+    #[wasm_bindgen(method, setter, js_name = onerror)]
+    fn rtc_onerror(this: &RtcSocket, value: Option<&js_sys::Function>);
+    #[wasm_bindgen(method, setter, js_name = onclose)]
+    fn rtc_onclose(this: &RtcSocket, value: Option<&js_sys::Function>);
+    #[wasm_bindgen(method, getter, js_name = bufferedAmount)]
+    fn rtc_buffered(this: &RtcSocket) -> u32;
+    #[wasm_bindgen(method, getter, js_name = protocol)]
+    fn rtc_protocol(this: &RtcSocket) -> String;
+    #[wasm_bindgen(method, catch, js_name = send)]
+    fn rtc_send(this: &RtcSocket, bytes: &[u8]) -> Result<(), JsValue>;
+    #[wasm_bindgen(method, catch, js_name = close)]
+    fn rtc_close(this: &RtcSocket) -> Result<(), JsValue>;
+}
+
+#[derive(Clone)]
+enum TransportSocket {
+    Ws(WebSocket),
+    Rtc(RtcSocket),
+}
+impl TransportSocket {
+    fn set_onopen(&self, f: Option<&js_sys::Function>) {
+        match self {
+            Self::Ws(s) => s.set_onopen(f),
+            Self::Rtc(s) => s.rtc_onopen(f),
+        }
+    }
+    fn set_onmessage(&self, f: Option<&js_sys::Function>) {
+        match self {
+            Self::Ws(s) => s.set_onmessage(f),
+            Self::Rtc(s) => s.rtc_onmessage(f),
+        }
+    }
+    fn set_onerror(&self, f: Option<&js_sys::Function>) {
+        match self {
+            Self::Ws(s) => s.set_onerror(f),
+            Self::Rtc(s) => s.rtc_onerror(f),
+        }
+    }
+    fn set_onclose(&self, f: Option<&js_sys::Function>) {
+        match self {
+            Self::Ws(s) => s.set_onclose(f),
+            Self::Rtc(s) => s.rtc_onclose(f),
+        }
+    }
+    fn close(&self) -> Result<(), JsValue> {
+        match self {
+            Self::Ws(s) => s.close(),
+            Self::Rtc(s) => s.rtc_close(),
+        }
+    }
+    fn protocol(&self) -> String {
+        match self {
+            Self::Ws(s) => s.protocol(),
+            Self::Rtc(s) => s.rtc_protocol(),
+        }
+    }
+    fn buffered_amount(&self) -> u32 {
+        match self {
+            Self::Ws(s) => s.buffered_amount(),
+            Self::Rtc(s) => s.rtc_buffered(),
+        }
+    }
+    fn send_with_u8_array(&self, bytes: &[u8]) -> Result<(), JsValue> {
+        match self {
+            Self::Ws(s) => s.send_with_u8_array(bytes),
+            Self::Rtc(s) => s.rtc_send(bytes),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -188,7 +291,10 @@ impl TcpStream for BrowserTcpStream {
         // oneshot receiver, not a WebSocket, Closure, Rc or JS timer.
         let endpoint = FORWARDER.with(|v| v.borrow().clone());
         let (reply, result) = oneshot::channel();
-        if let Some((mut endpoint, protocol)) = endpoint {
+        // The forwarder refuses these ports too; failing locally avoids a
+        // pointless bridge request for a RouterInfo that names a service port.
+        let endpoint = endpoint.filter(|_| crate::ntcp2::is_allowed_ntcp2_port(address.port()));
+        if let Some((mut endpoint, protocol, rtc)) = endpoint {
             // Do not allow a configured query to shadow the selected target.
             let query: Vec<_> = endpoint
                 .query_pairs()
@@ -200,7 +306,7 @@ impl TcpStream for BrowserTcpStream {
                 .query_pairs_mut()
                 .extend_pairs(query)
                 .append_pair("target", &address.to_string());
-            wasm_bindgen_futures::spawn_local(run_socket(endpoint.into(), protocol, reply));
+            crate::tasks::spawn_local(run_socket(endpoint.into(), protocol, rtc, reply));
         }
         async move { result.await.ok().flatten() }
     }
@@ -382,7 +488,7 @@ impl futures::io::AsyncWrite for BrowserTcpStream {
 /// Drop always detaches handlers, breaking JS/Rust reference cycles, and closes
 /// the socket. This also handles cancellation during open or failed handoff.
 struct SocketGuard {
-    ws: WebSocket,
+    ws: TransportSocket,
     _open: Closure<dyn FnMut(Event)>,
     _message: Closure<dyn FnMut(MessageEvent)>,
     _error: Closure<dyn FnMut(Event)>,
@@ -404,16 +510,23 @@ impl Drop for SocketGuard {
 async fn run_socket(
     endpoint: String,
     protocol: Option<String>,
+    rtc: bool,
     reply: oneshot::Sender<Option<BrowserTcpStream>>,
 ) {
-    let socket = match protocol.as_deref() {
-        Some(protocol) => WebSocket::new_with_str(&endpoint, protocol),
-        None => WebSocket::new(&endpoint),
+    let socket = match (rtc, protocol.as_deref()) {
+        (true, Some(protocol)) => create_rtc_socket(&endpoint, protocol).map(TransportSocket::Rtc),
+        (true, None) => return,
+        (false, Some(protocol)) => {
+            WebSocket::new_with_str(&endpoint, protocol).map(TransportSocket::Ws)
+        }
+        (false, None) => WebSocket::new(&endpoint).map(TransportSocket::Ws),
     };
     let Ok(ws) = socket else {
         return;
     };
-    ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+    if let TransportSocket::Ws(ref socket) = ws {
+        socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
+    }
     let terminal = Arc::new(Terminal::default());
     let (incoming_tx, incoming) = mpsc::channel(QUEUE_DEPTH);
     let incoming_tx = Rc::new(RefCell::new(incoming_tx));
@@ -499,7 +612,7 @@ async fn run_socket(
         terminal: terminal.clone(),
     };
 
-    let timeout = gloo_timers::future::TimeoutFuture::new(10_000);
+    let timeout = gloo_timers::future::TimeoutFuture::new(if rtc { 30_000 } else { 10_000 });
     if !matches!(
         futures::future::select(opened_rx, timeout).await,
         futures::future::Either::Left((Ok(true), _))

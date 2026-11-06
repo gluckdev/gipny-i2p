@@ -46,7 +46,7 @@ export type ViewKind = 'profile-select' | 'auth-create' | 'auth-unlock' | 'auth-
  * address, then the tunnels that address needs — but tunnels was listed before
  * the address, so the screen showed the long wait under the wrong label and
  * declared it done the moment the router was up. */
-export const BOOT_STEPS = ['vault', 'router', 'session', 'tunnels', 'core', 'relay', 'dht'] as const;
+export const BOOT_STEPS = ['vault', 'router', 'session', 'inbound', 'outbound', 'tunnels', 'core', 'relay', 'dht'] as const;
 export type BootStepId = typeof BOOT_STEPS[number];
 
 export interface BootStep {
@@ -99,7 +99,6 @@ export class Store {
   /** Live progress of opening a profile; the unlock screen renders it. */
   bootSteps = new Signal<BootStep[]>(freshBootSteps());
   /** The technical lines behind those steps, newest last. */
-  bootLog = new Signal<string[]>([]);
   /** «Кофеин»: the app is pinned to this chat and the screen is kept awake
    * until someone types the profile passphrase. */
   caffeine = new Signal<ChatTarget | null>(null);
@@ -127,7 +126,7 @@ export class Store {
   private static readonly VISIBLE_MESSAGES = 2000;
   private profileEpoch = 0;
   private contentLocked = false;
-  private deletedMessages = new Map<number, { deleted_at: number; pending: boolean }>();
+  private deletedMessages = new Map<number, { deleted_at: number; pending: boolean; deletion_notice?: Message['deletion_notice'] }>();
   /** Messages whose files in parts moved on, and how far (for the bar). */
   fileProgress = new Signal<Map<number, { done: number; total: number; incoming: boolean }>>(new Map());
   /** Bumped when a file in parts becomes an attachment of message `mid`. */
@@ -286,7 +285,8 @@ export class Store {
     if (!deleted && message.deleted_at == null) return message;
     return { ...message, body: '', buttons: null, console: null, reply_to: null, read: true,
       expires_at: null, deleted_at: deleted?.deleted_at ?? message.deleted_at,
-      delete_pending: deleted?.pending ?? message.delete_pending };
+      delete_pending: deleted?.pending ?? message.delete_pending,
+      deletion_notice: message.deletion_notice === null ? null : deleted ? deleted.deletion_notice : message.deletion_notice };
   }
 
   private clearAudio(): void {
@@ -521,7 +521,6 @@ export class Store {
     this.stopPrewarmWatch();
     this.currentProfile.set(profile);
     this.bootSteps.set(freshBootSteps());
-    this.bootLog.set([]);
     this.bootCanEnter.set(false);
     this.bootStage.set('unlocking');
     this.bootStartedAt = Date.now();
@@ -554,20 +553,13 @@ export class Store {
 
   private onBootStatus(status: BootStatus): void {
     const now = Date.now();
-    this.bootLog.update((lines) => [...lines, `${((now - this.bootStartedAt) / 1000).toFixed(1)}s  ${status.detail}`].slice(-200));
     const idx = BOOT_STEPS.indexOf(status.stage);
     if (idx < 0) return;
     this.bootSteps.update((steps) => steps.map((step, i) => {
-      if (i < idx && (step.state === 'idle' || step.state === 'active')) {
-        // A step we never saw finish is over by the time a later one speaks.
-        // Only 'idle' and 'active' are back-filled: a step that already
-        // reported 'skipped' is terminal and says something different from a
-        // step that did the work, so it has to survive the later steps that
-        // come after it.
-        return { ...step, state: 'done' as const, ms: step.ms || (step.startedAt ? now - step.startedAt : 0) };
-      }
+      // Pools can complete in either order. A later event never proves that
+      // an earlier stage completed; only an explicit backend signal does.
       if (i !== idx) return step;
-      const startedAt = step.startedAt || this.bootStepStartedAt || now;
+      const startedAt = step.startedAt || now;
       const ms = status.state === 'active' ? step.ms : now - startedAt;
       return { ...step, state: status.state, startedAt, ms, detail: status.detail };
     }));
@@ -903,7 +895,6 @@ export class Store {
     void this.stopCaffeine();
     this.bootResuming.set(false);
     this.bootSteps.set(freshBootSteps());
-    this.bootLog.set([]);
     this.bootCanEnter.set(false);
     this.updateAvailable.set(null);
     this.updateProgress.set(null);
@@ -1385,6 +1376,18 @@ export class Store {
         this.nativeNotify(prefix, preview);
         this.playNotify(m.notify_sound ?? null);
       }
+    } else if ('PeerEvent' in e) {
+      // Only the open chat holds message rows; another chat reloads them.
+      const { contact_id, message_id, events } = e.PeerEvent;
+      const target: ChatTarget = { kind: 'contact', id: contact_id };
+      if (!sameTarget(this.selectedChat.get(), target) || this.contentLocked) return;
+      const key = targetKey(target);
+      this.messages.update((map) => {
+        const next = new Map(map);
+        next.set(key, (next.get(key) ?? []).map((message) => message.id === message_id && message.deleted_at == null
+          ? { ...message, peer_events: events } : message));
+        return next;
+      });
     } else if ('MessageDeleted' in e) {
       const deleted = e.MessageDeleted;
       const target: ChatTarget = { kind: 'contact', id: deleted.contact_id };
@@ -1397,12 +1400,12 @@ export class Store {
         }).catch(() => {});
         return;
       }
-      this.deletedMessages.set(deleted.message_id, { deleted_at: deleted.deleted_at, pending: deleted.pending });
+      this.deletedMessages.set(deleted.message_id, { deleted_at: deleted.deleted_at, pending: deleted.pending, deletion_notice: deleted.deletion_notice });
       this.messages.update((map) => {
         const next = new Map(map);
         next.set(key, (next.get(key) ?? []).map((message) => message.id === deleted.message_id
-          ? { ...message, body: '', buttons: null, console: null, reply_to: null, read: true,
-            expires_at: null, deleted_at: deleted.deleted_at, delete_pending: deleted.pending }
+          ? { ...message, body: '', buttons: null, console: null, reply_to: null, read: true, peer_events: [],
+            expires_at: null, deleted_at: deleted.deleted_at, delete_pending: deleted.pending, deletion_notice: deleted.deletion_notice }
           : message));
         return next;
       });
@@ -1440,17 +1443,20 @@ export class Store {
       for (const b of bumps) this.bumpChatOrder(b.target, b.ts);
     } else if ('FileProgress' in e) {
       const { message_id, done, total, incoming } = e.FileProgress;
-      if (![...this.messages.get().values()].some((list) => list.some((message) => message.id === message_id))) return;
       if ([...this.messages.get().values()].some((list) => list.some((message) => message.id === message_id && message.deleted_at != null))) return;
-      this.fileProgress.update((m) => new Map(m).set(message_id, { done, total, incoming }));
+      this.fileProgress.update((m) => {
+        const next = new Map(m).set(message_id, { done, total, incoming });
+        while (next.size > Store.VISIBLE_MESSAGES) next.delete(next.keys().next().value!);
+        return next;
+      });
     } else if ('FileReceived' in e) {
       const mid = e.FileReceived.message_id;
-      if (![...this.messages.get().values()].some((list) => list.some((message) => message.id === mid))) return;
       if ([...this.messages.get().values()].some((list) => list.some((message) => message.id === mid && message.deleted_at != null))) return;
       this.fileProgress.update((m) => { const n = new Map(m); n.delete(mid); return n; });
       this.fileArrived.update((v) => ({ mid, n: v.n + 1 }));
     } else if ('FileFailed' in e) {
       const { message_id, reason } = e.FileFailed;
+      this.fileArrived.update(value => ({ mid: message_id, n: value.n + 1 }));
       this.fileProgress.update((m) => { const n = new Map(m); n.delete(message_id); return n; });
       const why = reason === 'not taken' ? tr('state.the_recipient_s_version_does_not_support_chunked')
         : reason === 'cancelled' ? tr('state.transfer_cancelled') : tr('state.the_received_file_was_corrupted');
@@ -1557,6 +1563,7 @@ export class Store {
     } else if ('RelayInfoChanged' in e) {
       const info = e.RelayInfoChanged.info;
       this.relayInfo.set(info);
+      if (info.mode === 'builtin' && info.hosted.state === 'ready') { this.bootNetworkReady = true; this.enterMain(); }
       this.relayUnconfigured.set(info.mode !== 'builtin' && info.external.trim() === '');
     } else if ('DhtJoined' in e) {
       // Zero peers is a fact worth keeping, not a failure to raise: a device on

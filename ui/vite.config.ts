@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
+import { buildDefinitions } from './build-policy';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  define: buildDefinitions(command === 'serve'),
   base: process.env.VITE_BASE || '/',
   clearScreen: false,
   server: { port: 5173, strictPort: true },
@@ -10,4 +12,4 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
-});
+}));

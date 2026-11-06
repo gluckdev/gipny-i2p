@@ -4,6 +4,9 @@ declare module '*gipny_browser_router.js' {
   export function public_network_metrics(): string;
   export default function init(): Promise<unknown>;
   export class BrowserEngine {
+    new_attachment_key(id: string): Uint8Array;
+    seal_attachment_part(id: string, key: Uint8Array, index: number, data: Uint8Array): Uint8Array;
+    open_attachment_part(id: string, key: Uint8Array, index: number, data: Uint8Array): Uint8Array;
     static create(profile: string, pass: string): BrowserEngine;
     static open_password(profile: string, pass: string, a: Uint8Array, b: Uint8Array): BrowserEngine;
     static open_passkey(profile: string, id: Uint8Array, prf: Uint8Array, a: Uint8Array, b: Uint8Array): BrowserEngine;
@@ -49,5 +52,21 @@ declare module '*gipny_browser_router.js' {
   export function encode_relay_frame(value: string): Uint8Array;
   export function decode_relay_frame(value: Uint8Array): string;
   export function contact_qr_svg(text: string): string;
-  export function clean_attachment(name: string, data: Uint8Array): string;
+  /** Cleaned bytes cross once as a Uint8Array (`take_data`), never as JSON. */
+  export function clean_attachment(name: string, data: Uint8Array): CleanedAttachment;
+  export class CleanedAttachment {
+    readonly name: string;
+    take_data(): Uint8Array;
+    free(): void;
+  }
+  /** True for an `EnvelopeBlob::X3dhInit` envelope (needs a lifetime replay record). */
+  export function envelope_is_initial(envelope: Uint8Array): boolean;
+  export function attachment_passes_through(name: string, head: Uint8Array): boolean;
+  export function attachment_passed_name(name: string): string;
+  export class AttachmentHasher {
+    constructor();
+    update(data: Uint8Array): void;
+    finish(): Uint8Array;
+    free(): void;
+  }
 }

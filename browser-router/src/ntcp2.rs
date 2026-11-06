@@ -33,6 +33,88 @@ pub enum ProbeError {
     Timeout,
 }
 
+/// Largest RouterInfo accepted from netDb files, snapshots or allowlists.
+pub const MAX_ROUTER_INFO_BYTES: usize = 16 * 1024;
+/// Public netDb rows per forwarder allowlist. `prepare-netdb` emits at most
+/// this many plus one optional loopback fixture row; the forwarder accepts
+/// exactly [`MAX_TARGET_ROWS`].
+pub const MAX_PUBLIC_TARGETS: usize = 2048;
+pub const MAX_TARGET_ROWS: usize = MAX_PUBLIC_TARGETS + 1;
+
+/// Inclusive TCP port ranges never used as NTCP2 dial targets. A RouterInfo is
+/// self-signed by anyone, so a published `host:port` must not turn the browser
+/// bridge into a TCP relay towards ordinary services. The first group mirrors
+/// Java I2P `TransportUtil.isValidPort` (i2p.i2p master, checked 2026-11-06);
+/// the second adds common unauthenticated / plaintext services. Ports below
+/// 1024 are rejected separately. Java I2P and i2pd pick random NTCP2 ports in
+/// 9151..=30777, so the few blocked ports there cost almost no peers.
+pub const BLOCKED_NTCP2_PORTS: &[(u16, u16)] = &[
+    // Java I2P TransportUtil.isValidPort.
+    (1719, 1720),   // H.323
+    (1900, 1900),   // UPnP SSDP
+    (2049, 2049),   // NFS
+    (2827, 2827),   // I2P BOB
+    (3659, 3659),   // Apple SASL
+    (4045, 4045),   // lockd
+    (4444, 4445),   // I2P HTTP/HTTPS proxies
+    (5060, 5061),   // SIP
+    (6000, 6000),   // X11 / lockd
+    (6665, 6669),   // IRC
+    (6697, 6697),   // IRC over TLS
+    (7070, 7070),   // i2pd web console
+    (7650, 7668),   // standard I2P service range (I2CP, SAM, console)
+    (8080, 8080),   // HTTP / proxies
+    (9001, 9001),   // Tor ORPort
+    (9030, 9030),   // Tor DirPort
+    (9050, 9050),   // Tor SOCKS
+    (9100, 9100),   // network printers
+    (9150, 9150),   // Tor Browser SOCKS
+    (31000, 31000), // Java service wrapper
+    (32000, 32000), // Java service wrapper
+    // gipny additions: services that act on unauthenticated bytes.
+    (1080, 1080),   // SOCKS
+    (1433, 1434),   // Microsoft SQL Server
+    (1521, 1521),   // Oracle
+    (1723, 1723),   // PPTP
+    (1883, 1883),   // MQTT
+    (2181, 2181),   // ZooKeeper
+    (2375, 2376),   // Docker API
+    (2379, 2380),   // etcd
+    (3128, 3128),   // HTTP proxy
+    (3306, 3306),   // MySQL
+    (3389, 3389),   // RDP
+    (4369, 4369),   // Erlang EPMD
+    (4447, 4447),   // i2pd SOCKS
+    (5432, 5432),   // PostgreSQL
+    (5672, 5672),   // AMQP
+    (5900, 5903),   // VNC
+    (5984, 5984),   // CouchDB
+    (5985, 5986),   // WinRM
+    (6379, 6379),   // Redis
+    (6443, 6443),   // Kubernetes API
+    (8118, 8118),   // Privoxy
+    (8332, 8333),   // Bitcoin RPC / P2P
+    (8883, 8883),   // MQTT over TLS
+    (9042, 9042),   // Cassandra
+    (9051, 9051),   // Tor control
+    (9092, 9092),   // Kafka
+    (9151, 9151),   // Tor Browser control
+    (9200, 9200),   // Elasticsearch HTTP
+    (9300, 9300),   // Elasticsearch transport
+    (10250, 10250), // Kubernetes kubelet
+    (11211, 11211), // memcached
+    (27017, 27017), // MongoDB
+];
+
+/// Port policy shared by RouterInfo verification, `prepare-netdb`, the
+/// forwarder's target parser/allowlist and the browser dialer.
+pub fn is_allowed_ntcp2_port(port: u16) -> bool {
+    port >= 1024
+        && !BLOCKED_NTCP2_PORTS
+            .iter()
+            .any(|&(first, last)| (first..=last).contains(&port))
+}
+
 pub struct VerifiedPeer {
     pub router: RouterInfo,
     pub address: SocketAddr,
@@ -42,8 +124,9 @@ pub struct VerifiedPeer {
 
 /// Signature verification precedes use of every target or static key. Published
 /// IPv4 NTCP2 only for this spike; PQ and IPv6 remain separate experiments.
+/// Addresses on ports refused by [`is_allowed_ntcp2_port`] are ignored.
 pub fn verified_peer(bytes: &[u8]) -> Result<VerifiedPeer, ProbeError> {
-    if bytes.len() > 16 * 1024 {
+    if bytes.len() > MAX_ROUTER_INFO_BYTES {
         return Err(ProbeError::RouterInfo);
     }
     let router = RouterInfo::parse::<BrowserRuntime>(bytes).map_err(|_| ProbeError::RouterInfo)?;
@@ -65,7 +148,7 @@ pub fn verified_peer(bytes: &[u8]) -> Result<VerifiedPeer, ProbeError> {
                 iv: Some(iv),
                 socket_address: Some(address),
                 ..
-            } if address.is_ipv4() && address.port() != 0 => {
+            } if address.is_ipv4() && is_allowed_ntcp2_port(address.port()) => {
                 Some((*address, StaticPublicKey::X25519(*key), *iv))
             }
             _ => None,

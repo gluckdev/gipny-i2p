@@ -183,7 +183,7 @@ mockIPC(async (cmd, payload) => {
     };
     case 'list_unreachable_contacts': return scene === 'chat' ? [2] : [];
     case 'get_agent_mode': return agentMaster;
-    case 'get_router_settings': return { transit: 'balanced', yggdrasil: 'auto' };
+    case 'get_router_settings': return { transit: 'balanced', upnp: 'on' };
     case 'update_configured': return false;
     case 'current_version': return '0.4.1';
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };

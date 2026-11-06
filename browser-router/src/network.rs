@@ -25,7 +25,7 @@ use gloo_timers::future::TimeoutFuture;
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    bootstrap, configure_forwarder_authenticated,
+    bootstrap,
     engine::BrowserEngine,
     router::{client_config, verify_no_listener},
     tasks::TaskScope,
@@ -53,6 +53,12 @@ struct ConfigDto {
     snapshot_sha256: String,
     forwarder_url: String,
     capability: String,
+    #[serde(default = "default_transport")]
+    transport: String,
+}
+
+fn default_transport() -> String {
+    "wss".into()
 }
 
 fn validate_config(config_json: &str) -> Result<ConfigDto, String> {
@@ -423,8 +429,12 @@ impl BrowserNetwork {
     ) -> Result<BrowserNetwork, JsValue> {
         let config = validate_config(config_json).map_err(|e| JsValue::from_str(&e))?;
 
-        configure_forwarder_authenticated(&config.forwarder_url, &config.capability)
-            .map_err(JsValue::from_str)?;
+        crate::socket::configure_transport(
+            &config.forwarder_url,
+            &config.capability,
+            &config.transport,
+        )
+        .map_err(JsValue::from_str)?;
 
         let scope = TaskScope::enter().map_err(JsValue::from_str)?;
 
@@ -479,29 +489,70 @@ impl BrowserNetwork {
                 cancel_source_for_router.lock().unwrap().cancel();
             });
 
+            emit_boot(on_event_ref, "session", "done", "Client identity loaded");
+            emit_boot(on_event_ref, "inbound", "active", "Building inbound paths");
+            emit_boot(
+                on_event_ref,
+                "outbound",
+                "active",
+                "Building outbound paths",
+            );
+            let creating = client_handle.create(&identity);
+            futures::pin_mut!(creating);
+            let mut previous = None;
+            let session = loop {
+                // These are router pool gauges, not a fabricated percentage or
+                // a promise that the application destination is ready yet.
+                let metrics = crate::metrics::metrics_snapshot();
+                let directions = (
+                    metrics.gauge("tunnel_inbound_count") > 0,
+                    metrics.gauge("tunnel_outbound_count") > 0,
+                );
+                if previous != Some(directions) {
+                    emit_boot(
+                        on_event_ref,
+                        "inbound",
+                        if directions.0 { "done" } else { "active" },
+                        "Inbound pool state",
+                    );
+                    emit_boot(
+                        on_event_ref,
+                        "outbound",
+                        if directions.1 { "done" } else { "active" },
+                        "Outbound pool state",
+                    );
+                    if directions.0 && directions.1 {
+                        emit_boot(
+                            on_event_ref,
+                            "tunnels",
+                            "active",
+                            "Waiting for the application destination",
+                        );
+                    }
+                    previous = Some(directions);
+                }
+                let tick = TimeoutFuture::new(250);
+                futures::pin_mut!(tick);
+                match select(creating.as_mut(), tick).await {
+                    Either::Left((result, _)) => {
+                        break result.map_err(|e| format!("ClientSession::create failed: {e:?}"))?
+                    }
+                    Either::Right(_) => {}
+                }
+            };
+            // A successful client session requires its own established pool.
+            emit_boot(on_event_ref, "inbound", "done", "Client inbound path ready");
+            emit_boot(
+                on_event_ref,
+                "outbound",
+                "done",
+                "Client outbound path ready",
+            );
             emit_boot(
                 on_event_ref,
                 "tunnels",
-                "active",
-                "Building client exploratory and destination pools",
-            );
-            emit_boot(
-                on_event_ref,
-                "session",
-                "active",
-                "Creating in-process I2P client session",
-            );
-
-            let session = client_handle
-                .create(&identity)
-                .await
-                .map_err(|e| format!("ClientSession::create failed: {e:?}"))?;
-
-            emit_boot(
-                on_event_ref,
-                "session",
                 "done",
-                "Client session established and tunnel pool ready",
+                "Application destination ready",
             );
 
             let dest_b64 = base64_encode(session.destination().serialize());

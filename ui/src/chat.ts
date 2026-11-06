@@ -1,14 +1,15 @@
 import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { downloadBrowserFile, forgetBrowserFiles } from './browser-files';
-import { Api, isTauri, usesBrowserCore, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
-import type { Message, LinkStats, ChatPrefs, ExfiltrationReceipt } from './api';
+import { forgetBrowserFiles } from './browser-files';
+import { saveBrowserAttachment } from './browser-download';
+import { Api, isTauri, usesBrowserCore, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF, PEER_EVENT } from './api';
+import type { Message, MessageFiles, ChatPrefs, PeerEvent } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
 import { icon } from './icons';
 import { onAvatarsChanged } from './avatars';
-import { View, h, avatar, fmtTime, fmtDate, fmtAgo, fmtMs, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
+import { View, h, avatar, fmtTime, fmtDate, fmtAgo, trustLabel, short, humanSize, isImageName, mimeFromName } from './view';
 import type { App } from './app';
 import { PinnedBanner, EditInline, ContextMenu, messageMenuItems, scrollLogToMessage, attachContextMenu } from './actions';
 import { ContactModal } from './contact';
@@ -17,6 +18,7 @@ import { SearchModal } from './search';
 import { MediaModal } from './media';
 import { ForwardModal } from './forward';
 import { renderAnsi } from './ansi';
+import { deletionRuns } from './deletion-notices';
 
 interface PendingFile { name: string; path: string; size: number }
 
@@ -26,6 +28,8 @@ interface PendingFile { name: string; path: string; size: number }
  * copy of anything, so a wrong guess costs the conversation rather than a
  * glance. Anyone who wants it shorter has one tap away, and the choice sticks. */
 const DEFAULT_TTL_SECS = 86_400;
+/** How a row with no files known yet, or none at all, is drawn. */
+const NO_FILES = JSON.stringify({ attachments: [], progress: [] });
 
 /** The picker offers the same steps in both directions; the label next to it is
  * what a person reads, so the seconds get said in words. */
@@ -65,6 +69,12 @@ export class ChatView extends View {
   private historySaving = false;
   private prefsRevision = 0;
   private attachmentCache = new Map<number, Array<{ id: number; name: string; size: number }>>();
+  private fileCache = new Map<number, MessageFiles>();
+  private fileVersions = new Map<number, number>();
+  private fileMessageSignatures = new Map<number, string>();
+  private fileQueue = new Set<number>();
+  private fileBatchPending = false;
+  private fileRetryTimer: number | null = null;
   private imageDataCache = new Map<number, string>();
   private imageMessages = new Map<number, number>();
   private imageClosers = new Map<number, () => void>();
@@ -75,12 +85,16 @@ export class ChatView extends View {
   private deletedSeen = new Set<number>();
   private pinnedBanner: PinnedBanner;
   private editingId: number | null = null;
+  /** The files each row was last drawn with (JSON), to skip redraws that
+   *  would change nothing. */
+  private drawnFiles = new Map<number, string>();
+  /** What the user typed into the inline editor, kept across re-renders. */
+  private editDraft: string | undefined;
   private replyTo: Message | null = null;
   private replyChip: HTMLElement;
   private pasteHandler: (e: ClipboardEvent) => void;
   private copyHandler: (e: ClipboardEvent) => void;
   private keyHandler: (e: KeyboardEvent) => void;
-  private exfiltrations: Record<number, ExfiltrationReceipt[]> = {};
   private typingActive = false;
   private typingStopTimer: number | null = null;
   private typingHeader: HTMLElement;
@@ -96,7 +110,6 @@ export class ChatView extends View {
   private promptEl: HTMLElement;
   private unreachableNote: HTMLElement;
   private caffeineBar: HTMLElement;
-  private linkStrip: HTMLElement;
   private turboTitle: HTMLElement;
   private turboHint: HTMLElement;
   private fastBtn: HTMLButtonElement;
@@ -364,30 +377,7 @@ export class ChatView extends View {
       this.prefsRevision++;
       this.updateHistoryPrompt(prefs);
     }));
-    this.subs.push(Api.onExfiltration((receipt) => {
-      if (this.disposed) return;
-      const list = this.exfiltrations[receipt.message_id] || [];
-      list.push(receipt);
-      this.exfiltrations[receipt.message_id] = list;
-      this.renderLog();
-    }));
     void this.loadPrefs();
-    void Api.getExfiltrations().then((all) => {
-      if (!this.disposed) {
-        this.exfiltrations = all;
-        this.renderLog();
-      }
-    });
-
-    // What the channel is doing, in the user's own terms. Groups have no
-    // single channel — each member collects somewhere else — so this is a
-    // one-to-one readout only.
-    this.linkStrip = h('div', { class: 'link-strip hidden' });
-    if (target.kind === 'contact') {
-      void this.paintLinkStrip();
-      this.sub(store.linkRtt, () => void this.paintLinkStrip());
-      this.sub(store.unreachable, () => void this.paintLinkStrip());
-    }
 
     this.turboTitle = h('div', { class: 'caffeine-title' }, tr('chat.turbo'));
     this.turboHint = h('div', { class: 'caffeine-hint' });
@@ -427,7 +417,6 @@ export class ChatView extends View {
         ),
         headerRight,
       ),
-      this.linkStrip,
       this.unreachableNote,
       this.historyPrompt,
       this.peerHistoryNote,
@@ -452,7 +441,18 @@ export class ChatView extends View {
 
     this.sub(store.messages, () => {
       const messages = store.messages.get().get(targetKey(this.target)) ?? [];
+      for (const message of messages) {
+        const signature = `${message.sent}:${message.delivered}`;
+        const previous = this.fileMessageSignatures.get(message.id);
+        this.fileMessageSignatures.set(message.id, signature);
+        if (previous !== undefined && previous !== signature && message.deleted_at == null) this.invalidateFiles(message.id);
+      }
       for (const message of messages) if (message.deleted_at != null) {
+        // Notices now stay until confirmed, so history loaded later (opening
+        // the chat, scrolling up, a locale switch) holds old deletions too:
+        // only one that has just happened clears what is being typed.
+        const fresh = Date.now() - message.deleted_at < 60_000;
+        if (!this.deletedSeen.has(message.id) && !fresh) this.deletedSeen.add(message.id);
         if (!this.deletedSeen.has(message.id)) {
           this.deletedSeen.add(message.id);
           this.draftEpoch++;
@@ -469,29 +469,20 @@ export class ChatView extends View {
         }
         for (const [attachmentId, messageId] of this.imageMessages) if (messageId === message.id) this.releaseImage(attachmentId);
         this.attachmentCache.delete(message.id);
-        if (this.editingId === message.id) this.editingId = null;
+        this.fileCache.delete(message.id);
+        this.fileVersions.set(message.id, (this.fileVersions.get(message.id) ?? 0) + 1);
+        if (this.editingId === message.id) { this.editingId = null; this.editDraft = undefined; }
         if (this.replyTo?.id === message.id) this.cancelReply();
       }
       this.renderLog();
     });
-    // A file in parts moved on: repaint its bar where it is on screen.
-    this.sub(store.fileProgress, (m) => {
-      for (const [mid, p] of m) {
-        // First news of this message's files: draw the bar.
-        if (!this.el.querySelector(`[data-files-mid="${mid}"]`) && this.el.querySelector(`[data-mid="${mid}"]`)) {
-          this.renderLog();
-          return;
-        }
-        const el = this.el.querySelector(`[data-files-mid="${mid}"] .file-progress-bar`) as HTMLElement | null;
-        if (el) el.style.width = `${p.total ? Math.floor((100 * p.done) / p.total) : 0}%`;
-        const label = this.el.querySelector(`[data-files-mid="${mid}"] .file-progress-label`);
-        if (label) label.textContent = tr('chat.of_parts', { p0: (p.done), p1: (p.total) });
-      }
+    let lastProgress = store.fileProgress.get();
+    this.sub(store.fileProgress, (progress) => {
+      for (const [id, value] of progress) if (lastProgress.get(id) !== value) this.invalidateFiles(id);
+      for (const id of lastProgress.keys()) if (!progress.has(id)) this.invalidateFiles(id);
+      lastProgress = progress;
     }, false);
-    // One became whole: show it as an attachment.
-    this.sub(store.fileArrived, (v) => {
-      if (v.mid) { this.attachmentCache.delete(v.mid); this.renderLog(); }
-    }, false);
+    this.sub(store.fileArrived, value => { if (value.mid) this.invalidateFiles(value.mid); }, false);
     this.sub(store.groupMembers, () => {
       subEl.textContent = computeSub();
       if (isGroup) this.renderLog();
@@ -548,7 +539,7 @@ export class ChatView extends View {
       ttlSecs: this.ttlSecs, history: [...this.consoleHistory], historyIndex: this.historyIndex,
       consoleDraft: this.consoleDraft, consoleClearedThrough: this.consoleClearedThrough,
       editingId: this.editingId,
-      editBody: this.el.querySelector<HTMLTextAreaElement>('.edit-inline-textarea')?.value,
+      editBody: this.el.querySelector<HTMLTextAreaElement>('.edit-inline-textarea')?.value ?? this.editDraft,
       scrollTop: this.log.scrollTop, stickyBottom: this.stickyBottom,
     };
   }
@@ -564,10 +555,9 @@ export class ChatView extends View {
     this.consoleDraft = draft.consoleDraft;
     this.consoleClearedThrough = draft.consoleClearedThrough;
     this.editingId = draft.editingId;
+    this.editDraft = draft.editBody;
     this.renderedKey = '';
     this.renderLog();
-    const editor = this.el.querySelector<HTMLTextAreaElement>('.edit-inline-textarea');
-    if (editor && draft.editBody !== undefined) editor.value = draft.editBody;
     this.renderFileChips();
     this.renderReplyChip();
     if (this.target.kind !== 'group') this.renderTtlPicker();
@@ -600,6 +590,8 @@ export class ChatView extends View {
     this.imageClosers.clear();
     this.deletedSeen.clear();
     this.attachmentCache.clear();
+    this.fileCache.clear(); this.fileVersions.clear(); this.fileMessageSignatures.clear(); this.fileQueue.clear();
+    if (this.fileRetryTimer !== null) window.clearTimeout(this.fileRetryTimer);
     this.renderedSignatures.clear();
     this.renderedIds = [];
     this.renderedKey = '';
@@ -622,9 +614,20 @@ export class ChatView extends View {
     super.destroy();
   }
 
+  /** Lookup by id over this chat's current list. The list is replaced, never
+   *  mutated, on every change, so the map is rebuilt only when it changes:
+   *  rendering asks once per row, and a linear search each time was O(n²). */
+  private messageIndex: { list: readonly Message[]; byId: Map<number, Message> } | null = null;
+  private messageById(messageId: number): Message | undefined {
+    const list = this.store.messages.get().get(targetKey(this.target)) ?? [];
+    if (this.messageIndex?.list !== list) this.messageIndex = { list, byId: new Map(list.map(message => [message.id, message])) };
+    return this.messageIndex.byId.get(messageId);
+  }
+
   private isMessageLive(messageId: number): boolean {
-    return !this.disposed && sameTarget(this.store.selectedChat.get(), this.target)
-      && (this.store.messages.get().get(targetKey(this.target)) ?? []).some((message) => message.id === messageId && message.deleted_at == null);
+    if (this.disposed || !sameTarget(this.store.selectedChat.get(), this.target)) return false;
+    const message = this.messageById(messageId);
+    return message !== undefined && message.deleted_at == null;
   }
 
   private releaseImage(attachmentId: number): void {
@@ -772,61 +775,57 @@ export class ChatView extends View {
     this.renderFileChips();
   }
 
+  /** A live message of this direct chat, by its row in the log. */
+  private liveDirectMessage(el: Element | null | undefined): Message | undefined {
+    if (this.target.kind !== 'contact' || !el) return undefined;
+    const id = Number(el.getAttribute('data-mid'));
+    if (!Number.isFinite(id) || id <= 0) return undefined;
+    const message = this.messageById(id);
+    return message?.deleted_at == null ? message : undefined;
+  }
+
+  /** Copying the contact's text tells them so (their client shows it under
+   *  their message). Our own messages need no report. */
   private handleCopy(_e: ClipboardEvent): void {
-    if (this.disposed) return;
+    if (this.disposed || this.target.kind !== 'contact') return;
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return;
-    const text = sel.toString().trim();
-    if (!text) return;
-    const anchor = sel.anchorNode;
-    const msgEl = anchor instanceof HTMLElement ? anchor.closest('.msg[data-mid]') : anchor?.parentElement?.closest('.msg[data-mid]');
-    if (msgEl) {
-      const midStr = msgEl.getAttribute('data-mid');
-      const mid = midStr ? Number(midStr) : null;
-      if (mid && Number.isFinite(mid)) {
-        void Api.recordExfiltration({
-          message_id: mid,
-          contact_id: this.target.kind === 'contact' ? (this.target.id as number) : null,
-          kind: 'text_copied',
-          detail: text.length > 60 ? text.slice(0, 57) + '...' : text,
-          timestamp: Date.now(),
-        });
-      }
+    if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
+    for (const el of this.log.querySelectorAll('.msg[data-mid]')) {
+      if (!sel.containsNode(el, true)) continue;
+      const message = this.liveDirectMessage(el);
+      if (message && !message.outgoing) void Api.reportPeerEvent(message.id, PEER_EVENT.copied).catch(() => {});
     }
   }
 
+  /** A screenshot shortcut that reaches the page. Many systems take the
+   *  picture before the page sees any key, so this proves nothing either way;
+   *  the contact is told a shortcut was pressed, not that a picture exists. */
   private handleKey(e: KeyboardEvent): void {
-    if (this.disposed) return;
-    const isPrintScreen = e.key === 'PrintScreen' || (e.key === 's' && e.metaKey && e.shiftKey) || (e.key === '4' && e.metaKey && e.shiftKey) || (e.key === 'S' && e.shiftKey && (e.metaKey || e.ctrlKey));
-    if (isPrintScreen) {
-      // Find visible messages in viewport
-      const visibleMsgs = this.log.querySelectorAll('.msg[data-mid]');
-      if (visibleMsgs.length > 0) {
-        const lastEl = visibleMsgs[visibleMsgs.length - 1];
-        const midStr = lastEl?.getAttribute('data-mid');
-        const mid = midStr ? Number(midStr) : null;
-        if (mid && Number.isFinite(mid)) {
-          void Api.recordExfiltration({
-            message_id: mid,
-            contact_id: this.target.kind === 'contact' ? (this.target.id as number) : null,
-            kind: 'screenshot_taken',
-            timestamp: Date.now(),
-          });
-        }
-      }
-    }
+    if (this.disposed || this.target.kind !== 'contact') return;
+    const shortcut = e.key === 'PrintScreen'
+      || (e.metaKey && e.shiftKey && ['3', '4', '5', 's', 'S'].includes(e.key));
+    if (!shortcut) return;
+    const view = this.log.getBoundingClientRect();
+    const visible = [...this.log.querySelectorAll('.msg[data-mid]')].filter(el => {
+      const box = el.getBoundingClientRect();
+      return box.bottom > view.top && box.top < view.bottom;
+    });
+    const message = this.liveDirectMessage(visible[visible.length - 1]);
+    if (message) void Api.reportPeerEvent(message.id, PEER_EVENT.screenshot).catch(() => {});
   }
 
   private renderedKey: string = '';
   private renderedIds: number[] = [];
   private renderedSignatures: Map<number, string> = new Map();
+  private deletionGroups = new Map<number, Message[]>();
 
   private msgSignature(m: Message): string {
     const pinned = this.isPinned(m) ? '1' : '0';
     const btns = m.buttons ? JSON.stringify(m.buttons) : '';
     const consoleFrame = m.console ? JSON.stringify(m.console) : '';
-    const exfil = this.exfiltrations[m.id]?.length ?? 0;
-    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${m.delete_pending}|${this.editingId === m.id ? 'e' : ''}|${exfil}`;
+    const peerEvents = m.peer_events?.length ? JSON.stringify(m.peer_events) : '';
+    const deletion = m.deleted_at != null ? JSON.stringify((this.deletionGroups.get(m.id) ?? [m]).map(row => [row.id, row.deletion_notice])) : '';
+    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${deletion}|${this.editingId === m.id ? 'e' : ''}|${peerEvents}`;
   }
 
   private renderLog(): void {
@@ -834,7 +833,11 @@ export class ChatView extends View {
     const consoleMode = this.store.isConsoleMode(this.target);
     const key = targetKey(this.target) + (consoleMode ? ':console' : ':chat');
     const all = this.store.messages.get().get(targetKey(this.target)) ?? [];
-    const list = all.filter((m) => this.showsInLog(m));
+    const windowIds = new Set(all.map(row => row.id));
+    for (const id of this.fileCache.keys()) if (!windowIds.has(id)) { this.fileCache.delete(id); this.attachmentCache.delete(id); this.fileMessageSignatures.delete(id); this.drawnFiles.delete(id); }
+    const rows = deletionRuns(all.filter((m) => this.showsInLog(m)));
+    this.deletionGroups = new Map(rows.filter(row => row.message.deleted_at != null).map(row => [row.message.id, row.members]));
+    const list = rows.map(row => row.message);
     this.log.querySelector('.console-running')?.remove();
     const newIds = list.map((m) => m.id);
 
@@ -938,7 +941,7 @@ export class ChatView extends View {
   private maybeLoadMore(): void {
     if (this.loadingMore || this.noMoreOlder) return;
     if (this.log.scrollTop > ChatView.LOAD_MORE_THRESHOLD) return;
-    if (this.renderedIds.length === 0) return;
+    if (!(this.store.messages.get().get(targetKey(this.target))?.length)) return;
     this.loadingMore = true;
     this.prependCompensation = { prevHeight: this.log.scrollHeight, prevTop: this.log.scrollTop };
     this.store.loadMoreMessages(this.target).then((more) => {
@@ -951,6 +954,7 @@ export class ChatView extends View {
       this.prependCompensation = null;
     }).finally(() => {
       this.loadingMore = false;
+      if (!this.disposed && !this.noMoreOlder && this.renderedIds.length === 0) window.setTimeout(() => this.maybeLoadMore(), 0);
     });
   }
 
@@ -1022,9 +1026,7 @@ export class ChatView extends View {
 
   private renderMessage(m: Message): HTMLElement {
     if (m.deleted_at != null) {
-      return h('div', { class: 'divider-text msg-deleted', 'data-mid': String(m.id), role: 'note' },
-        tr('chat.deleted_number', { number: m.dm_seq ?? '?' }),
-        ' · ', tr(m.delete_pending ? 'chat.deletion_pending' : 'chat.deletion_confirmed'));
+      return this.renderDeletionNotice(this.deletionGroups.get(m.id) ?? [m]);
     }
     if (m.console) return this.renderConsoleMessage(m);
     if (this.editingId === m.id) return this.renderEditing(m);
@@ -1060,26 +1062,7 @@ export class ChatView extends View {
       () => this.openForward(m),
       () => { void this.deleteForBoth(m); },
     ));
-    const exfilList = this.exfiltrations[m.id];
-    if (exfilList && exfilList.length > 0) {
-      const exfilBox = h('div', { class: 'msg-exfiltration-notices' });
-      for (const ex of exfilList) {
-        let label = '';
-        let iconChar = '⚠️';
-        if (ex.kind === 'attachment_saved') {
-          iconChar = '💾';
-          label = tr('chat.attachment_saved_by_peer', { name: ex.detail || '' });
-        } else if (ex.kind === 'text_copied') {
-          iconChar = '📋';
-          label = tr('chat.text_copied_by_peer', { text: ex.detail || '' });
-        } else if (ex.kind === 'screenshot_taken') {
-          iconChar = '📸';
-          label = tr('chat.screenshot_taken_by_peer');
-        }
-        exfilBox.appendChild(h('div', { class: 'msg-exfil-badge' }, `${iconChar} ${label}`));
-      }
-      wrap.appendChild(exfilBox);
-    }
+    if (m.peer_events?.length && this.target.kind === 'contact') wrap.appendChild(this.renderPeerEvents(m.peer_events));
     this.loadAttachmentsFor(m.id, wrap);
     if (m.buttons && m.buttons.length > 0 && !m.outgoing) {
       const btns = h('div', { class: 'msg-buttons' });
@@ -1107,6 +1090,52 @@ export class ChatView extends View {
       wrap.appendChild(btns);
     }
     return wrap;
+  }
+
+  /** What the contact reported doing with this message on their device. */
+  private renderPeerEvents(events: PeerEvent[]): HTMLElement {
+    const key = { 5: 'chat.peer_copied', 6: 'chat.peer_saved', 7: 'chat.peer_screenshot_keys' } as const;
+    const today = fmtDate(Date.now());
+    return h('div', { class: 'msg-peer-events', role: 'note' }, ...events.map(event => {
+      const at = fmtDate(event.at) === today ? fmtTime(event.at) : `${fmtDate(event.at)} ${fmtTime(event.at)}`;
+      const times = event.count > 1 ? ` ×${event.count}` : '';
+      return h('div', { class: 'msg-peer-event' }, `${tr(key[event.kind])}${times} · ${at}`);
+    }));
+  }
+
+  private renderDeletionNotice(messages: Message[]): HTMLElement {
+    const first = messages[0]!;
+    // The date only when it is not today: a grouped notice has up to four times.
+    const today = fmtDate(Date.now());
+    const format = (at: number): string => fmtDate(at) === today ? fmtTime(at) : `${fmtDate(at)} ${fmtTime(at)}`;
+    const from = Math.min(...messages.map(row => row.sent_at));
+    const to = Math.max(...messages.map(row => row.sent_at));
+    const removed = messages.map(row => row.deletion_notice?.deleted_at ?? row.deleted_at!);
+    const removedFrom = Math.min(...removed), removedTo = Math.max(...removed);
+    const at = removedFrom === removedTo ? format(removedFrom) : `${format(removedFrom)} — ${format(removedTo)}`;
+    const theirs = first.deletion_notice?.can_ack === true;
+    const by = tr(theirs ? 'chat.deleted_by_contact' : 'chat.deleted_by_you');
+    const text = messages.length === 1
+      ? tr('chat.deletion_notice_one', { time: format(from), by, at })
+      : tr('chat.deletion_notice_many', { count: messages.length, from: format(from), to: format(to), by, at });
+    const acknowledge = theirs && this.target.kind === 'contact';
+    const button = h('button', { class: 'deletion-ok', type: 'button', title: tr('chat.deletion_ack_hint'), 'aria-label': tr('chat.deletion_ack_hint') }, tr('chat.deletion_ok')) as HTMLButtonElement;
+    if (acknowledge) button.addEventListener('click', () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      const target = this.target;
+      if (target.kind !== 'contact') return;
+      // The core takes at most 500 ids per call; a cleared chat can hold more.
+      const ids = messages.map(row => row.id);
+      const batches: number[][] = [];
+      for (let i = 0; i < ids.length; i += 500) batches.push(ids.slice(i, i + 500));
+      void batches.reduce((done, batch) => done.then(() => Api.acknowledgeDeletionNotices(target.id, batch)), Promise.resolve())
+        .then(() => this.store.loadMessages(target))
+        .catch(error => { if (!this.disposed) this.store.showToast(errorText(error), true); })
+        .finally(() => { if (!this.disposed) button.disabled = false; });
+    });
+    return h('div', { class: 'msg-deleted', 'data-mid': String(first.id), role: 'note' },
+      acknowledge && button, h('span', null, theirs ? text : `${text} ${tr('chat.deletion_waiting_ok')}`));
   }
 
   private async deleteForBoth(message: Message): Promise<void> {
@@ -1180,14 +1209,19 @@ export class ChatView extends View {
       'data-mid': String(m.id),
     });
     const editor = new EditInline(
-      m.body,
+      this.editDraft ?? m.body,
       (newBody) => {
         this.store.editMessage(this.target, m.id, newBody)
-          .then(() => { this.editingId = null; this.renderLog(); })
+          .then(() => { this.editingId = null; this.editDraft = undefined; this.renderLog(); })
           .catch((e) => this.store.showToast(tr('chat.edit_failed') + e, true));
       },
-      () => { this.editingId = null; this.renderLog(); },
+      () => { this.editingId = null; this.editDraft = undefined; this.renderLog(); },
     );
+    // A re-render (a receipt, a locale switch, history arriving late) must
+    // not reset what the user has typed so far.
+    editor.el.addEventListener('input', (e) => {
+      if ((e.target as HTMLElement).classList.contains('edit-inline-textarea')) this.editDraft = (e.target as HTMLTextAreaElement).value;
+    });
     wrap.appendChild(editor.el);
     return wrap;
   }
@@ -1195,6 +1229,7 @@ export class ChatView extends View {
   private startEdit(m: Message): void {
     if (!m.outgoing || !this.isMessageLive(m.id)) return;
     this.editingId = m.id;
+    this.editDraft = undefined;
     this.renderLog();
   }
 
@@ -1270,55 +1305,98 @@ export class ChatView extends View {
     );
   }
 
-  private async loadAttachmentsFor(msgId: number, container: HTMLElement): Promise<void> {
-    if (!this.isMessageLive(msgId)) return;
-    let list = this.attachmentCache.get(msgId);
-    if (!list) {
-      list = await Api.listAttachments(msgId);
-      if (!this.isMessageLive(msgId)) return;
-      this.attachmentCache.set(msgId, list);
+  private invalidateFiles(id: number): void {
+    if (!this.isMessageLive(id)) return;
+    this.fileVersions.set(id, (this.fileVersions.get(id) ?? 0) + 1);
+    this.fileCache.delete(id); this.attachmentCache.delete(id);
+    this.queueFiles(id);
+  }
+
+  private queueFiles(id: number): void {
+    this.fileQueue.add(id);
+    if (this.fileBatchPending || this.disposed) return;
+    this.fileBatchPending = true;
+    // Rendering the whole history coalesces into one bounded IPC request.
+    queueMicrotask(() => { void this.fetchFiles(); });
+  }
+
+  private async fetchFiles(): Promise<void> {
+    // A message deleted or scrolled out of this chat while queued leaves the
+    // queue too; left behind, it re-armed this batch forever (a busy loop).
+    for (const id of [...this.fileQueue]) if (!this.isMessageLive(id)) this.fileQueue.delete(id);
+    const ids = [...this.fileQueue].slice(0, 500);
+    ids.forEach(id => this.fileQueue.delete(id));
+    const versions = new Map(ids.map(id => [id, this.fileVersions.get(id) ?? 0]));
+    try {
+      if (!ids.length || this.disposed) return;
+      const result = await Api.messageFiles(ids);
+      if (this.disposed) return;
+      let changed = false;
+      for (const id of ids) {
+        if (!this.isMessageLive(id)) continue;
+        if ((this.fileVersions.get(id) ?? 0) !== versions.get(id)) { this.fileQueue.add(id); continue; }
+        // No entry means no files: cache that, or rendering asks again forever.
+        const files = result[id] ?? { attachments: [], progress: [] };
+        this.fileCache.set(id, files); this.attachmentCache.set(id, files.attachments);
+        // Re-render a row only when what it shows changes.
+        if (JSON.stringify(files) !== (this.drawnFiles.get(id) ?? NO_FILES)) { this.renderedSignatures.delete(id); changed = true; }
+      }
+      if (changed) this.renderLog();
+    } catch {
+      // Keep unknown transfers pending, never fabricate an empty completed file.
+      if (!this.disposed && this.fileRetryTimer === null) this.fileRetryTimer = window.setTimeout(() => {
+        this.fileRetryTimer = null;
+        ids.forEach(id => { if (this.isMessageLive(id)) this.queueFiles(id); });
+      }, 3000);
+    } finally {
+      this.fileBatchPending = false;
+      if (!this.disposed && this.fileQueue.size && this.fileRetryTimer === null) this.queueFiles(this.fileQueue.values().next().value!);
     }
-    // Files still moving in parts: a bar each, and a cancel for ours.
-    // Asked only for messages a progress event named: not one call per row.
-    const moving = this.store.fileProgress.get().has(msgId)
-      ? await Api.filesProgress(msgId).catch(() => [])
-      : [];
+  }
+
+  private loadAttachmentsFor(msgId: number, container: HTMLElement): void {
     if (!this.isMessageLive(msgId)) return;
-    if (moving.length > 0) {
+    const message = this.messageById(msgId);
+    const files = this.fileCache.get(msgId);
+    this.drawnFiles.set(msgId, files ? JSON.stringify(files) : NO_FILES);
+    if (!files) { this.queueFiles(msgId); return; }
+    const { attachments } = files;
+    // A finished file already has its card below: a «complete» row would
+    // repeat its name and size.
+    const progress = files.progress.filter(file => file.status !== 'complete' || !attachments.some(card => card.name === file.name));
+    if (!attachments.length && !progress.length) return;
+    container.classList.toggle('attachment-only', !message?.body.trim());
+    const sending = progress.some(file => file.status === 'sending') || (!!message?.outgoing && !message.delivered && attachments.length > 0 && progress.length === 0);
+    container.classList.toggle('file-sending', sending);
+    // Metadata ACK never substitutes for file-part ACK in the displayed status.
+    if (progress.some(file => !file.incoming && file.status !== 'complete')) container.querySelector('.msg-meta')?.remove();
+    const labelFor = (status: import('./api').FileProgress['status'], incoming: boolean): string => tr(status === 'waiting' ? 'files.waiting_contact' : status === 'sending' ? 'files.sending' : status === 'receiving' ? 'files.receiving' : status === 'failed' ? 'files.failed' : status === 'cancelled' ? 'files.cancelled' : incoming ? 'files.complete' : 'files.delivered');
+    if (progress.length) {
       const box = h('div', { class: 'msg-files-moving', 'data-files-mid': String(msgId) });
-      for (const f of moving) {
-        const pct = f.total ? Math.floor((100 * f.done) / f.total) : 0;
-        const row = h('div', { class: 'file-progress' },
-          h('div', { class: 'file-progress-name' }, `${f.incoming ? '⇣' : '⇡'} ${f.name} (${humanSize(f.size)})`),
-          h('div', { class: 'file-progress-track' }, h('div', { class: 'file-progress-bar', style: `width:${pct}%` })),
-          h('div', { class: 'file-progress-label' }, tr('chat.of_parts', { p0: (f.done), p1: (f.total) })),
+      for (const file of progress) {
+        const pct = file.total ? Math.min(100, Math.floor(100 * file.done / file.total)) : 0;
+        const moving = file.status === 'sending' || file.status === 'receiving';
+        const row = h('div', { class: 'file-progress ' + file.status },
+          h('div', { class: 'file-progress-name' }, file.name, h('span', { class: 'file-size' }, humanSize(file.size))),
+          moving && h('div', { class: 'file-progress-track', role: 'progressbar', 'aria-label': file.name, 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(pct) }, h('div', { class: 'file-progress-bar', style: `width:${pct}%` })),
+          h('div', { class: 'file-progress-label' }, labelFor(file.status, file.incoming), moving ? ` · ${pct}%` : ''),
         );
-        if (!f.incoming) {
-          row.appendChild(h('button', {
-            class: 'file-progress-cancel',
-            onClick: async () => {
-              try { await Api.cancelFiles(msgId); row.remove(); } catch (e) { this.store.showToast(tr('chat.cancel_failed') + errorText(e), true); }
-            },
-          }, tr('chat.cancel')));
-        }
+        if (!file.incoming && moving && file.cancelable !== false) row.appendChild(h('button', { class: 'file-progress-cancel', type: 'button', onClick: async () => {
+          try { await Api.cancelFiles(msgId); this.invalidateFiles(msgId); }
+          catch (error) { this.store.showToast(tr('chat.cancel_failed') + errorText(error), true); }
+        } }, tr('chat.cancel')));
         box.appendChild(row);
       }
       container.appendChild(box);
-    }
-    if (list.length === 0) return;
+    } else if (sending) container.appendChild(h('div', { class: 'file-progress-label' }, tr('files.sending')));
+    if (!attachments.length) return;
     const bar = h('div', { class: 'msg-attachments' });
-    for (const a of list) {
-      if (isImageName(a.name)) {
-        bar.appendChild(h('div', {
-          class: 'attachment image-stub',
-          onClick: () => this.openImageLazy(a.id, a.name, msgId),
-        }, tr('chat.open', { p0: (a.name), p1: (humanSize(a.size)) })));
-      } else {
-        bar.appendChild(h('div', {
-          class: 'attachment',
-          onClick: () => this.downloadAttachment(a.id, a.name),
-        }, `◆ ${a.name} (${humanSize(a.size)})`));
-      }
+    for (const attachment of attachments) {
+      const image = isImageName(attachment.name) && (isTauri || attachment.size <= 32 * 1024 * 1024);
+      bar.appendChild(h('button', {
+        type: 'button', class: 'attachment file-card' + (image ? ' image-stub' : ''),
+        onClick: () => image ? this.openImageLazy(attachment.id, attachment.name, msgId) : this.downloadAttachment(attachment.id, attachment.name),
+      }, icon('attach', 20), h('span', { class: 'file-card-copy' }, h('span', { class: 'file-card-name' }, attachment.name), h('span', { class: 'file-size' }, humanSize(attachment.size)))));
     }
     container.appendChild(bar);
   }
@@ -1417,26 +1495,24 @@ export class ChatView extends View {
   }
 
   private async downloadAttachment(id: number, name: string): Promise<void> {
+    // Saving the contact's file out of the app tells them so.
+    const reportSaved = (): void => {
+      const msgId = this.imageMessages.get(id) || [...this.attachmentCache.entries()].find(([_, atts]) => atts.some(a => a.id === id))?.[0];
+      const message = msgId ? this.liveDirectMessage(this.log.querySelector(`.msg[data-mid="${msgId}"]`)) : undefined;
+      if (message && !message.outgoing) void Api.reportPeerEvent(message.id, PEER_EVENT.saved).catch(() => {});
+    };
     try {
       if (!isTauri) {
-        const data = await Api.loadAttachment(id);
-        if (!this.disposed) downloadBrowserFile(data, name);
+        if (this.disposed) return;
+        await saveBrowserAttachment(id);
+        reportSaved();
         return;
       }
       const dest = await save({ defaultPath: name });
       if (!dest || this.disposed) return;
       await Api.saveAttachment(id, dest);
       this.store.showToast(tr('chat.saved'));
-      const msgId = this.imageMessages.get(id) || [...this.attachmentCache.entries()].find(([_, atts]) => atts.some(a => a.id === id))?.[0];
-      if (msgId) {
-        void Api.recordExfiltration({
-          message_id: msgId,
-          contact_id: this.target.kind === 'contact' ? (this.target.id as number) : null,
-          kind: 'attachment_saved',
-          detail: name,
-          timestamp: Date.now(),
-        });
-      }
+      reportSaved();
     } catch (e) {
       this.store.showToast(tr('chat.save_failed', { error: errorText(e) }), true);
     }
@@ -1458,10 +1534,12 @@ export class ChatView extends View {
     if (this.target.kind !== 'contact') {
       this.peerNote.classList.add('hidden'); this.peerHistoryNote.classList.add('hidden'); return;
     }
+    // No client sends this preference yet, so «unknown» would sit in every
+    // chat for good: say nothing until the contact has actually said something.
     const peerChoice = this.store.contacts.get().find((contact) => contact.id === this.target.id)?.save_history;
     this.peerHistoryNote.textContent = peerChoice === true ? tr('chat.peer_saves_history')
-      : peerChoice === false ? tr('chat.peer_doesnt_save_history') : tr('chat.peer_history_unknown');
-    this.peerHistoryNote.classList.remove('hidden');
+      : peerChoice === false ? tr('chat.peer_doesnt_save_history') : '';
+    this.peerHistoryNote.classList.toggle('hidden', peerChoice == null);
     const list = this.store.messages.get().get(targetKey(this.target)) ?? [];
     const newest = [...list].reverse().find((m) => !m.outgoing && m.console == null && m.group_id == null && m.deleted_at == null);
     this.peerNote.classList.toggle('hidden', newest == null || newest.expires_at != null);
@@ -1592,58 +1670,6 @@ export class ChatView extends View {
 
   private openGroupDetails(): void {
     this.app.openModal((close) => new GroupModal(this.store, this.app, this.target.id as string, close).el);
-  }
-
-  /** Leaving «кофеин» costs the profile passphrase — that is the whole point
-   * of it. The check goes through the vault, so a duress passphrase still does
-   * what it does and a wrong one still counts towards the attempt limit. */
-  /** Draw the link readout.
-   *
-   * Every number here is measured or read from the running session; nothing is
-   * a placeholder. Until one message has been acknowledged there is no round
-   * trip to show, and the tile says so instead of inventing a figure. */
-  private async paintLinkStrip(): Promise<void> {
-    if (this.target.kind !== 'contact') return;
-    let stats: LinkStats;
-    try {
-      stats = await Api.linkStats(this.target.id as number);
-      if (this.disposed) return;
-    } catch {
-      this.linkStrip.classList.add('hidden');
-      return;
-    }
-    this.store.lane.set(stats.lane);
-    const rtt = stats.rtt_ms ?? this.store.linkRtt.get().get(this.target.id as number) ?? null;
-    const route = stats.route === 'relay'
-      ? (rtt === null ? tr('chat.relay') : tr('chat.relay_2', { p0: (fmtMs(rtt)) }))
-      : stats.route === 'archive' ? tr('chat.archive') : tr('chat.no_route');
-    const routeTitle = stats.route === 'relay'
-      ? tr('chat.the_message_goes_to_the_relay_where_your')
-      : stats.route === 'archive'
-        ? tr('chat.your_contact_s_relay_is_unavailable_the_message')
-        : tr('chat.neither_your_contact_s_relay_nor_the_relay');
-
-    this.linkStrip.replaceChildren(
-      h('div', { class: 'stats link-stats' },
-        h('div', { class: 'stat', title: tr('chat.intermediate_hops_in_our_outbound_tunnel_and_the') },
-          h('div', { class: 'stat-value' }, `${stats.our_hops} + ${stats.their_hops}`),
-          h('div', { class: 'stat-label' }, tr('chat.garlic_routing_hops')),
-        ),
-        h('div', { class: 'stat', title: stats.padded
-          ? tr('chat.the_message_is_padded_to_a_fixed_size')
-          : tr('chat.the_message_is_sent_without_padding_faster_but') },
-          h('div', { class: 'stat-value' }, stats.padded ? tr('chat.medium') : tr('chat.off')),
-          h('div', { class: 'stat-label' }, tr('chat.noise_level')),
-        ),
-        h('div', { class: 'stat', title: routeTitle },
-          h('div', { class: 'stat-value' }, route),
-          h('div', { class: 'stat-label' }, tr('chat.delivery')),
-        ),
-      ),
-      h('div', { class: 'link-verdict' + (stats.lane === 'normal' ? '' : ' lowered') },
-        stats.lane === 'normal' ? tr('chat.standard_security_settings') : tr('chat.reduced_security_cocaine')),
-    );
-    this.linkStrip.classList.remove('hidden');
   }
 
   /** Enter «кокаин», having said what it costs.

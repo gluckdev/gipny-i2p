@@ -4,8 +4,8 @@ import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { messages, resolveLanguage, applyLanguage, initialize } from '../main.js';
-import { build, publicFiles, catalogKeys, releaseCatalog, renderCatalog } from '../build.mjs';
+import { messages, resolveLanguage, applyLanguage, initialize, detectDevice, chooseDownload } from '../main.js';
+import { build, publicFiles, catalogKeys, releaseCatalog, renderCatalog, nativeChoices } from '../build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const html = await readFile(resolve(root, 'index.html'), 'utf8');
@@ -57,28 +57,23 @@ test('both languages cover every rendered string and accessible label', () => {
   assert.match(messages.ru.browserStatus, /Эксперимент/i);
   assert.match(messages.en.browserBoundary, /does not send or receive messages/);
   assert.match(messages.ru.browserBoundary, /не отправляет и не принимает сообщения/);
-  assert.match(messages.ru.browserLocal, /127\.0\.0\.1.*Chrome.*Firefox/);
-  assert.match(messages.ru.browserTimeline, /эксперимент.*не выпущенный/);
-  assert.match(messages.en.browserTimeline, /experiment.*not a released/);
-  assert.match(messages.ru.browserStandaloneBody, /WASM.*OPFS/);
-  assert.match(messages.en.browserStandaloneBody, /WASM.*OPFS/);
+  assert.match(messages.ru.browserLocal, /HTTPS.*WebAssembly.*OPFS/);
+  assert.match(messages.ru.browserTimeline, /проходит проверку/);
+  assert.match(messages.en.browserTimeline, /under validation/);
+  assert.match(messages.ru.browserStandaloneBody, /OPFS.*WASM/);
+  assert.match(messages.en.browserStandaloneBody, /OPFS.*WASM/);
   assert.match(messages.ru.i2pProTunnelsTitle, /Чесночная маршрутизация/);
   assert.match(messages.en.i2pProTunnelsTitle, /Garlic routing/);
   assert.match(messages.ru.i2pConBootstrapTitle, /холодный старт/i);
   assert.match(messages.en.i2pConBootstrapTitle, /cold start/i);
 });
 
-test('future chat policy and contact consent are visibly planned, while current history and separate-copy limits remain explicit', () => {
-  const section = html.match(/<section class="plans-section section"[\s\S]*?<\/section>/)[0];
-  assert.match(section, /data-i18n="plansEyebrow">В планах/);
-  assert.match(section, /data-i18n="plansTitle">Поговорили и забыли/);
-  assert.match(messages.ru.plansIntro, /Сейчас приложения сохраняют историю/);
-  assert.match(messages.en.plansIntro, /current apps store conversation history/);
-  assert.match(messages.ru.planHistoryBody, /В начале каждого нового чата.*предложит включить зашифрованное локальное хранение/);
-  assert.match(messages.en.planHistoryBody, /each new chat.*offer encrypted local storage/);
-  assert.match(messages.ru.planNameBody, /@Петрович666.*без центрального аккаунта.*отпечаток/);
-  assert.match(messages.ru.planConsentBody, /с уведомлением.*только после принятия/);
-  assert.match(messages.en.planConsentBody, /notification.*only after acceptance/);
+test('roadmap distinguishes future features and transport availability from privacy guarantees', () => {
+  assert.match(messages.ru.plansIntro, /не означает готовую функцию/);
+  assert.match(messages.en.plansIntro, /not an available feature/);
+  assert.match(messages.ru.planNameBody, /требуют доработки/);
+  assert.match(messages.en.planCallsBody, /does not by itself provide calls/);
+  assert.match(messages.ru.i2pConVisibilityBody, /WSS.*WebRTC.*не гарантируют/);
   assert.match(messages.ru.plansBoundary, /сохранить текст.*снимок экрана/);
 });
 
@@ -190,7 +185,7 @@ test('local resources and section links work below a GitHub project prefix', asy
       const url = new URL(target, 'https://example.test/gipny-i2p/');
       assert.ok(url.pathname.startsWith('/gipny-i2p/'));
       // app/ is supplied by the UI build in Pages CI, not the landing builder.
-      if (target === './app/') assert.equal(url.pathname, '/gipny-i2p/app/');
+      if (target === './app/browser.html') assert.equal(url.pathname, '/gipny-i2p/app/browser.html');
       else await readFile(resolve(root, target));
     }
   }
@@ -227,25 +222,24 @@ function releaseFixture(version = '0.4.18', extended = false) {
   };
 }
 
-test('published release catalogs render every binary exactly once with architecture, format, size and inline icons', async () => {
-  for (const [release, binaries] of [[releaseFixture(), 13], [releaseFixture('0.4.19', true), 20]]) {
+test('catalog offers one native download control and a GitHub Releases link, keeping other packages off the landing', async () => {
+  for (const release of [releaseFixture(), releaseFixture('0.4.19', true)]) {
     const output = await mkdtemp(resolve(tmpdir(), 'gipny-catalog-test-'));
     try {
       await build(output, release);
       const rendered = await readFile(resolve(output, 'index.html'), 'utf8');
-      assert.equal([...rendered.matchAll(/data-download-asset="/g)].length, binaries);
-      for (const asset of release.assets) {
-        assert.equal(rendered.split('href="' + asset.browser_download_url + '"').length - 1, 1, asset.name);
+      const catalog = releaseCatalog(release), choices = nativeChoices(catalog);
+      assert.equal(choices.length, 7);
+      assert.equal([...rendered.matchAll(/id="download-primary"/g)].length, 1);
+      assert.equal([...rendered.matchAll(/data-download-asset="/g)].length, choices.length);
+      for (const asset of choices) {
+        assert.equal(rendered.split('value="' + asset.url + '"').length - 1, 1, asset.name);
+        assert.equal(rendered.split('href="' + asset.url + '"').length - 1, 0, 'button is selected on-device');
       }
-      const catalog = releaseCatalog(release);
-      assert.equal(catalog.assets.filter(asset => asset.group === 'native').length, 9);
-      assert.equal(catalog.assets.filter(asset => asset.group === 'openwrt').length, binaries === 20 ? 4 : 0);
-      assert.match(rendered, /class="platform-icon"[^>]+aria-hidden="true"/);
-      assert.match(rendered, /x86_64/);
+      assert.ok(choices.filter(asset => asset.platform === 'Linux').every(asset => asset.format === 'AppImage'));
+      assert.match(rendered, /data-i18n="catalogAll"/);
       assert.match(rendered, /Apple Silicon ARM64/);
-      assert.match(rendered, /AppImage · \d+\.\d MB/);
-      assert.match(rendered, /class="download-advanced"/);
-      assert.doesNotMatch(rendered, /<script>alert|unused release prose|data:image|<iframe/);
+      assert.doesNotMatch(rendered, /download-advanced|<script>alert|unused release prose|data:image|<iframe/);
       assert.deepEqual((await readdir(output)).sort(), ['assets', 'index.html', 'main.js', 'styles.css']);
       assert.deepEqual(await readFile(resolve(output, 'main.js')), await readFile(resolve(root, 'main.js')));
       const doc = documentFixture(rendered);
@@ -255,13 +249,34 @@ test('published release catalogs render every binary exactly once with architect
   }
 });
 
-test('a smaller published release never invents links for absent architectures or advanced components', () => {
+test('a smaller release never invents an absent native architecture; full Releases remains available', () => {
   const release = releaseFixture();
   release.assets = release.assets.filter(asset => asset.name.endsWith('x64-setup.exe'));
   const rendered = renderCatalog(releaseCatalog(release));
   assert.equal([...rendered.matchAll(/data-download-asset="/g)].length, 1);
-  assert.match(rendered, />Windows<\/h3>/);
-  assert.doesNotMatch(rendered, /download-advanced|>macOS<\/h3>|>Linux<\/h3>|>Android<\/h3>/);
+  assert.match(rendered, /data-platform="Windows"/);
+  assert.doesNotMatch(rendered, /data-platform="macOS"|data-platform="Linux"|data-platform="Android"/);
+});
+
+test('device selection respects real ARM hints, iPad desktop mode and missing architecture information', () => {
+  const choices = [
+    { platform: 'macOS', architecture: 'arm64', value: 'mac-arm' }, { platform: 'macOS', architecture: 'x64', value: 'mac-intel' },
+    { platform: 'Windows', architecture: 'x64', value: 'windows' },
+    { platform: 'Android', architecture: 'arm64', value: 'android' }, { platform: 'Linux', architecture: 'x64', value: 'linux' },
+  ];
+  const mac = { platform: 'MacIntel', userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', maxTouchPoints: 0 };
+  assert.equal(chooseDownload(choices, detectDevice(mac)), null, 'Safari does not expose Intel vs Apple Silicon reliably');
+  assert.equal(chooseDownload(choices, detectDevice(mac, { platform: 'macOS', architecture: 'arm', bitness: '64' })).value, 'mac-arm');
+  assert.equal(chooseDownload(choices, detectDevice(mac, { platform: 'macOS', architecture: 'x86', bitness: '64' })).value, 'mac-intel');
+  assert.equal(detectDevice({ ...mac, maxTouchPoints: 5 }).platform, 'iOS');
+  assert.equal(chooseDownload(choices, detectDevice({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' })), null);
+  assert.equal(chooseDownload(choices, detectDevice({}, { platform: 'Windows', architecture: 'x86', bitness: '64' })).value, 'windows');
+  assert.equal(chooseDownload(choices, detectDevice({}, { platform: 'Windows', architecture: 'arm', bitness: '64' })), null, 'no native Windows ARM package exists');
+  assert.equal(chooseDownload(choices, detectDevice({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' })).value, 'linux');
+  assert.equal(chooseDownload(choices, detectDevice({ userAgent: 'Mozilla/5.0 (Linux; Android 10; K)' })), null);
+  assert.equal(chooseDownload(choices, detectDevice({ userAgent: 'Mozilla/5.0 (Linux; Android 10; K)' }, { architecture: 'arm', bitness: '64' })).value, 'android');
+  assert.equal(detectDevice({ userAgent: 'Mozilla/5.0 (X11; CrOS x86_64)' }).platform, 'ChromeOS');
+  assert.equal(chooseDownload(choices, detectDevice({})), null);
 });
 
 test('catalog rejects unpublished, foreign, mismatched, incomplete or injected release assets before writing output', async () => {
@@ -367,7 +382,7 @@ test('Pages workflow validates PRs and only deploys the reviewed main branch', a
   const preparation = workflow.split('\n  deploy:')[0];
   assert.match(preparation, /github\.event_name != 'workflow_run' \|\| \(github\.event\.workflow_run\.conclusion == 'success' && github\.event\.workflow_run\.head_repository\.full_name == github\.repository\)/);
   assert.match(preparation, /github\.event_name == 'workflow_run' && 'refs\/heads\/main'/);
-  assert.match(preparation, /releases\/latest/);
+  assert.match(preparation, /releases\?per_page=100/);
   assert.match(preparation, /node site\/build\.mjs _site "\$RUNNER_TEMP\/gipny-release\.json"/);
   assert.doesNotMatch(preparation, /workflow_run\.head_sha|workflow_run\.head_branch|download-artifact/);
   assert.match(deployment, /enablement: false/);
@@ -379,14 +394,14 @@ test('Pages workflow validates PRs and only deploys the reviewed main branch', a
 });
 
 
-test('experimental app is packaged separately without changing the landing CSP', async () => {
-  assert.match(html, /href="\.\/app\/"/);
+test('WASM browser app is packaged separately without changing the landing CSP', async () => {
+  assert.match(html, /href="\.\/app\/browser\.html"/);
   for (const lang of ['ru', 'en']) {
     assert.match(messages[lang].browserBody, /Pages/);
-    assert.match(messages[lang].browserLocal, /127\.0\.0\.1/);
+    assert.match(messages[lang].browserLocal, /OPFS/);
   }
   const workflow = await readFile(resolve(root, '../.github/workflows/pages.yml'), 'utf8');
   assert.match(workflow, /VITE_BASE: \/gipny-i2p\/app\//);
-  assert.match(workflow, /cp -R ui\/dist\/\. _site\/app\//);
+  assert.match(workflow, /cp -R ui\/browser-dist\/\. _site\/app\//);
   assert.match(workflow, /npm test --prefix ui/);
 });

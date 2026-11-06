@@ -7,13 +7,15 @@
 //! new every start), so profiles can share it. Its settings are the first
 //! profile's too, until the app restarts.
 //!
-//! There is nothing else: no SAM, no router process, no local port.
+//! No separate router process or local SAM/proxy listener is needed. The router
+//! still has network transport ports; unless the profile turned UPnP off, the
+//! embedded UPnP manager maps eligible ones.
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use crate::net::NetError;
-use crate::router::{RouterSettings, Yggdrasil};
+use crate::router::RouterSettings;
 
 static ROUTER: OnceLock<Arc<i2p_embed::Router>> = OnceLock::new();
 
@@ -36,25 +38,26 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
             Err(e) => eprintln!("[i2p] bundled network snapshot not used: {e}"),
         }
     }
-    // What router.rs passes the child, less SAM and the HTTP proxy: nothing
-    // here listens on any port but the router's own transports.
-    let mut options = vec![
+    // The embedded library exposes only the router's own network transports.
+    let options = vec![
         format!("--datadir={}", router_dir.display()),
         "--sam.enabled=false".into(),
         "--http.enabled=false".into(),
         "--httpproxy.enabled=false".into(),
         "--socksproxy.enabled=false".into(),
-        "--upnp.enabled=true".into(),
-        "--upnp.name=UPnP".into(),
-        // Fast NAT penetration and modern Noise-based transport
+        // The embedded manager maps only active router transports and verifies
+        // ownership before renewal/removal; it never exposes application ports.
+        // Off in settings, it never starts (i2pd's own default is on for Android).
+        format!("--upnp.enabled={}", settings.upnp.enabled()),
+        // Native transports; their reachability is checked independently.
         "--ssu2.enabled=true".into(),
         "--ntcp2.enabled=true".into(),
         // Internal clock drift correction from peer crypto exchanges without plaintext NTP leak
         "--nettime.frompeers=true".into(),
-        // Persist reliable peer profiles and verified LeaseSets across app sessions
+        // Peer profiles and address book; this is not a LeaseSet cache promise.
         "--persist.profiles=true".into(),
         "--persist.addressbook=true".into(),
-        // Balanced exploratory tunnel pool: 2 in / 2 out tunnels for low overhead and quick boot
+        // Current bounded pool; startup/resilience trade-offs need live measurement.
         "--exploratory.inbound.length=2".into(),
         "--exploratory.outbound.length=2".into(),
         "--exploratory.inbound.quantity=2".into(),
@@ -66,9 +69,6 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
         format!("--share={}", settings.transit.share_percent()),
         format!("--limits.transittunnels={}", settings.transit.transit_tunnels()),
     ];
-    if matches!(settings.yggdrasil, Yggdrasil::On) {
-        options.push("--meshnets.yggdrasil".into());
-    }
     // The i2p-embed boundary applies the compile-time diagnostics policy:
     // debug/test honors GIPNY_I2P_LOGLEVEL and this path; release forces
     // warnings/errors to stderr and never opens a router log file.

@@ -101,7 +101,7 @@ def profile(root, output, snapshot, candidates, name, cpu_rate):
     with tempfile.TemporaryDirectory(prefix='browser-bootstrap-') as private:
         try:
             with (output / f'forwarder-{name}.log').open('w') as log:
-                forwarder = subprocess.Popen([sys.executable, 'forwarder/server.py',
+                forwarder = subprocess.Popen([str(root / 'forwarder/target/release/gipny-forwarder'),
                     '--host', '127.0.0.1:18767', '--origin', 'http://127.0.0.1:18770',
                     '--capability-file', str(cap_file), '--candidates', str(candidates),
                     '--max-connections', '24', '--session-seconds', '600', '--idle-seconds', '120',

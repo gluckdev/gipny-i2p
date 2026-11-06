@@ -1,11 +1,9 @@
-import { WebTransportClient } from './web-transport';
-import { browserAttachments } from './browser-files';
+import { selectedBrowserFiles, forgetBrowserFiles } from './browser-files';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 
-const webClient = new WebTransportClient();
 export interface BrowserBackend {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn>;
@@ -13,15 +11,13 @@ export interface BrowserBackend {
 let browserBackend: BrowserBackend | null = null;
 export function configureBrowserBackend(backend: BrowserBackend): void { browserBackend = backend; }
 export function usesBrowserCore(): boolean { return browserBackend !== null; }
-export function configureWebTransport(endpoint: string | null): void { webClient.configure(endpoint); }
-export function connectWebTransport(): Promise<void> { return webClient.connect(); }
 
 export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri) {
     return tauriInvoke(cmd, args);
   }
   if (browserBackend) return browserBackend.invoke<T>(cmd, args);
-  return webClient.invoke<T>(cmd, args);
+  return Promise.reject(new Error('Browser core is not configured'));
 }
 
 export function listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
@@ -29,7 +25,7 @@ export function listen<T>(event: string, handler: (event: { payload: T }) => voi
     return tauriListen(event, handler);
   }
   if (browserBackend) return browserBackend.listen<T>(event, handler);
-  return webClient.listen<T>(event, handler);
+  return Promise.reject(new Error('Browser core is not configured'));
 }
 export type { UnlistenFn };
 
@@ -70,16 +66,6 @@ export interface ChatPrefs {
   saveHistory?: Record<string, boolean>;
 }
 
-/** The relay network as this device's node sees it. */
-export interface DhtStatus {
-  peers: number;
-  items: number;
-  bytes: number;
-  joined: boolean;
-  stores: boolean;
-  seeds: number;
-}
-
 export interface Contact {
   id: number;
   sign_pk: string;
@@ -106,13 +92,12 @@ export interface Contact {
 }
 
 export type TransitProfile = 'frugal' | 'balanced' | 'generous';
-export type YggdrasilMode = 'off' | 'auto' | 'on';
 
 export interface RouterSettings {
   /** How much of the line carries other people's tunnels. */
   transit: TransitProfile;
-  /** Speak i2p over a Yggdrasil mesh as well, when one is running locally. */
-  yggdrasil: YggdrasilMode;
+  /** Ask the home router to open the transport ports (UPnP). Absent means on. */
+  upnp?: 'on' | 'off';
 }
 
 export interface Button { text: string; callback_data: string; }
@@ -169,6 +154,16 @@ export interface FileProgress {
   done: number;
   total: number;
   incoming: boolean;
+  status: 'waiting' | 'sending' | 'receiving' | 'complete' | 'failed' | 'cancelled';
+  cancelable?: boolean;
+}
+
+export interface MessageFiles { attachments: Attachment[]; progress: FileProgress[] }
+
+export interface DeletionNotice {
+  deleted_at: number;
+  by_sender: boolean;
+  can_ack: boolean;
 }
 
 export interface Message {
@@ -187,6 +182,9 @@ export interface Message {
   dm_seq?: number | null;
   deleted_at?: number | null;
   delete_pending?: boolean;
+  /** Null dismisses only the notice; the anti-replay tombstone is retained. */
+  deletion_notice?: DeletionNotice | null;
+  peer_events?: PeerEvent[];
   buttons?: Button[][] | null;
   reply_to: number | null;
   /** Set when the row is console-framed (command, output or mode marker). */
@@ -243,9 +241,9 @@ export interface Bundle {
 
 /** One step of opening a profile, from the backend's `boot_status` event.
  * `stage` is a stable id the interface turns into its own wording; `detail` is
- * the technical line, shown under «технические подробности». */
+ * diagnostic context; the ordinary interface uses localized stage labels. */
 export interface BootStatus {
-  stage: 'vault' | 'router' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht';
+  stage: 'vault' | 'router' | 'inbound' | 'outbound' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht';
   state: 'active' | 'done' | 'failed' | 'skipped';
   detail: string;
 }
@@ -255,21 +253,6 @@ export interface BootStatus {
  * Named for what each one does. The buttons say «КОКАИН» and «НИТРО»; those
  * are labels, and labels change. */
 export type Lane = 'normal' | 'fast';
-
-/** The channel to one contact, as the strip above the chat shows it.
- *
- * Two hop counts, not one: a letter goes out through our tunnel and arrives
- * through the inbound tunnel of the relay the other person collects from.
- * Each side owns its own leg, and shortening a leg exposes the side that
- * shortened it — which is why they are counted separately. */
-export interface LinkStats {
-  lane: Lane;
-  our_hops: number;
-  their_hops: number;
-  padded: boolean;
-  route: 'relay' | 'archive' | 'none';
-  rtt_ms: number | null;
-}
 
 export interface UpdateInfo {
   version: string;
@@ -288,13 +271,13 @@ export type CheckResult =
   | { status: 'unsupported'; latest: string }
   | { status: 'no_asset'; latest: string; wanted: string };
 
-export interface ApkArtifact { arch: string; size: number; }
-export interface ApkArtifacts { version: string; artifacts: ApkArtifact[]; }
 
 export type CoreEvent =
+  | 'RelayConnected' | 'RelayDisconnected'
   | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null; console_kind: number | null } }
   | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
-  | { MessageDeleted: { contact_id: number; message_id: number; deleted_at: number; pending: boolean } }
+  | { MessageDeleted: { contact_id: number; message_id: number; deleted_at: number; pending: boolean; deletion_notice?: DeletionNotice | null } }
+  | { PeerEvent: { contact_id: number; message_id: number; events: PeerEvent[] } }
   | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageSent: { message_id: number } }
@@ -332,13 +315,11 @@ export type CoreEvent =
 
 export interface PendingAttachment { name: string; data: string; }
 
-export interface ExfiltrationReceipt {
-  message_id: number;
-  contact_id?: number | null;
-  kind: 'attachment_saved' | 'text_copied' | 'screenshot_taken';
-  detail?: string;
-  timestamp: number;
-}
+/** What the contact reported doing with one of this chat's messages on their
+ *  device. No content travels: only which message, what, when and how often. */
+export const PEER_EVENT = { copied: 5, saved: 6, screenshot: 7 } as const;
+export type PeerEventKind = typeof PEER_EVENT[keyof typeof PEER_EVENT];
+export interface PeerEvent { kind: PeerEventKind; at: number; count: number; }
 
 export class Api {
   static listProfiles(): Promise<string[]> {
@@ -419,14 +400,8 @@ export class Api {
   static setRouterSettings(settings: RouterSettings): Promise<void> {
     return invoke('set_router_settings', { settings });
   }
-  static setRelayAddress(addr: string): Promise<void> {
-    return invoke('set_relay_address', { addr });
-  }
   static getRelayInfo(): Promise<RelayInfo> {
     return invoke('get_relay_info');
-  }
-  static setRelayMode(mode: RelayMode): Promise<void> {
-    return invoke('set_relay_mode', { mode });
   }
   /** Contacts whose relay has been silent for a while with mail waiting. */
   static listUnreachableContacts(): Promise<number[]> {
@@ -501,6 +476,15 @@ export class Api {
     return invoke('delete_message', { id });
   }
 
+  static acknowledgeDeletionNotices(contactId: number, messageIds: number[]): Promise<void> {
+    return invoke('acknowledge_deletion_notices', { contactId, messageIds });
+  }
+  /** Tell the contact we copied, saved or screenshotted their message. Best
+   *  effort from the caller's view: the core queues and repeats it. */
+  static reportPeerEvent(messageId: number, kind: PeerEventKind): Promise<void> {
+    return invoke('report_peer_event', { messageId, kind });
+  }
+
   static clearDmChat(contactId: number): Promise<number> {
     return invoke('clear_dm_chat', { contactId });
   }
@@ -508,7 +492,7 @@ export class Api {
     return invoke('send_message', { contactId, body, attachments, ttlSecs, replyTo });
   }
   static sendMessagePaths(contactId: number, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
-    if (!isTauri) return browserAttachments(paths).then((attachments) => Api.sendMessage(contactId, body, attachments, ttlSecs, replyTo));
+    if (!isTauri) return invoke<number>('send_message', { contactId, body, browserFiles: selectedBrowserFiles(paths), ttlSecs, replyTo }).then(id => { forgetBrowserFiles(paths); return id; });
     return invoke('send_message_paths', { contactId, body, paths, ttlSecs, replyTo });
   }
   static sendEdit(contactId: number, messageId: number, newBody: string): Promise<void> {
@@ -523,12 +507,9 @@ export class Api {
   static pressGroupButton(groupId: string, messageId: number, callbackData: string): Promise<void> {
     return invoke('press_group_button', { groupId, messageId, callbackData });
   }
-  static listAttachments(messageId: number): Promise<Attachment[]> {
-    return invoke('list_attachments', { messageId });
-  }
   /** Files of a message still moving in parts. */
-  static filesProgress(messageId: number): Promise<FileProgress[]> {
-    return invoke('files_progress', { messageId });
+  static messageFiles(messageIds: number[]): Promise<Record<number, MessageFiles>> {
+    return invoke('message_files', { messageIds });
   }
   static cancelFiles(messageId: number): Promise<void> {
     return invoke('cancel_files', { messageId });
@@ -670,7 +651,7 @@ export class Api {
     return invoke('send_group_message', { groupId, body, attachments, ttlSecs, replyTo });
   }
   static sendGroupMessagePaths(groupId: string, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
-    if (!isTauri) return browserAttachments(paths).then((attachments) => Api.sendGroupMessage(groupId, body, attachments, ttlSecs, replyTo));
+    if (!isTauri) return invoke<number>('send_group_message', { groupId, body, browserFiles: selectedBrowserFiles(paths), ttlSecs, replyTo }).then(id => { forgetBrowserFiles(paths); return id; });
     return invoke('send_group_message_paths', { groupId, body, paths, ttlSecs, replyTo });
   }
   static saveAttachment(attachmentId: number, destPath: string): Promise<void> {
@@ -803,39 +784,6 @@ export class Api {
   static clearMessageHistory(preserveSaved = false): Promise<number> {
     return invoke('clear_message_history', preserveSaved ? { preserveSaved: true } : undefined);
   }
-  /** Exfiltration receipts kept in the vault: attachment saves, copied text fragments, screenshots. */
-  static async getExfiltrations(): Promise<Record<number, ExfiltrationReceipt[]>> {
-    try {
-      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'exfiltration_receipts' })) ?? '{}');
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<number, ExfiltrationReceipt[]>) : {};
-    } catch {
-      return {};
-    }
-  }
-  static async recordExfiltration(receipt: ExfiltrationReceipt): Promise<void> {
-    try {
-      const all = await Api.getExfiltrations();
-      const list = all[receipt.message_id] || [];
-      list.push(receipt);
-      all[receipt.message_id] = list;
-      await invoke('set_ui_data', { key: 'exfiltration_receipts', json: JSON.stringify(all) });
-      for (const listener of Api.exfiltrationListeners) listener(receipt);
-    } catch (e) {
-      console.error('[recordExfiltration]', e);
-    }
-  }
-  private static exfiltrationListeners = new Set<(r: ExfiltrationReceipt) => void>();
-  static onExfiltration(callback: (r: ExfiltrationReceipt) => void): () => void {
-    Api.exfiltrationListeners.add(callback);
-    return () => { Api.exfiltrationListeners.delete(callback); };
-  }
-
-  static getDhtStatus(): Promise<DhtStatus> {
-    return invoke('get_dht_status');
-  }
-  static linkStats(contactId: number): Promise<LinkStats> {
-    return invoke('link_stats', { contactId });
-  }
   /** Rebuilds tunnels; takes tens of seconds and rejects if it could not. */
   static setLane(lane: Lane): Promise<void> {
     return invoke('set_lane', { lane });
@@ -852,27 +800,6 @@ export class Api {
   }
   static currentVersion(): Promise<string> {
     return invoke('current_version');
-  }
-  static listApkArtifacts(): Promise<ApkArtifacts> {
-    return invoke('list_apk_artifacts');
-  }
-  static downloadApk(arch: string, destPath: string): Promise<void> {
-    return invoke('download_apk', { arch, destPath });
-  }
-  static readPreviousLog(): Promise<string> {
-    return invoke('read_previous_log');
-  }
-  static logSettings(): Promise<{ available: boolean; enabled: boolean; path: string }> {
-    return invoke('log_settings');
-  }
-  static setLogEnabled(enabled: boolean): Promise<void> {
-    return invoke('set_log_enabled', { enabled });
-  }
-  static clearDebugLog(): Promise<void> {
-    return invoke('clear_debug_log');
-  }
-  static readDebugLog(): Promise<string> {
-    return invoke('read_debug_log');
   }
   static onEvent(handler: (e: CoreEvent) => void): Promise<UnlistenFn> {
     return listen<CoreEvent>('core_event', (ev) => handler(ev.payload));

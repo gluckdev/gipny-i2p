@@ -1,17 +1,20 @@
-# Старые шаблоны серверного gipny-web
+# Размещение / Deployment
 
-`setup-gcp.sh`, `gipny-web.service` и `nginx-deusexxx.online.conf` относятся
-к прежней схеме серверного gateway. Это исторические шаблоны, а не инструкция
-развёртывания автономного браузерного мессенджера. Они предполагают нативный
-бэкенд за nginx; упоминание домена не подтверждает наличие работающего сервера
-или доступных сертификатов. Не применяйте их к новой PWA.
+## Русский
 
-Актуальный локальный `gipny-web` описан в [core/README.md](../../core/README.md#gipny-web):
-loopback, capability и явные Origin/Host проверки. Публичный reverse proxy из
-старого шаблона не соответствует этой модели по умолчанию.
+Шаблоны отдельного серверного/локального `gipny-web` удалены по решению владельца
+2026-11-06. Веб-клиент — статическая WASM/PWA-сборка; профили и криптография
+находятся в браузере. Для сети нужен отдельный байтовый Rust-мост WSS/WebRTC.
 
-Автономный браузерный клиент использует `browser-messenger-pwa` из GitHub Actions,
-HTTPS-статику, `browser-config.json`, проверенный снимок netDb и отдельный
-байтовый WSS-форвардер. Конфигурация и команда его запуска приведены в
-[docs/browser-messenger.md](../../docs/browser-messenger.md#hosting-preparation).
-Профили, приватные ключи и криптография в этой схеме находятся в браузере.
+Используйте [руководство веб-клиента](../../docs/browser-messenger.md) и
+[руководство моста](../../browser-router/forwarder/README.md). Pages workflow
+готовит WASM в `/app/browser.html`. Наличие workflow не означает развёрнутый мост.
+
+## English
+
+The separate server/local `gipny-web` templates were removed by owner decision
+on 2026-11-06. The web client is a static WASM/PWA build with browser-owned
+profiles and cryptography. Networking uses a separate Rust WSS/WebRTC byte bridge.
+Follow the [browser guide](../../docs/browser-messenger.md) and
+[bridge guide](../../browser-router/forwarder/README.md). Pages builds WASM at
+`/app/browser.html`; a workflow is not a deployed transport service.

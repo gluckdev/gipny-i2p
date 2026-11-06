@@ -43,6 +43,13 @@ pub type DhtHandler = Arc<dyn Fn(&[u8; 32], Vec<u8>) -> Vec<u8> + Send + Sync>;
 /// may sit idle between them.
 const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
+/// Streams served at once. Each costs a task and frame buffers before it has
+/// proved anything; past this, new streams are closed at once rather than
+/// queued, so a flood of idle connections cannot starve the messenger.
+const MAX_CLIENTS: usize = 256;
+/// How long a new stream may take to send its first frame (auth or a DHT
+/// request). An i2p round trip is seconds; a silent stream is let go.
+const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Live connections by the signing key they authenticated as.
 pub type Connections = Arc<RwLock<HashMap<[u8; 32], Lanes>>>;
@@ -459,7 +466,9 @@ where
     crate::crypto::fill_random(&mut challenge);
     send(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
-    let (sign_pk, signature, signed, owner) = match recv::<_, ClientToRelay>(&mut stream).await? {
+    let first = tokio::time::timeout(FIRST_FRAME_DEADLINE, recv::<_, ClientToRelay>(&mut stream)).await
+        .map_err(|_| RelayError::Proto("no first frame in time".into()))??;
+    let (sign_pk, signature, signed, owner) = match first {
         ClientToRelay::Dht(first) => return serve_dht(stream, challenge, first, dht).await,
         ClientToRelay::AuthV2 { sign_pk, signature } => {
             (sign_pk, signature, crate::relay::auth_v2_message(&destination_hash, &challenge), true)
@@ -791,6 +800,10 @@ impl EphemeralRelay {
                         tokio::select! {
                             stream = inbound.recv() => {
                                 let Some(stream) = stream else { break };
+                                if clients.len() >= MAX_CLIENTS {
+                                    crate::debug_trace!("[relay-server] {MAX_CLIENTS} streams open; closing a new one");
+                                    continue;
+                                }
                                 let (store, connections) = (store.clone(), connections.clone());
                                 let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
                                 clients.spawn(async move {

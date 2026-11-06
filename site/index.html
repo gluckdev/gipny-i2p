@@ -7,10 +7,10 @@
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#09151e">
-  <meta name="description" content="Мессенджер с открытым кодом для компьютеров и Android: сквозное шифрование, встроенный I2P и контакты без номера телефона.">
+  <meta name="description" content="Мессенджер с открытым кодом: сквозное шифрование, встроенный I2P и локальные профили без номера телефона. Приложения для компьютеров, Android и браузера.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="gipny.i2p — Личная переписка через I2P.">
-  <meta property="og:description" content="Мессенджер с открытым кодом для компьютеров и Android: сквозное шифрование, встроенный I2P и контакты без номера телефона.">
+  <meta property="og:description" content="Мессенджер с открытым кодом: сквозное шифрование, встроенный I2P и локальные профили без номера телефона. Приложения для компьютеров, Android и браузера.">
   <meta property="og:locale" content="ru_RU">
   <meta property="og:locale:alternate" content="en_US">
   <title>gipny.i2p — Личная переписка через I2P.</title>
@@ -30,7 +30,7 @@
         <a href="#principles" data-i18n="navPrinciples">Как работает</a>
         <a href="#i2p" data-i18n="navI2p">Сеть I2P</a>
         <a href="#downloads" data-i18n="navApps">Скачать</a>
-        <a href="#browser" data-i18n="navBrowser">А в браузере?</a>
+        <a href="#browser" data-i18n="navBrowser">Открыть веб</a>
       </nav>
       <div class="language-switch" role="group" aria-label="Язык сайта" data-i18n-aria="languageLabel" hidden>
         <button type="button" data-language="en" lang="en" aria-pressed="false" aria-label="Read in English">EN</button>
@@ -69,7 +69,7 @@
             <a class="button button-primary" href="#downloads"><span data-i18n="download">Скачать приложение</span><span aria-hidden="true">↓</span></a>
             <a class="text-link" href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="source">Открыть исходники</span><span aria-hidden="true">↗</span></a>
           </div>
-          <p class="availability" data-i18n="availability">Загрузки и инструкции для Linux, Windows, macOS и Android.</p>
+          <p class="availability" data-i18n="availability">Клиенты для Linux, Windows, macOS, Android и браузера.</p>
         </div>
 
         <figure class="message-path">
@@ -94,29 +94,34 @@
           <article class="principle"><span class="card-number" aria-hidden="true">02</span><h3 data-i18n="encryptionTitle">Шифрование до отправки.</h3><p data-i18n="encryptionBody">Личные чаты используют X3DH и Double Ratchet. Сообщения и файлы шифруются до передачи релеям, а расшифровываются на устройствах участников.</p></article>
           <article class="principle"><span class="card-number" aria-hidden="true">03</span><h3 data-i18n="networkTitle">I2P встроен в приложение.</h3><p data-i18n="networkBody">Отдельный роутер устанавливать не нужно. При недоступности I2P или релеев доставка может задержаться; прямой IP-канал для сообщений не используется.</p></article>
         </div>
-        <aside class="hosting-note" aria-label="Защита и её границы" data-i18n-aria="securityLabel"><p data-i18n="securityBoundary">Релеи видят служебные данные доставки, а интернет-провайдер может заметить использование I2P. Заражённое устройство может раскрыть переписку. Копии, которые собеседник сохранил отдельно, нельзя удалить удалённо.</p></aside>
+        <div class="principle-grid">
+          <article class="principle"><span class="card-number" aria-hidden="true">04</span><h3 data-i18n="storageTitle">Зашифрованный локальный профиль.</h3><p data-i18n="storageBody">История и ключи сохраняются на устройстве. Нативное приложение использует защищённое хранилище ОС; веб-клиент — зашифрованное хранилище браузера. Пароль защищает закрытый профиль, но не заражённую систему.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">05</span><h3 data-i18n="attachmentTitle">Вложения под той же защитой.</h3><p data-i18n="attachmentBody">Файлы передаются зашифрованными частями. Получатель проверяет целостность файла до подтверждения завершения. Поддерживаемые изображения проходят очистку метаданных, если она включена; очистка PDF пока доступна только в нативном приложении.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">06</span><h3 data-i18n="securityPracticeTitle">Проверяйте, кому доверяете.</h3><p data-i18n="securityPracticeBody">Сверьте отпечаток контакта отдельным каналом. Обновляйте приложение из проверенного источника. Открытый код позволяет изучить защиту, но сам по себе не означает независимый аудит.</p></article>
+        </div>
+        <aside class="hosting-note" aria-label="Защита и её границы" data-i18n-aria="securityLabel"><p data-i18n="securityBoundary">Релеи видят служебные данные доставки. Скомпрометированное устройство может раскрыть переписку. Сохранённые собеседником копии нельзя гарантированно удалить.</p></aside>
       </section>
 
       <section class="i2p-section section" id="i2p" aria-labelledby="i2p-title">
-        <div class="section-heading"><p class="eyebrow" data-i18n="i2pEyebrow">Технология I2P</p><h2 id="i2p-title" data-i18n="i2pTitle">Что даёт сеть I2P и в чём её компромиссы.</h2></div>
-        <p class="downloads-intro" data-i18n="i2pIntro">I2P (Invisible Internet Project) — децентрализованная оверлейная сеть поверх интернета. В отличие от сетей, созданных для выхода на обычные сайты, I2P спроектирована для прямого зашифрованного взаимодействия приложений внутри самой сети.</p>
+        <div class="section-heading"><p class="eyebrow" data-i18n="i2pEyebrow">Технология I2P</p><h2 id="i2p-title" data-i18n="i2pTitle">Приватная доставка с сетевыми компромиссами.</h2></div>
+        <p class="downloads-intro" data-i18n="i2pIntro">I2P передаёт сообщения через зашифрованные туннели. Для связи не нужны номер телефона и прямое соединение с собеседником.</p>
         <div class="principle-grid">
-          <article class="principle"><span class="card-number" aria-hidden="true">+01</span><h3 data-i18n="i2pProTunnelsTitle">Чесночная маршрутизация и однонаправленные туннели.</h3><p data-i18n="i2pProTunnelsBody">Трафик упаковывается в зашифрованные «зубчики» и идёт через отдельные входящие и исходящие цепочки узлов. Промежуточные участники не видят одновременно отправителя и получателя.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">+02</span><h3 data-i18n="i2pProIdentityTitle">Криптографические адреса вместо IP.</h3><p data-i18n="i2pProIdentityBody">Узлы находят друг друга по криптографическим назначениям (.b32.i2p) через распределённую базу netDb. Ваш реальный IP-адрес не передаётся собеседнику и не привязан к профилю.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">+03</span><h3 data-i18n="i2pProBuiltinTitle">Внутренняя сеть без выходных узлов.</h3><p data-i18n="i2pProBuiltinBody">Сообщения не покидают пределы I2P. Роутер уже встроен в приложения (C++ i2pd на устройствах и WASM-роутер в браузере) и не требует отдельной настройки.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">+01</span><h3 data-i18n="i2pProTunnelsTitle">Чесночная маршрутизация и однонаправленные туннели.</h3><p data-i18n="i2pProTunnelsBody">Отдельные входящие и исходящие туннели распределяют маршрут между несколькими узлами. Защита зависит от выбранного профиля и возможностей наблюдателя.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">+02</span><h3 data-i18n="i2pProIdentityTitle">Криптографические адреса вместо IP.</h3><p data-i18n="i2pProIdentityBody">Вместо IP собеседники обмениваются контактными ключами и I2P-адресами. Отпечаток ключа проверяйте по доверенному каналу.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">+03</span><h3 data-i18n="i2pProBuiltinTitle">Внутренняя сеть без выходных узлов.</h3><p data-i18n="i2pProBuiltinBody">Роутер встроен в нативное приложение; в веб-клиенте он работает как WASM. Переписка доставляется внутри I2P.</p></article>
         </div>
         <div class="principle-grid">
-          <article class="principle"><span class="card-number" aria-hidden="true">−01</span><h3 data-i18n="i2pConBootstrapTitle">Долгий холодный старт.</h3><p data-i18n="i2pConBootstrapBody">Первое подключение занимает несколько минут: роутеру нужно получить список узлов (reseed), изучить базу сети netDb и построить цепочки туннелей.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">−01</span><h3 data-i18n="i2pConBootstrapTitle">Долгий холодный старт.</h3><p data-i18n="i2pConBootstrapBody">При первом запуске роутер получает сведения об узлах и строит туннели. Это может занять несколько минут.</p></article>
           <article class="principle"><span class="card-number" aria-hidden="true">−02</span><h3 data-i18n="i2pConLatencyTitle">Задержки и накладные расходы.</h3><p data-i18n="i2pConLatencyBody">Многослойное шифрование и прохождение через несколько промежуточных узлов увеличивают отклик, расход трафика и нагрузку на батарею по сравнению с централизованными мессенджерами.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">−03</span><h3 data-i18n="i2pConVisibilityTitle">Видимость факта использования I2P.</h3><p data-i18n="i2pConVisibilityBody">Интернет-провайдер не видит ваших собеседников и содержимое писем, но может определить сам факт работы I2P-роутера по характерным соединениям с узлами сети.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">−03</span><h3 data-i18n="i2pConVisibilityTitle">Транспорт и наблюдение за трафиком.</h3><p data-i18n="i2pConVisibilityBody">Нативный I2P использует NTCP2/SSU2. Для браузера предусмотрены WSS и WebRTC через транспортный мост. Они меняют вид соединения, но не гарантируют нераспознаваемость; WebRTC и CDN требуют отдельной проверки.</p></article>
         </div>
       </section>
 
       <section class="downloads-section section" id="downloads" aria-labelledby="downloads-title">
         <div class="section-heading"><p class="eyebrow" data-i18n="downloadsEyebrow">Готовые пакеты</p><h2 id="downloads-title" data-i18n="downloadsTitle">Скачайте для своего устройства.</h2></div>
-        <p class="downloads-intro" data-i18n="downloadsBody">Выберите систему, архитектуру и формат. Ниже — файлы опубликованного релиза; размер указан для скачиваемого пакета.</p>
+        <p class="downloads-intro" data-i18n="downloadsBody">Одна загрузка для вашей системы. Если браузер скрывает тип процессора, уточните устройство в списке. Все пакеты, контрольные суммы и инструкции доступны в релизах GitHub.</p>
         <!-- download-catalog:start -->
-        <p class="catalog-fallback"><a href="https://github.com/gluckdev/gipny-i2p/releases/latest" data-i18n="nativeDownload">Открыть загрузки</a></p>
+        <p class="catalog-fallback"><a href="https://github.com/gluckdev/gipny-i2p/releases" data-i18n="catalogAll">Все релизы на GitHub</a></p>
         <!-- download-catalog:end -->
       </section>
 
@@ -138,35 +143,39 @@
       <section class="browser-section section" id="browser" aria-labelledby="browser-title">
         <div class="browser-mark" aria-hidden="true"><span>&gt;_</span><i></i></div>
         <div class="browser-copy">
-          <p class="pill pill-research" data-i18n="browserStatus">Эксперимент · проверка реализуемости</p>
-          <h2 id="browser-title" data-i18n="browserTitle">Веб-версия</h2>
-          <p class="hero-body" data-i18n="browserClientHighlight">Это принципиально не та веб-версия, к которым все привыкли: здесь нет удалённого сервера мессенджера. Вся память, зашифрованная база данных, криптографические ключи и маршрутизация I2P выполняются исключительно на вашем устройстве внутри браузера.</p>
-          <p data-i18n="browserBody">Браузер — только интерфейс; локально установленный gipny-web хранит ключи, выполняет криптографию и работает с данными на вашем устройстве. Pages раздаёт статический код и не получает переписку, даже шифротекст.</p>
-          <p class="browser-boundary" data-i18n="browserTimeline">Это эксперимент, а не выпущенный веб-мессенджер.</p>
-          <p><a class="button button-primary" href="./app/" data-i18n="browserOpen">Открыть экспериментальный интерфейс</a></p>
-          <p><a href="https://github.com/gluckdev/gipny-i2p/blob/main/core/README.md#gipny-web" data-i18n="browserSetup">Настройка локального gipny-web</a></p>
-          <p class="browser-boundary" data-i18n="browserLocal">Нужен gipny-web на этом устройстве; браузер подключается к 127.0.0.1. Chrome может запросить доступ к локальной сети. Поддержка HTTPS → loopback в Firefox не проверена.</p>
-          <p class="browser-boundary" data-i18n="browserStandaloneTitle">Автономный браузерный мессенджер</p>
-          <p data-i18n="browserStandaloneBody">Отдельная сборка работает без локального gipny-web: встроенный WASM-роутер I2P запускается в Web Worker, а ключи и история хранятся в зашифрованном виде в OPFS на устройстве.</p>
+          <p class="pill pill-research" data-i18n="browserStatus">Экспериментальная WASM-версия</p>
+          <h2 id="browser-title" data-i18n="browserTitle">Самостоятельное приложение. В вашем браузере.</h2>
+          <p data-i18n="browserBody">Вы запускаете приложение на своём устройстве: WASM-ядро шифрует сообщения, хранит профиль и работает с I2P. GitHub Pages раздаёт код и обновления; сервер GitHub не участвует в доставке переписки.</p>
+          <div class="browser-differences">
+            <h3 data-i18n="browserDifferenceTitle">Чем отличается веб-клиент Gipny</h3><p data-i18n="browserDifferenceBody">В отличие от веб-оболочки, которая управляет запущенным на сервере мессенджером, Gipny выполняет эту работу в вашем браузере. Аккаунт GitHub, установленное приложение на телефоне и сопряжение с ним не нужны.</p>
+            <dl>
+              <dt data-i18n="browserDataTitle">Профиль на вашем устройстве</dt><dd data-i18n="browserDataBody">Профиль создаётся локально. Пароль, ключи и история не отправляются GitHub; сообщения расшифровываются здесь же.</dd>
+              <dt data-i18n="browserNetworkTitle">Свой I2P-роутер</dt><dd data-i18n="browserNetworkBody">WASM-роутер строит I2P-туннели на устройстве. Из-за ограничений браузера выход в сеть проходит через WSS- или WebRTC-мост. Это транспорт зашифрованных данных; он видит IP, время и объём соединений.</dd>
+              <dt data-i18n="browserHostingTitle">Хостинг для установки и обновлений</dt><dd data-i18n="browserHostingBody">После сохранения приложения браузером его оболочка и история открываются без хостинга. Для переписки нужны сеть I2P, рабочий мост и актуальные сведения об узлах. Первый запуск и получение новой версии требуют доступного источника файлов.</dd>
+            </dl>
+          </div>
+          <p class="browser-boundary" data-i18n="browserTimeline">Браузерный клиент проходит проверку. Сетевому режиму нужен доступный транспортный мост; при его отказе нет скрытого обходного подключения.</p>
+          <p><a class="button button-primary" href="./app/browser.html" data-i18n="browserOpen">Открыть веб-мессенджер</a></p>
+          <p><a href="https://github.com/gluckdev/gipny-i2p/blob/main/docs/browser-messenger.md" data-i18n="browserSetup">Возможности и требования веб-версии</a></p>
+          <p class="browser-boundary" data-i18n="browserLocal">Нужны HTTPS, WebAssembly, Worker и OPFS. Очистка данных сайта удаляет локальный профиль. Перенос и зашифрованный экспорт браузерного профиля пока не реализованы.</p>
+          <p data-i18n="browserStandaloneBody">Ключи и зашифрованная история остаются в OPFS. WASM работает в отдельном Worker. Браузер не предоставляет все механизмы защиты памяти и хранилища нативного приложения.</p>
           <p class="browser-boundary" data-i18n="browserBoundary">Перед вами сайт проекта. Он не отправляет и не принимает сообщения, не создаёт профили и не хранит ваши ключи.</p>
-          <aside class="hosting-note" aria-label="О посещении сайта" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">На сайте нет аналитики и внешних скриптов. Но его хостинг, GitHub Pages, видит запросы страниц, включая IP-адрес и время посещения. Открытие сайта само по себе не включает защиту I2P; сайт не получает ваши сообщения, контакты или ключи.</p></aside>
+          <aside class="hosting-note" aria-label="О посещении сайта" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">На этой странице нет аналитики и внешних скриптов. GitHub Pages видит IP и время посещения. Веб-клиент доверяет коду своего хостинга; транспортный мост и TURN видят сетевые метаданные.</p></aside>
         </div>
       </section>
 
       <section class="plans-section section" id="plans" aria-labelledby="plans-title">
-        <div class="section-heading"><p class="pill pill-research" data-i18n="plansEyebrow">В планах</p><h2 id="plans-title" data-i18n="plansTitle">Поговорили и забыли.</h2></div>
-        <p class="downloads-intro" data-i18n="plansIntro">Это планы для будущих версий. Сейчас приложения сохраняют историю переписки локально.</p>
+        <div class="section-heading"><p class="pill pill-research" data-i18n="plansEyebrow">В планах</p><h2 id="plans-title" data-i18n="plansTitle">Что дальше.</h2></div>
+        <p class="downloads-intro" data-i18n="plansIntro">Направления развития; наличие пункта в планах не означает готовую функцию.</p>
         <div class="principle-grid">
-          <article class="principle"><span class="card-number" aria-hidden="true">01</span><h3 data-i18n="planHistoryTitle">Без истории по умолчанию.</h3><p data-i18n="planHistoryBody">Планируем не сохранять историю переписки по умолчанию. В начале каждого нового чата приложение сообщит об этом и предложит включить зашифрованное локальное хранение.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">02</span><h3 data-i18n="planNameTitle">Имя, которым удобно делиться.</h3><p data-i18n="planNameBody">Хотим добавить имена для обмена — например, @Петрович666 — без центрального аккаунта. Имя не заменит ключ: отпечаток контакта по-прежнему нужно будет сверять по доверенному каналу.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">03</span><h3 data-i18n="planConsentTitle">Контакт — после вашего согласия.</h3><p data-i18n="planConsentBody">Запрос на добавление будет приходить с уведомлением. Контакт появится в списке только после принятия; нежелательный запрос можно будет отклонить.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">04</span><h3 data-i18n="planCallsTitle">Защищённые видеозвонки и конференции.</h3><p data-i18n="planCallsBody">Видеоконференции на базе эфе Recents мерных мультиадресов и случайных путей через публичные ноды сети с индивидуальным сквозным шифрованием под каждую отдельную сессию (как опциональное расширение).</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">05</span><h3 data-i18n="planXmrTitle">Встроенный XMR кошелёк и майнер.</h3><p data-i18n="planXmrBody">Опциональный подключаемый модуль приватных платежей Monero (XMR) и фоновый лёгкий майнер на базе пула MoneroOcean для автономной поддержки узла.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">06</span><h3 data-i18n="planTelTitle">Звонки и SMS по всему миру.</h3><p data-i18n="planTelBody">Подключаемый шлюз для совершения звонков и отправки SMS на реальные телефонные номера по всему миру без раскрытия персональных данных абонента.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">07</span><h3 data-i18n="planMailTitle">Анонимная электронная почта I2P.</h3><p data-i18n="planMailBody">Встроенная поддержка отправки и приёма e-mail через скрытые сервисы I2P (I2P-Bote / Postman / Smail): сквозное шифрование писем, отсутствие центральных почтовых серверов и надёжная анонимность переписки.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">08</span><h3 data-i18n="planMipsTitle">Поддержка роутеров на архитектуре MIPS.</h3><p data-i18n="planMipsBody">Расширение сборок агента для OpenWrt поддержкой распространённых роутеров на базе архитектур MIPS и MIPSel наряду с ARM и x86.</p></article>
-          <article class="principle"><span class="card-number" aria-hidden="true">09</span><h3 data-i18n="planCertTitle">Подпись сборок бесплатными сертификатами.</h3><p data-i18n="planCertBody">Внедрение автоматической цифровой подписи дистрибутивов для Windows и macOS общедоступными сертификатами, чтобы операционные системы не выдавали предупреждений о неизвестном издателе.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">04</span><h3 data-i18n="planNameTitle">Имя, которым удобно делиться.</h3><p data-i18n="planNameBody">Удобные имена для обмена контактами. Владение именем и защита от подмены ещё требуют доработки; сейчас используйте карточки и отпечатки.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">05</span><h3 data-i18n="planCallsTitle">Защищённые видеозвонки и конференции.</h3><p data-i18n="planCallsBody">Аудио и видео — отдельное расширение. Транспорт WebRTC для переписки сам по себе ещё не означает поддержку звонков.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">06</span><h3 data-i18n="planCertTitle">Проверяемые сборки.</h3><p data-i18n="planCertBody">Независимая подпись издателя и происхождение пакетов. Возможность убрать предупреждения ОС зависит от требований платформы.</p></article>
         </div>
+        <article class="mirror-plan">
+          <h3 data-i18n="planMirrorsTitle">Зеркала в Tor и I2P.</h3><p data-i18n="planMirrorsBody">Планируем зеркала страницы в .onion и .i2p с адресами, содержащими gipny. Ключи и адреса будут проверены перед публикацией; действующих зеркал пока нет.</p>
+          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/docs/site-mirrors.md" data-i18n="planMirrorsLink">План зеркал и проверки адресов</a>
+        </article>
         <aside class="hosting-note"><p data-i18n="plansBoundary">Собеседник всё равно сможет сохранить текст или сделать снимок экрана.</p></aside>
       </section>
 
@@ -174,13 +183,13 @@
         <div><p class="eyebrow" data-i18n="openEyebrow">Открытая разработка</p><h2 id="open-title" data-i18n="openTitle">Открытый код. Понятные ограничения.</h2><p data-i18n="openBody">Исходники, архитектура и описание защиты доступны публично. Следите за разработкой, изучайте известные ограничения и сообщайте о проблемах.</p></div>
         <div class="resource-links">
           <a href="https://github.com/gluckdev/gipny-i2p"><span data-i18n="resourceCode">Исходники и задачи</span><span aria-hidden="true">↗</span></a>
-          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/README.md"><span data-i18n="resourceDocs">Документация проекта</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/gluckdev/gipny-i2p/blob/main/README.md"><span data-i18n="resourceDocs">Документация RU / EN</span><span aria-hidden="true">↗</span></a>
           <a href="https://github.com/gluckdev/gipny-i2p/blob/main/SECURITY.md"><span data-i18n="resourceSecurity">Политика безопасности</span><span aria-hidden="true">↗</span></a>
         </div>
       </section>
     </main>
 
-    <footer class="site-footer"><a class="footer-brand" href="#main">gipny<span>.i2p</span></a><p><span data-i18n="footerAttribution">I2P-форк проекта</span> <a href="https://github.com/ri-kont/gipny">gipny</a>.</p><a href="https://github.com/gluckdev/gipny-i2p/releases" data-i18n="footerReleases">История релизов</a></footer>
+    <footer class="site-footer"><a class="footer-brand" href="#main">gipny<span>.i2p</span></a><p><span data-i18n="footerAttribution">I2P-форк проекта</span> <a href="https://github.com/ri-kont/gipny">gipny</a>.</p><a href="https://github.com/gluckdev/gipny-i2p/releases" data-i18n="footerReleases">Все релизы на GitHub</a></footer>
   </div>
 </body>
 </html>

@@ -17,6 +17,7 @@ type RelayFrame = 'AuthOk' | 'AuthFail' | 'Pong' | { Challenge: number[] }
 export class BrowserRelay {
   private closed = false;
   private streams = new Set<BrowserStream>();
+  private idle: { address: string; stream: BrowserStream; timer: ReturnType<typeof setTimeout> }[] = [];
   private serving = 0;
   private sequence = 1;
   constructor(private engine: BrowserEngine, private network: BrowserNetwork, private identity: PublicIdentity,
@@ -25,6 +26,8 @@ export class BrowserRelay {
   start(): void { void this.acceptLoop(); }
   close(): void {
     this.closed = true;
+    for (const entry of this.idle) { clearTimeout(entry.timer); this.release(entry.stream); }
+    this.idle = [];
     for (const stream of this.streams) stream.close();
     this.streams.clear();
     this.network.close();
@@ -88,6 +91,12 @@ export class BrowserRelay {
 
   private async authenticated(address: string): Promise<BrowserStream> {
     if (this.closed) throw new Error('Router is locked');
+    const index = this.idle.findIndex(entry => entry.address === address);
+    if (index >= 0) {
+      const entry = this.idle.splice(index, 1)[0]!;
+      clearTimeout(entry.timer);
+      return entry.stream;
+    }
     const stream = await this.network.connect(address, 443);
     if (this.closed) { stream.close(); stream.free(); throw new Error('Router is locked'); }
     this.streams.add(stream);
@@ -100,28 +109,42 @@ export class BrowserRelay {
       return stream;
     } catch (error) { this.release(stream); throw error; }
   }
+  private reuse(address: string, stream: BrowserStream): void {
+    if (this.closed || this.idle.length >= 8 || this.idle.filter(entry => entry.address === address).length >= 4) { this.release(stream); return; }
+    const timer = setTimeout(() => {
+      const index = this.idle.findIndex(entry => entry.stream === stream);
+      if (index >= 0) { this.idle.splice(index, 1); this.release(stream); }
+    }, 15000);
+    this.idle.push({ address, stream, timer });
+  }
   async bundle(address: string, peer: string): Promise<Uint8Array> {
     const stream = await this.authenticated(address);
+    let ok = false;
     try {
       await this.writeClient(stream, { GetBundle: { pk: unhex(peer) } });
       const frame = await this.readRelay(stream);
       if (typeof frame !== 'object' || !('Bundle' in frame) || hex(frame.Bundle.pk) !== peer || !frame.Bundle.bundle) throw new Error('Peer bundle is unavailable');
+      ok = true;
       return new Uint8Array(frame.Bundle.bundle);
-    } finally { this.release(stream); }
+    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
   }
   async ping(address: string): Promise<void> {
     const stream = await this.authenticated(address);
+    let ok = false;
     try {
       await this.writeClient(stream, 'Ping');
       if (await this.readRelay(stream) !== 'Pong') throw new Error('Relay did not answer ping');
-    } finally { this.release(stream); }
+      ok = true;
+    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
   }
-  async deposit(address: string, peer: string, blob: number[]): Promise<void> {
+  async deposit(address: string, peer: string, blob: Uint8Array): Promise<void> {
     const stream = await this.authenticated(address);
+    let ok = false;
     try {
-      await this.writeClient(stream, { Send: { to: unhex(peer), blob } });
+      await this.writeClient(stream, { Send: { to: unhex(peer), blob: Array.from(blob) } });
       const frame = await this.readRelay(stream);
       if (typeof frame !== 'object' || !('Deposited' in frame)) throw new Error('Relay did not acknowledge deposit');
-    } finally { this.release(stream); }
+      ok = true;
+    } finally { if (ok) this.reuse(address, stream); else this.release(stream); }
   }
 }

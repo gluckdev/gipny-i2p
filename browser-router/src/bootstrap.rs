@@ -1,4 +1,4 @@
-//! Bounded, memory-only ingestion of the release netDb tar.gz format.
+//! Bounded ingestion of the release netDb tar.gz format with a public local cache.
 //! The archive digest identifies the chosen snapshot; every usable RouterInfo
 //! is independently signature/freshness/network checked before it reaches core.
 use crate::{ntcp2::verified_peer, BrowserRuntime};
@@ -12,6 +12,7 @@ const MAX_ENTRIES: usize = 4096;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct SnapshotReceipt {
+    pub from_cache: bool,
     pub compressed_bytes: usize,
     pub tar_bytes: usize,
     pub entries: usize,
@@ -183,6 +184,16 @@ mod browser {
     use wasm_bindgen::{prelude::*, JsCast};
     use wasm_bindgen_futures::JsFuture;
 
+    #[wasm_bindgen(module = "/src/bootstrap-cache.js")]
+    extern "C" {
+        #[wasm_bindgen(js_name = loadBootstrap)]
+        fn load_bootstrap(digest: &str) -> js_sys::Promise;
+        #[wasm_bindgen(js_name = saveBootstrap)]
+        fn save_bootstrap(digest: &str, bytes: &[u8]) -> js_sys::Promise;
+        #[wasm_bindgen(js_name = removeBootstrap)]
+        fn remove_bootstrap(digest: &str) -> js_sys::Promise;
+    }
+
     struct AbortFetch(web_sys::AbortController);
     impl Drop for AbortFetch {
         fn drop(&mut self) {
@@ -204,6 +215,18 @@ mod browser {
             return Err(
                 "snapshot URL requires HTTPS or loopback HTTP, without credentials/fragment".into(),
             );
+        }
+        if let Ok(cached) = JsFuture::from(load_bootstrap(digest)).await {
+            if let Ok(bytes) = cached.dyn_into::<js_sys::Uint8Array>() {
+                if bytes.length() as usize <= MAX_DOWNLOAD_BYTES {
+                    if let Ok(mut snapshot) = verify_snapshot(&bytes.to_vec(), digest).await {
+                        snapshot.receipt.from_cache = true;
+                        return Ok(snapshot);
+                    }
+                }
+                // Stale, damaged or wrongly signed caches never bypass validation.
+                let _ = JsFuture::from(remove_bootstrap(digest)).await;
+            }
         }
         let abort =
             AbortFetch(web_sys::AbortController::new().map_err(|_| "fetch abort controller")?);
@@ -284,6 +307,7 @@ mod browser {
         drop(abort);
         let mut snapshot = verify_snapshot(&bytes, digest).await?;
         snapshot.receipt.download_ms = download_ms;
+        let _ = JsFuture::from(save_bootstrap(digest, &bytes)).await;
         Ok(snapshot)
     }
 

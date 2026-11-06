@@ -1,13 +1,13 @@
-import { errorText, logText } from './error-text';
+import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import { save } from '@tauri-apps/plugin-dialog';
 import { Api, isTauri, usesBrowserCore, encodeCard } from './api';
-import type { RelayInfo, RelayMode, RouterSettings, TransitProfile, YggdrasilMode } from './api';
+import type { RouterSettings, TransitProfile } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
 import { getLang, setLang, type Lang } from './i18n';
 import type { Store } from './state';
-import { h, busy, humanSize, short } from './view';
+import { h, busy, humanSize } from './view';
 import type { App } from './app';
 
 import { icon } from './icons';
@@ -31,69 +31,9 @@ export class SettingsModal {
     const verSlot = h('div', { class: 'card-block' }, tr('media.loading'));
     Api.currentVersion().then((v) => { verSlot.textContent = `gipny v${v}`; }).catch(() => { verSlot.textContent = '?'; });
     const updErr = h('div', { class: 'err' });
-
-    const apkInfo = h('div', { class: 'hint', style: { marginBottom: '6px' } }, tr('settings.fetching_apk_info'));
-    const apkButtons = h('div', { class: 'row' });
-    const apkErr = h('div', { class: 'err' });
-    const apkProgress = h('div', { class: 'hint', style: { marginTop: '4px' } });
-
-    const renderApk = (version: string, items: { arch: string; size: number }[]): void => {
-      apkInfo.textContent = items.length === 0
-        ? tr('settings.no_apk_in_current_release')
-        : tr('settings.gipny_v_for_android_sideload_apk_for_your', { p0: (version) });
-      apkButtons.replaceChildren();
-      for (const it of items) {
-        const btn = h('button', {
-          class: 'btn btn-ghost',
-          onClick: () => busy(btn as HTMLButtonElement, async () => {
-            apkErr.textContent = '';
-            apkProgress.textContent = '';
-            try {
-              if (!isTauri) { apkErr.textContent = tr('web.desktop_only'); return; }
-              const fname = `gipny-${version}-android-${it.arch}.apk`;
-              const dest = await save({ defaultPath: fname, filters: [{ name: 'APK', extensions: ['apk'] }] });
-              if (!dest) return;
-              apkProgress.textContent = tr('settings.downloading', { p0: (humanSize(it.size)) });
-              await Api.downloadApk(it.arch, dest);
-              apkProgress.textContent = tr('settings.saved', { p0: (dest) });
-              store.showToast(tr('settings.apk_saved', { p0: (humanSize(it.size)) }));
-            } catch (e) {
-              apkErr.textContent = errorText(e);
-              apkProgress.textContent = '';
-            }
-          }),
-        }, tr('settings.download', { p0: (it.arch.toUpperCase()), p1: (humanSize(it.size)) })) as HTMLButtonElement;
-        apkButtons.appendChild(btn);
-      }
-    };
-
-    // Only ask when this session has a local HTTP proxy to check GitHub
-    // through (Android, or attached to a router we don't own, has none).
     const updateSection = h('div', { class: 'stack' });
-    const apkSection = h('div', { class: 'stack' });
-    Api.updateConfigured()
-      .then((configured) => {
-        if (!configured) {
-          // No local HTTP proxy this run (Android, or a router we don't own):
-          // say so instead of quietly hiding the whole block.
-          updateSection.replaceChildren(h('div', { class: 'hint' },
-            tr('settings.automatic_updates_are_unavailable_in_this_session_download')));
-          apkSection.classList.remove('hidden');
-          return Api.listApkArtifacts()
-            .then((info) => renderApk(info.version, info.artifacts))
-            .catch(() => { apkInfo.textContent = ''; });
-        }
-        return Api.listApkArtifacts()
-          .then((info) => renderApk(info.version, info.artifacts))
-          .catch((e) => { apkInfo.textContent = ''; apkErr.textContent = tr('settings.apk_info_failed', { p0: (e) }); });
-      })
-      .catch(() => { updateSection.classList.add('hidden'); apkSection.classList.add('hidden'); });
 
-    const unsubProg = store.updateProgress.subscribe((p) => {
-      if (!p) return;
-      apkProgress.textContent = tr('settings.downloading_2', { p0: (p.pct), p1: (humanSize(p.downloaded)), p2: (humanSize(p.total)) });
-    }, false);
-    const closeWrapped = (): void => { unsubProg(); close(); };
+    const closeWrapped = close;
 
     this.el = h('div', { class: 'modal' },
       h('div', { class: 'modal-header' },
@@ -136,112 +76,16 @@ export class SettingsModal {
             (() => {
               const line = h('div', { class: 'hint', style: { marginTop: '8px' } },
                 tr('settings.updates_are_checked_at_startup_and_every_few'));
-              Api.updateAsksForRoot().then((asks) => {
-                if (!asks) return;
-                line.textContent = tr('settings.this_app_was_installed_as_a_deb_package');
+              Api.updateConfigured().then((configured) => {
+                if (!configured) { line.textContent = tr('settings.automatic_updates_are_unavailable_in_this_session_download'); return; }
+                return Api.updateAsksForRoot().then((asks) => {
+                  if (asks) line.textContent = tr('settings.this_app_was_installed_as_a_deb_package');
+                });
               }).catch(() => {});
               return line;
             })(),
           );
           return updateSection;
-        })(),
-
-        h('div', { class: 'divider-text' }, tr('settings.relay')),
-        (() => {
-          const choices: { id: RelayMode; title: string; blurb: string }[] = [
-            {
-              id: 'builtin', title: tr('settings.relay_builtin'),
-              blurb: tr('settings.a_relay_inside_the_app_with_no_setup'),
-            },
-            {
-              id: 'external', title: tr('settings.relay_external'),
-              blurb: tr('settings.a_relay_on_your_own_or_someone_else'),
-            },
-          ];
-          const relayI = h('input', { class: 'input', placeholder: tr('settings.relay_destination_in_base64'), 'aria-label': tr('settings.relay_i2p_destination') }) as HTMLInputElement;
-          const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
-          const relayErr = h('div', { class: 'err' });
-          const saveBtn = h('button', {
-            class: 'btn btn-block',
-            onClick: () => busy(saveBtn, async () => {
-              relayErr.textContent = '';
-              try {
-                await Api.setRelayAddress(relayI.value.trim());
-                store.relayInfo.set(await Api.getRelayInfo());
-                store.showToast(tr('settings.relay_address_saved_reconnecting_within_20_seconds'));
-              } catch (e) { relayErr.textContent = errorText(e); }
-            }),
-          }, tr('settings.save_relay')) as HTMLButtonElement;
-          const externalBox = h('div', null, h('div', { class: 'field' }, relayI), saveBtn);
-
-          const radios = new Map<RelayMode, HTMLInputElement>();
-          const rows = choices.map(({ id, title, blurb }) => {
-            const r = h('input', { type: 'radio', name: 'relay-mode', id: `opt-relay-${id}` }) as HTMLInputElement;
-            radios.set(id, r);
-            r.addEventListener('change', () => {
-              if (!r.checked) return;
-              relayErr.textContent = '';
-              Api.setRelayMode(id)
-                .then(() => Api.getRelayInfo())
-                .then((info) => store.relayInfo.set(info))
-                .catch((e) => { relayErr.textContent = errorText(e); paint(store.relayInfo.get()); });
-            });
-            return h('label', { class: 'opt', for: `opt-relay-${id}` },
-              r,
-              h('span', { class: 'opt-text' },
-                h('span', { class: 'opt-title' }, title),
-                h('span', { class: 'opt-blurb' }, blurb)),
-            );
-          });
-
-          const paint = (info: RelayInfo | null): void => {
-            if (!info) { status.textContent = '…'; return; }
-            for (const [id, r] of radios) r.checked = id === info.mode;
-            externalBox.classList.toggle('hidden', info.mode !== 'external');
-            if (document.activeElement !== relayI) relayI.value = info.external;
-            status.textContent = info.mode === 'external'
-              ? (info.external.trim() ? tr('settings.collecting_mail_from_the_external_relay') : tr('settings.no_external_relay_address_sending_is_unavailable'))
-              : info.hosted.state === 'ready' ? tr('settings.built_in_relay_is_running', { p0: (short(info.hosted.address)) })
-              : info.hosted.state === 'failed' ? tr('settings.failed_to_start_retrying', { p0: (info.hosted.reason) })
-              : tr('settings.built_in_relay_is_starting_usually_1_2');
-          };
-
-          const box = h('div', null, !usesBrowserCore() && h('div', { class: 'opts' }, ...rows), status, !usesBrowserCore() && externalBox, relayErr);
-          // The modal has no teardown hook; the subscription lets go of itself
-          // once the modal has been on screen and is gone again.
-          let shown = false;
-          const unsub = store.relayInfo.subscribe((info) => {
-            if (box.isConnected) shown = true;
-            else if (shown) { unsub(); return; }
-            paint(info);
-          }, true);
-          Api.getRelayInfo().then((info) => store.relayInfo.set(info)).catch(() => {});
-          return box;
-        })(),
-
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('about.relay_network')),
-        !usesBrowserCore() && (() => {
-          const stat = (label: string) => {
-            const v = h('div', { class: 'stat-value' }, '…');
-            return { v, el: h('div', { class: 'stat' }, v, h('div', { class: 'stat-label' }, label)) };
-          };
-          const peers = stat(tr('settings.known_nodes'));
-          const items = stat(tr('settings.records_stored_for_others'));
-          const role = stat(tr('settings.device_role'));
-          const note = h('div', { class: 'hint' });
-          Api.getDhtStatus().then((d) => {
-            peers.v.textContent = String(d.peers);
-            items.v.textContent = d.stores ? `${d.items} · ${humanSize(d.bytes)}` : '—';
-            role.v.textContent = d.stores ? tr('settings.storage_node') : tr('settings.client_only');
-            note.textContent = !d.joined
-              ? tr('settings.this_node_will_join_the_network_when_the')
-              : d.peers === 0 && d.seeds === 0
-                ? tr('settings.looking_for_the_network_through_your_contacts_relays')
-                : d.peers === 0
-                  ? tr('settings.no_nodes_found_gathering_candidates_from_saved_nodes')
-                  : tr('settings.this_device_participates_in_the_network_it_stores');
-          }).catch(() => { note.textContent = tr('settings.network_status_unavailable'); });
-          return h('div', null, h('div', { class: 'stats' }, peers.el, items.el, role.el), note);
         })(),
 
         h('div', { class: 'divider-text' }, tr('settings.privacy')),
@@ -426,18 +270,14 @@ export class SettingsModal {
             { id: 'generous', title: tr('settings.generous'),
               blurb: tr('settings.more_transit_traffic_provides_cover_traffic_and_helps') },
           ];
-          const yggLevels: { id: YggdrasilMode; title: string; blurb: string }[] = [
-            { id: 'off', title: tr('chat.off'), blurb: tr('settings.regular_internet_only') },
-            { id: 'auto', title: tr('settings.automatic'),
-              blurb: tr('settings.try_the_regular_route_use_mesh_if_the') },
-            { id: 'on', title: tr('settings.always'), blurb: tr('settings.always_announce_this_node_in_the_mesh_network') },
-          ];
           const radios = new Map<TransitProfile, HTMLInputElement>();
-          const yggRadios = new Map<YggdrasilMode, HTMLInputElement>();
+          // On by default. Off, the router never talks to the home gateway: no
+          // search on the LAN and no rule that shows a P2P program runs here.
+          const upnpBox = h('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
 
           const current = (): RouterSettings => ({
             transit: [...radios].find(([, r]) => r.checked)?.[0] ?? 'balanced',
-            yggdrasil: [...yggRadios].find(([, r]) => r.checked)?.[0] ?? 'auto',
+            upnp: upnpBox.checked ? 'on' : 'off',
           });
           const persist = async (): Promise<void> => {
             err.textContent = '';
@@ -459,28 +299,16 @@ export class SettingsModal {
             );
           });
 
-          const yggOptions = yggLevels.map(({ id, title, blurb }) => {
-            const r = h('input', { type: 'radio', name: 'ygg', id: `opt-ygg-${id}` }) as HTMLInputElement;
-            yggRadios.set(id, r);
-            r.addEventListener('change', () => { void persist(); });
-            return h('label', { class: 'opt', for: `opt-ygg-${id}` },
-              r,
-              h('span', { class: 'opt-text' },
-                h('span', { class: 'opt-title' }, title),
-                h('span', { class: 'opt-blurb' }, blurb)),
-            );
-          });
+          upnpBox.addEventListener('change', () => { void persist(); });
 
           Api.getRouterSettings()
             .then((s2) => {
               const t = radios.get(s2.transit);
               if (t) t.checked = true;
-              const y = yggRadios.get(s2.yggdrasil);
-              if (y) y.checked = true;
+              upnpBox.checked = s2.upnp !== 'off';
             })
             .catch(() => {
               radios.get('balanced')!.checked = true;
-              yggRadios.get('auto')!.checked = true;
             });
 
           return h('div', null,
@@ -488,24 +316,16 @@ export class SettingsModal {
               tr('settings.how_many_other_people_s_tunnels_your_router')),
             h('div', { class: 'opt-group' }, ...options),
 
-            h('div', { class: 'divider-text', style: { marginTop: '14px' } }, 'yggdrasil'),
-            h('div', { class: 'hint', style: { marginBottom: '8px' } },
-              tr('settings.an_alternative_when_your_isp_blocks_regular_i2p')),
-            h('div', { class: 'opt-group' }, ...yggOptions),
+            h('div', { class: 'divider', style: { margin: '14px 0' } }),
+            h('label', { class: 'opt', style: { alignItems: 'center' } },
+              upnpBox,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, tr('settings.open_the_router_port_automatically_upnp')),
+                h('span', { class: 'opt-blurb' },
+                  tr('settings.speeds_up_connecting_but_the_local_network_can_tell')))),
             note,
             err,
           );
-        })(),
-
-        !usesBrowserCore() && (() => {
-          apkSection.append(
-            h('div', { class: 'divider-text' }, tr('settings.android_app')),
-            apkInfo,
-            apkButtons,
-            apkProgress,
-            apkErr,
-          );
-          return apkSection;
         })(),
 
         h('div', { class: 'divider-text' }, tr('settings.change_passphrase')),
@@ -607,76 +427,6 @@ export class SettingsModal {
             errEl,
             exportBtn,
           );
-        })(),
-
-        h('div', { class: 'divider-text' }, tr('settings.application_log')),
-        (() => {
-          const panel = h('div', { class: 'application-log' },
-            h('div', { class: 'hint' }, tr('settings.log_capability_loading')));
-          const out = h('pre', { class: 'log-view hidden' });
-          const pathLine = h('div', { class: 'hint' }, '');
-          const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
-
-          const load = (which: 'current' | 'previous') => busy(showBtn, async () => {
-            try {
-              const txt = which === 'current' ? await Api.readDebugLog() : await Api.readPreviousLog();
-              out.textContent = logText(txt);
-              out.classList.remove('hidden');
-              out.scrollTop = out.scrollHeight;
-            } catch (e) {
-              out.textContent = errorText(e);
-              out.classList.remove('hidden');
-            }
-          });
-
-          const showBtn = h('button', { class: 'btn btn-ghost', onClick: () => void load('current') }, tr('settings.show_log')) as HTMLButtonElement;
-          const prevBtn = h('button', { class: 'btn btn-ghost', onClick: () => void load('previous') }, tr('settings.previous_session')) as HTMLButtonElement;
-          const copyBtn = h('button', {
-            class: 'btn btn-ghost',
-            onClick: () => {
-              navigator.clipboard.writeText(out.textContent ?? '')
-                .then(() => store.showToast(tr('settings.log_copied')))
-                .catch(() => store.showToast(tr('settings.could_not_copy'), true));
-            },
-          }, tr('settings.copy'));
-          const clearBtn = h('button', {
-            class: 'btn btn-ghost',
-            onClick: () => busy(clearBtn, async () => {
-              await Api.clearDebugLog().catch((e) => store.showToast(errorText(e), true));
-              out.textContent = tr('settings.log_is_empty');
-              store.showToast(tr('settings.log_cleared'));
-            }),
-          }, tr('settings.clear')) as HTMLButtonElement;
-
-          Api.logSettings().then((s) => {
-            if (!s.available) {
-              panel.replaceChildren(h('div', { class: 'hint' }, tr('settings.log_unavailable_release')));
-              return;
-            }
-            cb.checked = s.enabled;
-            pathLine.textContent = tr('settings.file', { p0: (s.path) });
-            panel.replaceChildren(
-              h('label', { class: 'opt', style: { alignItems: 'center' } },
-                cb,
-                h('span', { class: 'opt-text' },
-                  h('span', { class: 'opt-title' }, tr('settings.keep_a_detailed_log')),
-                  h('span', { class: 'opt-blurb' }, tr('settings.enabled_by_default_to_help_diagnose_problems_the')))),
-              pathLine,
-              h('div', { class: 'row', style: { marginTop: '8px', flexWrap: 'wrap' } }, showBtn, prevBtn, copyBtn, clearBtn),
-              out,
-            );
-          }).catch(() => {
-            panel.replaceChildren(h('div', { class: 'hint' }, tr('settings.log_capability_failed')));
-          });
-          cb.addEventListener('change', () => {
-            Api.setLogEnabled(cb.checked)
-              .then(() => store.showToast(cb.checked
-                ? tr('settings.logging_enabled_starts_on_the_next_launch')
-                : tr('settings.logging_disabled_and_log_erased')))
-              .catch((e) => { store.showToast(errorText(e), true); cb.checked = !cb.checked; });
-          });
-
-          return panel;
         })(),
 
         h('div', { class: 'divider-text' }, tr('settings.danger_zone')),

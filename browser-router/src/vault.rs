@@ -140,6 +140,70 @@ fn passkey_key(
 }
 
 impl Vault {
+    // Each file has an independent random key. Only its wrapped token is kept
+    // in encrypted profile metadata, so removing both live metadata slots also
+    // removes access to orphaned ciphertext. File ids/indexes bind every part.
+    pub(crate) fn attachment_key(&self, id: &[u8; 32]) -> Result<Vec<u8>, String> {
+        let secret = Zeroizing::new(random_array());
+        let aad = [b"gipny/browser/file-key/v1".as_slice(), id].concat();
+        let wrapped = wrap(&self.key, &secret, &aad)?;
+        Ok([wrapped.nonce.as_slice(), wrapped.ciphertext.as_slice()].concat())
+    }
+
+    pub(crate) fn attachment_part(
+        &self,
+        id: &[u8; 32],
+        token: &[u8],
+        index: u32,
+        data: &[u8],
+        opening: bool,
+    ) -> Result<Vec<u8>, String> {
+        if token.len() != 72
+            || index > 10922
+            || data.len() > 192 * 1024 + if opening { 40 } else { 0 }
+            || (opening && data.len() < 40)
+        {
+            return Err("invalid attachment part".into());
+        }
+        let key_aad = [b"gipny/browser/file-key/v1".as_slice(), id].concat();
+        let wrapped = WrappedKey {
+            nonce: token[..24].try_into().map_err(|_| "file key nonce")?,
+            ciphertext: token[24..].to_vec(),
+        };
+        let key = unwrap(&self.key, &wrapped, &key_aad)?;
+        let aad = [
+            b"gipny/browser/file-part/v1".as_slice(),
+            id,
+            &index.to_le_bytes(),
+        ]
+        .concat();
+        let cipher = XChaCha20Poly1305::new((&*key).into());
+        if opening {
+            cipher
+                .decrypt(
+                    XNonce::from_slice(&data[..24]),
+                    Payload {
+                        msg: &data[24..],
+                        aad: &aad,
+                    },
+                )
+                .map_err(|_| "attachment authentication failed".into())
+        } else {
+            // Fresh nonces also make a retry after a failed metadata commit safe.
+            let nonce: [u8; 24] = random_array();
+            let sealed = cipher
+                .encrypt(
+                    XNonce::from_slice(&nonce),
+                    Payload {
+                        msg: data,
+                        aad: &aad,
+                    },
+                )
+                .map_err(|_| "attachment encryption failed")?;
+            Ok([nonce.as_slice(), sealed.as_slice()].concat())
+        }
+    }
+
     pub fn create(profile: &str, pass: &str) -> Result<Self, String> {
         if profile.is_empty() || profile.len() > 128 || profile.chars().any(char::is_control) {
             return Err("invalid profile name".into());
@@ -420,6 +484,47 @@ pub(crate) fn newest<'a>(records: impl IntoIterator<Item = &'a [u8]>) -> Result<
 mod tests {
     use super::*;
     use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn attachment_parts_bind_profile_file_index_and_survive_password_rotation() {
+        let mut vault = Vault::create("files", "long initial passphrase").unwrap();
+        let id = [7u8; 32];
+        let key = vault.attachment_key(&id).unwrap();
+        let plaintext = b"private attachment part";
+        let first = vault
+            .attachment_part(&id, &key, 0, plaintext, false)
+            .unwrap();
+        let retry = vault
+            .attachment_part(&id, &key, 0, plaintext, false)
+            .unwrap();
+        assert_ne!(first, retry, "every retry gets a fresh nonce");
+        assert!(!first.windows(plaintext.len()).any(|w| w == plaintext));
+        assert_eq!(
+            vault.attachment_part(&id, &key, 0, &first, true).unwrap(),
+            plaintext
+        );
+        assert!(vault.attachment_part(&id, &key, 1, &first, true).is_err());
+        assert!(vault
+            .attachment_part(&[8; 32], &key, 0, &first, true)
+            .is_err());
+        let other = Vault::create("other", "long initial passphrase").unwrap();
+        assert!(other.attachment_part(&id, &key, 0, &first, true).is_err());
+        let mut corrupt = first.clone();
+        corrupt[30] ^= 1;
+        assert!(vault.attachment_part(&id, &key, 0, &corrupt, true).is_err());
+        vault
+            .change_password("long initial passphrase", "long replacement passphrase")
+            .unwrap();
+        let (_, record) = vault
+            .seal_next(b"file metadata including wrapped keys")
+            .unwrap();
+        let (opened, _) =
+            Vault::open_password("files", "long replacement passphrase", &record).unwrap();
+        assert_eq!(
+            opened.attachment_part(&id, &key, 0, &first, true).unwrap(),
+            plaintext
+        );
+    }
 
     #[wasm_bindgen_test]
     fn encrypted_profile_authenticates_and_recovers_a_torn_new_slot() {

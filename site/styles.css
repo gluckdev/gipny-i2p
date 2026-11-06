@@ -17,9 +17,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; color: var(--text); background: radial-gradient(ellipse at 82% 12%, #153b422e, transparent 36%), var(--background); font-size: 16px; line-height: 1.65; }
 a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: .25em; }
-button { font: inherit; }
+button, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
-a:focus-visible, button:focus-visible { outline: 3px solid var(--mint); outline-offset: 5px; }
+a:focus-visible, button:focus-visible, select:focus-visible { outline: 3px solid var(--mint); outline-offset: 5px; }
 [hidden] { display: none !important; }
 img { max-width: 100%; }
 h1, h2, h3, p { margin: 0; }
@@ -162,29 +162,23 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
   .site-footer p { flex-basis: calc(100% - 120px); }
 }
 .downloads-intro { max-width: 760px; color: var(--muted); margin-bottom: 24px; }
+.download-choice { max-width: 620px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.download-choice label { display: block; margin-bottom: 8px; font-size: .85rem; color: var(--muted); }
+.download-choice select { width: 100%; min-height: 48px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--background); color: var(--text); }
+.download-help { margin: 12px 0; font-size: .8rem; color: var(--muted); }
+#download-unavailable { margin: 16px 0; color: var(--muted); }
+.catalog-fallback { margin-top: 20px; color: var(--mint); }
+.browser-differences { margin: 28px 0; }
+.browser-differences h3 { margin-bottom: 14px; }
+.browser-differences p, .browser-differences dd { color: var(--muted); font-size: .9rem; }
+.browser-differences dl { margin: 24px 0 0; }
+.browser-differences dt { color: var(--mint); font-weight: 600; margin-top: 18px; }
+.browser-differences dd { margin: 6px 0 0; }
+.mirror-plan { margin-top: 32px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; }
+.mirror-plan p { margin: 14px 0; color: var(--muted); font-size: .9rem; }
+.mirror-plan a { color: var(--mint); font-size: .85rem; }
 .catalog-release { color: var(--muted); font-size: .85rem; margin-bottom: 20px; }
 .catalog-release a { color: var(--mint); }
-.download-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 18px; min-width: 0; }
-.download-platform { min-width: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
-.download-platform h3 { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; font-size: 1.25rem; }
-.platform-icon { display: inline-block; width: 32px; height: 32px; flex-shrink: 0; color: var(--mint); }
-.download-files { display: grid; gap: 8px; }
-.download-file { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: center; gap: 3px 10px; min-height: 60px; min-width: 0; padding: 11px 12px; border: 1px solid #39575e; border-radius: 7px; text-decoration: none; background: var(--background); }
-.download-file:hover { border-color: var(--mint); }
-.download-architecture { min-width: 0; font-size: .85rem; font-weight: 650; overflow-wrap: anywhere; }
-.download-file-info { grid-row: 2; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
-.download-arrow { grid-column: 2; grid-row: 1 / 3; align-self: center; color: var(--mint); font-size: 1.3rem; }
-.download-advanced { margin-top: 25px; border: 1px solid var(--line); border-radius: 10px; padding: 0 18px; }
-.download-advanced summary { min-height: 56px; padding: 14px 0; cursor: pointer; color: var(--mint); font-weight: 650; overflow-wrap: anywhere; }
-.download-advanced summary:focus-visible { outline: 3px solid var(--mint); outline-offset: 3px; }
-.download-advanced-note { color: var(--muted); font-size: .85rem; margin: 5px 0 25px; }
-.download-component { margin-bottom: 24px; min-width: 0; }
-.download-component h4 { margin: 0 0 13px; font-size: .95rem; }
-.download-component-file { padding: 13px; }
-.download-component-file > .platform-icon { width: 25px; height: 25px; margin-bottom: 10px; }
-.catalog-verification { margin: 25px 0 8px; color: var(--muted); font-size: .82rem; }
-.catalog-resources { display: flex; flex-wrap: wrap; gap: 4px 22px; min-width: 0; }
-.catalog-resources a { display: inline-flex; align-items: center; min-height: 44px; max-width: 100%; font-size: .8rem; overflow-wrap: anywhere; }
 .hero-actions .text-link { min-height: 44px; }
 .garlic-backdrop { position: absolute; z-index: -1; top: -120px; left: 24%; width: min(58%, 680px); height: auto; color: var(--mint); pointer-events: none; }
 @media (max-width: 1000px) { .garlic-backdrop { top: -90px; left: 18%; width: 66%; } }
@@ -195,8 +189,6 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
 @media (max-width: 740px) {
   .language-switch button { min-height: 44px; min-width: 44px; }
   .main-nav a { display: inline-flex; align-items: center; min-height: 44px; }
-  .download-platform { padding: 16px; }
-  .download-advanced { padding: 0 13px; }
 }
 @media (prefers-reduced-motion: no-preference) {
   .route-endpoint::before, .route-network::before { animation: message-glow 6s ease-in-out infinite; }

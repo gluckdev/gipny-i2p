@@ -1,5 +1,5 @@
 {
   "repository": "https://github.com/eepnet/emissary",
-  "revision": "5e696a90276c316ebc5ec3a1d0815b02f17516ef",
+  "revision": "620fb9debb0cbfd41de664ca5297c1deab8bd40b",
   "patch": "patches/client-only-ntcp2.patch"
 }

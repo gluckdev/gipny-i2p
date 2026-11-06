@@ -1,6 +1,6 @@
 [package]
 name = "gipny"
-version = "0.5.0-rc2"
+version = "0.5.0-rc3"
 edition = "2021"
 
 [lib]
@@ -11,19 +11,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "gipny"
 path = "src/main.rs"
 
-[[bin]]
-name = "gipny-web"
-path = "src/web_main.rs"
-required-features = ["web-gateway"]
-
-[features]
-# The browser launcher is a separate opt-in binary, never a desktop sidecar.
-# Tauri also uses required-features when choosing which binaries to bundle.
-web-gateway = []
-
 [dev-dependencies]
 tempfile = "3"
-tokio-tungstenite = "=0.30.0"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -31,9 +20,6 @@ image = { version = "0.25", features = ["png", "ico"], default-features = false 
 
 [dependencies]
 gipny-libcore = { path = "../libcore" }
-axum = { version = "0.8", default-features = false, features = ["ws", "tokio", "http1", "http2", "json"] }
-tower-http = { version = "0.7", features = ["fs", "cors"] }
-futures-util = "0.3"
 
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"

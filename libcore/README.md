@@ -1,103 +1,139 @@
-# libcore — общее ядро gipny: криптография, сессии, база, релей, роутер, агент, автообновление
+# libcore — общее ядро / Shared core
 
-Крейт `gipny-libcore` используют приложение (`core/`), агент (`agent/`), боты (`bot-sdk/`) и e2e-харнесс. Он собирается в том числе в APK под Android. Портативные криптография, карточки
-и wire-форматы также используются в `browser-router` под `wasm32-unknown-unknown`.
+## Русский
 
-## Портативная часть для WASM
+`gipny-libcore` используют desktop/Android приложение, агент, боты и e2e-harness.
+Браузер повторно использует портативные криптографию, карточки и wire-форматы;
+его хранилище и асинхронная доставка реализованы в WASM/Worker отдельно.
 
-`crypto.rs` и `card.rs` общие для нативного клиента и браузера.
-`message_wire.rs`, `relay_wire.rs` и `dm_reference.rs` содержат вынесенные
-без изменения wire-позиций типы и кодеки; нативные session/relay/db включают
-те же исходники. Правки `WirePayload` и enum релея вносятся в эти общие файлы.
+### Карта исходников
 
-При `cfg(target_arch = "wasm32")` модули session/relay/db экспортируют только
-портативные форматы. SQLCipher, Tokio, libi2pd, нативные файлы, DHT, updater и
-агент исключены. `memory_browser.rs` предоставляет `Sealed`/`SecretGuard` на
-`Arc<Zeroizing<_>>`, без `mlock`/`mprotect`; это отдельная граница памяти.
-Хранилище и асинхронные сессии браузера реализованы в `browser-router` и Worker,
-а не в нативных `Db`/`SessionManager`.
-
-WASM-граф и совместимость проверяет
-[Browser router WASM](../.github/workflows/browser-router.yml).
-[Руководство браузерного мессенджера](../docs/browser-messenger.md) описывает
-OPFS, passkey и актуальные результаты CI.
-
-## Что здесь
-
-| Файл | За что отвечает | Главное |
-|---|---|---|
-| `crypto.rs` | Ключи личности, X3DH, Double Ratchet, шифрование вложений | `Identity`, `IdentityCard`, `PreKeyBundle`, `x3dh_initiate`/`x3dh_respond`, `RatchetState`, `AttachmentCipher`, `fill_random` |
-| `security.rs` | Хранилище ключей (vault), KDF, duress-пароль, бэкапы, защита памяти | `Vault`, `MasterKey`, `UnlockOutcome`, `DuressMode`, `backup_seal`/`backup_open`, `harden_process` |
-| `memory.rs` | Запечатанные ключи и отдельная locked-страница с доступом только на время операции | `SecretGuard`, `SealedBlob`, `capabilities`; [границы защиты и проверки](../docs/memory-security.md) |
-| `db.rs` | SQLCipher-база: контакты, сообщения, группы, сессии, prekeys, настройки, очереди отправки | `Db::open` / `open_plain`, `migrate` + `ensure_column`, `Contact`, `TrustLevel`, `RequestState`, `list_unacked_outgoing`, `RETRY_TTL_MS` |
-| `session.rs` | Мессенджер без UI для агента и ботов (`SessionManager`); здесь же формат сообщения. С 0.4.11 — тот же путь через сеть релеев, что у `Core`: `Route::{Relay,Dht}`, `dht_handler`/`join_dht`, `collect_from_dht` (вступительные письма первыми; неоткрывшееся остаётся в сети), `set_local_relay` (свой релей — по трубе); релеи собеседников дозваниваются заранее (`warm_peer_relays`/`warm_relay_of`, повтор 5 с → 2 мин) и по тому же соединению запрашивается бандл (`bundle_cache`); X3DH без ожидания, скрещённые инициализации — `ours_stands` | `SessionManager`, `SessionEvent`, `WirePayload` и снимки `WireV0..WireV9`, `encode_payload`/`decode_payload`, `pad_payload`; файлы частями: поля `files`/`file_chunk`/`file_ack`/`file_cancel`, `store_outgoing`, `accept_offers`, `on_file_chunk`, `send_file_parts` (по `FILE_LANES` потокам), `spawn_collect_lanes` (приём частей несколькими соединениями со своим сторонним релеем, `collect_lane_wanted`/`collect_lane_holds`), события `FileProgress`/`FileReceived`/`FileFailed` |
-| `files.rs` | Файлы частями: нарезка, запись частей на диск каждая в своё место, сборка с проверкой sha256, учёт полученного и окно отправителя | `INLINE_MAX` (128 КБ), `CHUNK_SIZE` (192 КБ), `WINDOW`, `seal_from`, `read_part`/`write_part`, `open_to`, `read_attachment` (оба формата), `Received` (сводный ack с дырами и `seen_to`), `Sending`, `Flow` (окно на собеседника, как у TCP: время пути, таймаут, рост по ack и половина при потере — раз на окно, с отменой для опоздавших частей; тормоза по задержке нет — круг в i2p скачет; до 16 частей) |
-| `relay.rs` | Клиент протокола релея и сам протокол | `ClientToRelay`/`RelayToClient`, `EnvelopeBlob`, `connect`/`connect_peer`/`connect_local` (свой релей в процессе, по трубе), `AuthV2` + `auth_v2_message` + `destination_hash`, `ERR_NOT_SERVED`, `ERR_NEEDS_AUTH_V2` |
-| `relay_server.rs` | Встроенный релей в процессе: опубликованная destination на роутере процесса | `EphemeralRelay::start(limits, dht)`, `start_unclaimed()` + `claim` (туннели строятся до разблокировки профиля), `connect_local` (вход для владельца по трубе, без i2p), `set_hops` (пересборка destination), `MemStore`, `MemStoreLimits` (`personal`), `handle_client` (несколько соединений одного ключа — `Lanes`, почта по кругу, неподтверждённое закрытого — остальным, `redeal`); первый кадр `Dht` — анонимный запрос к узлу сети (`serve_dht`, `DhtHandler`) |
-| `dht_client.rs` | Узел сети релеев (`gipny-dht`) в приложении и агенте | `new_node`, `handler` (для релея), `join` (релей поднялся), `maintain` (раз в 45 мин), `DbStorage` (таблицы `dht_items`, `dht_peers`), `I2pTransport`, `status`, сиды из `GIPNY_DHT_SEEDS` (только при сборке); `save_peers` не затирает таблицу, если никто не ответил |
-| `embedded.rs` | Роутер i2pd внутри процесса (`i2p-embed`), один на процесс, под `<data_dir>/i2p/router` | `router` (запуск: datadir, SAM/http/httpproxy/socks/upnp выключены, `--reseed.verify=true`, bandwidth/share/transittunnels из настроек, Yggdrasil; снимок netDb до старта), `running`, `destination_options`; в разработке/тестах `GIPNY_I2P_LOGLEVEL` управляет уровнем `i2pd.log`, релиз принудительно оставляет `warn` в stderr без файла |
-| `net.rs` | Наша destination на роутере процесса, только исходящие | `I2pNode` (он же `TorNode`), `start`/`start_with_progress`, `connect_relay`/`connect_service`, `set_hops`, `recreate` (новая destination на тех же ключах) |
-| `router.rs` | Настройки роутера, прогресс запуска, снимок netDb | `RouterSettings`, `TransitProfile`, `Yggdrasil`; `BootProgress`/`note` — прогресс запуска наружу (его показывает экран открытия профиля); `seed_netdb_from`/`seed_netdb_reader` (раскладка снимка только в пустой netDb), `compiled_in_seed` (`GIPNY_NETDB_SEED` при сборке, Android), `bundled_seed` (`GIPNY_I2P_SEED` или рядом с исполняемым файлом) |
-| `i2p_http.rs` | HTTPS GET в clearnet через i2p без локального прокси: свой поток к outproxy, `CONNECT`, TLS (rustls/ring, корни webpki), HTTP/1.1 (hyper) | `get`, `Body`, `OUTPROXY` (b32 `exit.stormycloud.i2p`) |
-| `update.rs` | Автообновление через GitHub Releases по i2p-outproxy (транспорт — `i2p_http.rs`) | `Updater` (`check`/`asset_sha256`/`download`/`install`), обязательный `Sha256Digest`, `Component`, `InstallOutcome`, `target_suffix`, `apply_staged_windows_installer`, `is_deb_install`/`install_deb_now` (пакет ставит менеджер пакетов через `pkexec`, поэтому там установка по кнопке, а не молча) |
-| `agent.rs` | Режим агента: выполнение команд мастера | `run_command`, `handle_console_request`, `parse_control`, `save_uploads`, `BODY_GRANT`/`BODY_REVOKE`/`BODY_OFF` |
-| `card.rs` | Компактная карточка `gipny:v3:`; импорт прежних v1/v2 | `ContactCard`, `ContactCard::encode` → `Result`, `is_valid_i2p_address`; [формат и ограничения](../docs/contact-cards.md) |
-| `lib.rs` | Реэкспорты | В том числе общая `diagnostics` и `debug_trace!` из `i2p-embed`; [политика релиза и тестов](../docs/release-diagnostics.md) |
-| `tests/` | `crypto.rs` (криптоядро), `compat.rs` + `fixtures/compat-0.4.0` (база и vault из 0.4.0 открываются), `first_run.rs` | — |
-
-## Куда вносить правки
-
-| Задача | Где |
+| Модуль | Назначение |
 |---|---|
-| Новое поле в сообщении | `message_wire.rs`: поле в конец `WirePayload` с `#[serde(default)]`, условие в `encode_payload`, `None` во всех `From<WireVn>` и литералах в `core/src/core.rs` и `session.rs` |
-| Новый кадр протокола релея | `relay_wire.rs`: вариант в **конец** `ClientToRelay`/`RelayToClient` + golden-тест + то же в `core/relay/src/proto.rs` |
-| Правила входа на релей | `relay.rs` (`handshake`, `predates_auth_v2`), `relay_server.rs` (`handle_client`, `client_loop`) |
-| Сколько и как долго встроенный релей держит почту | `relay_server.rs`: `MemStoreLimits` |
-| Политика повторной отправки | `db.rs`: `RETRY_TTL_MS`, `list_unacked_outgoing`, `pending_outbound_for_recipient`; бэкофф — константы `RETRY_*` в `core.rs`/`session.rs` |
-| Очередь и подтверждения групп | `db.rs`: `queue_group_recipients`, `acknowledge_group_delivery`, `GroupDeliveryAck`, `purge_expired_group_outbound`; `session.rs` и `core/src/core.rs`: `attempt_group_delivery`, `acknowledge_delivery`; [контракт](../docs/group-delivery.md) |
-| Новая колонка или таблица | `db.rs`: `migrate`: колонка — через `ensure_column` (таблица должна быть в `MIGRATE_TABLES`), новая таблица — `CREATE TABLE IF NOT EXISTS` в общем батче; для контактов и сообщений ещё `select_contact!`/`message_cols!` и `map_contact`/`map_message` |
-| Состояние запроса в контакты | `db.rs`: `RequestState`, `set_contact_request_state`, `list_incoming_requests` |
-| Криптография сессий | `crypto.rs` + `tests/crypto.rs` |
-| Пароль, KDF, duress, бэкап | `security.rs` |
-| Флаги i2pd, транзит, Yggdrasil | `embedded.rs` (`router`), значения — `router.rs` (`TransitProfile`) |
-| Снимок netDb для первого запуска | `router.rs` (`seed_netdb_*`, `bundled_seed`, `compiled_in_seed`), `build.rs` (`GIPNY_NETDB_SEED`) |
-| Своя destination, дозвон, восстановление | `net.rs` |
-| Outproxy обновлений, TLS | `i2p_http.rs` (`OUTPROXY`) |
-| Имена ассетов автообновления, установка по платформам | `update.rs`: `target_suffix`, `install` |
-| Частота проверки обновлений | `update.rs`: `UPDATE_CHECK_INITIAL_SECS`, `UPDATE_CHECK_INTERVAL_SECS` |
-| Команды консоли агента | `agent.rs` (`handle_console_request`, `HELP_TEXT`) |
-| Формат карточки | `card.rs` **и** `ui/src/contact-card.ts` (`encodeCard`/`decodeCard`, реэкспорт из `api.ts`) |
-| Поведение агента и ботов при приёме и отправке | `session.rs` (`flush_all_pending`, `handle_incoming_envelope`, `relay_for`) |
+| `crypto.rs`, `card.rs` | Личность, X3DH, Double Ratchet, шифрование вложений, карточки контактов |
+| `message_wire.rs`, `relay_wire.rs`, `dm_reference.rs` | Общие форматы сообщений, релея и ссылок на исходное личное сообщение |
+| `security.rs`, `memory.rs`, `device_binding.rs` | Vault, KDF, защита ключей в памяти и привязка к OS credential store |
+| `db.rs`, `db/message_commit.rs` | SQLCipher, контакты, история, очереди; совместная публикация сообщения, файлов и управляющих metadata |
+| `db/dm.rs`, `db/deletion_notice.rs` | Tombstones, удаление и отдельное подтверждение пользователя «ОК» |
+| `files.rs`, `db/file_transfer.rs` | Подготовка зашифрованных файлов, части, окно отправки и устойчивые ACK |
+| `session.rs` | Доставка для агента и ботов, повторы, группы, контакты и файлы |
+| `relay.rs`, `relay_server.rs`, `dht_client.rs` | Клиент релея, встроенный релей и участие в сети доставки |
+| `embedded.rs`, `net.rs`, `router.rs` | i2pd внутри процесса, I2P destinations, транспорт и настройки роутера |
+| `i2p_http.rs`, `update.rs` | HTTPS через I2P outproxy и проверяемая подготовка обновлений |
 
-## Что менять вместе
+### Границы компонентов
 
-- **`session.rs` ↔ `core/src/core.rs`.** Это две копии одной логики доставки. Исправление приёма или отправки почти всегда нужно в обоих файлах.
-- **`relay_wire.rs` ↔ `core/relay/src/proto.rs`.** Протокол описан дважды. Порядок вариантов — это номер на проводе, поэтому golden-тесты стоят в обоих крейтах.
-- **`card.rs` ↔ `ui/src/contact-card.ts`** — формат карточки и общие golden fixtures.
-- **`update.rs` ↔ `.github/workflows/release.yml`** — имена ассетов релиза.
+`Core` в `core/src/core.rs` и `SessionManager` — две реализации доставки.
+Изменение одной требует проверки второй и browser backend. Форматы релея
+также представлены в отдельном workspace `core/relay`; кодировка карточек
+имеет TypeScript-реализацию. Старые данные не требуют миграций по решению
+владельца, но все текущие клиенты должны понимать один протокол.
 
-## Инварианты и грабли
+Нативная БД — SQLCipher. GUI получает ключ из vault; production agent/bot paths
+используют OS-bound ключ. `open_plain` нужен тестовым фикстурам, а не аварийному
+переключению production-профиля на незашифрованное хранение. Защита от копии
+профиля, раскрытия памяти и захвата ОС имеет разные границы:
+[хранилище](../docs/device-bound-storage.md), [память](../docs/memory-security.md).
 
-- **bincode остаётся 1.x.** Legacy-декодер `WirePayload` сохраняет совместимость прежних версий; строгие внешние relay/engine-фреймы используют fixed-int codec и отклоняют хвостовые байты. Мажорное обновление — это смена протокола, dependabot его блокирует.
-- **Новые поля и варианты — только в конец.** Старые клиенты декодируют по позиции.
-- **Письмо не больше 4 МБ** (`MAX_PAYLOAD_BYTES`): следующая корзина паддинга, 16 МБ, вместе с заголовком ratchet уже не проходит `MAX_FRAME` релея. Всё больше 128 КБ идёт частями (`files.rs`), превышение — `MessageFailed`, а не «отправлено».
-- **Части — только через релей получателя**, не через сеть релеев (там 64 записи / 16 МБ на ключ). Повтор частей — только по дыре в `file_ack` или, если получатель подавал признаки жизни, по таймеру раз в 30 мин; иначе офлайн-получатель стоил бы гигабайт дублей на релее. Частей в полёте — сколько даёт окно собеседника (`files::Flow`, от 4 до `WINDOW`), считая повторы, на все файлы к нему; дыра в ack повторяется, только когда её часть старше таймаута: по нескольким полосам части обгоняют друг друга, и дыра чаще всего — часть в пути. Полос столько, сколько нужно окну (`lanes_for`, по 4 части).
-- **Вложение на диске бывает двух видов**: целиком одним блоком (`chunk_size` `None`) или частями, каждая в своём слоте. Читать только через `files::read_attachment` (или `open_to` потоком).
-- **TLS для автообновления — `rustls` с провайдером `ring`, не `aws-lc-rs`.** `aws-lc-sys` требует cmake и C-тулчейн на каждую цель, что ломает кросс-сборку Android.
-- **SHA256 обновления обязателен** (следующая версия). Отсутствие, ошибка загрузки или повреждение `SHA256SUMS.txt` останавливают операцию; прежний destination заменяется только после проверки размера и суммы. [Контракт, доверие и проверки](../docs/update-verification.md).
-- **Один роутер на процесс** (`embedded.rs`): libi2pd держит глобальное состояние. Настройки роутера — от первого открытого профиля до перезапуска приложения. Падение роутера роняет процесс: перезапускать нечего.
-- **Ни одного локального порта.** SAM, HTTP-прокси, SOCKS, веб-консоль, UPnP выключены флагами в `embedded.rs::router`; обновления ходят через `i2p_http.rs`, а не через прокси.
-- **Встроенный релей личный** (`MemStoreLimits::personal`): чужую почту он не принимает, а его адрес живёт только в памяти.
-- **Relay выдаёт `Incoming` с `from = [0; 32]` (sealed sender).** Получатель перебирает сессии всех контактов.
-- **Собирать и публиковать через релей можно только после `AuthV2`.** Простой `Auth` оставлен для 0.4.2 и даёт только право положить письмо.
-- **`Db::open` — SQLCipher с ключом из vault.** `open_plain` используют только агент и боты.
-- **Групповая очередь хранится до ACK каждого ожидаемого получателя** (следующая версия). `queue_group_recipients` публикует весь снимок одной транзакцией после подготовки метаданных. ACK привязан к исходящему сообщению, группе и аутентифицированному контакту; только `GroupDeliveryAck::Complete` отмечает доставку группы. При семидневной очистке снимаются все оставшиеся ожидания этого сообщения, включая старые записи с разными датами, без удаления истории и без отметки доставки. Подробности и ограничения — в [group-delivery.md](../docs/group-delivery.md).
+При сборке для WASM native DB/session/router модули заменяются портативными
+форматами. Нет SQLCipher, Tokio, libi2pd, нативного DHT, updater и OS API.
+`memory_browser.rs` использует `Arc<Zeroizing<_>>` без `mlock`/`mprotect`.
+Подробнее: [браузерный мессенджер](../docs/browser-messenger.md).
 
-## Как проверить
+### Доставка и файлы
 
-Компиляция, тесты и сборки бинарей выполняются только в GitHub CI
-(`build.yml`, `i2p-embed.yml`, `e2e-i2pd.yml`). Для memory policy нужны также
-команды из [memory-security.md](../docs/memory-security.md). Тесты используют
-исходники libi2pd и требуют boost, OpenSSL и zlib. Строки `sqlcipher … error
-decrypting` в тесте неверного пароля ожидаемы; они не заменяют проверку
-остальных ошибок или предупреждений.
+Сообщение, его описания файлов, peer state и управляющие metadata сохраняются
+одной DB-транзакцией. `StagedAttachments` владеет подготовленными зашифрованными
+файлами до commit и удаляет их при обычной ошибке. Аварийное завершение процесса
+до commit может оставить неиспользуемый шифротекст. Это граница публикации
+прикладных данных; полный цикл криптографии и доставки проверяется отдельно.
+
+Запрос контакта сохраняет текст и file offers, включая сообщение только с файлом.
+Приём multipart-байтов и ACK сообщения начинаются после принятия. До 16 файлов
+в сообщении, 64 незавершённых incoming offers на профиль и 16 от контакта.
+Маленькие файлы делят inline-бюджет 1 МиБ; остальные идут частями по 192 КиБ,
+с пределом отдельного файла 2 ГиБ. Изображение прогресса и окончательный ACK
+опираются на сохранённое состояние и проверку SHA-256, а не на доставку текста.
+
+Части идут через релей получателя. Окно `Flow` ограничивает незавершённые части
+на контакт; несколько потоков переиспользуют I2P-соединения. Прямой IP fallback
+не включается. Групповая очередь сохраняется до E2E ACK каждого получателя.
+[Передача файлов](../docs/file-transfer.md), [группы](../docs/group-delivery.md),
+[удаление сообщений](../docs/message-deletion.md).
+
+### Роутер, журналы и проверки
+
+Один i2pd работает на процесс: его состояние и настройки сохраняются до выхода.
+SAM, локальные HTTP/SOCKS-прокси и веб-консоль выключены. NTCP2/SSU2 имеют
+сетевые порты; [UPnP](../docs/upnp.md) управляет допустимыми mappings с проверкой
+владения. Stable-сборка не включает подробный capture; prerelease/developer/test
+используют фиксированную diagnostic policy. Границы платформ описаны в
+[журналах](../docs/release-diagnostics.md).
+
+Обновление требует корректный SHA-256; checksum с того же сервера не заменяет
+независимую подпись издателя. См. [проверку обновлений](../docs/update-verification.md).
+Сборки и исполняемые тесты запускаются только в GitHub Actions:
+`security-fast.yml`, `build.yml`, `i2p-embed.yml`, `e2e-i2pd.yml`,
+`browser-router.yml`. Синтаксическая проверка, stub, native fixture и доставка
+через живую I2P подтверждают разные свойства. Новые изменения этого прохода
+ещё требуют CI и проверки телефон ↔ ПК; [текущее состояние](../docs/current-state.md).
+
+## English
+
+`gipny-libcore` serves the desktop/Android app, agent, bots and e2e harness.
+The browser reuses portable crypto, contact cards and wire formats; WASM/Worker
+storage and asynchronous delivery have separate implementations.
+
+| Module | Responsibility |
+|---|---|
+| `crypto.rs`, `card.rs` | Identity, X3DH, Double Ratchet, attachment encryption and contact cards |
+| `message_wire.rs`, `relay_wire.rs`, `dm_reference.rs` | Shared message, relay and original-DM reference formats |
+| `security.rs`, `memory.rs`, `device_binding.rs` | Vault/KDF, memory protection and OS credential custody |
+| `db.rs`, `db/message_commit.rs` | SQLCipher and atomic message/file/control metadata publication |
+| `db/dm.rs`, `db/deletion_notice.rs` | Tombstones, deletion and explicit human OK receipts |
+| `files.rs`, `db/file_transfer.rs` | Encrypted file staging, parts, sending windows and durable ACKs |
+| `session.rs` | Agent/bot delivery, retry, groups, contacts and files |
+| `relay.rs`, `relay_server.rs`, `dht_client.rs` | Relay client, built-in relay and delivery network |
+| `embedded.rs`, `net.rs`, `router.rs` | In-process i2pd, I2P destinations and router configuration |
+| `i2p_http.rs`, `update.rs` | HTTPS over an I2P outproxy and verified update preparation |
+
+`Core` and `SessionManager` contain separate delivery implementations. Check
+both and the browser when changing behavior. Relay formats also appear in the
+separate `core/relay` workspace; contact cards have a TypeScript implementation.
+Old-data migrations are not required, but current clients must interoperate.
+
+Native GUI storage uses a vault SQLCipher key; production agent/bot paths use
+OS-bound keys. Plain DBs are test fixtures, never a production fallback. Profile
+copying, memory disclosure and a compromised OS have distinct limits; see
+[device storage](../docs/device-bound-storage.md) and [memory](../docs/memory-security.md).
+WASM excludes native SQLCipher/Tokio/i2pd/DHT/updater/OS facilities and uses portable
+formats instead. Its `Arc<Zeroizing<_>>` memory wrapper lacks `mlock`/`mprotect`.
+See the [browser guide](../docs/browser-messenger.md).
+
+Message publication includes file offers/peer state and control metadata in one
+DB transaction. `StagedAttachments` owns prepared ciphertext until commit and
+cleans it after ordinary failures. Process death before commit can leave encrypted
+orphans. This application-data boundary does not establish validation of the
+entire crypto/delivery cycle.
+
+Contact requests retain text and file-only offers, but multipart bytes and content
+ACKs wait for acceptance. Limits are 16 files per message, 64 unfinished incoming
+offers per profile and 16 per contact. Small files share a 1 MiB inline letter
+budget; larger/excess files use 192 KiB parts, up to 2 GiB each. Progress and final
+receipts follow durable state and SHA-256 verification, not text delivery.
+Parts use recipient relays, bounded per-contact windows and multiple I2P streams,
+without a direct-IP fallback. Group recipient queues remain until each E2E ACK.
+See [files](../docs/file-transfer.md), [groups](../docs/group-delivery.md) and
+[deletion](../docs/message-deletion.md).
+
+The router is process-global. Local SAM/HTTP/SOCKS/web-console listeners are off;
+NTCP2/SSU2 retain actual transport ports, with managed [UPnP](../docs/upnp.md).
+Stable builds omit detailed capture; prerelease/developer/test diagnostics use a
+fixed build policy. Platform limits are in [logging](../docs/release-diagnostics.md).
+Updates require a valid SHA-256; a same-host checksum is not independent publisher
+signing. See [update verification](../docs/update-verification.md).
+
+Application builds and executable checks belong in GitHub Actions: security-fast,
+build, i2p-embed, e2e-i2pd and browser-router workflows. Syntax checking, stubs,
+native fixtures and live I2P delivery prove different properties. New changes
+still need CI and phone/PC validation; see [current state](../docs/current-state.md).

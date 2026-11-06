@@ -4,6 +4,7 @@ import { t as tr } from './i18n';
 import { Api, usesBrowserCore } from './api';
 import type { Store, BootStep, BootStepId } from './state';
 import { View, h, busy, logo } from './view';
+import { salonBackdrop, salonEmblem } from './profile-salon';
 
 export class AuthCreate extends View {
   el: HTMLElement;
@@ -33,10 +34,11 @@ export class AuthCreate extends View {
 
     const hasProfiles = store.profiles.get().length > 0;
 
-    this.el = h('div', { class: 'auth' },
-      h('div', { class: 'auth-card' },
-        logo(),
+    this.el = h('div', { class: 'auth profile-salon salon-create' },
+      salonBackdrop(),
+      h('div', { class: 'auth-card salon-panel' },
         languagePicker(),
+        salonEmblem(),
         h('div', { class: 'auth-title' }, tr('auth.new_profile_title')),
         h('div', { class: 'auth-sub' }, tr('auth.new_profile_sub')),
         h('div', { class: 'field' },
@@ -152,7 +154,7 @@ export class AuthUnlock extends View {
       onClick: () => void this.unlock('passkey') }, tr('browser.unlock_passkey')) : null;
     this.openBtn = h('button', { class: 'btn', style: { flex: '1' }, type: 'button', disabled: true,
       onClick: () => void this.unlock('password') }, tr('auth.open_btn'));
-    this.el = h('div', { class: 'auth' },
+    this.el = h('div', { class: 'auth login-cyber' },
       h('div', { class: 'auth-card' },
         logo(),
         languagePicker(),
@@ -269,11 +271,6 @@ export class AuthBooting extends View {
   private progressEl: HTMLElement;
   private progressFill: HTMLElement;
   private progressText: HTMLElement;
-  private logEl: HTMLElement;
-  private logPanel: HTMLElement;
-  private logToggle: HTMLButtonElement;
-  private logExpanded = false;
-  private logFrame: number | null = null;
   private enterBtn: HTMLButtonElement;
   private backBtn: HTMLButtonElement;
   private startedAt = Date.now();
@@ -297,29 +294,6 @@ export class AuthBooting extends View {
       'aria-valuenow': '0',
     }, this.progressFill);
     this.progressText = h('span', { class: 'boot-progress-text' }, '0%');
-    this.logEl = h('div', {
-      id: 'boot-live-output', class: 'boot-log', role: 'log',
-      'aria-label': tr('auth.live_system_log'), 'aria-live': 'off', tabindex: '0',
-    });
-    this.logToggle = h('button', {
-      class: 'boot-log-toggle', type: 'button',
-      'aria-expanded': 'false', 'aria-controls': 'boot-live-output',
-      'aria-label': tr('boot.details'), title: tr('boot.details'),
-      onClick: () => {
-        this.logExpanded = !this.logExpanded;
-        this.logPanel.classList.toggle('is-expanded', this.logExpanded);
-        this.logToggle.setAttribute('aria-expanded', String(this.logExpanded));
-        this.logToggle.textContent = this.logExpanded ? '[ − ]' : '[ + ]';
-        this.renderLog(this.store.bootLog.get());
-      },
-    }, '[ + ]');
-    this.logPanel = h('section', { class: 'boot-live-log' },
-      h('div', { class: 'boot-log-head' },
-        h('span', null, h('span', { class: 'boot-live-dot', 'aria-hidden': 'true' }), tr('auth.live_system_log')),
-        this.logToggle,
-      ),
-      this.logEl,
-    );
     this.enterBtn = h('button', {
       class: 'boot-button boot-enter hidden', type: 'button',
       onClick: () => store.enterMain(),
@@ -336,7 +310,7 @@ export class AuthBooting extends View {
     this.summaryEl = h('p', { class: 'boot-status hidden', role: 'status', 'aria-live': 'polite' });
     this.detailsEl = h('div', { class: 'boot-details' },
       h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
-      h('p', { class: 'boot-sub' }, tr('boot.sub')), list, this.logPanel);
+      h('p', { class: 'boot-sub' }, tr('boot.sub')), list);
     this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
         languagePicker(),
@@ -354,7 +328,6 @@ export class AuthBooting extends View {
     );
 
     this.sub(store.bootSteps, (steps) => this.paint(steps));
-    this.sub(store.bootLog, (lines) => this.renderLog(lines));
     this.sub(store.bootCanEnter, (can) => this.enterBtn.classList.toggle('hidden', !can));
     this.sub(store.bootResuming, (resuming) => {
       this.detailsEl.classList.toggle('hidden', resuming);
@@ -380,7 +353,10 @@ export class AuthBooting extends View {
   }
 
   private paint(steps: BootStep[]): void {
-    const failed = steps.find((step) => step.state === 'failed');
+    // The relay and the relay network keep retrying after the chats open: a
+    // failure there is not a reason to go back and sign in again.
+    const background = (step: BootStep): boolean => step.id === 'relay' || step.id === 'dht';
+    const failed = steps.find((step) => step.state === 'failed' && !background(step));
     this.backBtn.classList.toggle('hidden', !failed);
     if (this.store.bootResuming.get()) {
       this.summaryEl.textContent = failed?.detail || (this.store.bootStage.get() === 'done'
@@ -402,32 +378,17 @@ export class AuthBooting extends View {
       ms.textContent = step.state === 'active' && step.startedAt
         ? fmtBootMs(Date.now() - step.startedAt)
         : step.state === 'done' ? `· ${fmtBootMs(step.ms)}` : '';
-      hint.textContent = step.state === 'failed'
-        ? `— ${step.detail || tr('boot.back')}`
-        : bootLabels().find(([id]) => id === step.id)?.[2] ?? '';
+      hint.textContent = step.state !== 'failed'
+        ? bootLabels().find(([id]) => id === step.id)?.[2] ?? ''
+        : background(step) ? tr('boot.retrying_in_background')
+        // With no log in stable builds, the reason shown here is all there is.
+        : step.detail ? `${tr('boot.stage_failed')} ${errorText(step.detail)}` : tr('boot.stage_failed');
     }
     const done = steps.filter((step) => step.state === 'done' || step.state === 'skipped').length;
     const percent = steps.length ? Math.round(done / steps.length * 100) : 0;
     this.progressFill.style.width = `${percent}%`;
     this.progressText.textContent = `${percent}%`;
     this.progressEl.setAttribute('aria-valuenow', String(percent));
-  }
-
-  private renderLog(lines: string[]): void {
-    if (this.store.bootResuming.get()) return;
-    const visible = this.logExpanded ? lines : lines.slice(-6);
-    this.logEl.replaceChildren(...(visible.length ? visible : ['…']).map((line) =>
-      h('div', { class: 'boot-log-line' },
-        h('span', { class: 'boot-log-prompt', 'aria-hidden': 'true' }, '>'),
-        h('span', null, line),
-      ),
-    ));
-    // Wait for layout so the first render and expansion scroll correctly too.
-    if (this.logFrame != null) cancelAnimationFrame(this.logFrame);
-    this.logFrame = requestAnimationFrame(() => {
-      this.logEl.scrollTop = this.logEl.scrollHeight;
-      this.logFrame = null;
-    });
   }
 
   private tick(): void {
@@ -441,7 +402,6 @@ export class AuthBooting extends View {
 
   destroy(): void {
     if (this.timer != null) clearInterval(this.timer);
-    if (this.logFrame != null) cancelAnimationFrame(this.logFrame);
     super.destroy();
   }
 }
@@ -454,10 +414,10 @@ function fmtBootMs(ms: number): string {
 const bootLabels = (): [BootStepId, string, string][] => [
   ['vault', tr('boot.step.vault'), tr('boot.step.vault_hint')],
   ['router', tr('boot.step.router'), tr('boot.step.router_hint')],
-  // Address before tunnels: the address is what the tunnels get built for, so
-  // this is the order the work happens in. The rows are built from this list,
-  // and the back-fill in the store counts on the same order.
+  // Inbound/outbound pools progress independently after address creation.
   ['session', tr('boot.step.session'), tr('boot.step.session_hint')],
+  ['inbound', tr('boot.step.inbound'), tr('boot.step.inbound_hint')],
+  ['outbound', tr('boot.step.outbound'), tr('boot.step.outbound_hint')],
   ['tunnels', tr('boot.step.tunnels'), tr('boot.step.tunnels_hint')],
   ['core', tr('boot.step.core'), tr('boot.step.core_hint')],
   ['relay', tr('boot.step.relay'), tr('boot.step.relay_hint')],

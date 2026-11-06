@@ -23,7 +23,7 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The i2pd router inside the process (no SAM, no port); see embedded.rs.
+# The i2pd router inside the process (no local SAM/proxy listener); see embedded.rs.
 i2p-embed = { path = "../i2p-embed" }
 gipny-dht = { path = "../dht" }
 futures = { workspace = true }

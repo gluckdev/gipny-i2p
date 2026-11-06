@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::crypto::{self, AttachmentCipher, Identity, PreKeyBundle, PreKeyPair, RatchetState, X3dhInitial, CryptoError};
-use crate::db::{Contact, Db, DbError, Direction, GroupDeliveryAck, GroupMember, NewAttachment, NewOutgoingGroup, PreKeyKind, TrustLevel};
+use crate::db::{Contact, Db, DbError, Direction, GroupDeliveryAck, GroupMember, NewOutgoingDm, NewOutgoingGroup, PreKeyKind, TrustLevel};
 use crate::dht_client;
 use crate::net::{NetError, TorNode};
 use crate::relay::{self, ClientToRelay, EnvelopeBlob, RelayClient, RelayError, RelayToClient, DEFAULT_RELAY};
@@ -103,6 +103,8 @@ const RECONNECT_MAX_MS: u64 = 15_000;
 const PING_INTERVAL_SECS: u64 = 20;
 const DEAD_THRESHOLD_SECS: u64 = 75;
 const BUNDLE_REFRESH_SECS: u64 = 12 * 3600;
+/// How often letters left in the durable inbox are tried again (first at start).
+const INBOX_RETRY_SECS: u64 = 30;
 const PENDING_REQ_TIMEOUT_MS: u64 = 30_000;
 /// A bundle asked for ahead of use is used only this fresh: its one-time
 /// prekey may be handed to someone else meanwhile, and an init on a spent one
@@ -116,7 +118,6 @@ const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 /// dropped at the relay). Large files go in parts; see `files`.
 const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
 /// A part unacknowledged this long, by a recipient heard from since, goes again.
-const FILE_RESEND_IDLE_MS: i64 = 30 * 60 * 1000;
 /// Streams to a recipient's relay carrying parts at once (the usual one
 /// included).
 const FILE_LANES: usize = 4;
@@ -127,7 +128,6 @@ const FILE_LANES: usize = 4;
 const COLLECT_LANE_IDLE_MS: i64 = 5 * 60_000;
 /// A recipient alive this long without acknowledging a single part cannot
 /// take files in parts.
-const FILE_GIVE_UP_MS: i64 = 24 * 3600 * 1000;
 /// Unfinished incoming transfers are dropped after the relay's letter TTL.
 const FILE_IN_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
@@ -160,7 +160,7 @@ pub enum SessionEvent {
     Disconnected,
     IncomingPayload { contact_id: i64, payload: WirePayload, message_id: i64 },
     MessageDelivered { message_id: i64 },
-    MessageDeleted { contact_id:i64, message_id:i64, deleted_at:i64, pending:bool },
+    MessageDeleted { contact_id:i64, message_id:i64, deleted_at:i64, pending:bool, deletion_notice: Option<crate::db::DmDeletionNotice> },
     /// It will not go: too large for one letter (files go in parts; this is
     /// a letter that could not). Marked sent so it is not retried forever.
     MessageFailed { message_id: i64, reason: String },
@@ -206,6 +206,9 @@ pub struct SessionManager {
     /// Their sessions that lost to ours, kept so what they sent on one before
     /// taking ours is still read, not dropped and waited for again.
     lost_inits: Arc<Mutex<HashMap<i64, RatchetState>>>,
+    /// Inbox rows being processed right now by the receive path, which the
+    /// periodic retry must leave alone.
+    inbox_busy: Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
     /// When each contact was last heard from (anything decrypted): a part is
     /// resent on a timer only to someone alive since it went.
     heard: Arc<std::sync::Mutex<HashMap<i64, i64>>>,
@@ -259,6 +262,7 @@ impl SessionManager {
             bundle_cache: Arc::new(Mutex::new(HashMap::new())),
             own_inits: Arc::new(Mutex::new(HashMap::new())),
             lost_inits: Arc::new(Mutex::new(HashMap::new())),
+            inbox_busy: Arc::default(),
             heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
@@ -446,19 +450,12 @@ impl SessionManager {
     ) -> Result<i64> {
         let sent_at = now_ms();
         let expires_at = ttl.map(|d| sent_at + d.as_millis() as i64);
-        let (stored, parts) = self.store_outgoing(&attachments)?;
-        let msg_id = self.db.insert_message(
-            contact_id, Direction::Out, &body, sent_at, expires_at, &stored,
-        )?;
-        self.register_offers(msg_id, &parts, &[contact_id])?;
-        if let Some(b) = &buttons {
-            if let Ok(bytes) = bincode::serialize(b) {
-                self.db.set_setting(&format!("buttons_{}", msg_id), &bytes)?;
-            }
-        }
-        if let Some(s) = &notify_sound {
-            self.db.set_setting(&format!("sound_{}", msg_id), s.as_bytes())?;
-        }
+        let buttons = buttons.as_ref().map(bincode::serialize).transpose()?;
+        let staged = self.store_outgoing(&attachments)?;
+        let msg_id = staged.publish_dm(&self.db, &NewOutgoingDm {
+            contact_id, body: &body, sent_at, expires_at, reply_to: None,
+            buttons: buttons.as_deref(), notify_sound: notify_sound.as_ref().map(|s| s.as_bytes()), console: None,
+        })?;
         self.send_kick.notify_one();
         Ok(msg_id)
     }
@@ -475,12 +472,12 @@ impl SessionManager {
         attachments: Vec<(String, Vec<u8>)>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let (stored, parts) = self.store_outgoing(&attachments)?;
-        let msg_id = self.db.insert_message(
-            contact_id, Direction::Out, &body, sent_at, None, &stored,
-        )?;
-        self.register_offers(msg_id, &parts, &[contact_id])?;
-        self.db.set_setting(&format!("console_{}", msg_id), &bincode::serialize(&console)?)?;
+        let console = bincode::serialize(&console)?;
+        let staged = self.store_outgoing(&attachments)?;
+        let msg_id = staged.publish_dm(&self.db, &NewOutgoingDm {
+            contact_id, body: &body, sent_at, expires_at: None, reply_to: None,
+            buttons: None, notify_sound: None, console: Some(&console),
+        })?;
         self.send_kick.notify_one();
         Ok(msg_id)
     }
@@ -558,15 +555,16 @@ impl SessionManager {
         }
         let recipients: Vec<i64> = contacts.iter().map(|contact| contact.id).collect();
         let buttons_bytes = buttons.as_ref().map(bincode::serialize).transpose()?;
-        let mut staged = crate::files::StagedGroupAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
-        for (name, data) in &attachments {
-            if data.len() > crate::files::INLINE_MAX { staged.parts(name, &data[..])?; }
-            else { staged.inline(name, data)?; }
+        let mut staged = crate::files::StagedAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        let mut wire_atts = Vec::new();
+        for (name, data) in attachments {
+            if !staged.can_inline(data.len()) { staged.parts(&name, &data[..])?; }
+            else {
+                staged.inline(&name, &data)?;
+                wire_atts.push(WireAttachment { name, data });
+            }
         }
         let offers = staged.offers();
-        let wire_atts: Vec<WireAttachment> = attachments.into_iter()
-            .filter(|(_, data)| data.len() <= crate::files::INLINE_MAX)
-            .map(|(name, data)| WireAttachment { name, data }).collect();
         let gref_members: Vec<WireMember> = members.iter().map(|m| WireMember {
             sign_pk: m.sign_pk.clone(), dh_pk: m.dh_pk.clone(),
             onion: m.onion.clone(), name: m.display_name.clone(),
@@ -805,6 +803,8 @@ impl SessionManager {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 let mut still = Vec::new();
                 for fin in left {
+                    if !this.db.can_receive_files(fin.contact_id).unwrap_or(false) { continue; }
+                    let Some(fin) = this.db.file_in(&fin.file_id, fin.contact_id).ok().flatten() else { continue; };
                     let total = crate::files::chunk_count(fin.size as u64, fin.chunk_size);
                     let ack = crate::files::Received::from_bits(fin.bits.clone(), total).resume_ack(fin.file_id);
                     if this.send_file_message(fin.contact_id, |p| p.file_ack = Some(ack)).await {
@@ -1100,6 +1100,11 @@ impl SessionManager {
                             crate::debug_trace!("[session] crypto err on msg {}, no contact, NOT acking", id);
                         }
                     }
+                    // Nothing was committed (a letter once read is always
+                    // acknowledged): the relay keeps it and offers it again.
+                    Err(e) if is_transient(&e) => {
+                        crate::debug_trace!("[session] storage err on msg {}: {:?}, NOT acking (will retry)", id, e);
+                    }
                     Err(e) => {
                         crate::debug_trace!("[session] incoming err: {:?}", e);
                         let _ = out_tx.send(ClientToRelay::Ack { id }).await;
@@ -1137,7 +1142,19 @@ impl SessionManager {
             EnvelopeBlob::X3dhInit(init) => {
                 let sender_sign = init.identity.sign_pk;
                 let sender_dh = init.identity.dh_pk;
-                let contact = match self.db.find_contact_by_sign_pk(&sender_sign)? {
+                let known = self.db.find_contact_by_sign_pk(&sender_sign)?;
+                if let Some(c) = &known {
+                    if c.trust == TrustLevel::Blocked { return Ok(()); }
+                    if sender_dh != c.identity_dh.as_slice() { return Err(SessionError::State); }
+                }
+                // Authenticate before touching anything: an init that does not
+                // decrypt (forged, replayed, stale) must leave the contact list,
+                // the one-time prekeys and the working session as they were.
+                let ad = build_ad(&self.identity.card().dh_pk, &sender_dh);
+                let (state, plaintext, opk_id) = self.accept_x3dh(&init, &ad).await?;
+                let plaintext = zeroize::Zeroizing::new(plaintext);
+                let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
+                let contact = match known {
                     Some(c) => c,
                     None => {
                         let name = hex_short(&sender_sign);
@@ -1146,13 +1163,6 @@ impl SessionManager {
                         self.db.get_contact(id)?.ok_or(SessionError::NotFound)?
                     }
                 };
-                if contact.trust == TrustLevel::Blocked { return Ok(()); }
-                if init.identity.sign_pk != contact.identity_sign.as_slice()
-                    || init.identity.dh_pk != contact.identity_dh.as_slice()
-                {
-                    return Err(SessionError::State);
-                }
-                let ad = build_ad(&self.identity.card().dh_pk, &contact.identity_dh);
                 let crossed = self.own_inits.lock().await.get(&contact.id).is_some()
                     && self.sessions.lock().await.contains_key(&contact.id);
                 // A second init from them while their first lost to ours: they
@@ -1164,10 +1174,9 @@ impl SessionManager {
                     // read for what it says (name, relay) and set aside, and
                     // they will take ours when it reaches them.
                     crate::debug_trace!("[session] X3dhInit from contact {} crossed ours; ours stands", contact.id);
-                    let (theirs, plaintext) = self.accept_x3dh(&init, &ad).await?;
-                    self.lost_inits.lock().await.insert(contact.id, theirs);
-                    let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
-                    self.persist_incoming(contact.id, payload).await?;
+                    let letter = self.db.commit_received(contact.id, None, opk_id, &plaintext)?;
+                    self.lost_inits.lock().await.insert(contact.id, state);
+                    self.deliver_letter(letter, contact.id, payload).await;
                     if init.one_time_id.is_some() {
                         self.republish_bundle().await;
                     }
@@ -1183,19 +1192,19 @@ impl SessionManager {
                 }
                 self.own_inits.lock().await.remove(&contact.id);
                 self.lost_inits.lock().await.remove(&contact.id);
-                self.sessions.lock().await.remove(&contact.id);
-                let _ = self.db.delete_session(contact.id);
-                let (state, plaintext) = self.accept_x3dh(&init, &ad).await?;
-                self.sessions.lock().await.insert(contact.id, state);
-                self.session_created_at.lock().await.insert(contact.id, now_ms());
-                let sb = {
-                    let s = self.sessions.lock().await;
-                    s.get(&contact.id).unwrap().to_bytes()?
+                let sb = zeroize::Zeroizing::new(state.to_bytes()?);
+                let letter = {
+                    // Replace the old session in memory and on disk together,
+                    // under the lock, as the ratchet path does; the prekey is
+                    // spent and the letter kept in that same commit.
+                    let mut sessions = self.sessions.lock().await;
+                    let letter = self.db.commit_received(contact.id, Some(&sb), opk_id, &plaintext)?;
+                    sessions.insert(contact.id, state);
+                    letter
                 };
-                self.db.put_session(contact.id, &sb)?;
                 drop(sb);
-                let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
-                self.persist_incoming(contact.id, payload).await?;
+                self.session_created_at.lock().await.insert(contact.id, now_ms());
+                self.deliver_letter(letter, contact.id, payload).await;
                 crate::debug_trace!("[session] session established with contact {} via X3dhInit", contact.id);
                 if init.one_time_id.is_some() {
                     self.republish_bundle().await;
@@ -1203,7 +1212,7 @@ impl SessionManager {
                 self.send_kick.notify_one();
             }
             EnvelopeBlob::Ratchet { header, ciphertext } => {
-                let mut decrypted: Option<(i64, Vec<u8>, Contact)> = None;
+                let mut decrypted: Option<(i64, zeroize::Zeroizing<Vec<u8>>, i64)> = None;
                 let candidates: Vec<Contact> = if sealed {
                     self.db.list_contacts()?.into_iter().filter(|c| c.trust != TrustLevel::Blocked).collect()
                 } else {
@@ -1229,22 +1238,32 @@ impl SessionManager {
                     };
                     // Saved before the lock goes: two letters of one contact
                     // read at once (several connections) must not write their
-                    // states back in the other order.
+                    // states back in the other order. The letter is saved in
+                    // the same commit: its key is now spent.
                     let attempt = match attempt {
                         Ok((pt, sb_res)) => {
-                            let sb = sb_res?;
-                            self.db.put_session(c.id, &sb)?;
-                            Ok(pt)
+                            let pt = zeroize::Zeroizing::new(pt);
+                            let committed = sb_res.map_err(SessionError::from).map(zeroize::Zeroizing::new)
+                                .and_then(|sb| Ok(self.db.commit_received(c.id, Some(&sb), None, &pt)?));
+                            match committed {
+                                Ok(letter) => Ok((pt, letter)),
+                                Err(e) => {
+                                    // Not saved: forget the advanced state, so
+                                    // the relay's copy still opens next time.
+                                    sess.remove(&c.id);
+                                    return Err(e);
+                                }
+                            }
                         }
                         Err(e) => Err(e),
                     };
                     drop(sess);
-                    if let Ok(pt) = attempt {
-                        decrypted = Some((c.id, pt, c));
+                    if let Ok((pt, letter)) = attempt {
+                        decrypted = Some((c.id, pt, letter));
                         break;
                     }
                 }
-                let (cid, pt, contact) = match decrypted {
+                let (cid, pt, letter) = match decrypted {
                     Some(x) => x,
                     None => {
                         // On a session of theirs that lost to ours: sent before
@@ -1265,8 +1284,9 @@ impl SessionManager {
                         };
                         if let Some((cid, pt)) = lost_hit {
                             crate::debug_trace!("[session] letter from contact {cid} on its session that lost to ours; read on it");
-                            let payload: WirePayload = decode_with_padding_fallback(&pt)?;
-                            self.persist_incoming(cid, payload).await?;
+                            let pt = zeroize::Zeroizing::new(pt);
+                            let letter = self.db.commit_received(cid, None, None, &pt)?;
+                            self.deliver_stored(letter, cid, &pt).await;
                             return Ok(());
                         }
                         if sealed {
@@ -1283,7 +1303,13 @@ impl SessionManager {
                 // They answered on this session: it is settled, and an init
                 // from them from now on is a new start, not a crossing.
                 self.own_inits.lock().await.remove(&cid);
-                let payload: WirePayload = decode_with_padding_fallback(&pt)?;
+                let Ok(payload) = decode_with_padding_fallback(&pt) else {
+                    // Read, but not a payload this version understands. The
+                    // key is spent, so the relay copy is of no further use.
+                    crate::debug_trace!("[session] letter from contact {cid} did not decode; dropped");
+                    let _ = self.db.inbox_done(letter);
+                    return Ok(());
+                };
                 let is_keepalive = payload.ack_for == Some(0)
                     && payload.origin_msg_id == 0
                     && payload.body.is_empty()
@@ -1291,53 +1317,85 @@ impl SessionManager {
                 if !is_keepalive {
                     *self.incoming_since_send.lock().await.entry(cid).or_insert(0) += 1;
                 }
-                self.persist_incoming(cid, payload).await?;
+                self.deliver_letter(letter, cid, payload).await;
                 if !is_keepalive {
                     let counter = self.incoming_since_send.lock().await.get(&cid).copied().unwrap_or(0);
                     if counter >= KEEPALIVE_INCOMING_THRESHOLD {
                         self.send_kick.notify_one();
                     }
                 }
-                let _ = contact;
             }
         }
         Ok(())
     }
 
+    /// Process a letter already committed to the inbox. Whatever happens here
+    /// the relay copy is acknowledged: the letter is safe on disk. A storage
+    /// failure leaves the row for `drain_inbox`; any other failure is the
+    /// letter's own and drops it. Returns whether the letter was kept.
+    async fn deliver_letter(self: &Arc<Self>, letter: i64, contact_id: i64, payload: WirePayload) -> bool {
+        self.inbox_busy.lock().unwrap_or_else(|p| p.into_inner()).insert(letter);
+        let outcome = self.persist_incoming(contact_id, payload).await;
+        self.inbox_busy.lock().unwrap_or_else(|p| p.into_inner()).remove(&letter);
+        match outcome {
+            Err(e) if is_transient(&e) => {
+                crate::debug_error!("[inbox] letter {letter} from contact {contact_id} kept for retry: {e:?}");
+                true
+            }
+            outcome => {
+                if let Err(e) = outcome {
+                    crate::debug_trace!("[inbox] letter {letter} from contact {contact_id} rejected: {e:?}");
+                }
+                let _ = self.db.inbox_done(letter);
+                false
+            }
+        }
+    }
+
+    async fn deliver_stored(self: &Arc<Self>, letter: i64, contact_id: i64, plaintext: &[u8]) -> bool {
+        match decode_with_padding_fallback(plaintext) {
+            Ok(payload) => self.deliver_letter(letter, contact_id, payload).await,
+            Err(_) => { let _ = self.db.inbox_done(letter); false }
+        }
+    }
+
+    /// Finish letters a crash, a storage or a network failure left in the
+    /// inbox, oldest first. One that fails again waits for the next round
+    /// without holding up the others.
+    async fn drain_inbox(self: &Arc<Self>) {
+        let Ok(pending) = self.db.inbox_pending(64) else { return };
+        for row in pending {
+            if self.inbox_busy.lock().unwrap_or_else(|p| p.into_inner()).contains(&row.id) { continue; }
+            self.deliver_stored(row.id, row.contact_id, &row.payload).await;
+        }
+    }
+
+    /// Reads an init without changing anything: the one-time prekey it used
+    /// is returned for the caller to spend once the payload is accepted.
     async fn accept_x3dh(
         &self,
         init: &X3dhInitial,
         ad: &[u8],
-    ) -> Result<(RatchetState, Vec<u8>)> {
+    ) -> Result<(RatchetState, Vec<u8>, Option<i64>)> {
         let signed_id = i64::from_be_bytes(
             self.db.get_setting(SETTING_SIGNED_PREKEY_ID)?.ok_or(SessionError::State)?
                 .try_into().map_err(|_| SessionError::State)?);
         let signed = self.db.get_prekey(signed_id)?.ok_or(SessionError::State)?;
         let signed_pair = PreKeyPair::from_secret(to_arr32(signed.private.clone())?);
-        let opk_pair = if let Some(opk_id) = init.one_time_id {
-            let p = self.db.get_prekey(opk_id)?;
-            if p.is_none() { return Err(SessionError::StaleOpk); }
-            if let Some(ref pk) = p { let _ = self.db.delete_prekey(pk.id); }
-            p.map(|p| Ok::<PreKeyPair, SessionError>(PreKeyPair::from_secret(to_arr32(p.private.clone())?))).transpose()?
-        } else { None };
-        let (state, pt) = crypto::x3dh_respond(&self.identity, &signed_pair, opk_pair.as_ref(), init, ad)?;
-        Ok((state, pt))
+        let opk = match init.one_time_id {
+            Some(opk_id) => {
+                let p = self.db.get_prekey(opk_id)?.ok_or(SessionError::StaleOpk)?;
+                Some((p.id, PreKeyPair::from_secret(to_arr32(p.private.clone())?)))
+            }
+            None => None,
+        };
+        let (state, pt) = crypto::x3dh_respond(&self.identity, &signed_pair, opk.as_ref().map(|(_, pair)| pair), init, ad)?;
+        Ok((state, pt, opk.map(|(id, _)| id)))
     }
 
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
         if self.handle_dm_control(contact_id, &payload).await? {return Ok(());}
         if self.reject_deleted_dm_content(contact_id, &payload).await? {return Ok(());}
-        self.heard.lock().unwrap_or_else(|p| p.into_inner()).insert(contact_id, now_ms());
-        // Files in parts: these letters are nothing else.
-        if let Some(ack) = &payload.file_ack {
-            self.on_file_ack(contact_id, ack).await?;
-        }
-        if let Some(chunk) = &payload.file_chunk {
-            self.on_file_chunk(contact_id, chunk, payload.sent_at, payload.dm.as_ref().map(|dm| &dm.reference)).await?;
-        }
-        if let Some(file_id) = &payload.file_cancel {
-            self.on_file_cancel(contact_id, file_id).await?;
-        }
         // As in the app: a contact who deleted us asks for the chat to go.
         if payload.wipe == Some(true) {
             crate::debug_trace!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");
@@ -1349,6 +1407,37 @@ impl SessionManager {
             self.incoming_since_send.lock().await.remove(&contact_id);
             let _ = self.events.send(SessionEvent::ContactWiped { contact_id }).await;
             return Ok(());
+        }
+        if self.db.get_contact(contact_id)?.is_some_and(|c| c.request_state == crate::db::RequestState::Incoming) {
+            if crate::files::is_request_content(&payload) {
+                crate::files::validate_message_files(&payload)?;
+                let mut staged = crate::files::StagedAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
+                for attachment in &payload.attachments { staged.inline(&attachment.name, &attachment.data)?; }
+                let committed = staged.publish_incoming(&self.db, contact_id, &payload)?;
+                if !committed.pending && !committed.deleted {
+                    self.activate_message_files(contact_id, committed.id).await?;
+                    if committed.inserted {
+                        self.db.if_message_live(committed.id, || { let _ = self.events.try_send(SessionEvent::IncomingPayload {
+                            contact_id, payload: payload.clone(), message_id: committed.id,
+                        }); })?;
+                    }
+                    if let Some(contact) = self.db.get_contact(contact_id)? {
+                        let _ = self.send_ack(&contact, &payload).await;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        self.heard.lock().unwrap_or_else(|p| p.into_inner()).insert(contact_id, now_ms());
+        // Files in parts: these letters are nothing else.
+        if let Some(ack) = &payload.file_ack {
+            self.on_file_ack(contact_id, ack).await?;
+        }
+        if let Some(chunk) = &payload.file_chunk {
+            self.on_file_chunk(contact_id, chunk, payload.sent_at, payload.dm.as_ref().map(|dm| &dm.reference)).await?;
+        }
+        if let Some(file_id) = &payload.file_cancel {
+            self.on_file_cancel(contact_id, file_id).await?;
         }
         if let Some(name) = payload.sender_name.as_deref() {
             let trimmed = name.trim();
@@ -1388,7 +1477,9 @@ impl SessionManager {
         }
 
         if let Some(gref) = &payload.group {
-            ensure_group_session(&self.db, &self.identity, gref)?;
+            let sender = self.db.get_contact(contact_id)?.ok_or(SessionError::State)?;
+            let card = self.identity.card();
+            self.db.apply_group_ref(gref, &sender.identity_sign, &card.sign_pk, &card.dh_pk)?;
         }
 
         if payload.callback_data.is_some()
@@ -1466,54 +1557,34 @@ impl SessionManager {
             } else {
                 self.db.find_message_by_origin(contact_id, payload.origin_msg_id as i64)?
             };
-            if existing.is_some() {
+            if let Some(mid) = existing {
                 crate::debug_trace!("[session] duplicate origin={} from contact {}, re-acking", payload.origin_msg_id, contact_id);
-                let _ = self.send_ack(&contact, &payload).await;
+                self.activate_message_files(contact_id, mid).await?;
+                if self.db.can_receive_files(contact_id)? {
+                    let _ = self.send_ack(&contact, &payload).await;
+                }
                 return Ok(());
             }
         }
 
-        let expires_at = payload.ttl_ms.map(|t| payload.sent_at + t);
-        let mut atts = Vec::with_capacity(payload.attachments.len());
-        for a in &payload.attachments {
-            let (key, path, size) = store_attachment(&self.data_dir, &a.data)?;
-            atts.push(NewAttachment { name: a.name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
+        crate::files::validate_message_files(&payload)?;
+        let mut staged = crate::files::StagedAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        for attachment in &payload.attachments {
+            staged.inline(&attachment.name, &attachment.data)?;
         }
-        let mid = if let Some(gref) = &payload.group {
-            self.db.insert_group_message_with_origin(
-                &gref.id, Some(&contact.identity_sign), Direction::In,
-                &payload.body, payload.sent_at, expires_at, &atts,
-                Some(payload.origin_msg_id as i64),
-            )?
-        } else {
-            self.db.insert_message_with_origin(
-                contact_id, Direction::In, &payload.body, payload.sent_at, expires_at, &atts,
-                Some(payload.origin_msg_id as i64),
-            )?
-        };
-        if self.db.get_message(mid)?.is_some_and(|message|message.deleted_at.is_some()) {
-            for attachment in &atts {let _=std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&attachment.path));}
+        let committed = staged.publish_incoming(&self.db, contact_id, &payload)?;
+        if committed.deleted || committed.pending { return Ok(()); }
+        let mid = committed.id;
+        self.activate_message_files(contact_id, mid).await?;
+        if !committed.inserted {
+            let _ = self.send_ack(&contact, &payload).await;
             return Ok(());
         }
-        if !payload.files.is_empty() {
-            self.accept_offers(contact_id, mid, &payload.files).await?;
-        }
-        if let Some(btns) = &payload.buttons {
-            if let Ok(b) = bincode::serialize(btns) {
-                self.db.set_setting(&format!("buttons_{}", mid), &b)?;
-            }
-        }
         if let Some(c) = &payload.console {
-            if let Ok(b) = bincode::serialize(c) {
-                self.db.set_setting(&format!("console_{}", mid), &b)?;
-            }
             // Console framing is a DM affair; in a group it is stored for
             // display and nothing more.
             if payload.group.is_none() {
                 match c.kind {
-                    CONSOLE_COMMAND => {
-                        self.db.set_setting(&format!("console_pending_{}", mid), b"1")?;
-                    }
                     CONSOLE_GRANT | CONSOLE_REVOKE => {
                         let granted = c.kind == CONSOLE_GRANT;
                         if self.db.set_contact_agent_granted(contact_id, granted).unwrap_or(false) {
@@ -1552,6 +1623,13 @@ impl SessionManager {
         Ok(deletions.iter().filter(|deletion|deletion.changed).count())
     }
 
+    pub fn acknowledge_deletion_notices(&self, contact_id:i64, message_ids:&[i64]) -> Result<()> {
+        for deletion in self.db.acknowledge_deletion_notices(contact_id,message_ids)? {
+            self.emit_dm_deleted(&deletion)?;
+        }
+        Ok(())
+    }
+
     fn emit_dm_deleted(&self, deletion: &crate::db::DmDelete) -> Result<()> {
         if let Some(flow) = self.flows.lock().unwrap_or_else(|p| p.into_inner()).get_mut(&deletion.contact_id) {
             for file in &deletion.files { flow.forget(*file); }
@@ -1562,6 +1640,7 @@ impl SessionManager {
             contact_id: deletion.contact_id, message_id: deletion.message_id,
             deleted_at: message.deleted_at.ok_or(SessionError::State)?,
             pending: self.db.dm_delete_pending(deletion.message_id)?,
+            deletion_notice: self.db.dm_deletion_notice(deletion.message_id)?,
         });
         self.send_kick.notify_one();
         Ok(())
@@ -1573,7 +1652,7 @@ impl SessionManager {
         if !dm.is_control_payload(payload) { return Err(SessionError::State); }
         match dm.kind {
             1 => {
-                let deleted = self.db.receive_dm_delete(contact_id, &dm.reference)?;
+                let deleted = self.db.receive_dm_delete_at(contact_id, &dm.reference, payload.sent_at)?;
                 self.emit_dm_deleted(&deleted)?;
                 let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
                 let mut ack = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
@@ -1590,6 +1669,34 @@ impl SessionManager {
                         })?;
                     }
                 }
+            }
+            3 => {
+                if let Some(message_id)=self.db.receive_dm_notice_ack(contact_id,&dm.reference)? {
+                    self.emit_dm_deleted(&crate::db::DmDelete {contact_id,message_id,changed:false,files:vec![]})?;
+                    let contact=self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
+                    let mut ack=WirePayload::simple(0,String::new(),vec![],now_ms(),None);
+                    ack.dm=Some(crate::session::WireDm {kind:4,reference:dm.reference.clone()});
+                    if let Some(route)=self.route_for(&contact).await {
+                        let _=self.send_payload_via_relay(&contact,&mut ack,&route).await;
+                    }
+                }
+            }
+            4 => self.db.confirm_dm_notice_ack(contact_id,&dm.reference)?,
+            // Headless: nobody looks at these here, but they are kept like in
+            // the app and confirmed, so the contact stops repeating them.
+            kind if crate::db::is_peer_event_kind(kind) => {
+                self.db.receive_peer_event(contact_id, &dm.reference, kind, payload.sent_at)?;
+                let contact = self.db.get_contact(contact_id)?.ok_or(SessionError::NotFound)?;
+                let mut receipt = WirePayload::simple(0, String::new(), vec![], now_ms(), None);
+                receipt.dm = Some(crate::session::WireDm {
+                    kind: kind + crate::db::PEER_EVENT_RECEIPT_OFFSET, reference: dm.reference.clone(),
+                });
+                if let Some(route) = self.route_for(&contact).await {
+                    let _ = self.send_payload_via_relay(&contact, &mut receipt, &route).await;
+                }
+            }
+            kind if kind.checked_sub(crate::db::PEER_EVENT_RECEIPT_OFFSET).is_some_and(crate::db::is_peer_event_kind) => {
+                self.db.confirm_peer_event(contact_id, &dm.reference, kind - crate::db::PEER_EVENT_RECEIPT_OFFSET)?;
             }
             _ => return Err(SessionError::State),
         }
@@ -1745,11 +1852,13 @@ impl SessionManager {
                 50,
             )?;
             let deletions=self.db.pending_dm_deletes(contact.id,now_ms())?;
+            let notice_acks=self.db.pending_dm_notice_acks(contact.id,now_ms())?;
             let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
                 && deletions.is_empty()
+                && notice_acks.is_empty()
                 && !needs_session
                 && !needs_keepalive
                 && !file_work
@@ -1767,9 +1876,16 @@ impl SessionManager {
             };
             if self.ensure_session_for(&contact, &route).await.is_err() { continue; }
             for reference in deletions {
-                let mut payload=WirePayload::simple(0,String::new(),vec![],now_ms(),None);
-                payload.dm=Some(WireDm {kind:1,reference:reference.clone()});
+                let at=self.db.dm_local_delete_time(contact.id,&reference)?;
+                let mut payload=WirePayload::simple(0,String::new(),vec![],at,None);
+                payload.dm=Some(crate::session::WireDm {kind:1,reference:reference.clone()});
                 self.db.record_dm_delete_attempt(contact.id,&reference,now_ms())?;
+                let _=self.send_payload_via_relay(&contact,&mut payload,&route).await;
+            }
+            for reference in notice_acks {
+                let mut payload=WirePayload::simple(0,String::new(),vec![],now_ms(),None);
+                payload.dm=Some(crate::session::WireDm {kind:3,reference:reference.clone()});
+                self.db.record_dm_notice_attempt(contact.id,&reference,now_ms())?;
                 let _=self.send_payload_via_relay(&contact,&mut payload,&route).await;
             }
             if needs_keepalive && pending.is_empty() && unacked.is_empty() {
@@ -2006,10 +2122,17 @@ impl SessionManager {
             let mut tick = tokio::time::interval(Duration::from_secs(BUNDLE_REFRESH_SECS));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await;
+            // Letters left in the inbox by a crash or a storage failure.
+            let mut inbox_retry = tokio::time::interval(Duration::from_secs(INBOX_RETRY_SECS));
+            inbox_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                tick.tick().await;
-                this.republish_bundle().await;
-                this.gc_files();
+                tokio::select! {
+                    _ = inbox_retry.tick() => this.drain_inbox().await,
+                    _ = tick.tick() => {
+                        this.republish_bundle().await;
+                        this.gc_files();
+                    }
+                }
             }
         });
         self.tasks.lock().unwrap().push(handle);
@@ -2211,23 +2334,6 @@ fn nonempty(value: String) -> Option<String> {
     (!value.trim().is_empty()).then_some(value)
 }
 
-fn ensure_group_session(db: &Arc<Db>, identity: &Arc<Identity>, gref: &WireGroupRef) -> Result<()> {
-    if db.get_group_name(&gref.id)?.is_none() {
-        db.create_group(&gref.id, &gref.name)?;
-    }
-    let my_sign = identity.card().sign_pk;
-    for m in &gref.members {
-        let is_self = m.sign_pk.as_slice() == my_sign.as_slice();
-        if db.is_group_member(&gref.id, &m.sign_pk)? { continue; }
-        let name = if m.name.is_empty() { hex_short(&m.sign_pk) } else { m.name.clone() };
-        db.add_group_member(&gref.id, &m.sign_pk, &m.dh_pk, &m.onion, &name, is_self)?;
-        if !is_self && db.find_contact_by_identity(&m.dh_pk)?.is_none() {
-            let _ = db.add_contact(&m.sign_pk, &m.dh_pk, &m.onion, &name, None)?;
-        }
-    }
-    Ok(())
-}
-
 fn load_or_create_identity(db: &Db) -> Result<Identity> {
     match (db.get_setting(SETTING_IDENTITY_SIGN)?.map(zeroize::Zeroizing::new), db.get_setting(SETTING_IDENTITY_DH)?.map(zeroize::Zeroizing::new)) {
         (Some(s), Some(d)) if s.len() == 32 && d.len() == 32 => {
@@ -2250,35 +2356,17 @@ fn load_or_create_identity(db: &Db) -> Result<Identity> {
 /// Files sent in parts (`crate::files`, docs/plans/2026-09-24-chunked-files.md).
 impl SessionManager {
     /// Seal outgoing attachments: small ones whole (they ride inside the
-    /// letter), larger ones in parts. Returns what to store and, for each
-    /// sealed in parts, its sha256 in order.
-    fn store_outgoing(&self, attachments: &[(String, Vec<u8>)]) -> Result<(Vec<NewAttachment>, Vec<[u8; 32]>)> {
-        let mut stored = Vec::with_capacity(attachments.len());
-        let mut parts = Vec::new();
+    /// letter), larger ones in parts. Publish only after every file is ready.
+    fn store_outgoing(&self, attachments: &[(String, Vec<u8>)]) -> Result<crate::files::StagedAttachments> {
+        let mut staged = crate::files::StagedAttachments::new(&self.data_dir.join(ATTACHMENTS_DIR))?;
         for (name, data) in attachments {
-            if data.len() > crate::files::INLINE_MAX {
-                let (key, path, size, sha) = store_attachment_parts(&self.data_dir, data)?;
-                stored.push(NewAttachment {
-                    name: name.clone(), size: size as i64, key: key.to_vec(), path,
-                    chunk_size: Some(crate::files::CHUNK_SIZE as i64),
-                });
-                parts.push(sha);
+            if !staged.can_inline(data.len()) {
+                staged.parts(name, data.as_slice())?;
             } else {
-                let (key, path, size) = store_attachment(&self.data_dir, data)?;
-                stored.push(NewAttachment { name: name.clone(), size: size as i64, key: key.to_vec(), path, chunk_size: None });
+                staged.inline(name, data)?;
             }
         }
-        Ok((stored, parts))
-    }
-
-    /// Offer the message's attachments sealed in parts to `recipients`.
-    fn register_offers(&self, msg_id: i64, shas: &[[u8; 32]], recipients: &[i64]) -> Result<()> {
-        let parted = self.db.list_attachments(msg_id)?.into_iter().filter(|a| a.chunk_size.is_some());
-        for (a, sha) in parted.zip(shas) {
-            let file_id: [u8; 16] = crypto::random_array();
-            self.db.file_out_add(&file_id, a.id, msg_id, sha, recipients)?;
-        }
-        Ok(())
+        Ok(staged)
     }
 
     fn offers_for(&self, msg_id: i64) -> Result<Vec<WireFileOffer>> {
@@ -2295,35 +2383,21 @@ impl SessionManager {
     }
 
     /// A letter offering files: start taking their parts.
-    async fn accept_offers(self: &Arc<Self>, contact_id: i64, message_id: i64, offers: &[WireFileOffer]) -> Result<()> {
-        for o in offers {
-            if o.size > crate::files::MAX_FILE_BYTES || o.chunk_size == 0 || o.chunk_size > crate::files::CHUNK_SIZE {
-                crate::debug_trace!("[files] offer from contact {contact_id} refused: {} bytes in parts of {}", o.size, o.chunk_size);
-                continue;
-            }
-            if self.db.file_in(&o.file_id, contact_id)?.is_some() {
-                continue;
-            }
-            let cipher = AttachmentCipher::generate();
-            let mut name = [0u8; 24];
-            crypto::fill_random(&mut name);
-            let total = crate::files::chunk_count(o.size, o.chunk_size);
-            let fin = crate::db::FileIn {
-                file_id: o.file_id, contact_id, message_id, name: o.name.clone(), size: o.size,
-                sha256: o.sha256, chunk_size: o.chunk_size, path: to_hex(&name), key: cipher.key().to_vec(),
-                bits: crate::files::Received::new(total).bits().to_vec(), received: 0, created_at: now_ms(),
-            };
-            if !self.db.file_in_add(&fin)? {
-                continue;
-            }
-            self.db.track_dm_file(contact_id,message_id,&o.file_id)?;
-            crate::debug_trace!("[files] contact {contact_id} offers {} ({} bytes, {total} parts)", o.name, o.size);
-            let _ = self.events.send(SessionEvent::FileProgress { message_id, contact_id, incoming: true, done: 0, total }).await;
-            // Parts that came before this letter.
-            let early = self.db.file_early_take(&o.file_id, contact_id)?;
-            for (index, data) in early {
-                let chunk = WireFileChunk { file_id: o.file_id, index, data };
+    async fn activate_message_files(self: &Arc<Self>, contact_id: i64, message_id: i64) -> Result<()> {
+        if !self.db.can_receive_files(contact_id)? { return Ok(()); }
+        for fin in self.db.files_in_for_message(message_id)? {
+            if fin.contact_id != contact_id { continue; }
+            let total = crate::files::chunk_count(fin.size, fin.chunk_size);
+            self.db.if_message_live(message_id, || { let _ = self.events.try_send(SessionEvent::FileProgress {
+                message_id, contact_id, incoming: true, done: fin.received, total,
+            }); })?;
+            for (index, data) in self.db.file_early_take(&fin.file_id, contact_id)? {
+                let chunk = WireFileChunk { file_id: fin.file_id, index, data };
                 self.on_file_chunk(contact_id, &chunk, 0, None).await?;
+            }
+            if let Some(current) = self.db.file_in(&fin.file_id, contact_id)? {
+                let ack = crate::files::Received::from_bits(current.bits, total).resume_ack(fin.file_id);
+                self.send_file_message(contact_id, |p| p.file_ack = Some(ack)).await;
             }
         }
         Ok(())
@@ -2337,6 +2411,8 @@ impl SessionManager {
         if !collect_lane_holds(before, now_ms()) { self.collect_kick.notify_one(); }
         let Some(update) = self.db.apply_file_chunk(contact_id, chunk, reference, &self.data_dir.join(ATTACHMENTS_DIR))? else { return Ok(()); };
         if update.broken {
+            self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
+            self.send_file_message(contact_id, |payload|payload.file_cancel=Some(chunk.file_id)).await;
             self.db.if_message_live(update.message_id, || { let _ = self.events.try_send(SessionEvent::FileFailed {
                 message_id:update.message_id,contact_id,reason:"came broken".into(),
             }); })?;
@@ -2360,47 +2436,31 @@ impl SessionManager {
         Ok(())
     }
 
-    async fn on_file_ack(self: &Arc<Self>, contact_id: i64, ack: &WireFileAck) -> Result<()> {
-        let Some(mut peer) = self.db.file_peer(&ack.file_id, contact_id)? else { return Ok(()) };
-        let Some(file) = self.db.file_out(&ack.file_id)? else { return Ok(()) };
-        let total = crate::files::chunk_count(file.attachment.size as u64, file.attachment.chunk_size.unwrap_or(1) as u32);
-        let mut s = crate::files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
-        {
-            let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-            let flow = flows.entry(contact_id).or_default();
-            crate::debug_trace!("[files] ack from contact {contact_id}: all below {}, missing {:?}, held to {}",
-                ack.received_up_to, ack.missing, ack.seen_to);
-            s.on_ack(ack, flow, now_ms());
-            if s.done(total) {
-                flow.forget(ack.file_id);
-                crate::debug_trace!("[files] window to contact {contact_id} now {} parts, round trip {:?} ms", flow.window(), flow.srtt_ms());
-            }
+    async fn on_file_ack(self: &Arc<Self>, contact_id:i64, ack:&WireFileAck) -> Result<()> {
+        let Some(file)=self.db.file_out(&ack.file_id)? else {return Ok(())};
+        let total=crate::files::chunk_count(file.attachment.size as u64,file.attachment.chunk_size.unwrap_or(1) as u32);
+        let done={
+            let mut flows=self.flows.lock().unwrap_or_else(|p|p.into_inner());
+            self.db.acknowledge_file_parts(contact_id,ack,total,flows.entry(contact_id).or_default(),now_ms())?
+        };
+        if let Some(done)=done {
+            let _=self.events.try_send(SessionEvent::FileProgress {message_id:file.message_id,contact_id,incoming:false,done,total});
+            self.send_kick.notify_one();
         }
-        peer.acked = s.acked;
-        peer.resend = s.resend.clone();
-        peer.last_ack_at = Some(now_ms());
-        self.db.file_peer_save(&peer)?;
-        let _ = self.events.send(SessionEvent::FileProgress {
-            message_id: file.message_id, contact_id, incoming: false, done: peer.acked, total,
-        }).await;
-        if s.done(total) {
-            crate::debug_trace!("[files] {} is all at contact {contact_id}", file.attachment.name);
-        }
-        self.send_kick.notify_one();
         Ok(())
     }
 
     async fn on_file_cancel(&self, contact_id: i64, file_id: &[u8; 16]) -> Result<()> {
         // They stopped sending it to us: forget what we had.
-        if let Some(fin) = self.db.file_in(file_id, contact_id)? {
-            let _ = std::fs::remove_file(self.data_dir.join(ATTACHMENTS_DIR).join(&fin.path));
-            self.db.file_in_delete(file_id, contact_id)?;
-            let _ = self.events.send(SessionEvent::FileFailed { message_id: fin.message_id, contact_id, reason: "cancelled".into() }).await;
+        if let Some(message_id)=self.db.cancel_incoming_file(file_id,contact_id)? {
+            self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
+            let _=self.events.try_send(SessionEvent::FileFailed {message_id,contact_id,reason:"cancelled".into()});
         }
-        // Or they refused ours.
-        if let Some(mut peer) = self.db.file_peer(file_id, contact_id)? {
-            peer.failed = true;
-            self.db.file_peer_save(&peer)?;
+        if self.db.fail_file_peer(file_id,contact_id)? {
+            if let Some(flow)=self.flows.lock().unwrap_or_else(|p|p.into_inner()).get_mut(&contact_id) {flow.forget(*file_id);}
+            if let Some(file)=self.db.file_out(file_id)? {
+                let _=self.events.try_send(SessionEvent::FileFailed {message_id:file.message_id,contact_id,reason:"cancelled".into()});
+            }
         }
         Ok(())
     }
@@ -2426,6 +2486,7 @@ impl SessionManager {
     /// A letter about files (an ack, a cancel): no text, not a message, not
     /// retried — the next part or ack supersedes it.
     async fn send_file_message(self: &Arc<Self>, contact_id: i64, fill: impl FnOnce(&mut WirePayload)) -> bool {
+        if !self.db.can_receive_files(contact_id).unwrap_or(false) { return false; }
         let Ok(Some(contact)) = self.db.get_contact(contact_id) else { return false };
         let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now_ms(), None);
         fill(&mut payload);
@@ -2484,40 +2545,24 @@ impl SessionManager {
         let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
         let mut lane = 0usize;
         let heard = self.heard.lock().unwrap_or_else(|p| p.into_inner()).get(&contact.id).copied();
-        for mut peer in self.db.file_peers_for(contact.id)? {
+        for peer in self.db.file_peers_for(contact.id)? {
             let Some(file) = self.db.file_out(&peer.file_id)? else { continue };
             let a = &file.attachment;
             let chunk_size = a.chunk_size.unwrap_or(crate::files::CHUNK_SIZE as i64) as u32;
             let total = crate::files::chunk_count(a.size as u64, chunk_size);
-            let mut s = crate::files::Sending { next: peer.next, acked: peer.acked, resend: peer.resend.clone() };
-            if let Some(sent) = peer.last_sent_at {
-                let alive_since = heard.is_some_and(|h| h > sent);
-                let no_ack_since = peer.last_ack_at.is_none_or(|a| a < sent);
-                // Never a single ack from someone alive for a day: a build
-                // without files in parts. Say so, rather than try for a week.
-                if peer.last_ack_at.is_none() && alive_since && now - sent > FILE_GIVE_UP_MS {
-                    peer.failed = true;
-                    self.db.file_peer_save(&peer)?;
-                    let _ = self.events.send(SessionEvent::FileFailed {
-                        message_id: file.message_id, contact_id: contact.id, reason: "not taken".into(),
-                    }).await;
-                    continue;
-                }
-                // Alive, and not a word about the parts for long: they are
-                // gone somewhere. Send what is outstanding again — rarely,
-                // since an absent recipient cannot be told from a lost part.
-                if s.resend.is_empty() && s.next > s.acked && alive_since && no_ack_since && now - sent > FILE_RESEND_IDLE_MS {
-                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                    s.rewind(file.file_id, flows.entry(contact.id).or_default());
-                }
-            }
-            let next_before = s.next;
-            let (due, window, in_flight, rto, srtt) = {
-                let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                let flow = flows.entry(contact.id).or_default();
-                let due = s.due(file.file_id, total, flow, now);
-                (due, flow.window(), flow.in_flight(), flow.rto_ms(), flow.srtt_ms())
+            let (plan,window,in_flight,rto,srtt)={
+                let mut flows=self.flows.lock().unwrap_or_else(|p|p.into_inner());
+                let flow=flows.entry(contact.id).or_default();
+                let plan=self.db.reserve_file_batch(&file.file_id,contact.id,total,flow,now,heard)?;
+                (plan,flow.window(),flow.in_flight(),flow.rto_ms(),flow.srtt_ms())
             };
+            let Some(plan)=plan else {continue};
+            if plan.gave_up {
+                let _=self.events.try_send(SessionEvent::FileFailed {message_id:file.message_id,contact_id:contact.id,reason:"not taken".into()});
+                continue;
+            }
+            let due=plan.due;
+            let next_before=plan.next_before;
             if due.is_empty() {
                 continue;
             }
@@ -2527,7 +2572,6 @@ impl SessionManager {
                 a.name, contact.id, due, again);
             let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
             let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
-            let mut sent_any = false;
             for index in &due {
                 let data = crate::files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
                 let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
@@ -2541,20 +2585,11 @@ impl SessionManager {
                     // What did not go goes again next time.
                     let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
                     let flow = flows.entry(contact.id).or_default();
-                    for i in due.iter().copied().filter(|i| i >= index) {
-                        flow.unsent(file.file_id, i);
-                        s.resend.push(i);
-                    }
+                    let retry:Vec<u32>=due.iter().copied().filter(|i|i>=index).collect();
+                    self.db.retry_file_parts(&file.file_id,contact.id,&retry,flow)?;
                     break;
                 }
-                sent_any = true;
             }
-            peer.next = s.next;
-            peer.resend = s.resend;
-            if sent_any {
-                peer.last_sent_at = Some(now);
-            }
-            self.db.file_peer_save(&peer)?;
         }
         Ok(())
     }
@@ -2570,28 +2605,6 @@ impl SessionManager {
         }
         let _ = self.db.file_early_gc(cutoff);
     }
-}
-
-/// Seal an attachment in parts (`crate::files`): key, file name, size, sha256.
-fn store_attachment_parts(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], String, u64, [u8; 32])> {
-    let cipher = AttachmentCipher::generate();
-    let mut name = [0u8; 24];
-    crate::crypto::fill_random(&mut name);
-    let hex = to_hex(&name);
-    let path = data_dir.join(ATTACHMENTS_DIR).join(&hex);
-    let (size, sha) = crate::files::seal_from(data, &path, &cipher, crate::files::CHUNK_SIZE)?;
-    Ok((*cipher.key(), hex, size, sha))
-}
-
-fn store_attachment(data_dir: &PathBuf, data: &[u8]) -> Result<([u8; 32], String, u64)> {
-    let cipher = AttachmentCipher::generate();
-    let encrypted = cipher.encrypt_chunk(0, &[], data)?;
-    let mut name = [0u8; 24];
-    crate::crypto::fill_random(&mut name);
-    let hex = to_hex(&name);
-    let path = data_dir.join(ATTACHMENTS_DIR).join(&hex);
-    std::fs::write(&path, &encrypted)?;
-    Ok((*cipher.key(), hex, data.len() as u64))
 }
 
 /// A successful send only enqueues or stores an envelope; the recipient's
@@ -2632,16 +2645,22 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-fn to_arr32(v: Vec<u8>) -> Result<[u8; 32]> {
-    v.try_into().map(|a: Vec<u8>| {
-        let mut o = [0u8; 32]; o.copy_from_slice(&a); o
-    }).map_err(|_| SessionError::State)
+/// The storage or the network failed, not the letter: worth trying again
+/// later. Processing a stored letter again is idempotent (duplicates are
+/// recognised by origin), so a reply that could not be sent is no reason to
+/// drop what was received.
+fn is_transient(error: &SessionError) -> bool {
+    match error {
+        SessionError::Net(_) | SessionError::Relay(_) => true,
+        SessionError::Db(e) => crate::db::is_transient(e),
+        SessionError::Io(_) => true,
+        _ => false,
+    }
 }
 
-fn to_hex(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
-    for x in b { s.push_str(&format!("{:02x}", x)); }
-    s
+/// See `Core`'s twin: a wrong length is an error, never a panic.
+fn to_arr32(v: Vec<u8>) -> Result<[u8; 32]> {
+    <[u8; 32]>::try_from(v).map_err(|_| SessionError::State)
 }
 
 /// When two X3dhInits cross, the session opened by the side with the lower

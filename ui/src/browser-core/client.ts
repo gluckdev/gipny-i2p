@@ -1,5 +1,7 @@
 import type { BrowserBackend, UnlistenFn } from '../api';
 import { enrollBrowserPasskey, unlockBrowserPasskey } from './passkeys';
+import { RtcBridge, rtcSettings } from './rtc-transport';
+import { loadNetworkConfiguration } from './network-config';
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; command: string };
 export class BrowserCoreClient implements BrowserBackend {
@@ -10,26 +12,33 @@ export class BrowserCoreClient implements BrowserBackend {
   private listeners = new Map<string, Set<(payload: unknown) => void>>();
   private config: Record<string, string> | null = null;
   private unlocked = false;
+  private rtc: RtcBridge | null = null;
+  private rtcConfig: ReturnType<typeof rtcSettings> | null = null;
   async configure(): Promise<void> {
-    const abort = new AbortController();
-    const deadline = setTimeout(() => abort.abort(), 5000);
-    try {
-      const response = await fetch(new URL('browser-config.json', document.baseURI), { cache: 'no-store', credentials: 'omit', redirect: 'error', signal: abort.signal });
-      if (response.ok) {
-        const value = await response.json() as Record<string, unknown>;
-        const fields = ['snapshot_url', 'snapshot_sha256', 'forwarder_url', 'capability'];
-        if (fields.some(field => typeof value[field] !== 'string' || (value[field] as string).length > 4096)) throw new Error('Invalid browser network configuration');
-        this.config = Object.fromEntries(fields.map(field => [field, value[field] as string]));
-      }
-    } catch { this.config = null; /* Encrypted offline history remains available. */ }
-    finally { clearTimeout(deadline); }
+    const loaded = await loadNetworkConfiguration(new URL('browser-config.json', document.baseURI));
+    this.config = loaded?.config ?? null;
+    this.rtcConfig = loaded?.rtc ?? null;
   }
   private ensureWorker(): Promise<unknown> {
     if (this.init) return this.init;
     const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'gipny-core' });
     this.worker = worker;
+    this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;
     worker.onmessage = (event: MessageEvent): void => {
       if (this.worker !== worker) return;
+      if (event.data?.event === 'rtc_connect') {
+        const port = event.ports[0];
+        const endpoint = event.data.endpoint;
+        const protocol = event.data.protocol;
+        try {
+          if (!port || !this.rtc || typeof endpoint !== 'string' || endpoint.length > 8192 || protocol !== `gipny.ntcp2.v1.${this.config?.capability}`) throw new Error('Invalid RTC request');
+          const url = new URL(endpoint), configured = new URL(this.config!.forwarder_url!);
+          url.searchParams.delete('target'); configured.searchParams.delete('target');
+          if (url.href !== configured.href) throw new Error('Unexpected RTC endpoint');
+          this.rtc.connect(endpoint, protocol, port);
+        } catch { port?.postMessage({ kind: 'error' }); port?.close(); }
+        return;
+      }
       const response = event.data as { id?: number; result?: unknown; error?: string; event?: string; payload?: unknown };
       if (response.event) {
         if (response.event === 'browser_fault') {
@@ -96,6 +105,7 @@ export class BrowserCoreClient implements BrowserBackend {
     return Promise.resolve(() => { listeners!.delete(callback); });
   }
   terminate(message = 'Profile locked'): void {
+    this.rtc?.close(); this.rtc = null;
     this.worker?.terminate(); this.worker = null; this.init = null;
     this.unlocked = false;
     for (const pending of this.pending.values()) pending.reject(new Error(message));
@@ -112,6 +122,8 @@ export class BrowserCoreClient implements BrowserBackend {
     if (!this.unlocked) return;
     await this.configure();
     if (!this.unlocked) return;
+    this.rtc?.close();
+    this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;
     await this.invoke('init', { config: this.config });
     await this.invoke('retry_network');
   }

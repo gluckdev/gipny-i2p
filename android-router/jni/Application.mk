@@ -9,9 +9,8 @@ APP_CPPFLAGS += -std=c++20 -fexceptions -frtti
 # router is stopped before exit by the shim.
 APP_CPPFLAGS += -fno-c++-static-destructors
 
-# No USE_UPNP: the router is only ever reached through its own api in this
-# process, so UPnP is a dependency (miniupnpc) and a hole-punching side effect
-# nobody asked for. The desktop builds do not enable it either.
+# The embedded Rust manager uses our pinned miniupnpc C library for the
+# router's own NTCP2/SSU2 ports. The upstream daemon's UPnP manager is not built.
 APP_CPPFLAGS += -DANDROID -D__ANDROID__ -Wno-deprecated-declarations
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
 APP_CPPFLAGS += -DANDROID_ARM7A
@@ -29,3 +28,4 @@ LIB_SRC_PATH  = $(I2PD_SRC_PATH)/libi2pd
 
 # gipny's C interface over libi2pd/api.h, shared with the desktop builds.
 SHIM_PATH = $(abspath $(NDK_PROJECT_PATH)/../i2p-embed/shim)
+MINIUPNPC_PATH = $(abspath $(SHIM_PATH)/../vendor/miniupnpc)

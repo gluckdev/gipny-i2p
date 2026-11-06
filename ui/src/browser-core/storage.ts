@@ -5,7 +5,7 @@ const ROOT = 'gipny-browser-v1';
 const LIMIT = 16 * 1024 * 1024;
 const MAX_PROFILES = 32;
 
-type SyncFile = {
+export type SyncFile = {
   getSize(): number;
   read(buffer: Uint8Array, options?: { at?: number }): number;
   write(buffer: Uint8Array, options?: { at?: number }): number;
@@ -194,6 +194,7 @@ export class ProfileStorage {
     readonly name: string,
     private slots: [SyncFile, SyncFile],
     private releaseLock: () => void,
+    readonly directory: FileSystemDirectoryHandle,
   ) {}
 
   static async open(raw: string, create: boolean): Promise<ProfileStorage> {
@@ -316,7 +317,7 @@ export class ProfileStorage {
             throw new Error('Failed to open storage slots');
           }
 
-          const storage = new ProfileStorage(name, [slotA, slotB], releaseHold);
+          const storage = new ProfileStorage(name, [slotA, slotB], releaseHold, await root.getDirectoryHandle(id));
           resolve(storage);
         } catch (error) {
           handles.forEach(h => {

@@ -1,7 +1,7 @@
 import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import { save } from '@tauri-apps/plugin-dialog';
-import { downloadBrowserFile } from './browser-files';
+import { saveBrowserAttachment } from './browser-download';
 import { Api, isTauri, type MediaItem } from './api';
 import type { Store, ChatTarget } from './state';
 import { h, fmtDate, fmtTime, humanSize, mimeFromName } from './view';
@@ -65,7 +65,7 @@ export class MediaModal {
     this.grid.replaceChildren();
     for (const it of items) {
       const mime = mimeFromName(it.name);
-      const isImage = mime.startsWith('image/');
+      const isImage = mime.startsWith('image/') && (isTauri || it.size <= 32 * 1024 * 1024);
       const tile = h('div', {
         class: 'media-tile' + (isImage ? ' is-image' : ''),
         title: `${it.name}\n${humanSize(it.size)}\n${fmtDate(it.sent_at)} ${fmtTime(it.sent_at)}`,
@@ -83,8 +83,7 @@ export class MediaModal {
           ev.stopPropagation();
           try {
             if (!isTauri) {
-              const data = await Api.loadAttachment(it.id);
-              if (!this.closed) downloadBrowserFile(data, it.name);
+              if (!this.closed) await saveBrowserAttachment(it.id);
               return;
             }
             const dest = await save({ defaultPath: it.name });

@@ -4,7 +4,8 @@ import { t as tr } from './i18n';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Api, isTauri } from './api';
 import type { Store } from './state';
-import { View, h, logo } from './view';
+import { View, h } from './view';
+import { salonBackdrop, salonEmblem } from './profile-salon';
 import type { App } from './app';
 
 export class ProfileSelect extends View {
@@ -16,10 +17,13 @@ export class ProfileSelect extends View {
     super();
     this.list = h('div', { class: 'stack', style: { gap: '8px', marginBottom: '16px' } });
     this.subTitle = h('div', { class: 'auth-sub' }, '');
-    this.el = h('div', { class: 'auth' },
-      h('div', { class: 'auth-card' },
-        logo(),
+    this.el = h('div', { class: 'auth profile-salon' },
+      salonBackdrop(),
+      h('div', { class: 'auth-card salon-panel' },
         languagePicker(),
+        salonEmblem(),
+        h('div', { class: 'salon-wordmark' }, 'GIPNY'),
+        h('p', { class: 'salon-caption' }, tr('profile.salon_caption')),
         h('div', { class: 'auth-title' }, tr('profile.select_title')),
         this.subTitle,
         this.list,
@@ -93,10 +97,10 @@ export class ProfileSelect extends View {
     for (const p of profiles) {
       this.list.appendChild(h('div', { class: 'row', style: { gap: '6px' } },
         h('button', {
-          class: 'btn btn-block',
+          class: 'btn btn-block salon-profile',
           style: { justifyContent: 'flex-start', flex: '1' },
           onClick: () => this.store.selectProfileForUnlock(p),
-        }, `◉  ${p}`),
+        }, h('span', { class: 'salon-profile-light', 'aria-hidden': 'true' }), h('span', { class: 'salon-profile-name' }, p)),
         h('button', {
           class: 'btn btn-danger',
           style: { padding: '10px 12px' },
