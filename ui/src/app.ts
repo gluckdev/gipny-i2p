@@ -464,9 +464,6 @@ class MainView extends View {
     };
     main.insertBefore(agentBanner, main.firstChild);
     this.subs.push(store.agentMode.subscribe(paintAgentBanner, true));
-    this.subs.push(store.sidebarCollapsed.subscribe((c: boolean) => {
-      main.classList.toggle('sidebar-collapsed', c);
-    }));
     this.subs.push(store.selectedChat.subscribe((target: ChatTarget | null) => {
       this.chat?.destroy();
       this.chat = null;

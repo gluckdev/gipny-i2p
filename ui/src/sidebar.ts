@@ -62,13 +62,6 @@ export class Sidebar extends View {
     this.sub(store.displayName, renderMe, false);
     this.sub(store.identity, renderMe, false);
 
-    const collapseBtn = h('button', {
-      class: 'icon-btn sidebar-collapse',
-      title: tr('sidebar.collapse'),
-      onClick: () => this.store.toggleSidebar(),
-    }, icon(store.sidebarCollapsed.get() ? 'chevronRight' : 'chevronLeft'));
-    this.sub(store.sidebarCollapsed, (c) => { collapseBtn.replaceChildren(icon(c ? 'chevronRight' : 'chevronLeft')); }, false);
-
     const newBtn = h('button', { class: 'icon-btn icon-btn-accent', title: tr('sidebar.new_chat') }, icon('plus'));
     newBtn.addEventListener('click', () => {
       const r = newBtn.getBoundingClientRect();
@@ -89,7 +82,6 @@ export class Sidebar extends View {
           newBtn,
           h('button', { class: 'icon-btn', title: tr('sidebar.search_messages'), onClick: () => this.search() }, icon('search')),
           h('button', { class: 'icon-btn', title: tr('sidebar.settings'), onClick: () => this.settings() }, icon('settings')),
-          collapseBtn,
         ),
       ),
       h('div', { class: 'sidebar-search-wrap' }, search),
