@@ -44,7 +44,21 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
         "--http.enabled=false".into(),
         "--httpproxy.enabled=false".into(),
         "--socksproxy.enabled=false".into(),
-        "--upnp.enabled=false".into(),
+        "--upnp.enabled=true".into(),
+        "--upnp.name=UPnP".into(),
+        // Fast NAT penetration and modern Noise-based transport
+        "--ssu2.enabled=true".into(),
+        "--ntcp2.enabled=true".into(),
+        // Internal clock drift correction from peer crypto exchanges without plaintext NTP leak
+        "--nettime.frompeers=true".into(),
+        // Persist reliable peer profiles and verified LeaseSets across app sessions
+        "--persist.profiles=true".into(),
+        "--persist.addressbook=true".into(),
+        // Balanced exploratory tunnel pool: 2 in / 2 out tunnels for low overhead and quick boot
+        "--exploratory.inbound.length=2".into(),
+        "--exploratory.outbound.length=2".into(),
+        "--exploratory.inbound.quantity=2".into(),
+        "--exploratory.outbound.quantity=2".into(),
         // Reseed bundles are checked against the certificates i2p-embed lays
         // out; i2pd's default takes them unverified.
         "--reseed.verify=true".into(),
