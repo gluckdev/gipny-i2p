@@ -101,14 +101,17 @@ export class AuthCreate extends View {
     if (duress && duress === pass) { this.err.textContent = tr('auth.duress_must_differ_from_primary'); return; }
 
     this.err.textContent = '';
-    await this.store.beginBoot(profile);
     try {
+      await this.store.beginBoot(profile, true);
+      if (!this.store.isBooting(profile)) return;
       await Api.vaultCreate(profile, pass, display, duress || null, wipe, max);
+      if (!this.store.isBooting(profile)) return;
       await this.store.onUnlocked(profile);
     } catch (e) {
+      if (!this.store.isBooting(profile)) return;
       this.store.endBoot();
       this.store.view.set('auth-create');
-      this.err.textContent = tr('auth.could_not_create_profile', { p0: (errorText(e)) });
+      this.store.showToast(tr('auth.could_not_create_profile', { p0: (errorText(e)) }), true);
     }
   }
 }
@@ -116,6 +119,17 @@ export class AuthCreate extends View {
 export class AuthUnlock extends View {
   el: HTMLElement;
   private passI: HTMLInputElement;
+  private totpI: HTMLInputElement;
+  private totpField: HTMLElement;
+  private totpRequired = false;
+  private biometricAvailable = false;
+  private biometricBtn: HTMLButtonElement;
+  private openBtn: HTMLButtonElement;
+  private passkeyBtn: HTMLButtonElement | null;
+  private optionsReady = false;
+  private optionsRequest: Promise<void> | null = null;
+  private unlocking = false;
+  private disposed = false;
   private err: HTMLElement;
   /** What i2p is doing while the password is being typed. The tunnels are
    * built ahead of it, so this is the minutes that used to come after. */
@@ -125,8 +139,19 @@ export class AuthUnlock extends View {
     super();
     const profile = store.currentProfile.get() ?? tr('auth.unknown');
     this.passI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.passphrase'), autofocus: true });
+    this.totpI = h('input', { class: 'input', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code',
+      maxlength: '6', pattern: '[0-9]{6}', placeholder: '000000', id: 'unlock-totp' });
+    this.totpField = h('div', { class: 'field hidden' },
+      h('label', { for: 'unlock-totp' }, tr('auth.totp_code')), this.totpI,
+      h('div', { class: 'hint' }, tr('auth.totp_hint')));
     this.err = h('div', { class: 'err' });
     this.net = h('div', { class: 'auth-net' });
+    this.biometricBtn = h('button', { class: 'btn btn-ghost btn-block hidden', type: 'button', disabled: true,
+      title: tr('auth.biometric_prompt'), onClick: () => void this.unlock('biometric') }, tr('auth.biometric_unlock'));
+    this.passkeyBtn = usesBrowserCore() ? h('button', { class: 'btn btn-ghost btn-block', type: 'button', disabled: true,
+      onClick: () => void this.unlock('passkey') }, tr('browser.unlock_passkey')) : null;
+    this.openBtn = h('button', { class: 'btn', style: { flex: '1' }, type: 'button', disabled: true,
+      onClick: () => void this.unlock('password') }, tr('auth.open_btn'));
     this.el = h('div', { class: 'auth' },
       h('div', { class: 'auth-card' },
         logo(),
@@ -134,27 +159,17 @@ export class AuthUnlock extends View {
         h('div', { class: 'auth-title' }, profile),
         h('div', { class: 'auth-sub' }, tr('auth.unlock_sub')),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
+        this.totpField,
         this.err,
         this.net,
-        usesBrowserCore() && (() => {
-          const button = h('button', { class: 'btn btn-ghost btn-block', onClick: () => busy(button as HTMLButtonElement, () => this.unlockPasskey()) }, tr('browser.unlock_passkey'));
-          return button;
-        })(),
+        this.biometricBtn,
+        this.passkeyBtn,
         h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
           h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
           }, tr('common.back')),
-          (() => {
-            const b = h('button', {
-              class: 'btn', style: { flex: '1' },
-              onClick: () => busy(b, () => this.unlock()),
-            }, tr('auth.open_btn')) as HTMLButtonElement;
-            this.passI.addEventListener('keydown', (e) => {
-              if ((e as KeyboardEvent).key === 'Enter') busy(b, () => this.unlock());
-            });
-            return b;
-          })(),
+          this.openBtn,
         ),
       ),
     );
@@ -164,48 +179,91 @@ export class AuthUnlock extends View {
         : s === 'ready' ? tr('auth.net_ready') : '';
       this.net.className = 'auth-net' + (s === 'ready' ? ' ok' : '');
     });
+    for (const input of [this.passI, this.totpI]) input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); void this.unlock('password'); }
+    });
+    void this.loadOptions().catch(() => {});
   }
 
-  private async unlock(): Promise<void> {
-    this.err.textContent = '';
+  private loadOptions(): Promise<void> {
+    if (this.optionsRequest) return this.optionsRequest;
     const profile = this.store.currentProfile.get();
-    if (!profile) { this.err.textContent = tr('auth.profile_not_selected'); return; }
-    const pass = this.passI.value;
-    if (!pass) { this.err.textContent = tr('auth.pass_required'); return; }
-    // The loading screen goes up *before* the call: everything slow (argon2id,
-    // the router, tunnels) happens inside it, and this used to be a disabled
-    // button and nothing else for up to three minutes.
-    await this.store.beginBoot(profile);
+    this.optionsRequest = Api.vaultStatus(profile ?? '').then((status) => {
+      if (this.disposed) return;
+      this.totpRequired = status?.totp_enabled === true;
+      this.biometricAvailable = status?.biometric_available === true;
+      this.totpField.classList.toggle('hidden', !this.totpRequired);
+      this.totpI.required = this.totpRequired;
+      this.biometricBtn.classList.toggle('hidden', !this.biometricAvailable);
+      this.optionsReady = true;
+    }).catch((error) => {
+      if (!this.disposed) this.err.textContent = tr('auth.security_status_failed');
+      throw error;
+    }).finally(() => {
+      this.optionsRequest = null;
+      if (!this.disposed && !this.unlocking) this.setBusy(false);
+    });
+    return this.optionsRequest;
+  }
+
+  private setBusy(value: boolean): void {
+    this.openBtn.disabled = value;
+    this.biometricBtn.disabled = value;
+    if (this.passkeyBtn) this.passkeyBtn.disabled = value;
+  }
+
+  private async unlock(method: 'password' | 'biometric' | 'passkey'): Promise<void> {
+    if (this.unlocking || this.disposed) return;
+    this.unlocking = true; this.setBusy(true); this.err.textContent = '';
+    const profile = this.store.currentProfile.get();
     try {
-      const warning = await Api.vaultUnlock(profile, pass);
+      if (!profile) { this.err.textContent = tr('auth.profile_not_selected'); return; }
+      if (!this.optionsReady) { try { await this.loadOptions(); } catch { return; } }
+      if (this.disposed || this.store.currentProfile.get() !== profile) return;
+      const pass = this.passI.value;
+      const code = this.totpRequired ? this.totpI.value.trim() : undefined;
+      if (method === 'password' && !pass) { this.err.textContent = tr('auth.pass_required'); return; }
+      if (this.totpRequired && !/^[0-9]{6}$/.test(code ?? '')) {
+        this.err.textContent = tr('auth.totp_required'); this.totpI.focus(); return;
+      }
+      if (method === 'biometric' && !this.biometricAvailable) return;
+      await this.store.beginBoot(profile);
+      if (!this.store.isBooting(profile)) return;
+      const warning = method === 'password' ? await Api.vaultUnlock(profile, pass, code)
+        : method === 'biometric' ? await Api.vaultUnlockBiometric(profile, code)
+        : await new Promise<null>((resolve, reject) => window.dispatchEvent(new CustomEvent('gipny-unlock-passkey', {
+          detail: { profile, totpCode: code, done: (error?: unknown) => error ? reject(error) : resolve(null) },
+        })));
+      if (!this.store.isBooting(profile)) return;
       await this.store.onUnlocked(profile);
       if (warning) this.store.showToast(warning, true);
     } catch (e) {
+      if (!profile || !this.store.isBooting(profile)) return;
       const msg = String(e);
       this.store.endBoot();
       this.store.view.set('auth-unlock');
-      if (msg.includes('wiped')) this.store.showToast(tr('auth.profile_wiped'), true);
+      if (/totp|2fa|authenticator code/i.test(msg)) this.store.showToast(tr('auth.totp_invalid'), true);
+      else if (msg.includes('wiped')) this.store.showToast(tr('auth.profile_wiped'), true);
       else if (msg.includes('invalid passphrase')) this.store.showToast(tr('auth.wrong_pass'), true);
+      else if (method === 'biometric') this.store.showToast(tr('auth.biometric_failed'), true);
       else this.store.showToast(errorText(msg), true);
+    } finally {
+      this.unlocking = false;
+      if (!this.disposed) this.setBusy(false);
     }
   }
 
-  private async unlockPasskey(): Promise<void> {
-    const profile = this.store.currentProfile.get();
-    if (!profile) return;
-    await this.store.beginBoot(profile);
-    try {
-      await new Promise<void>((resolve, reject) => window.dispatchEvent(new CustomEvent('gipny-unlock-passkey', { detail: { profile, done: (error?: unknown) => error ? reject(error) : resolve() } })));
-      await this.store.onUnlocked(profile);
-    } catch (error) {
-      this.store.endBoot(); this.store.view.set('auth-unlock');
-      this.store.showToast(errorText(error), true);
-    }
+  override destroy(): void {
+    this.disposed = true; this.passI.value = ''; this.totpI.value = '';
+    super.destroy();
   }
 }
 
 export class AuthBooting extends View {
   el: HTMLElement;
+  private titleEl: HTMLElement;
+  private summaryEl: HTMLElement;
+  private detailsEl: HTMLElement;
   private rows = new Map<BootStepId, HTMLElement>();
   private elapsedEl: HTMLElement;
   private progressEl: HTMLElement;
@@ -274,20 +332,23 @@ export class AuthBooting extends View {
       },
     }, tr('auth.back'));
 
+    this.titleEl = h('h1', { class: 'boot-title' }, tr('auth.gipny_system_initialization'));
+    this.summaryEl = h('p', { class: 'boot-status hidden', role: 'status', 'aria-live': 'polite' });
+    this.detailsEl = h('div', { class: 'boot-details' },
+      h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
+      h('p', { class: 'boot-sub' }, tr('boot.sub')), list, this.logPanel);
     this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
         languagePicker(),
         h('header', { class: 'boot-header' },
-          h('h1', { class: 'boot-title' }, tr('auth.gipny_system_initialization')),
+          this.titleEl,
           h('div', { class: 'boot-meta' },
             h('span', { class: 'boot-node' }, tr('auth.profile', { p0: (store.currentProfile.get() ?? 'unknown') })),
             this.elapsedEl,
           ),
         ),
-        h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
-        h('p', { class: 'boot-sub' }, tr('boot.sub')),
-        list,
-        this.logPanel,
+        this.summaryEl,
+        this.detailsEl,
         h('div', { class: 'boot-foot' }, this.backBtn, this.enterBtn),
       ),
     );
@@ -295,6 +356,14 @@ export class AuthBooting extends View {
     this.sub(store.bootSteps, (steps) => this.paint(steps));
     this.sub(store.bootLog, (lines) => this.renderLog(lines));
     this.sub(store.bootCanEnter, (can) => this.enterBtn.classList.toggle('hidden', !can));
+    this.sub(store.bootResuming, (resuming) => {
+      this.detailsEl.classList.toggle('hidden', resuming);
+      this.summaryEl.classList.toggle('hidden', !resuming);
+      this.elapsedEl.classList.toggle('hidden', resuming);
+      this.titleEl.textContent = resuming ? tr('boot.resuming') : tr('auth.gipny_system_initialization');
+      this.paint(store.bootSteps.get());
+    });
+    this.sub(store.bootStage, () => this.paint(store.bootSteps.get()));
     this.timer = window.setInterval(() => this.tick(), 500);
   }
 
@@ -311,6 +380,13 @@ export class AuthBooting extends View {
   }
 
   private paint(steps: BootStep[]): void {
+    const failed = steps.find((step) => step.state === 'failed');
+    this.backBtn.classList.toggle('hidden', !failed);
+    if (this.store.bootResuming.get()) {
+      this.summaryEl.textContent = failed?.detail || (this.store.bootStage.get() === 'done'
+        ? tr('boot.ready') : tr('boot.loading'));
+      return;
+    }
     const marks: Record<BootStep['state'], string> = {
       done: tr('auth.ok'), active: tr('auth.run'), idle: '[  --  ]',
       failed: tr('auth.fail'), skipped: tr('auth.skip'),
@@ -330,15 +406,15 @@ export class AuthBooting extends View {
         ? `— ${step.detail || tr('boot.back')}`
         : bootLabels().find(([id]) => id === step.id)?.[2] ?? '';
     }
-    const done = steps.filter((step) => step.state === 'done').length;
+    const done = steps.filter((step) => step.state === 'done' || step.state === 'skipped').length;
     const percent = steps.length ? Math.round(done / steps.length * 100) : 0;
     this.progressFill.style.width = `${percent}%`;
     this.progressText.textContent = `${percent}%`;
     this.progressEl.setAttribute('aria-valuenow', String(percent));
-    this.backBtn.classList.toggle('hidden', !steps.some((step) => step.state === 'failed'));
   }
 
   private renderLog(lines: string[]): void {
+    if (this.store.bootResuming.get()) return;
     const visible = this.logExpanded ? lines : lines.slice(-6);
     this.logEl.replaceChildren(...(visible.length ? visible : ['…']).map((line) =>
       h('div', { class: 'boot-log-line' },

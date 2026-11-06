@@ -33,7 +33,14 @@ export function listen<T>(event: string, handler: (event: { payload: T }) => voi
 }
 export type { UnlistenFn };
 
-export interface VaultStatus { exists: boolean; unlocked: boolean; }
+export interface VaultStatus {
+  exists: boolean;
+  unlocked: boolean;
+  /** Optional backend capabilities. Verification and credential storage stay
+   * in the backend, rather than in UI preferences. */
+  totp_enabled?: boolean;
+  biometric_available?: boolean;
+}
 
 export interface IdentityCard { sign_pk: string; dh_pk: string; }
 
@@ -59,6 +66,8 @@ export interface ChatPrefs {
    * for: a person who wants the app empty on every close says so, and nobody
    * else should lose a conversation to a default they never saw. */
   clearOnLock: boolean;
+  /** Explicit choices by targetKey. A missing key still needs a decision. */
+  saveHistory?: Record<string, boolean>;
 }
 
 /** The relay network as this device's node sees it. */
@@ -92,6 +101,8 @@ export interface Contact {
    * messages are held back until then. 'outgoing': we added their card and
    * have not heard from them yet. */
   request: 'none' | 'incoming' | 'outgoing';
+  /** The peer's explicit history choice, independently of message expiry. */
+  save_history?: boolean | null;
 }
 
 export type TransitProfile = 'frugal' | 'balanced' | 'generous';
@@ -295,6 +306,7 @@ export type CoreEvent =
   | { Typing: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; typing: boolean } }
   | { ContactAdded: { contact_id: number } }
   | { ContactUpdated: { contact_id: number } }
+  | { PeerHistorySaving: { contact_id: number; save_history: boolean | null } }
   | { ContactWiped: { contact_id: number; name: string } }
   | { ContactRequest: { contact_id: number } }
   | { GroupUpdated: { group_id: string } }
@@ -342,8 +354,11 @@ export class Api {
   static vaultCreate(profile: string, pass: string, displayName: string, duressPass: string | null, duressWipe: boolean, maxAttempts: number): Promise<void> {
     return invoke('vault_create', { profile, pass, displayName, duressPass, duressWipe, maxAttempts });
   }
-  static vaultUnlock(profile: string, pass: string): Promise<string | null> {
-    return invoke('vault_unlock', { profile, pass });
+  static vaultUnlock(profile: string, pass: string, totpCode?: string): Promise<string | null> {
+    return invoke('vault_unlock', { profile, pass, ...(totpCode ? { totpCode } : {}) });
+  }
+  static vaultUnlockBiometric(profile: string, totpCode?: string): Promise<string | null> {
+    return invoke('vault_unlock_biometric', { profile, ...(totpCode ? { totpCode } : {}) });
   }
   /** Checks the profile passphrase without restarting anything. Resolves
    * 'ok', 'wiped' (a duress passphrase wiped the profile), or rejects. */
@@ -740,6 +755,10 @@ export class Api {
       return {
         ttlSecs: typeof ttl === 'number' && Number.isFinite(ttl) ? ttl : null,
         ttlChosen: o['ttlChosen'] === true,
+        saveHistory: Object.fromEntries(Object.entries(
+          o['saveHistory'] && typeof o['saveHistory'] === 'object' && !Array.isArray(o['saveHistory'])
+            ? o['saveHistory'] as Record<string, unknown> : {},
+        ).filter(([key, value]) => /^(contact|group):.+$/.test(key) && typeof value === 'boolean')) as Record<string, boolean>,
         clearOnLock: o['clearOnLock'] === true,
       };
     } catch {
@@ -751,16 +770,30 @@ export class Api {
    * The TTL lives in the chat window and this flag in settings, so each writes
    * on its own; writing a whole object built from a stale copy would let one
    * quietly undo the other. */
-  static async updateChatPrefs(patch: Partial<ChatPrefs>): Promise<void> {
-    const current = await Api.getChatPrefs();
-    await Api.setChatPrefs({ ...current, ...patch });
+  private static chatPrefsWrite: Promise<void> = Promise.resolve();
+  private static chatPrefsListeners = new Set<(prefs: ChatPrefs) => void>();
+  static onChatPrefsChanged(callback: (prefs: ChatPrefs) => void): () => void {
+    Api.chatPrefsListeners.add(callback);
+    return () => { Api.chatPrefsListeners.delete(callback); };
   }
-  static setChatPrefs(prefs: ChatPrefs): Promise<void> {
-    return invoke('set_ui_data', { key: 'chat_prefs', json: JSON.stringify(prefs) });
+  static flushChatPrefs(): Promise<void> { return Api.chatPrefsWrite; }
+  static updateChatPrefs(patch: Partial<ChatPrefs>): Promise<void> {
+    const write = Api.chatPrefsWrite.then(async () => {
+      const current = await Api.getChatPrefs();
+      await Api.setChatPrefs({ ...current, ...patch,
+        ...(patch.saveHistory ? { saveHistory: { ...current.saveHistory, ...patch.saveHistory } } : {}),
+      });
+    });
+    Api.chatPrefsWrite = write.catch(() => {});
+    return write;
+  }
+  static async setChatPrefs(prefs: ChatPrefs): Promise<void> {
+    await invoke('set_ui_data', { key: 'chat_prefs', json: JSON.stringify(prefs) });
+    for (const callback of Api.chatPrefsListeners) callback(prefs);
   }
   /** Empty the transcript of this profile. Returns how many messages went. */
-  static clearMessageHistory(): Promise<number> {
-    return invoke('clear_message_history');
+  static clearMessageHistory(preserveSaved = false): Promise<number> {
+    return invoke('clear_message_history', preserveSaved ? { preserveSaved: true } : undefined);
   }
   static getDhtStatus(): Promise<DhtStatus> {
     return invoke('get_dht_status');

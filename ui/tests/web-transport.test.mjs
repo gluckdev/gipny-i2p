@@ -21,6 +21,42 @@ after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true,
 const token = 'A'.repeat(43);
 const page = (url) => new URL(url);
 
+test('automatic browser history clearing preserves saved chats, files, pins and pending deliveries', () => {
+  const state = ui.newBrowserState('Alice');
+  state.ui.chat_prefs = JSON.stringify({ saveHistory: { 'contact:1': true, 'contact:2': false, 'group:team': true } });
+  state.messages = [
+    { id: 1, contact_id: 1, group_id: null, author: 'alice', origin: 1, sent_at: 100, body: 'saved direct' },
+    { id: 2, contact_id: 2, group_id: null, author: 'bob', origin: 2, sent_at: 100, body: 'clear direct' },
+    { id: 3, contact_id: null, group_id: 'team', author: 'alice', origin: 3, sent_at: 100, body: 'saved group' },
+    { id: 4, contact_id: 3, group_id: null, author: 'alice', origin: 4, sent_at: 100, body: 'no choice' },
+  ];
+  state.attachments = state.messages.map(message => ({ id: message.id, message_id: message.id, data: 'attachment' }));
+  state.pinnedMessages = [1, 2, 3, 4];
+  state.outbox = [
+    { key: 'saved', row: 1, blob: null, payload: { body: 'saved direct' } },
+    { key: 'clear', row: 2, blob: null, payload: { body: 'clear direct' } },
+    { key: 'prepared', row: 4, blob: [1, 2, 3], payload: { body: 'no choice' } },
+  ];
+  assert.equal(ui.clearHistory(state, { preserveSaved: true }), 2);
+  assert.deepEqual(state.messages.map(message => message.id), [1, 3]);
+  assert.deepEqual(state.attachments.map(file => file.message_id), [1, 3]);
+  assert.deepEqual(state.pinnedMessages, [1, 3]);
+  assert.deepEqual(state.outbox.map(item => item.key), ['saved', 'prepared']);
+  assert.equal(state.outbox[1].payload, null);
+  assert.equal(state.outbox[0].payload.body, 'saved direct');
+  assert.equal(ui.clearHistory(state), 2, 'an explicit clear-all ignores retention choices');
+  assert.equal(state.messages.length, 0); assert.equal(state.attachments.length, 0); assert.equal(state.pinnedMessages.length, 0);
+});
+
+test('missing and malformed browser history preferences never imply consent to save', () => {
+  for (const raw of [undefined, '{', 'null', '[]', JSON.stringify({ saveHistory: { 'contact:1': 'true' } })]) {
+    const state = ui.newBrowserState('Alice');
+    if (raw !== undefined) state.ui.chat_prefs = raw;
+    state.messages = [{ id: 1, contact_id: 1, group_id: null, author: 'alice', origin: 1, sent_at: 100, body: 'clear' }];
+    assert.equal(ui.clearHistory(state, { preserveSaved: true }), 1);
+  }
+});
+
 test('browser expiry removes plaintext, attachments and pins while retaining unexpired history', () => {
   const state = ui.newBrowserState('Alice');
   state.messages = [

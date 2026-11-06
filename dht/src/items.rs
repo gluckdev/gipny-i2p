@@ -115,6 +115,215 @@ pub fn intro_keys_to_poll(my_sign_pk: &[u8; 32], my_dh_pk: &[u8; 32], now_ms: u6
 
 const KIND_ADDRESS: u8 = 1;
 const KIND_BUNDLE: u8 = 2;
+const KIND_ALIAS_CLAIM: u8 = 3;
+const KIND_ALIAS_TOMBSTONE: u8 = 4;
+
+const ALIAS_LABEL: &[u8] = b"alias";
+
+/// How long a claim or a tombstone asks to live. Both are renewed by their
+/// holder while it runs (a claimer in `maintain`, a revoker for as long as the
+/// revoking profile lives); a storing node grants a fraction of this, so the
+/// *founding time* a reader sees is what carries first-come-first-served
+/// across renewals, not the expiry.
+pub const ALIAS_CLAIM_TTL_MS: u64 = 366 * DAY_MS;
+/// The burn outlives the claim by far: the account that had the alias may be
+/// gone, and no one is left to renew its claim, but every reader that has
+/// resolved the alias once can repeat the tombstone it read, because alias
+/// values are readable by anyone holding the alias text.
+pub const ALIAS_TOMBSTONE_TTL_MS: u64 = 10 * 366 * DAY_MS;
+
+/// The bounds of an alias: 3..=32 of [A-Za-z0-9_].
+pub const ALIAS_MIN_LEN: usize = 3;
+pub const ALIAS_MAX_LEN: usize = 32;
+
+pub fn valid_alias(alias: &str) -> bool {
+    let len = alias.chars().count();
+    len >= ALIAS_MIN_LEN && len <= ALIAS_MAX_LEN
+        && alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[derive(Serialize, Deserialize)]
+struct AliasBody {
+    alias: String,
+    /// Routing or card payload, if the claimant wants one carried alongside.
+    payload: Option<Vec<u8>>,
+}
+
+/// One alias claim or tombstone, opened. `created_at_ms` is the founding time
+/// of the claim, kept across renewals.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AliasRecord {
+    pub owner: [u8; 32],
+    pub created_at_ms: u64,
+    pub expires_at_ms: u64,
+    /// Of a claim: the routing/card payload. Of a tombstone: `None` —
+    /// nothing rides on a burn.
+    pub payload: Option<Vec<u8>>,
+}
+
+/// What the network answers about an alias.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AliasState {
+    /// No valid claim, no valid tombstone: the alias can be claimed.
+    Available,
+    /// Claimed, first-come-first-served, by this owner.
+    Claimed(AliasRecord),
+    /// Burned by a tombstone of the claim's owner. Not claimable, ever
+    /// again, by anyone.
+    Revoked(AliasRecord),
+}
+
+/// An alias record ready to store. `created_at_ms` is usually `now_ms`
+/// (a first claim); a renewal passes the founding time instead, so the claim
+/// keeps the place in the line its first publication took.
+fn build_alias_record(
+    signing: &SigningKey, alias: &str, now_ms: u64, ttl_ms: u64, created_at_ms: u64,
+    payload: Option<Vec<u8>>, tombstone: bool,
+) -> Option<PreparedItem> {
+    if !valid_alias(alias) || created_at_ms > now_ms {
+        return None;
+    }
+    let key = crypto::alias_key(alias);
+    let body = bincode::serialize(&AliasBody { alias: alias.to_string(), payload }).expect("serialize to memory");
+    let kind = if tombstone { KIND_ALIAS_TOMBSTONE } else { KIND_ALIAS_CLAIM };
+    let owner = signing.verifying_key().to_bytes();
+    let expires_at_ms = now_ms + ttl_ms;
+    let sig = signing.sign(&record_digest(kind, &owner, created_at_ms, expires_at_ms, &body, &key)).to_bytes();
+    let plain = bincode::serialize(&SignedRecord { kind, owner, seq: created_at_ms, expires_at_ms, body, sig })
+        .expect("serialize to memory");
+    let secret = crypto::alias_seal_secret(&key);
+    Some(PreparedItem { key, value: crypto::seal(&secret, ALIAS_LABEL, &key, &plain)?, delete_hash: None, expires_at_ms })
+}
+
+/// Claim `alias` for this identity. Every record says who owns it, when it was
+/// founded and — unlike the other records — what to route by; no expiry is
+/// checked here, only while it lives on storing nodes. Consider
+/// /// [`alias_state`] first: the network does not arbitrate a race between
+/// two devices claiming the same free alias at once; the one whose founding
+/// time is earliest wins to every reader that sees both.
+pub fn alias_claim_record(
+    signing: &SigningKey, alias: &str, now_ms: u64, payload: Option<&[u8]>,
+) -> Option<PreparedItem> {
+    build_alias_record(signing, alias, now_ms, ALIAS_CLAIM_TTL_MS, now_ms, payload.map(<[u8]>::to_vec), false)
+}
+
+/// Re-publish a claim with its founding time, so it stays first in line and
+/// gains only a later expiry.
+pub fn alias_claim_renewal(
+    signing: &SigningKey, alias: &str, now_ms: u64, created_at_ms: u64, payload: Option<&[u8]>,
+) -> Option<PreparedItem> {
+    build_alias_record(signing, alias, now_ms, ALIAS_CLAIM_TTL_MS, created_at_ms, payload.map(<[u8]>::to_vec), false)
+}
+
+/// Burn `alias`: signed with the claim's own key, so it settles that the alias
+/// is dead — `alias_state` turns `Claimed` into `Revoked` and nothing else can
+/// ever take the alias again while the tombstone is anywhere visible.
+pub fn alias_tombstone_record(signing: &SigningKey, alias: &str, now_ms: u64) -> Option<PreparedItem> {
+    build_alias_record(signing, alias, now_ms, ALIAS_TOMBSTONE_TTL_MS, now_ms, None, true)
+}
+
+fn open_alias_records(alias: &str, key: &DhtKey, values: &[Vec<u8>], now_ms: u64) -> (Vec<AliasRecord>, Vec<AliasRecord>) {
+    let secret = crypto::alias_seal_secret(key);
+    let mut claims = Vec::new();
+    let mut revocations = Vec::new();
+    for v in values {
+        let plain = match crypto::open(&secret, ALIAS_LABEL, key, v) {
+            Some(p) => p,
+            None => continue,
+        };
+        let signed: SignedRecord = match bincode::deserialize(&plain) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        if (signed.kind != KIND_ALIAS_CLAIM && signed.kind != KIND_ALIAS_TOMBSTONE)
+            || signed.seq > now_ms
+            || signed.expires_at_ms <= now_ms
+        {
+            continue;
+        }
+        let body: AliasBody = match bincode::deserialize(&signed.body) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        // A record of another alias must not speak for this one, however well
+        // it is signed.
+        if body.alias != alias {
+            continue;
+        }
+        let digest = record_digest(signed.kind, &signed.owner, signed.seq, signed.expires_at_ms, &signed.body, key);
+        let Ok(vk) = VerifyingKey::from_bytes(&signed.owner) else { continue };
+        if vk.verify(&digest, &Signature::from_bytes(&signed.sig)).is_err() {
+            continue;
+        }
+        let record = AliasRecord {
+            owner: signed.owner,
+            created_at_ms: signed.seq,
+            expires_at_ms: signed.expires_at_ms,
+            payload: if signed.kind == KIND_ALIAS_TOMBSTONE { None } else { body.payload },
+        };
+        if signed.kind == KIND_ALIAS_CLAIM {
+            claims.push(record);
+        } else {
+            revocations.push(record);
+        }
+    }
+    (claims, revocations)
+}
+
+/// The founding record of one owner: the oldest of theirs in `claims`, and,
+/// should two of theirs read the same time (a renewal never should), the
+/// deterministic pick of the two.
+fn founding_of_owner(claims: &[AliasRecord]) -> Vec<AliasRecord> {
+    use std::collections::HashMap;
+    let mut per_owner: HashMap<[u8; 32], AliasRecord> = HashMap::new();
+    for c in claims {
+        let e = per_owner.entry(c.owner).or_insert_with(|| c.clone());
+        let older_of_two = (c.created_at_ms, c.expires_at_ms, &c.payload)
+            < (e.created_at_ms, e.expires_at_ms, &e.payload);
+        if older_of_two {
+            *e = c.clone();
+        }
+    }
+    per_owner.into_values().collect()
+}
+
+/// What the values found under `alias`'s key say about it. The rule is first
+/// come, first served, judged by the founding time each claim carries, with a
+/// deterministic owner-key tie-break, so every reader who sees the same values
+/// reaches the same verdict:
+///
+/// * A future-dated claim is ignored: it would otherwise let whoever lies
+///   about the clock rule forever.
+/// * A tombstone of an owner other than the first claim's is ignored: only the
+///   identity that claimed the alias can burn it, and a stranger's wish to
+///   burn someone else's claim is not a signature.
+/// * A tombstone with no claim at all *is* honored — the claim record may have
+///   rotated out of storage while its owner is gone, and the burn the
+///   tombstone proves is what has to survive that.
+pub fn alias_state(alias: &str, values: &[Vec<u8>], now_ms: u64) -> AliasState {
+    if !valid_alias(alias) {
+        return AliasState::Available;
+    }
+    let key = crypto::alias_key(alias);
+    let (claims, revocations) = open_alias_records(alias, &key, values, now_ms);
+    let founding = founding_of_owner(&claims)
+        .into_iter()
+        .min_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms).then(a.owner.cmp(&b.owner)));
+    if let Some(claim) = founding {
+        return match revocations.iter().find(|t| t.owner == claim.owner) {
+            Some(tombstone) => AliasState::Revoked(tombstone.clone()),
+            None => AliasState::Claimed(claim),
+        };
+    }
+    // Nothing claimable is visible: a burn still rules, or the alias is free.
+    match revocations.into_iter().min_by(|a, b| {
+        a.created_at_ms.cmp(&b.created_at_ms).then(a.owner.cmp(&b.owner))
+    }) {
+        Some(tombstone) => AliasState::Revoked(tombstone),
+        None => AliasState::Available,
+    }
+}
+
 
 #[derive(Serialize, Deserialize)]
 struct SignedRecord {
@@ -370,5 +579,151 @@ mod tests {
         let item = bundle_record(&alice.signing, &alice.dh_pk(), NOW, b"prekeys").unwrap();
         assert_eq!(item.key, bundle_key(&alice.sign_pk(), &alice.dh_pk()));
         assert_eq!(open_bundle_record(&alice.sign_pk(), &alice.dh_pk(), &[item.value], NOW).unwrap(), b"prekeys");
+    }
+
+    fn one(values: Vec<Vec<u8>>) -> Vec<Vec<u8>> { values }
+
+    fn claimed(values: &[Vec<u8>]) -> AliasState {
+        alias_state("moon", values, NOW)
+    }
+
+    /// The state of an alias at `at`, from values that were fresh at `NOW`.
+    fn state_at(values: &[Vec<u8>], at: u64) -> AliasState {
+        alias_state("moon", values, at)
+    }
+
+    #[test]
+    fn aliases_are_three_to_thirty_two_of_the_allowed_characters() {
+        assert!(valid_alias("abc"), "three is the floor");
+        assert!(valid_alias(&"a".repeat(32)), "32 is the ceiling");
+        assert!(valid_alias("a_b_1984"));
+
+        // A hyphen is not one of the characters an alias may carry.
+        assert!(!valid_alias("a-b_1984"));
+        assert!(!valid_alias("ab"), "two is below the floor");
+        assert!(!valid_alias(&"a".repeat(33)));
+        assert!(!valid_alias("has space"));
+        assert!(!valid_alias("none-合法"));
+        assert!(!valid_alias(""));
+    }
+
+    #[test]
+    fn a_claim_names_its_owner_and_reads_back() {
+        let alice = Who::new();
+        let item = alias_claim_record(&alice.signing, "moon", NOW, Some(b"card")).unwrap();
+        assert_eq!(item.key, crypto::alias_key("moon"));
+        match claimed(&[item.value]) {
+            AliasState::Claimed(r) => {
+                assert_eq!(r.owner, alice.sign_pk());
+                assert_eq!(r.created_at_ms, NOW);
+                assert_eq!(r.payload.as_deref(), Some(&b"card"[..]));
+            }
+            state => panic!("expected claimed, got {state:?}"),
+        }
+    }
+
+    #[test]
+    fn first_come_is_first_served_even_against_the_thief() {
+        let (alice, mallory, eve) = (Who::new(), Who::new(), Who::new());
+        let honest = alias_claim_record(&alice.signing, "moon", NOW, None).unwrap();
+        let thief = alias_claim_record(&mallory.signing, "moon", NOW + DAY_MS, None).unwrap();
+        // Mallory cannot read her way into being the owner: her record opens
+        // fine and is signed fine, but founding later loses to the one first.
+        match claimed(&[thief.value, honest.value.clone()]) {
+            AliasState::Claimed(r) => assert_eq!(r.owner, alice.sign_pk()),
+            state => panic!("expected claimed, got {state:?}"),
+        }
+        // A future-dated claim rules nobody: it would make the clock the only
+        // admission test. A founding claim cannot be dated ahead, and a
+        // renewal builder refuses a founding time beyond its publication.
+        let from_the_future = alias_claim_renewal(&eve.signing, "moon", NOW, NOW + DAY_MS, None);
+        assert!(from_the_future.is_none(), "a builder refuses to sign what lies ahead");
+        // And two claims of the same instant break the tie in one way on every
+        // reader, whatever order the values arrive in.
+        let other = Who::new();
+        let a = alias_claim_record(&other.signing, "moon", NOW, None).unwrap();
+        let state = alias_state("moon", &[a.value.clone(), honest.value.clone()], NOW);
+        let flipped = alias_state("moon", &[honest.value.clone(), a.value], NOW);
+        assert_eq!(state, flipped, "tie-break must not depend on value order");
+        let AliasState::Claimed(r) = state else { panic!("tie still leaves a claim") };
+        assert_eq!(r.owner, alice.sign_pk().min(other.sign_pk()), "the smaller owner key wins the tie");
+        let _ = eve;
+    }
+
+    #[test]
+    fn a_tombstone_of_the_owner_burns_and_a_strangers_does_not() {
+        let (alice, mallory) = (Who::new(), Who::new());
+        let claim = alias_claim_record(&alice.signing, "moon", NOW, None).unwrap();
+        let burn = alias_tombstone_record(&alice.signing, "moon", NOW + DAY_MS).unwrap();
+        let stranger = alias_tombstone_record(&mallory.signing, "moon", NOW + DAY_MS).unwrap();
+        // The reading is a day after everything was published, so the reader
+        // clock is past both records' founding times.
+        let tomorrow = NOW + DAY_MS;
+        assert_eq!(state_at(&[claim.value.clone(), stranger.value], tomorrow), AliasState::Claimed(
+            AliasRecord { owner: alice.sign_pk(), created_at_ms: NOW, expires_at_ms: NOW + ALIAS_CLAIM_TTL_MS, payload: None },
+        ), "a stranger cannot burn someone else's claim");
+        match state_at(&[claim.value, burn.value], tomorrow) {
+            AliasState::Revoked(t) => assert_eq!(t.owner, alice.sign_pk()),
+            state => panic!("expected revoked, got {state:?}"),
+        }
+    }
+
+    #[test]
+    fn the_burn_outlives_the_claim_it_burned() {
+        let alice = Who::new();
+        let claim = alias_claim_record(&alice.signing, "moon", NOW, None).unwrap();
+        let burn = alias_tombstone_record(&alice.signing, "moon", NOW + DAY_MS).unwrap();
+        // Long after the claim has rotated out of every node's memory, but
+        // within the far longer life of the tombstone: still not available.
+        let late = NOW + ALIAS_TOMBSTONE_TTL_MS / 2;
+        assert_eq!(state_at(&[burn.value], late), AliasState::Revoked(
+            AliasRecord { owner: alice.sign_pk(), created_at_ms: NOW + DAY_MS, expires_at_ms: NOW + DAY_MS + ALIAS_TOMBSTONE_TTL_MS, payload: None },
+        ));
+        // Without a burn, the freed claim leaves the alias claimable again.
+        assert_eq!(state_at(&[claim.value], late), AliasState::Available);
+    }
+
+    #[test]
+    fn renewal_keeps_the_founding_place_and_gains_only_expiry() {
+        let alice = Who::new();
+        let first = alias_claim_record(&alice.signing, "moon", NOW, None).unwrap();
+        let newcomer = Who::new();
+        let rival = alias_claim_record(&newcomer.signing, "moon", NOW + DAY_MS, None).unwrap();
+        let renew = alias_claim_renewal(&alice.signing, "moon", NOW + DAY_MS, NOW, None).unwrap();
+        match claimed(&[rival.value, first.value, renew.value]) {
+            AliasState::Claimed(r) => {
+                assert_eq!(r.owner, alice.sign_pk());
+                assert_eq!(r.created_at_ms, NOW, "the founding time, not the renewal's");
+            }
+            state => panic!("expected claimed, got {state:?}"),
+        }
+    }
+
+    #[test]
+    fn another_alias_records_and_tampered_ones_never_answer() {
+        let alice = Who::new();
+        let other_alias = alias_claim_record(&alice.signing, "dawn", NOW, None).unwrap().value;
+        assert_eq!(claimed(&[other_alias]), AliasState::Available, "\"dawn\" does not speak for \"moon\"");
+        let mut tampered = alias_claim_record(&alice.signing, "moon", NOW, None).unwrap().value;
+        *tampered.last_mut().unwrap() ^= 1;
+        assert_eq!(claimed(&[tampered]), AliasState::Available);
+        // A record signed by someone else entirely, seals opened through a
+        // secret everyone with the alias text can derive, is caught by the
+        // signature, not luck.
+        let eve = Who::new();
+        let forged = build_alias_record(&eve.signing, "moon", NOW, ALIAS_CLAIM_TTL_MS, NOW, None, false).unwrap();
+        match claimed(&[forged.value]) {
+            AliasState::Claimed(r) => assert_eq!(r.owner, eve.sign_pk(), "a valid forgery is a claim — of its own signer"),
+            state => panic!("expected claimed, got {state:?}"),
+        }
+    }
+
+    #[test]
+    fn an_invalid_alias_never_reaches_the_network() {
+        let alice = Who::new();
+        assert!(alias_claim_record(&alice.signing, "ab", NOW, None).is_none());
+        assert!(alias_claim_record(&alice.signing, &"a".repeat(33), NOW, None).is_none());
+        assert!(alias_claim_record(&alice.signing, "bad alias!", NOW, None).is_none());
+        assert_eq!(alias_state("ab", &[], NOW), AliasState::Available);
     }
 }

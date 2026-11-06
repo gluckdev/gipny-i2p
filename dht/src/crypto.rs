@@ -52,6 +52,7 @@ const SALT_PAIR: &[u8] = b"gipny-dht-pair-v1";
 const SALT_CARD: &[u8] = b"gipny-dht-card-v1";
 const SALT_SEAL: &[u8] = b"gipny-dht-seal-v1";
 const SALT_ECIES: &[u8] = b"gipny-dht-ecies-v1";
+const SALT_ALIAS: &[u8] = b"gipny-dht-alias-v1";
 
 fn hkdf(salt: &[u8], ikm: &[u8], info: &[u8]) -> Zeroizing<[u8; 32]> {
     let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
@@ -115,6 +116,21 @@ pub fn addr_key(pair: &[u8; 32], owner_sign_pk: &[u8; 32]) -> DhtKey {
 /// The owner's prekey bundle, for opening a session while they are away.
 pub fn bundle_key(card: &[u8; 32]) -> DhtKey {
     hmac(card, &[b"bundle"])
+}
+
+/// Where an alias lives: SHA-256 of the alias text under a fixed label. The
+/// label keeps some other SHA-256 from ever equalling this key; the alias
+/// itself is public knowledge to anyone who guesses it, so the key may be too.
+pub fn alias_key(alias: &str) -> DhtKey {
+    sha256(&[b"gipny-dht-alias-key-v1", alias.as_bytes()])
+}
+
+/// The secret alias records are sealed under. Anyone holding the alias text
+/// can derive it — that is the point: a stranger looking the alias up has to
+/// be able to read the record — but a storing node, which sees only the key,
+/// still sees opaque bytes under an opaque key.
+pub fn alias_seal_secret(key: &DhtKey) -> [u8; 32] {
+    *hkdf(SALT_ALIAS, key, b"alias")
 }
 
 fn pad(plaintext: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
@@ -248,6 +264,8 @@ mod tests {
             addr_key(&pair, &b),
             intro_key(&pair, 100),
             bundle_key(&pair),
+            alias_key("aa"),
+            alias_key("zz"),
         ];
         for i in 0..keys.len() {
             for j in i + 1..keys.len() {

@@ -5,7 +5,7 @@ import { ProfileStorage, listProfiles, removeProfile, profileName } from './stor
 import { BrowserRelay } from './relay';
 import { ActionLog, shortKey, shortAddress } from './log';
 import {
-  allocate, base64, expireHistory, hex, loadState, newState, payload, pruneMessageOutbox, sameScope, unbase64, unhex, visible,
+  allocate, base64, clearHistory, expireHistory, hex, loadState, newState, payload, pruneMessageOutbox, sameScope, unbase64, unhex, visible,
   type BrowserState, type Outbox, type PublicIdentity, type StoredMessage, type WireGroup, type WirePayload,
 } from './model';
 
@@ -631,9 +631,8 @@ export class BrowserBackend {
       return null;
     }
     if (command === 'clear_dm_chat' || command === 'clear_message_history') {
-      const ids = new Set(state.messages.filter(value => command === 'clear_message_history' || value.contact_id === args.contactId).map(value => value.id));
-      for (const row of state.messages) if (ids.has(row.id) && row.group_id === null) { const tombstone = `${row.author}:${row.origin}:${row.sent_at}`; if (!state.tombstones.includes(tombstone)) state.tombstones.push(tombstone); }
-      state.messages = state.messages.filter(value => !ids.has(value.id)); state.attachments = state.attachments.filter(value => !ids.has(value.message_id)); state.pinnedMessages = state.pinnedMessages.filter(id => !ids.has(id)); pruneMessageOutbox(state, ids); return null;
+      return clearHistory(state, command === 'clear_dm_chat'
+        ? { contactId: number(args, 'contactId') } : { preserveSaved: args.preserveSaved === true });
     }
     if (command === 'create_group') {
       const ids = args.memberContactIds as number[];

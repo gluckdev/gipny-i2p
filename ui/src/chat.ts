@@ -3,7 +3,7 @@ import { t as tr } from './i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { downloadBrowserFile, forgetBrowserFiles } from './browser-files';
 import { Api, isTauri, usesBrowserCore, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
-import type { Message, LinkStats } from './api';
+import type { Message, LinkStats, ChatPrefs } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
 import { icon } from './icons';
@@ -60,6 +60,10 @@ export class ChatView extends View {
   private ttlNote: HTMLElement;
   private ttlRow: HTMLElement;
   private peerNote: HTMLElement;
+  private peerHistoryNote: HTMLElement;
+  private historyPrompt: HTMLElement;
+  private historySaving = false;
+  private prefsRevision = 0;
   private attachmentCache = new Map<number, Array<{ id: number; name: string; size: number }>>();
   private imageDataCache = new Map<number, string>();
   private imageMessages = new Map<number, number>();
@@ -239,7 +243,6 @@ export class ChatView extends View {
     // there to show or set — the row is not even in the layout for one.
     if (!isGroup) {
       this.renderTtlPicker();
-      void this.loadTtl();
     }
 
     // Icon and label both; the stylesheet shows the label where the chat pane
@@ -339,18 +342,22 @@ export class ChatView extends View {
       this.unreachableNote.classList.toggle('hidden', !hit);
     }, true);
 
-    // Whether the person on the other end is keeping this conversation.
-    //
-    // A sender with the disappearing timer off attaches no expiry to what it
-    // sends, and the row arrives with none — which is the whole signal there
-    // is, and it is a real one rather than a guess: the expiry is what makes
-    // us delete our own copy, so no expiry means their copy is not on a clock.
-    //
-    // Read off the newest message, never the oldest: the setting belongs to
-    // the person, not to the message, and it can be turned on halfway through.
+    this.historyPrompt = h('div', { class: 'chat-notice history-prompt hidden', role: 'group',
+      'aria-label': tr('chat.save_history_prompt') },
+      h('span', null, tr('chat.save_history_prompt')),
+      h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onClick: () => void this.saveHistory(false) }, tr('chat.history_dont_save')),
+      h('button', { class: 'btn btn-sm', type: 'button', onClick: () => void this.saveHistory(true) }, tr('chat.history_save')));
+    this.peerHistoryNote = h('div', { class: 'chat-notice peer-history-note hidden', role: 'status' });
+    // Message expiry and the peer's explicit history choice are separate.
     this.peerNote = h('div', { class: 'chat-notice hidden' },
       icon('lock', 13), h('span', {}, tr('chat.peer_keeps')));
     this.sub(store.messages, () => this.updatePeerNote(), true);
+    this.sub(store.contacts, () => this.updatePeerNote(), false);
+    this.subs.push(Api.onChatPrefsChanged((prefs) => {
+      this.prefsRevision++;
+      this.updateHistoryPrompt(prefs);
+    }));
+    void this.loadPrefs();
 
     // What the channel is doing, in the user's own terms. Groups have no
     // single channel — each member collects somewhere else — so this is a
@@ -402,6 +409,8 @@ export class ChatView extends View {
       ),
       this.linkStrip,
       this.unreachableNote,
+      this.historyPrompt,
+      this.peerHistoryNote,
       this.peerNote,
       this.pinnedBanner.el,
       this.logWrap,
@@ -1346,21 +1355,40 @@ export class ChatView extends View {
     });
   }
 
-  /** Say so when the other end is keeping the conversation — and only then.
-   *
-   * Silence is the reassuring case, so the note appears while their newest
-   * message carries no expiry and goes away again if they turn the timer back
-   * on. A group is never judged: nothing a group sends carries a timer, so the
-   * note there would be a fact about our own protocol dressed up as a fact
-   * about the people in it. */
+  /** Show only an explicitly reported peer preference as a history choice. */
   private updatePeerNote(): void {
+    if (this.target.kind !== 'contact') {
+      this.peerNote.classList.add('hidden'); this.peerHistoryNote.classList.add('hidden'); return;
+    }
+    const peerChoice = this.store.contacts.get().find((contact) => contact.id === this.target.id)?.save_history;
+    this.peerHistoryNote.textContent = peerChoice === true ? tr('chat.peer_saves_history')
+      : peerChoice === false ? tr('chat.peer_doesnt_save_history') : tr('chat.peer_history_unknown');
+    this.peerHistoryNote.classList.remove('hidden');
     const list = this.store.messages.get().get(targetKey(this.target)) ?? [];
-    // `group_id === null` is what keeps groups out, and it is load-bearing
-    // rather than tidiness: a group message is always sent with no timer, so
-    // judging a group by the expiry would read as "they keep everything" for
-    // every group, forever, and mean nothing at all.
-    const newest = [...list].reverse().find((m) => !m.outgoing && m.console == null && m.group_id == null);
+    const newest = [...list].reverse().find((m) => !m.outgoing && m.console == null && m.group_id == null && m.deleted_at == null);
     this.peerNote.classList.toggle('hidden', newest == null || newest.expires_at != null);
+  }
+
+  private async saveHistory(save: boolean): Promise<void> {
+    if (this.historySaving || this.disposed) return;
+    this.historySaving = true;
+    const buttons = this.historyPrompt.querySelectorAll('button');
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      await Api.updateChatPrefs({ saveHistory: { [targetKey(this.target)]: save } });
+      if (!this.disposed) this.historyPrompt.classList.add('hidden');
+    } catch {
+      if (!this.disposed) this.store.showToast(tr('chat.history_save_failed'), true);
+    } finally {
+      this.historySaving = false;
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+  }
+
+  private updateHistoryPrompt(prefs: ChatPrefs): void {
+    if (this.disposed) return;
+    this.historyPrompt.classList.toggle('hidden', !prefs.clearOnLock
+      || typeof prefs.saveHistory?.[targetKey(this.target)] === 'boolean');
   }
 
   private renderTtlPicker(): void {
@@ -1382,6 +1410,7 @@ export class ChatView extends View {
    * reset on every new conversation would be a timer nobody could rely on. It
    * still only ever applies to what is sent from now on. */
   private setTtl(secs: number | null): void {
+    this.prefsRevision++;
     this.ttlSecs = secs;
     this.renderTtlPicker();
     void Api.updateChatPrefs({ ttlSecs: secs, ttlChosen: true }).catch(() => {
@@ -1393,9 +1422,12 @@ export class ChatView extends View {
 
   /** Read the saved timer, and on a profile that never chose one, say what the
    * new default does rather than quietly starting to delete messages. */
-  private async loadTtl(): Promise<void> {
+  private async loadPrefs(): Promise<void> {
+    const revision = this.prefsRevision;
     const prefs = await Api.getChatPrefs();
-    if (this.disposed) return;
+    if (this.disposed || revision !== this.prefsRevision) return;
+    this.updateHistoryPrompt(prefs);
+    if (this.target.kind === 'group') return;
     // null is a choice, not an absence: picking "off" stores null, and testing
     // ttlSecs on its own cannot tell that from a profile that never chose.
     // It would leave the default sitting in this.ttlSecs and put the timer back

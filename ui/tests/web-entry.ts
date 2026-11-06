@@ -5,4 +5,4 @@ export * from '../src/pairing';
 export { configureWebTransport, Api } from '../src/api';
 export { t } from '../src/i18n';
 export { Store } from '../src/state';
-export { expireHistory, pruneMessageOutbox, newState as newBrowserState } from '../src/browser-core/model';
+export { clearHistory, expireHistory, pruneMessageOutbox, newState as newBrowserState } from '../src/browser-core/model';

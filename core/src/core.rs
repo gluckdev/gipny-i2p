@@ -1733,6 +1733,31 @@ impl Core {
         Ok(dropped)
     }
 
+    /// Automatic cleanup honours explicit per-chat choices; an explicit
+    /// clear-all continues to use `clear_message_history`.
+    pub fn clear_unsaved_history(&self) -> Result<usize> {
+        let prefs = self.ui_data("chat_prefs")?
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+        let saved = prefs.as_ref().and_then(|prefs| prefs.get("saveHistory"))
+            .and_then(|saved| saved.as_object());
+        let Some(saved) = saved.filter(|saved| saved.values().any(|value| value.as_bool() == Some(true))) else {
+            return self.clear_message_history();
+        };
+        let mut dropped = 0;
+        for contact in self.db.list_contacts()? {
+            if saved.get(&format!("contact:{}", contact.id)).and_then(|value| value.as_bool()) != Some(true) {
+                dropped += self.clear_dm_contact(contact.id)?;
+            }
+        }
+        for group in self.db.list_groups()? {
+            if saved.get(&format!("group:{}", to_hex(&group.id))).and_then(|value| value.as_bool()) != Some(true) {
+                dropped += self.db.purge_group_messages(&group.id)?;
+            }
+        }
+        self.db.cleanup_orphan_pins()?;
+        Ok(dropped)
+    }
+
     pub fn clear_dm_contact(&self, contact_id:i64) -> Result<usize> {
         let deletions=self.db.clear_dm_contact(contact_id)?;
         for deletion in &deletions {self.emit_dm_deleted(deletion)?;}
@@ -1843,7 +1868,7 @@ impl Core {
         if prefs.get("clearOnLock").and_then(|v| v.as_bool()) != Some(true) {
             return Ok(false);
         }
-        self.clear_message_history()?;
+        self.clear_unsaved_history()?;
         Ok(true)
     }
 

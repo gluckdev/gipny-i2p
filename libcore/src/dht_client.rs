@@ -315,6 +315,119 @@ pub async fn publish_bundle(node: &Arc<Node>, identity: &Arc<Identity>, bundle: 
     node.put(to_stored(item)).await > 0
 }
 
+// ── cryptographic aliases ────────────────────────────────────────────────
+//
+// An alias ("moon") is claimed under SHA-256 of the alias text, signed by the
+// claiming identity's key, and burned by a tombstone under the same key.
+// Three things worth knowing once, because they follow from the design:
+//
+// * Records are sealed under a secret derived from the alias text, so anyone
+//   who looks the alias up can read what they find — the directory is its own
+//   point — while a storing node still sees only an opaque key.
+// * First come, first served, judged by each claim's founding time; a renewal
+//   re-signs with the founding time kept, so a claim never loses its place in
+//   the line. Two devices racing on one free alias is decided the same way.
+// * Storing nodes grant a fraction of a claim's asked lifetime, so a claim is
+//   a lease the holder republishes; the burn is a tombstone with a much
+//   longer asked life, readable and repeatable by any reader, which is how it
+//   outlives the account that made it.
+
+/// The state of an alias, as the network answers right now.
+pub use gipny_dht::items::{AliasRecord, AliasState};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AliasError {
+    /// Not 3..=32 of [A-Za-z0-9_].
+    Invalid,
+    /// No node accepted the claim or the tombstone.
+    Unpublished,
+    /// The identity's own secrets were not available.
+    Identity,
+}
+
+impl std::fmt::Display for AliasError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AliasError::Invalid => write!(f, "alias must be 3..32 of [A-Za-z0-9_]"),
+            AliasError::Unpublished => write!(f, "no relay node accepted the record"),
+            AliasError::Identity => write!(f, "identity unavailable"),
+        }
+    }
+}
+
+/// Whether an alias is a legal one at all.
+pub fn alias_is_valid(alias: &str) -> bool {
+    gipny_dht::items::valid_alias(alias)
+}
+
+/// Where the alias lives.
+pub fn alias_key(alias: &str) -> [u8; 32] {
+    gipny_dht::crypto::alias_key(alias)
+}
+
+/// What the network says about `alias` right now.
+pub async fn query_alias(node: &Arc<Node>, alias: &str) -> AliasState {
+    let key = gipny_dht::crypto::alias_key(alias);
+    let values: Vec<Vec<u8>> = node.get(&key).await.into_iter().map(|i| i.value).collect();
+    gipny_dht::items::alias_state(alias, &values, node.now_ms())
+}
+
+/// Claim `alias` for this identity, optionally carrying a routing or card
+/// payload. Claims are first-come-first-served, not atomic: check
+/// [`query_alias`] first, and treat `true` as "published", not "owed". The
+/// founding time is inside the signature; it is what keeps this claim first
+/// in line at every reader that sees it.
+pub async fn claim_alias(node: &Arc<Node>, identity: &Arc<Identity>, alias: &str, payload: Option<&[u8]>) -> Result<(), AliasError> {
+    if !alias_is_valid(alias) {
+        return Err(AliasError::Invalid);
+    }
+    let ok = identity.with_signing_key(|sign| gipny_dht::items::alias_claim_record(sign, alias, node.now_ms(), payload))
+        .map_err(|_| AliasError::Identity)?;
+    let Some(item) = ok else { return Err(AliasError::Invalid) };
+    if node.put(to_stored(item)).await == 0 {
+        return Err(AliasError::Unpublished);
+    }
+    Ok(())
+}
+
+/// Re-publish a claim we already hold, with its original founding time, so it
+/// keeps its place in line and gains only a later expiry (`refresh` is what
+/// `maintain` calls, and why). Founding time and payload are remembered by the
+/// caller; the network keeps no account of whose claim is whose lease.
+pub async fn refresh_alias(
+    node: &Arc<Node>, identity: &Arc<Identity>, alias: &str, created_at_ms: u64, payload: Option<&[u8]>,
+) -> Result<(), AliasError> {
+    if !alias_is_valid(alias) || created_at_ms > node.now_ms() {
+        return Err(AliasError::Invalid);
+    }
+    let ok = identity.with_signing_key(|sign| {
+        gipny_dht::items::alias_claim_renewal(sign, alias, node.now_ms(), created_at_ms, payload)
+    }).map_err(|_| AliasError::Identity)?;
+    let Some(item) = ok else { return Err(AliasError::Invalid) };
+    if node.put(to_stored(item)).await == 0 {
+        return Err(AliasError::Unpublished);
+    }
+    Ok(())
+}
+
+/// Burn `alias`: a tombstone under the alias's key, signed with *this*
+/// identity's key. It revokes nothing else — another owner's claim ignores a
+/// burn it cannot verify — but when the tombstone and the claim are of the
+/// same owner, every reader reports the alias revoked, and so shall it remain
+/// however long the tombstone is visible.
+pub async fn revoke_alias(node: &Arc<Node>, identity: &Arc<Identity>, alias: &str) -> Result<(), AliasError> {
+    if !alias_is_valid(alias) {
+        return Err(AliasError::Invalid);
+    }
+    let ok = identity.with_signing_key(|sign| gipny_dht::items::alias_tombstone_record(sign, alias, node.now_ms()))
+        .map_err(|_| AliasError::Identity)?;
+    let Some(item) = ok else { return Err(AliasError::Invalid) };
+    if node.put(to_stored(item)).await == 0 {
+        return Err(AliasError::Unpublished);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct DhtStatus {
     /// Nodes that answered us.

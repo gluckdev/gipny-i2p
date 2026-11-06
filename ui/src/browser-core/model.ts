@@ -71,6 +71,32 @@ export function pruneMessageOutbox(state: BrowserState, ids: ReadonlySet<number>
   });
 }
 
+/** Automatic clearing preserves saved chats, including files and pins. */
+export function clearHistory(state: BrowserState, options: { contactId?: number; preserveSaved?: boolean } = {}): number {
+  let saved: Record<string, unknown> = {};
+  if (options.preserveSaved) {
+    try {
+      const value: unknown = JSON.parse(state.ui.chat_prefs ?? '{}');
+      const choices = value && typeof value === 'object' ? (value as Record<string, unknown>).saveHistory : null;
+      if (choices && typeof choices === 'object' && !Array.isArray(choices)) saved = choices as Record<string, unknown>;
+    } catch { /* Invalid preferences do not opt a chat into retention. */ }
+  }
+  const ids = new Set(state.messages.filter(row => {
+    if (options.contactId !== undefined && (row.contact_id !== options.contactId || row.group_id !== null)) return false;
+    const key = row.group_id !== null ? `group:${row.group_id}` : `contact:${row.contact_id}`;
+    return !Object.hasOwn(saved, key) || saved[key] !== true;
+  }).map(row => row.id));
+  for (const row of state.messages) if (ids.has(row.id) && row.group_id === null) {
+    const reference = `${row.author}:${row.origin}:${row.sent_at}`;
+    if (!state.tombstones.includes(reference)) state.tombstones.push(reference);
+  }
+  state.messages = state.messages.filter(row => !ids.has(row.id));
+  state.attachments = state.attachments.filter(file => !ids.has(file.message_id));
+  state.pinnedMessages = state.pinnedMessages.filter(id => !ids.has(id));
+  pruneMessageOutbox(state, ids);
+  return ids.size;
+}
+
 /** Remove expired plaintext, keeping a prepared ciphertext only long enough
  * to finish its ratchet chain. Unencrypted queued letters can be discarded. */
 export function expireHistory(state: BrowserState, now = Date.now()): boolean {

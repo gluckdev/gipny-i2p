@@ -94,6 +94,8 @@ function freshBootSteps(): BootStep[] {
 export class Store {
   view = new Signal<ViewKind>('profile-select');
   bootStage = new Signal<BootStage>('unlocking');
+  /** Resumed startup has one status instead of replaying the step rows. */
+  bootResuming = new Signal<boolean>(false);
   /** Live progress of opening a profile; the unlock screen renders it. */
   bootSteps = new Signal<BootStep[]>(freshBootSteps());
   /** The technical lines behind those steps, newest last. */
@@ -108,6 +110,13 @@ export class Store {
   private bootStartedAt = 0;
   private bootStepStartedAt = 0;
   private unsubBoot: (() => void) | null = null;
+  private bootProfile: string | null = null;
+  private bootFresh = false;
+  private bootAttempt = 0;
+  private profileLoaded = false;
+  private bootNetworkReady = false;
+  private openedProfiles = new Set<string>();
+  private visibilityHookInstalled = false;
   profiles = new Signal<string[]>([]);
   currentProfile = new Signal<string | null>(null);
   contacts = new Signal<Contact[]>([]);
@@ -263,6 +272,7 @@ export class Store {
       this.pinned.set(new Map());
       this.deletedMessages.clear();
     });
+    this.installVisibilityHook();
   }
 
   private acceptsContent(target: ChatTarget, epoch: number): boolean {
@@ -487,6 +497,7 @@ export class Store {
   }
 
   async cancelToProfileSelect(): Promise<void> {
+    this.endBoot();
     await this.refreshProfiles();
     this.currentProfile.set(null);
     this.view.set(this.profiles.get().length > 0 ? 'profile-select' : 'auth-create');
@@ -494,7 +505,18 @@ export class Store {
 
   /** Start listening for boot progress and show the loading screen. Called
    * before `vault_unlock`, because that call is where the minutes go. */
-  async beginBoot(profile: string): Promise<void> {
+  async beginBoot(profile: string, fresh = false): Promise<void> {
+    if (this.isBooting(profile)) {
+      if (!this.bootFresh) this.bootResuming.set(true);
+      return;
+    }
+    this.endBoot();
+    const attempt = this.bootAttempt;
+    this.bootProfile = profile;
+    this.bootFresh = fresh;
+    this.profileLoaded = false;
+    this.bootNetworkReady = false;
+    this.bootResuming.set(!fresh && this.openedProfiles.has(profile));
     // From here the boot screen reports the same stages first-hand.
     this.stopPrewarmWatch();
     this.currentProfile.set(profile);
@@ -505,12 +527,23 @@ export class Store {
     this.bootStartedAt = Date.now();
     this.bootStepStartedAt = this.bootStartedAt;
     this.view.set('auth-booting');
-    this.unsubBoot?.();
-    this.unsubBoot = await Api.onBootStatus((s) => this.onBootStatus(s));
+    const unsubscribe = await Api.onBootStatus((s) => {
+      if (attempt === this.bootAttempt) this.onBootStatus(s);
+    });
+    if (attempt !== this.bootAttempt) unsubscribe();
+    else this.unsubBoot = unsubscribe;
+  }
+
+  isBooting(profile: string): boolean {
+    return this.bootProfile === profile && this.view.get() === 'auth-booting';
   }
 
   /** Give up on this attempt (wrong passphrase, failed router). */
   endBoot(): void {
+    this.bootAttempt++;
+    this.bootProfile = null;
+    this.profileLoaded = false;
+    this.bootNetworkReady = false;
     this.unsubBoot?.();
     this.unsubBoot = null;
     if (this.bootTimer != null) {
@@ -539,14 +572,15 @@ export class Store {
       return { ...step, state: status.state, startedAt, ms, detail: status.detail };
     }));
     if (status.state !== 'active') this.bootStepStartedAt = now;
-    // Once the core is up, the chats are readable even while the relay builds
-    // its tunnels — offer the way in rather than holding the screen hostage.
-    if (status.stage === 'core' && status.state === 'done') this.bootCanEnter.set(true);
+    // onUnlocked enables the entry button after profile data has loaded.
     // Either way round there is no relay work left: in hosted mode it came up,
     // and with an external relay there never was any of ours to build. Waiting
     // for 'done' only meant a person running an external relay sat on this
     // screen until the timeout fired.
-    if (status.stage === 'relay' && (status.state === 'done' || status.state === 'skipped')) this.enterMain();
+    if (status.stage === 'relay' && (status.state === 'done' || status.state === 'skipped')) {
+      this.bootNetworkReady = true;
+      this.enterMain();
+    }
   }
 
   /** Pin the app to this chat and keep the screen on.
@@ -617,6 +651,8 @@ export class Store {
 
   /** Leave the loading screen for the chats. */
   enterMain(): void {
+    // Relay events can precede vaultUnlock and refreshAll completing.
+    if (!this.profileLoaded) return;
     this.bootStage.set('done');
     // Leaving the screen ends the offer it was making; otherwise the timer
     // stays armed until it fires and finds nothing to do.
@@ -628,20 +664,27 @@ export class Store {
   }
 
   async onUnlocked(profile: string): Promise<void> {
+    const attempt = this.bootAttempt;
+    const active = () => attempt === this.bootAttempt && this.currentProfile.get() === profile;
     this.currentProfile.set(profile);
     this.bootStage.set('i2p');
     this.relayConnected.set(false);
     const [card, onion, fingerprint, displayName] = await Promise.all([
       Api.myCard(), Api.myOnion(), Api.myFingerprint(), Api.getDisplayName(),
     ]);
+    if (!active()) return;
     this.identity.set({ card, onion, fingerprint });
     this.displayName.set(displayName);
     await this.refreshAll();
-    this.unsubEvents = await Api.onEvent((e) => this.handleEvent(e));
+    if (!active()) return;
+    this.unsubEvents?.();
+    const unsubscribe = await Api.onEvent((e) => { if (active()) this.handleEvent(e); });
+    if (!active()) { unsubscribe(); return; }
+    this.unsubEvents = unsubscribe;
     this.unsubTrayBadge?.();
     this.unsubTrayBadge = this.unread.subscribe(() => this.pushTrayBadge(), true);
     await this.ensureNotifyPermission();
-    this.installVisibilityHook();
+    if (!active()) return;
     this.startWatchdog();
     this.bootStage.set('relay');
     await this.enterMainWhenReady();
@@ -662,16 +705,23 @@ export class Store {
    * still flips the banner through the normal event path.
    */
   private async enterMainWhenReady(): Promise<void> {
+    const attempt = this.bootAttempt;
     const [configured, info, unreachable] = await Promise.all([
       Api.getRelayAddress().catch(() => ''),
       Api.getRelayInfo().catch(() => null),
       Api.listUnreachableContacts().catch(() => [] as number[]),
     ]);
+    if (attempt !== this.bootAttempt) return;
     this.relayInfo.set(info);
     this.unreachable.set(new Set(unreachable));
+    this.relayUnconfigured.set(info?.mode !== 'builtin' && configured.trim() === '');
+    this.profileLoaded = true;
+    const profile = this.currentProfile.get();
+    if (profile) this.openedProfiles.add(profile);
+    this.bootCanEnter.set(true);
+    if (this.bootNetworkReady) { this.enterMain(); return; }
     // In built-in mode there is always a relay on the way: nothing for the
     // user to configure, only a minute or two to wait.
-    this.relayUnconfigured.set(info?.mode !== 'builtin' && configured.trim() === '');
     if (info?.mode === 'builtin' && info.hosted.state !== 'ready') {
       // Stay on the loading screen while the relay builds its tunnels — it is
       // a real step and the screen now shows it moving — but never as a
@@ -709,9 +759,13 @@ export class Store {
   }
 
   private installVisibilityHook(): void {
+    if (this.visibilityHookInstalled) return;
+    this.visibilityHookInstalled = true;
     this.windowVisible = !document.hidden && document.hasFocus();
     const update = (): void => {
+      const wasVisible = this.windowVisible;
       this.windowVisible = !document.hidden && document.hasFocus();
+      if (!wasVisible && !document.hidden && this.bootProfile && !this.bootFresh) this.bootResuming.set(true);
       // A hidden window's timers are throttled, and on a phone they stop
       // altogether — so the dots were whatever they had been at the moment
       // the app went away. Recompute the instant it comes back.
@@ -796,9 +850,10 @@ export class Store {
    * close either way, and a stale history is better than a vault left open. */
   private async clearHistoryIfAsked(): Promise<void> {
     try {
+      await Api.flushChatPrefs();
       const { clearOnLock } = await Api.getChatPrefs();
       if (!clearOnLock) return;
-      await Api.clearMessageHistory();
+      await Api.clearMessageHistory(true);
     } catch {
       // Nothing to say to anyone here: the lock screen is already on its way.
     }
@@ -807,6 +862,7 @@ export class Store {
   async lock(): Promise<void> {
     const wasProfile = this.currentProfile.get();
     this.profileEpoch++;
+    this.endBoot();
     this.contentLocked = true;
     if (!isTauri) clearBrowserFiles();
     this.contentEpoch++;
@@ -845,10 +901,10 @@ export class Store {
     this.linkRtt.set(new Map());
     this.bootStage.set('unlocking');
     void this.stopCaffeine();
+    this.bootResuming.set(false);
     this.bootSteps.set(freshBootSteps());
     this.bootLog.set([]);
     this.bootCanEnter.set(false);
-    this.endBoot();
     this.updateAvailable.set(null);
     this.updateProgress.set(null);
     this.updateReadyPath.set(null);
@@ -869,10 +925,12 @@ export class Store {
   }
 
   async refreshAll(): Promise<void> {
+    const epoch = this.profileEpoch, attempt = this.bootAttempt;
     const [contacts, groups, mutedList, agentMode] = await Promise.all([
       Api.listContacts(), Api.listGroups(), Api.listMuted().catch(() => []),
       Api.getAgentMode().catch(() => null),
     ]);
+    if (epoch !== this.profileEpoch || attempt !== this.bootAttempt) return;
     this.contacts.set(contacts);
     this.reconcileConsolePanes(contacts);
     this.groups.set(groups);
@@ -892,6 +950,7 @@ export class Store {
         .map(async (c) => unread.set(targetKey({ kind: 'contact', id: c.id }), await Api.unreadCount(c.id))),
       ...groups.map(async (g) => unread.set(targetKey({ kind: 'group', id: g.id }), await Api.groupUnreadCount(g.id))),
     ]);
+    if (epoch !== this.profileEpoch || attempt !== this.bootAttempt) return;
     this.unread.set(unread);
   }
 
@@ -1255,9 +1314,8 @@ export class Store {
         const wasOffline = !this.relayConnected.get();
         this.relayConnected.set(true);
         this.relayUnconfigured.set(false);
-        if (this.bootTimer != null) { window.clearTimeout(this.bootTimer); this.bootTimer = null; }
-        this.bootStage.set('done');
-        if (this.view.get() === 'auth-booting') this.view.set('main');
+        this.bootNetworkReady = true;
+        this.enterMain();
         if (wasOffline) {
           const t = this.selectedChat.get();
           if (t) {
@@ -1479,6 +1537,9 @@ export class Store {
       this.refreshContacts();
     } else if ('ContactUpdated' in e) {
       this.refreshContacts();
+    } else if ('PeerHistorySaving' in e) {
+      const { contact_id, save_history } = e.PeerHistorySaving;
+      this.contacts.update((list) => list.map((contact) => contact.id === contact_id ? { ...contact, save_history } : contact));
     } else if ('ContactWiped' in e) {
       const { contact_id, name } = e.ContactWiped;
       const sel = this.selectedChat.get();

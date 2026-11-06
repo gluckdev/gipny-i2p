@@ -225,6 +225,179 @@ test('language is available before login and preserves values while changing for
   app.destroy();
 });
 
+test('unlock requires the advertised TOTP code for both password and biometric requests', async () => {
+  const original = { status: Api.vaultStatus, password: Api.vaultUnlock, biometric: Api.vaultUnlockBiometric, boot: Api.onBootStatus };
+  const requests = [];
+  Api.vaultStatus = async () => ({ exists: true, unlocked: false, totp_enabled: true, biometric_available: true });
+  Api.vaultUnlock = async (...args) => { requests.push(['password', ...args]); return null; };
+  Api.vaultUnlockBiometric = async (...args) => { requests.push(['biometric', ...args]); return null; };
+  Api.onBootStatus = async () => () => {};
+  try {
+    for (const lang of ['en', 'ru']) for (const method of ['password', 'biometric']) {
+      setLang(lang);
+      const store = new Store(); store.currentProfile.set('alice'); store.view.set('auth-unlock');
+      let opened = 0; store.onUnlocked = async () => { opened++; };
+      const auth = new ui.AuthUnlock(store); document.body.append(auth.el);
+      try {
+        await tick();
+        const password = auth.el.querySelector('input[type=password]');
+        const code = auth.el.querySelector('input[autocomplete=one-time-code]');
+        assert.equal(code.closest('.field').classList.contains('hidden'), false);
+        assert.equal(code.inputMode, 'numeric');
+        assert.equal(code.required, true);
+        assert.ok(auth.el.textContent.includes(t('auth.biometric_unlock')));
+        password.value = 'secret-password';
+        for (const value of ['', '12345', '12a456', '1234567']) {
+          const before = requests.length;
+          code.value = value; await auth.unlock(method);
+          assert.equal(requests.length, before, `${lang}/${method}: ${value} must not reach the backend`);
+          assert.equal(store.view.get(), 'auth-unlock');
+          assert.equal(auth.el.querySelector('.err').textContent, t('auth.totp_required'));
+        }
+        code.value = '012345'; await auth.unlock(method);
+        assert.deepEqual(requests.at(-1), method === 'password'
+          ? ['password', 'alice', 'secret-password', '012345'] : ['biometric', 'alice', '012345']);
+        assert.equal(opened, 1);
+      } finally { auth.destroy(); store.endBoot(); }
+    }
+  } finally { Api.vaultStatus = original.status; Api.vaultUnlock = original.password; Api.vaultUnlockBiometric = original.biometric; Api.onBootStatus = original.boot; }
+});
+
+test('unlock options are optional, failed capability checks retry, and competing unlock methods share one request', async () => {
+  const original = { status: Api.vaultStatus, password: Api.vaultUnlock, biometric: Api.vaultUnlockBiometric, boot: Api.onBootStatus };
+  const store = new Store(); store.currentProfile.set('alice'); store.view.set('auth-unlock');
+  store.onUnlocked = async () => {};
+  Api.onBootStatus = async () => () => {};
+  let checks = 0, passwords = 0, biometrics = 0;
+  Api.vaultStatus = async () => { if (++checks === 1) throw new Error('unavailable'); return { exists: true, unlocked: false }; };
+  const pending = deferred();
+  Api.vaultUnlock = async () => { passwords++; return pending.promise; };
+  Api.vaultUnlockBiometric = async () => { biometrics++; return null; };
+  const auth = new ui.AuthUnlock(store); document.body.append(auth.el);
+  try {
+    await tick();
+    assert.equal(auth.el.querySelector('.err').textContent, t('auth.security_status_failed'));
+    assert.equal(auth.el.querySelector('#unlock-totp').closest('.field').classList.contains('hidden'), true);
+    assert.equal(auth.biometricBtn.classList.contains('hidden'), true);
+    auth.el.querySelector('input[type=password]').value = 'secret-password';
+    const opening = auth.unlock('password'); await tick();
+    assert.equal(checks, 2, 'retry the failed capability request before unlocking');
+    assert.equal(passwords, 1);
+    await auth.unlock('biometric');
+    await auth.unlock('password');
+    assert.equal(biometrics, 0); assert.equal(passwords, 1);
+    assert.equal(auth.openBtn.disabled, true);
+    pending.resolve(null); await opening;
+    auth.destroy();
+    assert.equal(auth.passI.value, ''); assert.equal(auth.totpI.value, '');
+  } finally { auth.destroy(); store.endBoot(); Api.vaultStatus = original.status; Api.vaultUnlock = original.password; Api.vaultUnlockBiometric = original.biometric; Api.onBootStatus = original.boot; }
+});
+
+test('resumed startup hides step rows and waits for profile data before reporting ready', async () => {
+  const original = { boot: Api.onBootStatus, card: Api.myCard, onion: Api.myOnion, fingerprint: Api.myFingerprint, name: Api.getDisplayName, events: Api.onEvent,
+    relayInfo: Api.getRelayInfo, relayAddress: Api.getRelayAddress,
+    hidden: Object.getOwnPropertyDescriptor(document, 'hidden'), focus: document.hasFocus };
+  const views = [], stores = [];
+  let boot;
+  Api.onBootStatus = async (handler) => { boot = handler; return () => {}; };
+  Api.myCard = async () => ({ sign_pk: 'a', dh_pk: 'b' }); Api.myOnion = async () => 'address';
+  Api.myFingerprint = async () => 'fingerprint'; Api.getDisplayName = async () => 'Alice';
+  Api.onEvent = async () => () => {};
+  let hidden = false;
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden }); document.hasFocus = () => !hidden;
+  try {
+    for (const fresh of [false, true]) {
+      const store = new Store(); stores.push(store);
+      const loaded = deferred(); store.refreshAll = () => loaded.promise;
+      const relay = deferred(); Api.getRelayInfo = () => relay.promise; Api.getRelayAddress = async () => '';
+      store.ensureNotifyPermission = async () => {}; store.startWatchdog = () => {};
+      await store.beginBoot('alice', fresh);
+      const view = new ui.AuthBooting(store); views.push(view); document.body.append(view.el);
+      boot({ stage: 'vault', state: 'done', detail: 'opened' });
+      hidden = true; document.dispatchEvent(new win.Event('visibilitychange'));
+      hidden = false; document.dispatchEvent(new win.Event('visibilitychange'));
+      assert.equal(store.bootResuming.get(), !fresh);
+      assert.equal(view.el.querySelector('.boot-details').classList.contains('hidden'), !fresh);
+      boot({ stage: 'core', state: 'done', detail: 'core running' });
+      boot({ stage: 'relay', state: 'done', detail: 'relay ready' });
+      store.handleEvent('RelayConnected'); store.enterMain();
+      assert.equal(store.view.get(), 'auth-booting', 'network readiness cannot bypass profile loading');
+      assert.equal(store.bootCanEnter.get(), false);
+      const opening = store.onUnlocked('alice'); await tick();
+      assert.equal(store.view.get(), 'auth-booting');
+      const before = store.bootSteps.get();
+      await store.beginBoot('alice', fresh);
+      assert.equal(store.bootSteps.get(), before, 'resuming an in-flight boot never resets progress');
+      loaded.resolve(); await tick();
+      assert.equal(store.view.get(), 'auth-booting', 'relay status is part of loading the profile');
+      assert.equal(store.bootCanEnter.get(), false);
+      relay.resolve(null); await opening;
+      assert.equal(store.view.get(), 'main');
+      assert.equal(store.displayName.get(), 'Alice');
+      if (!fresh) assert.equal(view.el.querySelector('.boot-status').textContent, t('boot.ready'));
+      view.destroy(); store.endBoot();
+    }
+  } finally {
+    for (const view of views) view.destroy(); for (const store of stores) store.endBoot();
+    Api.onBootStatus = original.boot; Api.myCard = original.card; Api.myOnion = original.onion; Api.myFingerprint = original.fingerprint; Api.getDisplayName = original.name; Api.onEvent = original.events;
+    Api.getRelayInfo = original.relayInfo; Api.getRelayAddress = original.relayAddress;
+    if (original.hidden) Object.defineProperty(document, 'hidden', original.hidden); else delete document.hidden;
+    document.hasFocus = original.focus;
+  }
+});
+
+test('a cancelled boot ignores and releases a late progress subscription', async () => {
+  const original = Api.onBootStatus, subscription = deferred();
+  let handler, released = 0;
+  Api.onBootStatus = (next) => { handler = next; return subscription.promise; };
+  const store = new Store();
+  try {
+    const opening = store.beginBoot('alice');
+    store.endBoot(); store.view.set('profile-select');
+    subscription.resolve(() => { released++; }); await opening;
+    handler({ stage: 'relay', state: 'done', detail: 'stale' });
+    assert.equal(released, 1);
+    assert.equal(store.bootLog.get().length, 0);
+    assert.equal(store.view.get(), 'profile-select');
+  } finally { store.endBoot(); Api.onBootStatus = original; }
+});
+
+test('a cancelled profile refresh cannot restore contact or unread data', async () => {
+  const original = { contacts: Api.listContacts, groups: Api.listGroups, muted: Api.listMuted, agent: Api.getAgentMode };
+  const contacts = deferred(), store = new Store();
+  Api.listContacts = () => contacts.promise; Api.listGroups = async () => [];
+  Api.listMuted = async () => []; Api.getAgentMode = async () => null;
+  try {
+    const refreshing = store.refreshAll();
+    store.endBoot();
+    contacts.resolve([{ id: 1, name: 'private contact', request: 'none' }]);
+    await refreshing;
+    assert.deepEqual(store.contacts.get(), []);
+    assert.equal(store.unread.get().size, 0);
+  } finally { Api.listContacts = original.contacts; Api.listGroups = original.groups; Api.listMuted = original.muted; Api.getAgentMode = original.agent; }
+});
+
+test('a rejected TOTP code never loads the profile and reports a localized retry', async () => {
+  const original = { status: Api.vaultStatus, password: Api.vaultUnlock, biometric: Api.vaultUnlockBiometric, boot: Api.onBootStatus };
+  Api.vaultStatus = async () => ({ exists: true, unlocked: false, totp_enabled: true, biometric_available: true });
+  Api.vaultUnlock = Api.vaultUnlockBiometric = async () => { throw new Error('invalid totp code'); };
+  Api.onBootStatus = async () => () => {};
+  try {
+    for (const lang of ['en', 'ru']) for (const method of ['password', 'biometric']) {
+      setLang(lang);
+      const store = new Store(); store.currentProfile.set('alice'); store.view.set('auth-unlock');
+      let opened = false; store.onUnlocked = async () => { opened = true; };
+      const auth = new ui.AuthUnlock(store);
+      try {
+        await tick(); auth.passI.value = 'secret-password'; auth.totpI.value = '123456';
+        await auth.unlock(method);
+        assert.equal(opened, false); assert.equal(store.view.get(), 'auth-unlock');
+        assert.equal(store.toast.get().text, t('auth.totp_invalid'));
+      } finally { auth.destroy(); store.endBoot(); }
+    }
+  } finally { Api.vaultStatus = original.status; Api.vaultUnlock = original.password; Api.vaultUnlockBiometric = original.biometric; Api.onBootStatus = original.boot; }
+});
+
 function chatStore() {
   const store = new Store();
   store.currentProfile.set('alice');
@@ -236,6 +409,111 @@ function chatStore() {
   store.view.set('main');
   return store;
 }
+
+test('history prompts persist explicit choices per direct chat and group in both languages', async () => {
+  const original = { get: Api.getChatPrefs, update: Api.updateChatPrefs };
+  try {
+    for (const lang of ['en', 'ru']) for (const target of [{ kind: 'contact', id: 1 }, { kind: 'group', id: 'team' }]) for (const save of [false, true]) {
+      setLang(lang);
+      const key = `${target.kind}:${target.id}`;
+      let prefs = { ttlSecs: null, ttlChosen: true, clearOnLock: true, saveHistory: { 'contact:2': true } };
+      Api.getChatPrefs = async () => prefs;
+      Api.updateChatPrefs = async (patch) => { prefs = { ...prefs, ...patch, saveHistory: { ...prefs.saveHistory, ...patch.saveHistory } }; };
+      const store = chatStore(); store.selectedChat.set(target);
+      const app = new App(store); document.body.append(app.el);
+      try {
+        await tick();
+        const prompt = app.el.querySelector('.history-prompt');
+        assert.equal(prompt.classList.contains('hidden'), false);
+        assert.ok(prompt.textContent.includes(t('chat.save_history_prompt')));
+        const button = [...prompt.querySelectorAll('button')].find(button => button.textContent === t(save ? 'chat.history_save' : 'chat.history_dont_save'));
+        button.click(); await tick();
+        assert.equal(prefs.saveHistory[key], save);
+        assert.equal(prefs.saveHistory['contact:2'], true);
+        assert.equal(prompt.classList.contains('hidden'), true);
+        setLang(lang === 'en' ? 'ru' : 'en'); await tick();
+        assert.equal(app.el.querySelector('.history-prompt').classList.contains('hidden'), true, 'both explicit answers survive a fresh chat render');
+        store.selectedChat.set({ kind: 'contact', id: 3 }); await tick();
+        assert.equal(app.el.querySelector('.history-prompt').classList.contains('hidden'), false, 'another chat still needs its own answer');
+      } finally { app.destroy(); }
+    }
+  } finally { Api.getChatPrefs = original.get; Api.updateChatPrefs = original.update; }
+});
+
+test('history prompts stay hidden when clearing is disabled and retry failed preference writes', async () => {
+  const original = { get: Api.getChatPrefs, update: Api.updateChatPrefs };
+  const store = chatStore(); let app;
+  try {
+    Api.getChatPrefs = async () => ({ ttlSecs: null, ttlChosen: true, clearOnLock: false });
+    app = new App(store); document.body.append(app.el); await tick();
+    assert.equal(app.el.querySelector('.history-prompt').classList.contains('hidden'), true);
+    app.destroy();
+    Api.getChatPrefs = async () => ({ ttlSecs: null, ttlChosen: true, clearOnLock: true });
+    Api.updateChatPrefs = async () => { throw new Error('write failed'); };
+    app = new App(store); document.body.append(app.el); await tick();
+    const prompt = app.el.querySelector('.history-prompt'), button = prompt.querySelector('button');
+    button.click(); await tick();
+    assert.equal(prompt.classList.contains('hidden'), false);
+    assert.equal(button.disabled, false);
+    assert.equal(store.toast.get().text, t('chat.history_save_failed'));
+    Api.updateChatPrefs = async () => {};
+    button.click(); await tick();
+    assert.equal(prompt.classList.contains('hidden'), true);
+  } finally { app?.destroy(); Api.getChatPrefs = original.get; Api.updateChatPrefs = original.update; }
+});
+
+test('history prompts react to saved settings while the chat stays open and release their subscription', async () => {
+  const listeners = Api.chatPrefsListeners.size;
+  const store = chatStore(), app = new App(store); document.body.append(app.el);
+  const prefs = { ttlSecs: null, ttlChosen: true, clearOnLock: false };
+  try {
+    await tick();
+    const prompt = app.el.querySelector('.history-prompt');
+    await Api.setChatPrefs(prefs);
+    assert.equal(prompt.classList.contains('hidden'), true);
+    await Api.setChatPrefs({ ...prefs, clearOnLock: true });
+    assert.equal(prompt.classList.contains('hidden'), false);
+    await Api.setChatPrefs({ ...prefs, clearOnLock: true, saveHistory: { 'contact:1': false } });
+    assert.equal(prompt.classList.contains('hidden'), true);
+  } finally { app.destroy(); }
+  assert.equal(Api.chatPrefsListeners.size, listeners);
+});
+
+test('peer history banners use explicit live preferences independently of message expiry', async () => {
+  const store = chatStore(), app = new App(store); document.body.append(app.el);
+  try {
+    for (const lang of ['en', 'ru']) {
+      setLang(lang); await tick();
+      for (const choice of [true, false, null]) {
+        store.handleEvent({ PeerHistorySaving: { contact_id: 1, save_history: choice } });
+        for (const expires_at of [null, Date.now() + 3600_000]) {
+          store.messages.set(new Map([['contact:1', [{ id: 9, outgoing: false, body: 'hello', sent_at: Date.now(), group_id: null, console: null, expires_at }]]]));
+          const text = t(choice === true ? 'chat.peer_saves_history' : choice === false ? 'chat.peer_doesnt_save_history' : 'chat.peer_history_unknown');
+          assert.equal(app.el.querySelector('.peer-history-note').textContent, text);
+        }
+      }
+      store.selectedChat.set({ kind: 'group', id: 'team' }); await tick();
+      assert.equal(app.el.querySelector('.peer-history-note').classList.contains('hidden'), true);
+      store.selectedChat.set({ kind: 'contact', id: 1 }); await tick();
+    }
+  } finally { app.destroy(); }
+});
+
+test('overlapping history, timer and clear-on-lock writes merge without losing another choice', async () => {
+  const original = { get: Api.getChatPrefs, set: Api.setChatPrefs };
+  let prefs = { ttlSecs: null, ttlChosen: false, clearOnLock: true, saveHistory: {} };
+  Api.getChatPrefs = async () => ({ ...prefs });
+  Api.setChatPrefs = async (value) => { await tick(); prefs = value; };
+  try {
+    await Promise.all([
+      Api.updateChatPrefs({ saveHistory: { 'contact:1': true } }),
+      Api.updateChatPrefs({ ttlSecs: 300, ttlChosen: true }),
+      Api.updateChatPrefs({ saveHistory: { 'group:team': false } }),
+      Api.updateChatPrefs({ clearOnLock: false }),
+    ]);
+    assert.deepEqual(prefs, { ttlSecs: 300, ttlChosen: true, clearOnLock: false, saveHistory: { 'contact:1': true, 'group:team': false } });
+  } finally { Api.getChatPrefs = original.get; Api.setChatPrefs = original.set; }
+});
 
 test('switching languages preserves unsent text, attachments, reply, editor and console history', async () => {
   const store = chatStore(); setLang('ru');

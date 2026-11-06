@@ -2342,6 +2342,7 @@ body::before { background: none; }
 }
 .boot-progress-text { width: 4ch; text-align: right; color: #33ff66; font-variant-numeric: tabular-nums; }
 .boot-sub { margin: 0; color: #789382; font-size: 11px; line-height: 1.6; }
+.boot-status { margin: 24px 0; color: #b6cdbd; }
 .boot-steps { display: grid; gap: 3px; margin: 20px 0; }
 .boot-step {
   display: flex; align-items: baseline; gap: 12px;
@@ -2549,6 +2550,10 @@ select.input { width: 100%; text-overflow: ellipsis; }
   border-bottom: 1px solid var(--danger);
   overflow-wrap: anywhere;
 }
+
+.history-prompt, .peer-history-note { color: var(--text); background: var(--surface); border-bottom: none; }
+.history-prompt { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.history-prompt > span { flex: 1 1 180px; }
 
 /* --- 2. Sizes follow the space, not three hard-coded screens ------------- */
 

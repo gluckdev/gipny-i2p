@@ -1448,6 +1448,14 @@ impl Db {
         )?))
     }
 
+    /// Clear one group's local history without affecting saved chats.
+    pub fn purge_group_messages(&self, group_id: &[u8]) -> Result<usize> {
+        self.with_conn(|c| Ok(c.execute(
+            "DELETE FROM messages WHERE group_id = ?1 AND id NOT IN (SELECT message_id FROM pinned_messages)",
+            params![group_id],
+        )?))
+    }
+
     fn map_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
         Ok(Message {
             id: r.get(0)?,
@@ -2411,6 +2419,31 @@ fn hex(b: &[u8]) -> String {
     for &x in b { s.push_str(&format!("{:02x}", x)); }
     s
 }
+#[cfg(test)]
+mod history_retention_tests {
+    use super::*;
+
+    #[test]
+    fn clearing_one_group_preserves_other_chats_and_existing_group_pins() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("history.db")).unwrap();
+        db.configure_dm_identity(&[7; 32]).unwrap();
+        let contact = db.add_contact(&[1; 32], &[2; 32], "", "peer", None).unwrap();
+        let direct = db.insert_message(contact, Direction::Out, "saved direct", now_ms(), None, &[]).unwrap();
+        db.create_group(b"saved", "saved group").unwrap();
+        db.create_group(b"clear", "clear group").unwrap();
+        let saved = db.insert_group_message(b"saved", Some(&[7; 32]), Direction::Out, "keep", now_ms(), None, &[]).unwrap();
+        let cleared = db.insert_group_message(b"clear", Some(&[7; 32]), Direction::Out, "clear", now_ms(), None, &[]).unwrap();
+        let pinned = db.insert_group_message(b"clear", Some(&[7; 32]), Direction::Out, "pin", now_ms(), None, &[]).unwrap();
+        db.pin_group_message(b"clear", pinned).unwrap();
+        assert_eq!(db.purge_group_messages(b"clear").unwrap(), 1);
+        assert!(db.get_message(cleared).unwrap().is_none());
+        assert_eq!(db.get_message(saved).unwrap().unwrap().body, "keep");
+        assert_eq!(db.get_message(direct).unwrap().unwrap().body, "saved direct");
+        assert_eq!(db.get_message(pinned).unwrap().unwrap().body, "pin");
+    }
+}
+
 #[cfg(test)]
 mod retry_tests {
     use super::*;

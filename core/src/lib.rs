@@ -2121,12 +2121,13 @@ async fn set_ui_data(key: String, json: String, ctx: State<'_, AppCtx>) -> Resul
     core_of(&ctx).await?.set_ui_data(&key, &json).map_err(err)
 }
 
-/// Throw away every message on this profile. The user turns this on and it
-/// happens the moment the vault is locked, so the next person to open the
-/// window finds an empty transcript rather than the last conversation.
+/// Clear all history, or honour per-chat retention during automatic clearing
+/// when `preserve_saved` is true.
 #[tauri::command]
-async fn clear_message_history(ctx: State<'_, AppCtx>) -> Result<usize, String> {
-    core_of(&ctx).await?.clear_message_history().map_err(err)
+async fn clear_message_history(preserve_saved: Option<bool>, ctx: State<'_, AppCtx>) -> Result<usize, String> {
+    let core = core_of(&ctx).await?;
+    if preserve_saved == Some(true) { core.clear_unsaved_history().map_err(err) }
+    else { core.clear_message_history().map_err(err) }
 }
 
 #[tauri::command]

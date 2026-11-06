@@ -695,9 +695,18 @@ async fn dispatch_rpc(
         }
         "set_ui_data" => {
             let key = p["key"].as_str().ok_or("missing key")?;
-            let val = p["val"].as_str().ok_or("missing val")?;
+            let val = p["json"].as_str().or_else(|| p["val"].as_str()).ok_or("missing json")?;
             core_of(ctx).await?.set_ui_data(key, val).map_err(err)?;
             Ok(json!(null))
+        }
+        "clear_message_history" => {
+            let core = core_of(ctx).await?;
+            let dropped = if p["preserveSaved"].as_bool() == Some(true) {
+                core.clear_unsaved_history()
+            } else {
+                core.clear_message_history()
+            }.map_err(err)?;
+            Ok(json!(dropped))
         }
 
         // --- 3-Factor Backup ---
