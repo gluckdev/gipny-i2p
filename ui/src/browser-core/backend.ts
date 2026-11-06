@@ -26,6 +26,8 @@ const number = (args: Args, key: string): number => { const n = args[key]; if (!
  *  native core's `UI_DATA_KEYS`, and nothing else. */
 const UI_DATA_KEYS = new Set(['contact_folders', 'avatars', 'chat_prefs']);
 const uiKey = (args: Args): string => { const key = text(args, 'key'); if (!UI_DATA_KEYS.has(key)) throw new Error('Unknown UI preference'); return key; };
+/** Concurrent deposits; each holds at most one file part in memory. */
+const SEND_STREAMS = 4;
 const reason = (error: unknown): string => String(error instanceof Error ? error.message : error).slice(0, 500);
 
 /** The worker's public state and command adapter. Private material stays in
@@ -44,6 +46,8 @@ export class BrowserBackend {
   private generation = 0;
   private closing = false;
   private pumping = false;
+  /** Outbox keys being sent, at most SEND_STREAMS. */
+  private sending = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -466,15 +470,19 @@ export class BrowserBackend {
         } catch (error) { if (!this.closing) this.log.info('file_queue_fault', reason(error)); }
       }
       if (attempt !== this.generation || !this.state) return;
-      const eligible = dueLetters(this.state, Date.now(), 8);
-      let next = 0;
-      const worker = async (): Promise<void> => {
-        while (next < eligible.length && attempt === this.generation && this.relay) await this.sendItem(eligible[next++]!, attempt);
-      };
       // Network waits overlap, but encryption and persistence still pass through
       // the single vault queue. Controls sort first; four streams bound memory.
-      // Every worker finishes before the next pump may start.
-      await Promise.allSettled([worker(), worker(), worker(), worker()]);
+      // One slow stream (connect, write and read deadlines add up to minutes)
+      // holds only its own slot: a freed slot refills at once, so receipts and
+      // further parts never wait for the slowest send.
+      const free = SEND_STREAMS - this.sending.size;
+      if (free <= 0) return;
+      for (const item of dueLetters(this.state, Date.now(), free, this.sending)) {
+        this.sending.add(item.key);
+        void this.sendItem(item, attempt)
+          .catch(error => { if (!this.closing) this.log.info('outbox_fault', reason(error)); })
+          .finally(() => { this.sending.delete(item.key); if (attempt === this.generation) this.schedule(0); });
+      }
     } finally { this.pumping = false; this.schedule(1000); }
   }
 

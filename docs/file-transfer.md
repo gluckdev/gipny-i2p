@@ -68,7 +68,9 @@ multipart-байты принимаются после согласия. Веб-
 отправляется. При принятии клиент сообщает сохранённое состояние файла.
 
 В браузере до четырёх сетевых операций выполняются параллельно; исправные
-соединения к релею переиспользуются. Служебные подтверждения имеют приоритет.
+соединения к релею переиспользуются. Медленное соединение занимает только своё
+место: освободившееся сразу получает следующее письмо, поэтому подтверждения и
+новые части не ждут самой долгой отправки. Служебные подтверждения имеют приоритет.
 Шифрование и фиксация состояния ratchet остаются последовательными.
 Это не переключение на прямой IP-транспорт: части по-прежнему идут через I2P.
 
@@ -192,8 +194,10 @@ new attachments, and deletion forbids resurrection. Accepting a contact resumes
 the retained offer and sends the content acknowledgement.
 
 The browser overlaps at most four network operations, reuses authenticated relay
-streams and prioritizes controls while keeping ratchet commits sequential. File
-parts continue through I2P.
+streams and prioritizes controls while keeping ratchet commits sequential. A slow
+stream holds only its own slot: a freed slot takes the next letter at once, so
+receipts and further parts never wait for the slowest send. File parts continue
+through I2P.
 
 Browser retransmission and queue bounds:
 

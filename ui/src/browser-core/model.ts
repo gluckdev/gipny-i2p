@@ -248,17 +248,20 @@ export function queueReceipt(state: BrowserState, peer: string, letter: WirePayl
 /** Choose letters to send now. Never returns a deposited ciphertext: a
  * deposited letter that still waits for its answer is returned only when a
  * new encryption is due (`reopenForResend`). File parts are encrypted only
- * for reachable peers and within the snapshot-wide cap. */
-export function dueLetters(state: BrowserState, now: number, limit = 8): Outbox[] {
+ * for reachable peers and within the snapshot-wide cap. Letters in `busy` are
+ * being sent: never picked twice, not yet failures, and their parts keep their
+ * per-peer slots. */
+export function dueLetters(state: BrowserState, now: number, limit = 8, busy: ReadonlySet<string> = new Set()): Outbox[] {
   const silent = new Set(state.contacts.filter(contact => contact.trust === 2 || contact.request === 'incoming').map(contact => contact.sign_pk));
-  const failing = new Set(state.outbox.filter(item => item.blob !== null && !item.deposited && item.attempts > 0).map(item => item.peer));
+  const failing = new Set(state.outbox.filter(item => !busy.has(item.key) && item.blob !== null && !item.deposited && item.attempts > 0).map(item => item.peer));
   let sealed = state.outbox.filter(item => item.file && item.blob !== null).length;
   const perPeer = new Map<string, number>();
+  for (const item of state.outbox) if (item.file && busy.has(item.key)) perPeer.set(item.peer, (perPeer.get(item.peer) ?? 0) + 1);
   const picked: Outbox[] = [];
   const order = [...state.outbox].sort((a, b) => Number(!!a.file) - Number(!!b.file));
   for (const item of order) {
     if (picked.length >= limit) break;
-    if (silent.has(item.peer)) continue;
+    if (silent.has(item.peer) || busy.has(item.key)) continue;
     if (item.deposited) {
       if (!retained(item) || now - item.at < resendDelay(item.resends ?? 0)) continue;
     } else if (now - item.at < retryDelay(item.attempts)) continue;

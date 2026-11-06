@@ -619,6 +619,21 @@ test('replay records stay bounded through a synthetic 12,000-part transfer; X3DH
   assert.ok(JSON.stringify(f.state).length < 256 * 1024, 'the snapshot stays small');
 });
 
+test('a letter being sent is not picked twice and does not stall its peer', () => {
+  const a = '0a'.repeat(32);
+  const f = outgoingFixture(40, [a]);
+  ui.queueFileChunks(f.state, f.own, 1000);
+  // Encrypted and attempted, its deposit still under way.
+  const busy = refs(f.state, a)[0]; busy.blob = ui.base64([1]); busy.attempts = 1; busy.at = 1000;
+  const later = 1000 + ui.retryDelay(1);
+  const due = ui.dueLetters(f.state, later, 8, new Set([busy.key]));
+  assert.ok(!due.includes(busy), 'never sent twice at once');
+  assert.ok(due.some(item => item.peer === a && item.blob === null), 'further parts are encrypted meanwhile');
+  assert.equal(due.filter(item => item.file && item.peer === a).length, 3, 'the busy part keeps its per-peer slot');
+  // Not marked busy, the same state is a failing relay.
+  assert.ok(!ui.dueLetters(f.state, later).some(item => item.peer === a && item.blob === null));
+});
+
 test('one offline or blocked recipient does not hold the others; silent transfers fail', async () => {
   const [a, b, c] = ['0a'.repeat(32), '0b'.repeat(32), '0c'.repeat(32)];
   const f = outgoingFixture(40, [a, b, c]);
