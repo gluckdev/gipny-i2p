@@ -168,7 +168,9 @@ a:hover { text-decoration: underline; }
 
 .auth {
   flex: 1;
-  display: flex; align-items: center; justify-content: center;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex; align-items: safe center; justify-content: center;
   background: var(--bg);
 }
 .auth-card {
@@ -2401,15 +2403,26 @@ body::before { background: none; }
 .boot-button:focus-visible, .boot-log-toggle:focus-visible, .boot-log:focus-visible {
   outline: 2px solid #7dff9e; outline-offset: 3px;
 }
-@media (max-width: 480px) {
-  .boot-cyber { padding: 16px 10px; }
-  .boot-card { padding: 18px 12px; }
-  .boot-title { font-size: 12px; letter-spacing: .04em; }
-  .boot-step { flex-wrap: wrap; gap: 4px 8px; padding: 7px 4px; }
+@media (max-width: 600px) {
+  .boot-cyber {
+    padding: calc(var(--safe-top) + 10px) calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 10px) calc(var(--safe-left) + 8px) !important;
+  }
+  .boot-card { padding: 14px 12px !important; font-size: 11px; line-height: 1.45; }
+  .boot-header { padding-bottom: 10px; }
+  .boot-title { margin-bottom: 6px; font-size: 12px; letter-spacing: .04em; }
+  .boot-progress { margin: 12px 0 6px; gap: 10px; }
+  .boot-sub { font-size: 10.5px; line-height: 1.4; }
+  .boot-steps { margin: 10px 0; gap: 2px; }
+  .boot-step { flex-wrap: wrap; gap: 2px 8px; padding: 5px 6px; }
+  .boot-step-label { font-size: 11.5px; }
+  .boot-step-hint { font-size: 10.5px; margin-top: 2px; }
   .boot-step-main { flex-basis: calc(100% - 10ch); }
-  .boot-step-ms { margin-left: calc(8ch + 8px); }
-  .boot-live-log.is-expanded .boot-log { height: 220px; }
-  .boot-button { width: 100%; }
+  .boot-step-ms { margin-left: calc(8ch + 8px); font-size: 10.5px; }
+  .boot-log-head { padding: 5px 10px; }
+  .boot-log { height: 76px; padding: 8px 10px; font-size: 10.5px; line-height: 1.45; }
+  .boot-live-log.is-expanded .boot-log { height: 180px; }
+  .boot-foot:has(.boot-button:not(.hidden)) { margin-top: 12px; }
+  .boot-button { width: 100%; padding: 8px 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .boot-active .boot-cursor { animation: none; }
@@ -2632,6 +2645,8 @@ select.input { width: 100%; text-overflow: ellipsis; }
   #app { min-height: 100vh; }
   .auth {
     align-items: flex-start !important;
+    min-height: 0;
+    overflow-y: auto;
     padding: calc(var(--safe-top) + 8px) calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 8px) calc(var(--safe-left) + 8px) !important;
   }
   .auth-card { width: 100% !important; max-width: 100% !important; padding: 16px !important; }
