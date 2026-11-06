@@ -365,81 +365,6 @@ jobs:
             target/release/bundle/**/*.dmg
 
   # ---------------------------------------------------------------------------
-  # 2b. Relay server for Linux amd64 and arm64: gipny-relay (the i2p router
-  #     compiled in: no i2pd beside it, no SAM, no port) and its systemd unit,
-  #     in one tarball. arm64 is here for the cheap always-on machines a relay
-  #     actually runs on — a Raspberry Pi, an ARM VPS.
-  # ---------------------------------------------------------------------------
-  relay:
-    name: relay (linux ${{ matrix.arch }})
-    needs: [version, netdb-seed]
-    env:
-      GIPNY_RELEASE_LOGS: ${{ needs.version.outputs.release_logs }}
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # 22.04 sets the glibc floor at 2.35: Debian 12, Ubuntu 22.04 and
-          # Raspberry Pi OS bookworm all meet it.
-          - { arch: amd64, runs-on: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
-          - { arch: arm64, runs-on: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.93.1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # only main writes it — see .github/workflows/README.md
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: core/relay
-          # relay-testnet.yml builds this workspace in a job named the same on
-          # ubuntu-latest; its build scripts want GLIBC_2.39, which 22.04 lacks
-          # (release run 36056978015).
-          key: ${{ matrix.runs-on }}
-      - name: i2pd sources and build deps (the relay compiles its router in)
-        run: |
-          git submodule update --init --depth 1 third_party/i2pd
-          .github/scripts/assert-i2pd-pin.sh
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libboost-dev libboost-program-options-dev libssl-dev zlib1g-dev
-      - name: current reseed certificates (upstream i2pd now, not the pin)
-        run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
-      - name: fetch the network database snapshot
-        uses: actions/download-artifact@v8
-        with:
-          name: netdb-seed
-          path: seed
-      - name: build and package
-        run: |
-          export I2P_EMBED_STATIC_LIBS=boost_program_options
-          export I2P_EMBED_LIB_DIRS="/usr/lib/$(gcc -dumpmachine)"
-          cargo build --locked --release --manifest-path core/relay/Cargo.toml
-          VERSION="$(jq -r .version core/tauri.conf.json)"
-          name="gipny-relay_${VERSION}_linux-${{ matrix.arch }}"
-          mkdir -p "dist/$name"
-          install -m 0755 core/relay/target/release/gipny-relay "dist/$name/"
-          install -m 0644 core/relay/gipny-relay.service "dist/$name/"
-          install -m 0644 seed/i2pd-netdb-seed.tar.gz "dist/$name/"
-          # Must run on the architecture this tarball is named for.
-          file "dist/$name/gipny-relay"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          ls -lh dist/*.tar.gz
-      - name: record exact source-built relay archive
-        run: python3 .github/scripts/build-provenance.py record build-manifest-relay-${{ matrix.arch }}.json '${{ matrix.target }}' --artifact 'dist/*.tar.gz'
-      - uses: actions/upload-artifact@v7
-        with:
-          name: gipny-provenance-relay-${{ matrix.arch }}
-          path: build-manifest-relay-${{ matrix.arch }}.json
-          if-no-files-found: error
-          retention-days: 5
-      - uses: actions/upload-artifact@v7
-        with:
-          name: gipny-relay-linux-${{ matrix.arch }}
-          retention-days: 5
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
   # 2c. Headless agent: gipny-agent (the i2p router compiled in, no SAM/proxy
   #     service; IP transport remains), the network snapshot and a systemd unit, as a tar.gz
   #     for Linux amd64 and arm64.
@@ -938,7 +863,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: release page
-    needs: [version, source, desktop, relay, agent, agent-openwrt, android]
+    needs: [version, source, desktop, agent, agent-openwrt, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the GitHub Release + upload assets
