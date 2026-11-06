@@ -39,7 +39,18 @@ Rust — на **1.93.1**. Для каждого архива в `openwrt-targets
 Rust 1.93 использует musl 1.2.5 для этих targets:
 [объявление Rust](https://blog.rust-lang.org/2025/12/05/Updating-musl-1.2.5/).
 
-## Что сознательно не включено
+## Планируемая поддержка: MIPS / MIPSel для OpenWrt 23.05 (облегчённый роутер)
+
+В планах развития проекта — адаптация легковесного демона роутера под классическую и массовую ветку **OpenWrt 23.05** на архитектурах MIPS:
+- **`mipsel-unknown-linux-musl`** (Little Endian, soft-float): семейство MediaTek/Ralink `ramips/mt7621` и `mt7628` (тулчейн `openwrt-toolchain-23.05.5-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz`, SHA256: `bb08478a46869009a2a8b85f88e266cc6b6d3ccefc34de61907ead2a986e08c9`).
+- **`mips-unknown-linux-musl`** (Big Endian, soft-float): семейство Qualcomm Atheros `ath79` (тулчейн `openwrt-toolchain-23.05.5-ath79-generic_gcc-12.3.0_musl.Linux-x86_64.tar.xz`, SHA256: `6cf197b2705307057548e65158396ca4d26b343f557bf81c97fd5643978cc991`).
+
+Особенности облегчённой сборки для MIPS под OpenWrt 23:
+1. **Экономия RAM и Flash**: минимизация потребления памяти встроенным роутером (frugal-профиль туннелей, усечённый транзит, сжатие бинарника).
+2. **Сборка Rust std через `build-std`**: так как MIPS musl относится к Tier 3, стандартная библиотека собирается целевым компилятором напрямую под GCC 12.3 / musl 1.2.4 ветки 23.05.
+3. **Чистый Soft-float ABI**: гарантия отсутствия инструкций FPU для полной совместимости со всеми бюджетными SoC без сопроцессора.
+
+## Что сознательно не включено в текущий 0.5.0-rc2
 
 - **MIPS / MIPSel**: `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl`
   относятся к Tier 3; готового std через rustup для этой версии нет.
