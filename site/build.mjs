@@ -4,7 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { messages } from './main.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
-export const publicFiles = ['index.html', 'styles.css', 'main.js', 'assets/logo.svg'];
+export const screenshots = ['chat-ru-desktop', 'chat-en-desktop', 'chat-ru-mobile', 'chat-en-mobile'].map(name => `assets/screens/${name}.webp`);
+export const publicFiles = ['index.html', 'styles.css', 'main.js', 'assets/logo.svg', ...screenshots];
 export const catalogKeys = ['catalogRelease', 'catalogSystem', 'catalogChoose', 'catalogDownload', 'catalogAll', 'catalogHelp', 'catalogUnavailable'];
 
 const repository = 'https://github.com/gluckdev/gipny-i2p';

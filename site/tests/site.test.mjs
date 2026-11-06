@@ -4,7 +4,7 @@ import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { messages, resolveLanguage, applyLanguage, initialize, detectDevice, chooseDownload } from '../main.js';
+import { messages, resolveLanguage, isRussianLayout, applyLanguage, initialize, detectDevice, chooseDownload } from '../main.js';
 import { build, publicFiles, catalogKeys, releaseCatalog, renderCatalog, nativeChoices } from '../build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -77,17 +77,58 @@ test('roadmap distinguishes future features and transport availability from priv
   assert.match(messages.ru.plansBoundary, /сохранить текст.*снимок экрана/);
 });
 
-test('Russian is the default regardless of browser locale; explicit language links keep their choice', () => {
+test('Russian only for a Russian locale or keyboard layout; explicit language links keep their choice', () => {
   assert.equal(resolveLanguage('', ['ru-RU', 'en-US']), 'ru');
-  assert.equal(resolveLanguage('', ['en-GB', 'ru-RU']), 'ru');
-  assert.equal(resolveLanguage('', ['fr-FR', 'ru']), 'ru');
-  assert.equal(resolveLanguage('', ['fr-FR']), 'ru');
-  assert.equal(resolveLanguage(), 'ru');
-  assert.equal(resolveLanguage('?lang=en', ['ru-RU']), 'en');
+  assert.equal(resolveLanguage('', ['en-GB', 'ru-RU']), 'ru', 'any preferred Russian locale counts');
+  assert.equal(resolveLanguage('', ['ru']), 'ru');
+  assert.equal(resolveLanguage('', ['fr-FR']), 'en');
+  assert.equal(resolveLanguage('', ['uk-UA', 'be-BY']), 'en', 'other Cyrillic locales are not Russian');
+  assert.equal(resolveLanguage('', ['rue-UA']), 'en', 'a language code merely starting with ru is not Russian');
+  assert.equal(resolveLanguage(), 'en');
+  assert.equal(resolveLanguage('', ['en-US'], true), 'ru', 'a Russian keyboard layout counts');
+  assert.equal(resolveLanguage('?lang=en', ['ru-RU'], true), 'en');
   assert.equal(resolveLanguage('?lang=ru', ['en-US']), 'ru');
   assert.equal(resolveLanguage('?lang=__proto__', ['ru-RU']), 'ru');
-  assert.equal(resolveLanguage('?lang=unknown', ['en-US']), 'ru');
-  assert.equal(resolveLanguage('?lang=en-US', ['en-US']), 'ru');
+  assert.equal(resolveLanguage('?lang=unknown', ['en-US']), 'en');
+  assert.equal(resolveLanguage('?lang=en-US', ['en-US']), 'en');
+  const russian = 'йцукенгшщзхъфывапролджэячсмитьбю'.split('');
+  assert.equal(isRussianLayout(russian), true);
+  assert.equal(isRussianLayout('йцукенгшщзхїфівапролджєячсмитьбю'.split('')), false, 'Ukrainian');
+  assert.equal(isRussianLayout('йцукенгшўзх\'фывапролджэячсмітьбю'.split('')), false, 'Belarusian');
+  assert.equal(isRussianLayout('qwertyuiop'.split('')), false);
+});
+
+test('initialization detects the system locale and a Russian layout without overriding a choice', async () => {
+  const make = (navigator, search = '', locale = 'en-US') => ({
+    location: new URL('https://example.test/gipny-i2p/' + search),
+    navigator,
+    Intl: { DateTimeFormat: () => ({ resolvedOptions: () => ({ locale }) }) },
+    history: { replaceState() {} },
+    addEventListener() {},
+  });
+  const english = documentFixture();
+  initialize(english, make({ languages: ['en-US'] }));
+  assert.equal(english.documentElement.lang, 'en');
+  const system = documentFixture();
+  initialize(system, make({ languages: ['en-US'] }, '', 'ru-RU'));
+  assert.equal(system.documentElement.lang, 'ru', 'the system locale counts as well as the browser languages');
+  const layout = { getLayoutMap: async () => new Map([['KeyS', 'ы'], ['BracketRight', 'ъ'], ['Quote', 'э']]) };
+  const keyboard = documentFixture();
+  initialize(keyboard, make({ languages: ['en-US'], keyboard: layout }));
+  assert.equal(keyboard.documentElement.lang, 'en');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(keyboard.documentElement.lang, 'ru', 'a Russian layout switches to Russian once known');
+  const clicked = documentFixture();
+  let release;
+  initialize(clicked, make({ languages: ['en-US'], keyboard: { getLayoutMap: () => new Promise(resolve => { release = resolve; }) } }));
+  clicked.buttons[0].listeners.click();
+  release(new Map([['KeyS', 'ы'], ['BracketRight', 'ъ'], ['Quote', 'э']]));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(clicked.documentElement.lang, 'en', 'a late layout never overrides a click');
+  const linked = documentFixture();
+  initialize(linked, make({ languages: ['en-US'], keyboard: layout }, '?lang=en'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(linked.documentElement.lang, 'en', 'nor an explicit link');
 });
 
 test('static title, description, Open Graph and pressed language agree with the Russian no-script page', () => {
@@ -137,7 +178,7 @@ test('English selection survives initialization and URL history without losing t
   const listeners = {};
   const browser = {
     location: new URL('https://example.test/gipny-i2p/?campaign=local#browser'),
-    navigator: { languages: ['en-US'] },
+    navigator: { languages: ['ru-RU'] },
     history: { replaceState(_state, _title, url) { browser.location = new URL(url); } },
     addEventListener(name, callback) { listeners[name] = callback; },
   };
@@ -191,12 +232,13 @@ test('local resources and section links work below a GitHub project prefix', asy
   }
 });
 
-test('build publishes only the four static public files, preserving their bytes', async () => {
+test('build publishes only the static public files and the app screenshots, preserving their bytes', async () => {
   const output = await mkdtemp(resolve(tmpdir(), 'gipny-site-test-'));
   try {
     await build(output);
     assert.deepEqual((await readdir(output)).sort(), ['assets', 'index.html', 'main.js', 'styles.css']);
-    assert.deepEqual(await readdir(resolve(output, 'assets')), ['logo.svg']);
+    assert.deepEqual((await readdir(resolve(output, 'assets'))).sort(), ['logo.svg', 'screens']);
+    assert.deepEqual((await readdir(resolve(output, 'assets/screens'))).sort(), ['chat-en-desktop.webp', 'chat-en-mobile.webp', 'chat-ru-desktop.webp', 'chat-ru-mobile.webp']);
     for (const file of publicFiles) assert.deepEqual(await readFile(resolve(output, file)), await readFile(resolve(root, file)));
     await assert.rejects(build(root), /must differ/);
   } finally { await rm(output, { recursive: true, force: true }); }

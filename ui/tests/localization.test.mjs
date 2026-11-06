@@ -133,6 +133,12 @@ test('locale choice respects saved preferences and handles unavailable storage',
   assert.equal(ui.detectLang(null, ['ru-RU']), 'ru');
   assert.equal(ui.detectLang(null, ['de-DE']), 'en');
   assert.equal(ui.detectLang('invalid', []), 'en');
+  assert.equal(ui.detectLang(null, ['en-US', 'ru-RU']), 'ru', 'any preferred Russian locale');
+  assert.equal(ui.detectLang(null, ['uk-UA', 'be-BY']), 'en', 'other Cyrillic locales are not Russian');
+  assert.equal(ui.detectLang(null, ['en-US'], true), 'ru', 'a Russian keyboard layout');
+  assert.equal(ui.detectLang('en', ['ru-RU'], true), 'en', 'an explicit choice wins');
+  assert.equal(ui.isRussianLayout('йцукенгшщзхъфывапролджэячсмитьбю'.split('')), true);
+  assert.equal(ui.isRussianLayout('йцукенгшщзхїфівапролджєячсмитьбю'.split('')), false);
   const old = win.localStorage.setItem;
   win.localStorage.setItem = () => { throw new Error('storage disabled'); };
   assert.doesNotThrow(() => setLang('ru'));

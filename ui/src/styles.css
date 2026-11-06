@@ -2728,7 +2728,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
 .network-ambient-lines i { position: absolute; top: 0; left: -32%; width: 32%; height: 2px; background: linear-gradient(90deg, transparent, var(--success), transparent); opacity: .5; animation: network-pass 5s ease-in-out infinite; }
 .network-ambient-lines i:nth-child(2) { animation-delay: 1.7s; }
 .network-ambient-lines i:nth-child(3) { animation-delay: 3.4s; }
-.network-ambient-label { position: absolute; right: 16px; bottom: 7px; max-width: calc(100% - 32px); padding: 3px 8px; border-radius: 5px; color: var(--text-dim); background: var(--surface); font-size: 10px; line-height: 1.4; opacity: .9; }
+.network-ambient-label { position: absolute; right: 16px; bottom: calc(var(--composer-height, 0px) + 7px); max-width: calc(100% - 32px); padding: 3px 8px; border-radius: 5px; color: var(--text-dim); background: var(--surface); font-size: 10px; line-height: 1.4; opacity: .9; }
 .network-ambient.is-retrying .network-ambient-lines i { animation-duration: 8s; }
 .network-ambient.is-offline .network-ambient-lines { display: none; }
 @keyframes network-pass { 0% { transform: translateX(0); } 100% { transform: translateX(420%); } }
@@ -2744,7 +2744,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .salon-wood { width: 18%; opacity: .55; }
   .salon-caption { margin-bottom: 25px; }
   .salon-emblem { margin-top: 12px; }
-  .network-ambient-label { font-size: 9px; right: 8px; bottom: 3px; }
+  .network-ambient-label { font-size: 9px; right: 8px; bottom: calc(var(--composer-height, 0px) + 3px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .salon-dial::before, .network-ambient-lines i, .boot-active .boot-cursor { animation: none; }

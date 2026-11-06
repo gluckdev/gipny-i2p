@@ -146,7 +146,8 @@ async function startChrome() {
   await cdp.call('Page.enable');
   await cdp.call('Page.setLifecycleEventsEnabled', { enabled: true });
   await cdp.call('Runtime.enable');
-  await cdp.call('Emulation.setLocaleOverride', { locale: 'en-US' });
+  // A Russian system locale: the page must pick Russian by itself (no ?lang=).
+  await cdp.call('Emulation.setLocaleOverride', { locale: 'ru-RU' });
 }
 
 async function ready(language) {

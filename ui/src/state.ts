@@ -1082,12 +1082,16 @@ export class Store {
       ? await Api.listMessages(target.id, 200, oldest)
       : await Api.listGroupMessages(target.id, 200, oldest);
     if (!this.acceptsContent(target, epoch)) return false;
-    if (more.length === 0) return false;
-    more.reverse();
+    // Only rows older than the window and not already in it: an overlapping
+    // answer must neither duplicate messages nor keep "more" coming forever.
+    const known = new Set(existing.map((message) => message.id));
+    const older = more.filter((message) => message.id < oldest && !known.has(message.id));
+    if (older.length === 0) return false;
+    older.reverse();
     this.messages.update((m) => {
       const n = new Map(m);
       const cur = n.get(key) ?? [];
-      n.set(key, [...more, ...cur].slice(0, Store.VISIBLE_MESSAGES).map((message) => this.redactDeleted(message)));
+      n.set(key, [...older, ...cur].slice(0, Store.VISIBLE_MESSAGES).map((message) => this.redactDeleted(message)));
       return n;
     });
     return true;

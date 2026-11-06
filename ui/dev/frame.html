@@ -11,6 +11,9 @@
   </head>
   <body>
     <div id="app"></div>
+    <!-- api.ts decides it runs under Tauri when it is first imported, before
+         the mocks install their internals: mark the window as Tauri first. -->
+    <script>window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {};</script>
     <!-- Installs a mocked Tauri backend, then boots the real app. -->
     <script type="module" src="/dev/mock.ts"></script>
   </body>

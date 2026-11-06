@@ -88,6 +88,8 @@ export class ChatView extends View {
   /** The files each row was last drawn with (JSON), to skip redraws that
    *  would change nothing. */
   private drawnFiles = new Map<number, string>();
+  private composer!: HTMLElement;
+  private composerObserver: ResizeObserver | null = null;
   /** What the user typed into the inline editor, kept across re-renders. */
   private editDraft: string | undefined;
   private replyTo: Message | null = null;
@@ -423,7 +425,7 @@ export class ChatView extends View {
       this.peerNote,
       this.pinnedBanner.el,
       this.logWrap,
-      h('div', { class: 'chat-input' },
+      this.composer = h('div', { class: 'chat-input' },
         this.replyChip,
         this.fileChips,
         h('div', { class: 'chat-input-row' },
@@ -438,6 +440,15 @@ export class ChatView extends View {
         ),
       ),
     );
+
+    // The connection status floats just above the composer instead of over
+    // its controls; it reads the height from here.
+    if (typeof ResizeObserver !== 'undefined') {
+      this.composerObserver = new ResizeObserver(() => {
+        document.documentElement.style.setProperty('--composer-height', `${this.composer.offsetHeight}px`);
+      });
+      this.composerObserver.observe(this.composer);
+    }
 
     this.sub(store.messages, () => {
       const messages = store.messages.get().get(targetKey(this.target)) ?? [];
@@ -569,6 +580,8 @@ export class ChatView extends View {
     if (this.disposed) return;
     this.disposed = true;
     this.draftEpoch++;
+    this.composerObserver?.disconnect();
+    document.documentElement.style.removeProperty('--composer-height');
     ContextMenu.close();
     if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
     document.removeEventListener('paste', this.pasteHandler);

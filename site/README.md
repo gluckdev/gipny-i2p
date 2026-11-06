@@ -4,8 +4,11 @@
 
 `site/` — короткая публичная страница: что такое Gipny, что доступно,
 ограничения безопасности, скачивание и переход к WASM-клиенту.
-Это не сервер переписки. Основной язык — русский, английский переключается
-в интерфейсе и имеет тот же набор ключей.
+Это не сервер переписки. Языки RU и EN с одинаковым набором ключей: русский
+выбирается для русской локали или русской раскладки клавиатуры, иначе английский;
+`?lang=` и переключатель на странице важнее. Без JavaScript показывается русский.
+Секция «Как это выглядит» берёт снимки из `assets/screens/` (демонстрационный
+профиль `ui/dev/demo.ts`, `?demo=1`); снимок подбирается под язык через `:lang()`.
 
 - `index.html`: семантическая разметка, fallback-текст и ссылка `./app/browser.html`.
 - `main.js`: RU/EN тексты, выбор языка и определение ОС/архитектуры локально,
@@ -46,7 +49,10 @@ WSS через CDN и WebRTC через ICE/TURN объясняются отде
 
 `site/` is the short public landing page: purpose, available features, security
 limits, downloads and entry to the WASM messenger. It is not a messaging server.
-Russian is primary; English uses the same translation keys.
+RU and EN share the same keys: Russian for a Russian locale or keyboard layout,
+otherwise English; `?lang=` and the page switch win. Without JavaScript the page
+is Russian. App screenshots in `assets/screens/` come from the demo profile
+(`ui/dev/demo.ts`, `?demo=1`) and follow the page language through `:lang()`.
 
 `index.html` contains markup and `./app/browser.html`; `main.js` handles language
 and copy, and detects the device locally without sending that information;

@@ -6,6 +6,12 @@ An open-source messenger with a local identity, end-to-end encryption and
 I2P delivery, without registering a phone number or email. This is an I2P fork
 of gipny; the [migration history](MIGRATION-i2p.md) is retained separately.
 
+<p align="center">
+  <img src="site/assets/screens/chat-en-desktop.webp" width="74%" alt="Gipny on a desktop: chats with folders, a contact request, a file, a copy notice and a deletion awaiting confirmation">
+  <img src="site/assets/screens/chat-en-mobile.webp" width="22%" alt="The same chat on a phone">
+</p>
+<p align="center"><sub>A demo profile: the names and messages are made up.</sub></p>
+
 ## Status
 
 The source version is **0.5.0-rc3**. A source version, a passing build,
