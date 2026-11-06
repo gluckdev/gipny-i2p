@@ -1,6 +1,6 @@
 # gipny-i2p
 
-[Русская документация](README.md) · [Downloads](https://github.com/gluckdev/gipny-i2p/releases) · [Security](SECURITY.md) · [Documentation](docs/README.md)
+[Русская документация](README.md) · [Website (GitHub Pages)](https://gluckdev.github.io/gipny-i2p/) · [Downloads](https://github.com/gluckdev/gipny-i2p/releases) · [Security](SECURITY.md) · [Documentation](docs/README.md)
 
 <p align="center"><img src="docs/assets/banner.svg" alt="gipny-i2p" width="100%" /></p>
 
