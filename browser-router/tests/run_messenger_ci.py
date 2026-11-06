@@ -264,7 +264,9 @@ def main():
             bob_contact = next(c['id'] for c in rpc(bob, 'list_contacts') if c['sign_pk'] == alice_card['sign_pk'])
             wait_for(lambda: any(row['body'] == '' for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'file-only introduction retained')
             received_intro = next(row['id'] for row in rpc(bob, 'list_messages', contactId=bob_contact) if row['body'] == '')
-            if rpc(bob, 'list_attachments', messageId=received_intro) or not any(item['status'] == 'offered' for item in rpc(bob, 'files_progress', messageId=received_intro)):
+            # The UI-facing status of an offer held until acceptance is
+            # 'waiting' (the internal transfer state is 'offered').
+            if rpc(bob, 'list_attachments', messageId=received_intro) or not any(item['status'] == 'waiting' for item in rpc(bob, 'files_progress', messageId=received_intro)):
                 raise RuntimeError('unaccepted request allocated a file or lost its offer')
             if any(row['id'] == introduction and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)):
                 raise RuntimeError('unaccepted introduction was acknowledged')

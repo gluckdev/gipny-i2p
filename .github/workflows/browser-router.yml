@@ -263,6 +263,7 @@ jobs:
             browser-router/pkg/*.js
             browser-router/pkg/*.wasm
             browser-router/pkg/package.json
+            browser-router/pkg/snippets/
             browser-router/tests/bootstrap-page/
             browser-router/LICENSE-emissary
             browser-router/emissary-provenance.json
