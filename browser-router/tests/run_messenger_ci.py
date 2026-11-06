@@ -380,28 +380,30 @@ def main():
             for client in clients:
                 rpc(client, 'vault_lock')
             wait_for(lambda: evaluate(alice, 'navigator.serviceWorker.ready.then(()=>!!navigator.serviceWorker.controller)'), 20, 'offline shell installed')
+            # Names the offending cache: keys and paths here are public.
             cache_boundary = evaluate(alice, r'''(async()=>{
               let configuration=false, peers=false;
+              const paths=requests=>requests.map(request=>new URL(request.url).pathname).join(',').slice(0,200);
               for(const key of await caches.keys()) {
                 const cache=await caches.open(key), requests=await cache.keys();
                 if(key==='gipny-public-network-v1') {
-                  if(requests.length!==1 || !requests[0].url.endsWith('/browser-config.json')) return false;
+                  if(requests.length!==1 || !requests[0].url.endsWith('/browser-config.json')) return key+' holds '+paths(requests);
                   configuration=true;
                 } else if(key==='gipny-public-netdb-v1') {
-                  if(requests.length!==1 || !/\/__gipny-public-netdb\/v1\/[0-9a-f]{64}$/i.test(new URL(requests[0].url).pathname)) return false;
-                  if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return false;
+                  if(requests.length!==1 || !/\/__gipny-public-netdb\/v1\/[0-9a-f]{64}$/i.test(new URL(requests[0].url).pathname)) return key+' holds '+paths(requests);
+                  if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return key+' oversize';
                   peers=true;
                 } else if(key==='gipny-public-netdb-live-v1') {
                   // Optional until the router first saves what it learned.
-                  if(requests.length!==1 || new URL(requests[0].url).pathname!=='/__gipny-public-netdb/live/v1') return false;
-                  if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return false;
-                } else if(!key.startsWith('gipny-shell-')) return false;
-                else if(requests.some(request=>/browser-config|snapshot|vault|attachments/.test(new URL(request.url).pathname))) return false;
+                  if(requests.length!==1 || new URL(requests[0].url).pathname!=='/__gipny-public-netdb/live/v1') return key+' holds '+paths(requests);
+                  if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return key+' oversize';
+                } else if(!key.startsWith('gipny-shell-')) return 'unexpected cache '+key.slice(0,80);
+                else if(requests.some(request=>/browser-config|snapshot|vault|attachments/.test(new URL(request.url).pathname))) return key+' holds '+paths(requests.filter(request=>/browser-config|snapshot|vault|attachments/.test(new URL(request.url).pathname)));
               }
-              return configuration && peers;
+              return !configuration ? 'no configuration cache' : !peers ? 'no netDb snapshot cache' : 'ok';
             })()''')
-            if not cache_boundary:
-                raise RuntimeError('public network caches missing or mixed with application/private storage')
+            if cache_boundary != 'ok':
+                raise RuntimeError('public network caches missing or mixed with application/private storage: ' + str(cache_boundary)[:300])
             # Stop the actual web server: an emulated network label alone does
             # not prove that service-worker/worker assets work offline.
             server.shutdown(); server.server_close(); server = None
