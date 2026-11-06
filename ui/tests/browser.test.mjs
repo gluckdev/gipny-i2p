@@ -781,6 +781,61 @@ test('rc2 snapshots load: number-array ciphertext, boolean progress and plaintex
   assert.deepEqual(state.closedFiles, []); assert.deepEqual(state.initials, {});
 });
 
+/** In-memory OPFS directory whose next handle open can be made to hang. */
+function fakeOpfs() {
+  const files = new Map(), stats = { opens: 0, open: 0 }, late = [];
+  let hang = false;
+  const access = name => {
+    stats.opens++; stats.open++;
+    const bytes = () => files.get(name) ?? new Uint8Array();
+    return {
+      read(buf, { at }) { const n = Math.max(0, Math.min(buf.length, bytes().length - at)); buf.set(bytes().subarray(at, at + n)); return n; },
+      write(buf, { at }) { let data = bytes(); if (data.length < at + buf.length) { const grown = new Uint8Array(at + buf.length); grown.set(data); data = grown; } data.set(buf, at); files.set(name, data); return buf.length; },
+      truncate(size) { const data = new Uint8Array(size); data.set(bytes().subarray(0, size)); files.set(name, data); },
+      flush() {}, getSize: () => bytes().length, close() { stats.open--; },
+    };
+  };
+  const directory = {
+    async getFileHandle(name, { create } = {}) {
+      if (!files.has(name)) { if (!create) throw new DOMException('missing', 'NotFoundError'); files.set(name, new Uint8Array()); }
+      return { createSyncAccessHandle() {
+        if (!hang) return Promise.resolve(access(name));
+        hang = false;
+        return new Promise(resolve => late.push(() => resolve(access(name))));
+      } };
+    },
+    async removeEntry(name) { files.delete(name); },
+    async *entries() { for (const name of files.keys()) yield [name, { kind: 'file' }]; },
+  };
+  return { profile: { getDirectoryHandle: async () => directory }, stats, late, hangNext: () => { hang = true; } };
+}
+const plainParts = {
+  new_attachment_key: () => new Uint8Array(72),
+  seal_attachment_part: (_id, _key, _index, data) => { const out = new Uint8Array(data.length + 40); out.set(data, 40); return out; },
+  open_attachment_part: (_id, _key, _index, data) => data.slice(40),
+};
+
+test('attachment parts share one handle; a hung open is retryable and never blocks the file', async () => {
+  const fake = fakeOpfs();
+  const store = await ui.FileStorage.open(fake.profile, plainParts, { open: 30, idle: 40 });
+  const file = { id: 'ab'.repeat(32), key: '00'.repeat(72), size: 10, chunk_size: 4 };
+  await store.write(file, 0, new Uint8Array([1, 2, 3, 4]));
+  await store.write(file, 1, new Uint8Array([5, 6, 7, 8]));
+  await store.write(file, 2, new Uint8Array([9, 10]));
+  assert.deepEqual([...await store.read(file, 1)], [5, 6, 7, 8]);
+  assert.equal(fake.stats.opens, 1, 'consecutive parts reuse the open handle');
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(fake.stats.open, 0, 'an idle handle is closed');
+  fake.hangNext();
+  await assert.rejects(store.read(file, 0), error => error instanceof ui.StorageBusy);
+  assert.deepEqual([...await store.read(file, 2)], [9, 10], 'later operations do not wait behind the hung open');
+  fake.late.forEach(open => open());
+  await new Promise(resolve => setTimeout(resolve, 0));
+  store.close();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(fake.stats.open, 0, 'the late handle and the live one are both closed');
+});
+
 test('log lines carry no keys or addresses; unaccepted contacts get bounded inline storage', () => {
   const line = ui.scrubLog(`peer ${'ab'.repeat(32)} via ${'a'.repeat(52)}.b32.i2p dest ${'A~'.repeat(260)} contact 7`);
   assert.doesNotMatch(line, /abab|aaaa|A~A~/);

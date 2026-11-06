@@ -9,7 +9,7 @@ import {
   fileWorkDue, finishFileVerification, forgetFlight, inlinePart, isRequestContent, offerOutgoingFile, pendingInlineAllowed, pruneFiles, queueFileChunks, receiveFileControl,
   repeatFileReceipt, resumeFiles, settleDeposit, validateFilePayload,
 } from './files';
-import { FileStorage, FILE_PREVIEW_LIMIT, MAX_FILE_BYTES } from './file-storage';
+import { FileStorage, FILE_PREVIEW_LIMIT, MAX_FILE_BYTES, StorageBusy } from './file-storage';
 import { ActionLog, LOG_LOCATION } from './log';
 import {
   allocate, base64, canSendControls, clearHistory, dueLetters, expireHistory, expireResends, fromBase64, hex, inHistory, redactMessage, loadState, newState, payload, pruneMessageOutbox,
@@ -310,7 +310,7 @@ export class BrowserBackend {
     const parts = outbox.filter(item => item.file);
     const flight = this.state.transfers.reduce((n, file) => n + (!file.incoming && file.status === 'sending' ? Object.keys(file.flight ?? {}).length : 0), 0);
     stalled.push(`slots ${this.sending.size}/${SEND_STREAMS}`, `outbox ${outbox.length} (parts ${parts.length}, sealed ${parts.filter(item => item.blob !== null).length})`,
-      `due ${dueLetters(this.state, now, 8, this.sending).length}`, `parts in flight ${flight}`, `last deposit ${this.lastDeposit ? age(this.lastDeposit) : 'never'}`);
+      `due ${dueLetters(this.state, now, 8, this.sending).length}`, `parts in flight ${flight}`, `no deposit for ${age(this.lastDeposit)}`);
     this.stallReported = now; this.stallReports++;
     this.log.info('stall', `${stalled.join(' · ')}${this.pumping ? ' · outbox pass running' : ''}`);
   }
@@ -377,6 +377,8 @@ export class BrowserBackend {
       this.sweepTimer = setInterval(() => { this.reportStalls(); if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
       this.boot('vault', 'done', 'Profile opened; keys remain in the WASM worker');
       const attempt = ++this.generation;
+      // "No deposit" stalls count from the network start, not the epoch.
+      this.lastDeposit = Date.now(); this.stallReports = 0;
       void this.startNetwork(attempt);
       return null;
     } catch (error) {
@@ -533,6 +535,8 @@ export class BrowserBackend {
         step('read');
         try { part = await this.outgoingPart(item); } catch (error) {
           if (attempt !== this.generation) return;
+          // A storage that did not open in time is retried, not a lost file.
+          if (error instanceof StorageBusy) throw error;
           const events: CoreEvent[] = [];
           await this.transact(state => failOutgoingFile(state, this.identity!, item.peer, item.file!.id, events));
           events.forEach(event => this.event(event));

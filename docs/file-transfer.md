@@ -73,6 +73,9 @@ multipart-байты принимаются после согласия. Веб-
 новые части не ждут самой долгой отправки. Релей, молчащий 60 секунд после
 открытия потока, считается мёртвым: поток закрывается, письмо уходит повтором по
 новому, не дожидаясь транспортных таймаутов записи и чтения (60 + 120 секунд).
+Файл в OPFS открывается один раз на серию частей и закрывается после 10 секунд
+простоя; открытие, не завершившееся за 10 секунд, — временная ошибка: часть
+уходит повтором, а остальные операции с файлом не ждут зависшего вызова.
 Служебные подтверждения имеют приоритет.
 Шифрование и фиксация состояния ratchet остаются последовательными.
 Это не переключение на прямой IP-транспорт: части по-прежнему идут через I2P.
@@ -202,7 +205,10 @@ stream holds only its own slot: a freed slot takes the next letter at once, so
 receipts and further parts never wait for the slowest send. A relay silent for
 60 s after the stream opened is treated as dead: the stream is closed and the
 letter goes again on a fresh one instead of waiting out the transport write and
-read timeouts (60 + 120 s). File parts continue through I2P.
+read timeouts (60 + 120 s). An OPFS file is opened once per run of parts and
+closed after 10 s idle; an open that does not finish within 10 s is a retryable
+error, so the part goes again and later operations on the file never wait
+behind the hung call. File parts continue through I2P.
 
 Browser retransmission and queue bounds:
 

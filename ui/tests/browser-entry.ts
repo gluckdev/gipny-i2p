@@ -19,5 +19,5 @@ export { ProfileSelect } from '../src/profile';
 export { AuthBooting } from '../src/auth';
 export * from '../src/browser-core/files';
 export { loadState as loadBrowserState } from '../src/browser-core/model';
-export { FileStorage, availableFileBytes, storedSize } from '../src/browser-core/file-storage';
+export { FileStorage, StorageBusy, availableFileBytes, storedSize } from '../src/browser-core/file-storage';
 export { validateNetworkConfiguration, loadNetworkConfiguration } from '../src/browser-core/network-config';
