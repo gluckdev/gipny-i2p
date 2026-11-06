@@ -2110,7 +2110,7 @@ async fn get_auto_update(ctx: State<'_, AppCtx>) -> Result<bool, String> {
     Ok(core_of(&ctx).await?.auto_update_enabled())
 }
 
-/// Interface data kept in the vault: `contact_folders`, `avatars`, `chat_prefs`.
+/// Interface data kept in the vault: `contact_folders`, `avatars`, `chat_prefs`, `exfiltration_receipts`.
 #[tauri::command]
 async fn get_ui_data(key: String, ctx: State<'_, AppCtx>) -> Result<Option<String>, String> {
     core_of(&ctx).await?.ui_data(&key).map_err(err)

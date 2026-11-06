@@ -1,4 +1,5 @@
 import { t as tr } from './i18n';
+import { Api } from './api';
 import type { Message } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey } from './state';
@@ -122,7 +123,15 @@ export function messageMenuItems(
     items.push({
       label: tr('common.copy'),
       onClick: () => {
-        navigator.clipboard.writeText(m.body).catch(() => store.showToast(tr('actions.copy_failed'), true));
+        navigator.clipboard.writeText(m.body).then(() => {
+          void Api.recordExfiltration({
+            message_id: m.id,
+            contact_id: target.kind === 'contact' ? (target.id as number) : null,
+            kind: 'text_copied',
+            detail: m.body.length > 60 ? m.body.slice(0, 57) + '...' : m.body,
+            timestamp: Date.now(),
+          });
+        }).catch(() => store.showToast(tr('actions.copy_failed'), true));
       },
     });
   }

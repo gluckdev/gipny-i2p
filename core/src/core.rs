@@ -67,7 +67,7 @@ const SETTING_AUTO_UPDATE: &str = "auto_update";
 /// What the interface keeps in the vault for itself (JSON it does not
 /// interpret here): contact folders, chosen avatars, chat preferences such as
 /// the disappearing-message timer. Only these keys.
-const UI_DATA_KEYS: &[&str] = &["contact_folders", "avatars", "chat_prefs"];
+const UI_DATA_KEYS: &[&str] = &["contact_folders", "avatars", "chat_prefs", "exfiltration_receipts"];
 const MAX_UI_DATA_BYTES: usize = 64 * 1024;
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;

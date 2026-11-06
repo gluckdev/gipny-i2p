@@ -332,6 +332,14 @@ export type CoreEvent =
 
 export interface PendingAttachment { name: string; data: string; }
 
+export interface ExfiltrationReceipt {
+  message_id: number;
+  contact_id?: number | null;
+  kind: 'attachment_saved' | 'text_copied' | 'screenshot_taken';
+  detail?: string;
+  timestamp: number;
+}
+
 export class Api {
   static listProfiles(): Promise<string[]> {
     return invoke('list_profiles');
@@ -795,6 +803,33 @@ export class Api {
   static clearMessageHistory(preserveSaved = false): Promise<number> {
     return invoke('clear_message_history', preserveSaved ? { preserveSaved: true } : undefined);
   }
+  /** Exfiltration receipts kept in the vault: attachment saves, copied text fragments, screenshots. */
+  static async getExfiltrations(): Promise<Record<number, ExfiltrationReceipt[]>> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'exfiltration_receipts' })) ?? '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<number, ExfiltrationReceipt[]>) : {};
+    } catch {
+      return {};
+    }
+  }
+  static async recordExfiltration(receipt: ExfiltrationReceipt): Promise<void> {
+    try {
+      const all = await Api.getExfiltrations();
+      const list = all[receipt.message_id] || [];
+      list.push(receipt);
+      all[receipt.message_id] = list;
+      await invoke('set_ui_data', { key: 'exfiltration_receipts', json: JSON.stringify(all) });
+      for (const listener of Api.exfiltrationListeners) listener(receipt);
+    } catch (e) {
+      console.error('[recordExfiltration]', e);
+    }
+  }
+  private static exfiltrationListeners = new Set<(r: ExfiltrationReceipt) => void>();
+  static onExfiltration(callback: (r: ExfiltrationReceipt) => void): () => void {
+    Api.exfiltrationListeners.add(callback);
+    return () => { Api.exfiltrationListeners.delete(callback); };
+  }
+
   static getDhtStatus(): Promise<DhtStatus> {
     return invoke('get_dht_status');
   }

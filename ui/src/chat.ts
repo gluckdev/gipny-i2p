@@ -3,7 +3,7 @@ import { t as tr } from './i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { downloadBrowserFile, forgetBrowserFiles } from './browser-files';
 import { Api, isTauri, usesBrowserCore, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
-import type { Message, LinkStats, ChatPrefs } from './api';
+import type { Message, LinkStats, ChatPrefs, ExfiltrationReceipt } from './api';
 import type { Store, ChatTarget } from './state';
 import { targetKey, sameTarget, pasteFileToTempPath } from './state';
 import { icon } from './icons';
@@ -78,6 +78,9 @@ export class ChatView extends View {
   private replyTo: Message | null = null;
   private replyChip: HTMLElement;
   private pasteHandler: (e: ClipboardEvent) => void;
+  private copyHandler: (e: ClipboardEvent) => void;
+  private keyHandler: (e: KeyboardEvent) => void;
+  private exfiltrations: Record<number, ExfiltrationReceipt[]> = {};
   private typingActive = false;
   private typingStopTimer: number | null = null;
   private typingHeader: HTMLElement;
@@ -232,6 +235,10 @@ export class ChatView extends View {
     });
     this.pasteHandler = (e: ClipboardEvent) => this.handlePaste(e);
     document.addEventListener('paste', this.pasteHandler);
+    this.copyHandler = (e: ClipboardEvent) => this.handleCopy(e);
+    document.addEventListener('copy', this.copyHandler);
+    this.keyHandler = (e: KeyboardEvent) => this.handleKey(e);
+    window.addEventListener('keydown', this.keyHandler);
 
     this.fileChips = h('div', { class: 'msg-attachments', style: { marginTop: '0' } });
     this.replyChip = h('div', { class: 'reply-chip', style: { display: 'none' } });
@@ -357,7 +364,20 @@ export class ChatView extends View {
       this.prefsRevision++;
       this.updateHistoryPrompt(prefs);
     }));
+    this.subs.push(Api.onExfiltration((receipt) => {
+      if (this.disposed) return;
+      const list = this.exfiltrations[receipt.message_id] || [];
+      list.push(receipt);
+      this.exfiltrations[receipt.message_id] = list;
+      this.renderLog();
+    }));
     void this.loadPrefs();
+    void Api.getExfiltrations().then((all) => {
+      if (!this.disposed) {
+        this.exfiltrations = all;
+        this.renderLog();
+      }
+    });
 
     // What the channel is doing, in the user's own terms. Groups have no
     // single channel — each member collects somewhere else — so this is a
@@ -562,6 +582,8 @@ export class ChatView extends View {
     ContextMenu.close();
     if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
     document.removeEventListener('paste', this.pasteHandler);
+    document.removeEventListener('copy', this.copyHandler);
+    window.removeEventListener('keydown', this.keyHandler);
     if (this.typingStopTimer != null) window.clearTimeout(this.typingStopTimer);
     if (this.typingActive) {
       const cid = this.target.kind === 'contact' ? (this.target.id as number) : null;
@@ -750,6 +772,51 @@ export class ChatView extends View {
     this.renderFileChips();
   }
 
+  private handleCopy(_e: ClipboardEvent): void {
+    if (this.disposed) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const text = sel.toString().trim();
+    if (!text) return;
+    const anchor = sel.anchorNode;
+    const msgEl = anchor instanceof HTMLElement ? anchor.closest('.msg[data-mid]') : anchor?.parentElement?.closest('.msg[data-mid]');
+    if (msgEl) {
+      const midStr = msgEl.getAttribute('data-mid');
+      const mid = midStr ? Number(midStr) : null;
+      if (mid && Number.isFinite(mid)) {
+        void Api.recordExfiltration({
+          message_id: mid,
+          contact_id: this.target.kind === 'contact' ? (this.target.id as number) : null,
+          kind: 'text_copied',
+          detail: text.length > 60 ? text.slice(0, 57) + '...' : text,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }
+
+  private handleKey(e: KeyboardEvent): void {
+    if (this.disposed) return;
+    const isPrintScreen = e.key === 'PrintScreen' || (e.key === 's' && e.metaKey && e.shiftKey) || (e.key === '4' && e.metaKey && e.shiftKey) || (e.key === 'S' && e.shiftKey && (e.metaKey || e.ctrlKey));
+    if (isPrintScreen) {
+      // Find visible messages in viewport
+      const visibleMsgs = this.log.querySelectorAll('.msg[data-mid]');
+      if (visibleMsgs.length > 0) {
+        const lastEl = visibleMsgs[visibleMsgs.length - 1];
+        const midStr = lastEl?.getAttribute('data-mid');
+        const mid = midStr ? Number(midStr) : null;
+        if (mid && Number.isFinite(mid)) {
+          void Api.recordExfiltration({
+            message_id: mid,
+            contact_id: this.target.kind === 'contact' ? (this.target.id as number) : null,
+            kind: 'screenshot_taken',
+            timestamp: Date.now(),
+          });
+        }
+      }
+    }
+  }
+
   private renderedKey: string = '';
   private renderedIds: number[] = [];
   private renderedSignatures: Map<number, string> = new Map();
@@ -758,7 +825,8 @@ export class ChatView extends View {
     const pinned = this.isPinned(m) ? '1' : '0';
     const btns = m.buttons ? JSON.stringify(m.buttons) : '';
     const consoleFrame = m.console ? JSON.stringify(m.console) : '';
-    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${m.delete_pending}|${this.editingId === m.id ? 'e' : ''}`;
+    const exfil = this.exfiltrations[m.id]?.length ?? 0;
+    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${m.delete_pending}|${this.editingId === m.id ? 'e' : ''}|${exfil}`;
   }
 
   private renderLog(): void {
@@ -992,6 +1060,26 @@ export class ChatView extends View {
       () => this.openForward(m),
       () => { void this.deleteForBoth(m); },
     ));
+    const exfilList = this.exfiltrations[m.id];
+    if (exfilList && exfilList.length > 0) {
+      const exfilBox = h('div', { class: 'msg-exfiltration-notices' });
+      for (const ex of exfilList) {
+        let label = '';
+        let iconChar = '⚠️';
+        if (ex.kind === 'attachment_saved') {
+          iconChar = '💾';
+          label = tr('chat.attachment_saved_by_peer', { name: ex.detail || '' });
+        } else if (ex.kind === 'text_copied') {
+          iconChar = '📋';
+          label = tr('chat.text_copied_by_peer', { text: ex.detail || '' });
+        } else if (ex.kind === 'screenshot_taken') {
+          iconChar = '📸';
+          label = tr('chat.screenshot_taken_by_peer');
+        }
+        exfilBox.appendChild(h('div', { class: 'msg-exfil-badge' }, `${iconChar} ${label}`));
+      }
+      wrap.appendChild(exfilBox);
+    }
     this.loadAttachmentsFor(m.id, wrap);
     if (m.buttons && m.buttons.length > 0 && !m.outgoing) {
       const btns = h('div', { class: 'msg-buttons' });
@@ -1339,6 +1427,16 @@ export class ChatView extends View {
       if (!dest || this.disposed) return;
       await Api.saveAttachment(id, dest);
       this.store.showToast(tr('chat.saved'));
+      const msgId = this.imageMessages.get(id) || [...this.attachmentCache.entries()].find(([_, atts]) => atts.some(a => a.id === id))?.[0];
+      if (msgId) {
+        void Api.recordExfiltration({
+          message_id: msgId,
+          contact_id: this.target.kind === 'contact' ? (this.target.id as number) : null,
+          kind: 'attachment_saved',
+          detail: name,
+          timestamp: Date.now(),
+        });
+      }
     } catch (e) {
       this.store.showToast(tr('chat.save_failed', { error: errorText(e) }), true);
     }
