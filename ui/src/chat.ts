@@ -371,7 +371,7 @@ export class ChatView extends View {
       h('button', { class: 'btn btn-sm', type: 'button', onClick: () => void this.saveHistory(true) }, tr('chat.history_save')));
     this.peerHistoryNote = h('div', { class: 'chat-notice peer-history-note hidden', role: 'status' });
     // Message expiry and the peer's explicit history choice are separate.
-    this.peerNote = h('div', { class: 'chat-notice hidden' },
+    this.peerNote = h('div', { class: 'chat-notice peer-timer-note hidden' },
       icon('lock', 13), h('span', {}, tr('chat.peer_keeps')));
     this.sub(store.messages, () => this.updatePeerNote(), true);
     this.sub(store.contacts, () => this.updatePeerNote(), false);

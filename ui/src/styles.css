@@ -2452,6 +2452,10 @@ select.input { width: 100%; text-overflow: ellipsis; }
 }
 
 .history-prompt, .peer-history-note { color: var(--text); background: var(--surface); border-bottom: none; }
+/* Information, not a warning: most contacts write without a timer, so this
+   line shows in most chats and must stay quiet. */
+.chat-notice.peer-timer-note { display: flex; align-items: center; gap: 6px; padding: 4px 16px; color: var(--text-dim); background: transparent; border-bottom: none; font-size: 11px; }
+.chat-notice.peer-timer-note svg { flex: 0 0 auto; opacity: .7; }
 .history-prompt { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .history-prompt > span { flex: 1 1 180px; }
 
