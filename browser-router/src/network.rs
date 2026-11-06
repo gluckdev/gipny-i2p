@@ -453,9 +453,12 @@ impl BrowserNetwork {
                 "active",
                 "Fetching NetDb bootstrap snapshot",
             );
-            let snapshot = bootstrap::fetch_snapshot(&config.snapshot_url, &config.snapshot_sha256)
-                .await
-                .map_err(|e| format!("fetch snapshot failed: {e}"))?;
+            let snapshot =
+                bootstrap::bootstrap_routers(&config.snapshot_url, &config.snapshot_sha256)
+                    .await
+                    .map_err(|e| format!("fetch snapshot failed: {e}"))?;
+            // What this session learns is kept for the next start.
+            let live = bootstrap::live_netdb(&snapshot.routers);
 
             emit_boot(
                 on_event_ref,
@@ -465,6 +468,7 @@ impl BrowserNetwork {
             );
             let (router, _events, local_info) =
                 RouterBuilder::<BrowserRuntime>::new(client_config(snapshot.routers))
+                    .with_storage(live)
                     .build()
                     .await
                     .map_err(|e| format!("RouterBuilder failed: {e:?}"))?;

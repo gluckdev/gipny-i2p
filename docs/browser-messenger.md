@@ -35,13 +35,19 @@ WebAuthn PRF можно добавить passkey; пароль сохраняй�
 старую. Авторизация моста проверяется отдельно, транспорт не меняется молча.
 Последний проверенный архив netDb хранится отдельно (до 4 МиБ); SHA-256,
 подписи, network ID и свежесть RouterInfo проверяются при каждом запуске.
+Кроме того, роутер сохраняет то, что узнал о сети за сессию: каждые 15 минут
+работы emissary отдаёт найденные RouterInfo, и полный набор (до 2048 записей,
+сначала самые свежие) пишется в отдельный публичный кэш тем же форматом архива.
+При старте сначала берётся опубликованный снапшот (его узлы есть в allowlist
+моста), затем — сохранённые записи; если снапшот недоступен, достаточно
+сохранённых. Каждая запись проверяется так же, как в снапшоте.
 
 Для повторного сетевого запуска без хостинга нужны рабочий мост, доступная I2P
 и ещё свежие записи узлов. RouterInfo старше 36 часов не принимается: наличие
 кэша не продлевает этот срок. Если кэш устарел, нужен доступный источник свежего
-bootstrap и соответствующая конфигурация. Постоянное сохранение обновляющегося
-netDb и независимое обновление bootstrap без исходного хостинга ещё требуют
-доработки. Первый запуск, обновление приложения и доверие к загружаемому коду
+bootstrap и соответствующая конфигурация. Сохранённый живой netDb продлевает
+тёплый старт, пока клиент регулярно работает (узлы переиздают свои записи), но
+не заменяет первый bootstrap. Первый запуск, обновление приложения и доверие к загружаемому коду
 остаются связаны с выбранным хостингом; обещание «вообще никаких зависимостей»
 было бы неверным. Проверка запуска и переписки с остановленным сервером страницы
 добавлена в CI; результат для новых исходников ещё не получен.
@@ -201,13 +207,19 @@ the repository does not erase local settings. Corrupt local data is rejected;
 valid new settings replace it. Bridge authorization is still checked separately,
 without an implicit transport switch. Another cache holds the
 last verified netDb archive (4 MiB maximum). Every read rechecks SHA-256, peer
-signatures, network ID and RouterInfo freshness.
+signatures, network ID and RouterInfo freshness. The router also keeps what it
+learned: every 15 minutes of uptime emissary hands over discovered RouterInfos,
+and the full set (at most 2048, newest first) is written to a separate public
+cache in the same archive format. Startup takes the published snapshot first
+(its routers are in the bridge allowlist), then the saved records; without a
+snapshot the saved records alone suffice. Each record gets the same checks.
 
 Restarting online without the host requires a working bridge, I2P and still-fresh
 peer records. RouterInfos older than 36 hours are rejected; caching does not
 extend their lifetime. An expired cache requires fresh bootstrap data and its
-matching configuration. Persisting live netDb updates and independently refreshing
-bootstrap without the original host remain future work. First launch, updates
+matching configuration. The saved live netDb keeps restarts warm while the
+client runs regularly (routers republish their records), but does not replace
+the first bootstrap. First launch, updates
 and trust in downloaded code still involve the chosen host. The CI scenario now
 stops the application server, restarts both clients and checks delivery; no new
 runtime result is available yet.

@@ -39,3 +39,26 @@ export async function saveBootstrap(digest, bytes) {
 export async function removeBootstrap(digest) {
   try { await (await caches.open(NAME)).delete(key(digest)); } catch { /* Optional cache. */ }
 }
+
+// What the router learned while running (public RouterInfos, same archive
+// format), kept separately from the published snapshot so replacing one never
+// drops the other. Rust re-verifies every record before use.
+const LIVE = 'gipny-public-netdb-live-v1';
+const liveKey = () => new URL('/__gipny-public-netdb/live/v1', globalThis.location.href).href;
+
+export async function loadLiveNetDb() {
+  try {
+    const response = await (await caches.open(LIVE)).match(liveKey());
+    if (!response) return null;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return bytes.length && bytes.length <= LIMIT ? bytes : null;
+  } catch { return null; }
+}
+
+export async function saveLiveNetDb(bytes) {
+  if (!bytes.length || bytes.length > LIMIT) return;
+  const owned = bytes.slice(); // The WASM view may detach while caches.open awaits.
+  try {
+    await (await caches.open(LIVE)).put(liveKey(), new Response(owned, { headers: { 'Content-Type': 'application/octet-stream' } }));
+  } catch { /* Optional cache: quota denial only means a colder next start. */ }
+}

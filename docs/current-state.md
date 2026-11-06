@@ -20,7 +20,7 @@ tests pass, while CI and device validation are separate evidence.
 | WSS / WebRTC Rust-мост | Только NTCP2-цели на допустимых портах, keepalive для прокси, TCP после DataChannel; unit/e2e-тесты моста пройдены локально, живые TURN/NAT — нет |
 | Pages /app/browser.html | Workflow готовит WASM-клиент; публикация требует успешного запуска main |
 | Онлайн веб-сервис | Дополнительно нужны HTTPS-хостинг, свежий netDb, доступный мост и конфигурация |
-| Повторный запуск без GitHub/хостинга | Код, публичные настройки и проверенный netDb кэшируются; свежесть RI ограничена 36 часами. Сценарий CI подготовлен, долгосрочное обновление bootstrap без хостинга ещё не завершено |
+| Повторный запуск без GitHub/хостинга | Код, публичные настройки и проверенный снапшот netDb кэшируются; браузер также сохраняет свой живой netDb (каждые 15 мин работы) и стартует с него, если снапшот недоступен. Записи старше 36 часов отвергаются, поэтому тёплый старт держится, пока клиент регулярно работает; первый запуск требует bootstrap. Сценарий CI с остановленным хостингом подготовлен |
 | WebRTC через TURN | Настройка предусмотрена; отдельные NAT/TURN, CDN и мобильные проверки обязательны |
 | Маскировка native NTCP2/SSU2 | В нативный транспорт ещё не интегрирована |
 | UPnP в desktop/Android | Включён по умолчанию с переключателем; нейтральные описание и User-Agent, метка своя для каждого шлюза, IP публикуется после проброса. Unit/fixture-тесты есть; реальные роутеры не проверены |
@@ -54,7 +54,7 @@ C++ upstream. Python и другие языки разрешены в CI и сл
 | Rust WSS / WebRTC bridge | NTCP2 targets on allowed ports only, proxy keepalive, TCP after the DataChannel opens; bridge tests pass locally, live TURN/NAT pending |
 | Pages /app/browser.html | Workflow prepares WASM; publication needs a successful main deployment |
 | Online browser service | Also needs HTTPS hosting, fresh netDb, an available bridge and configuration |
-| Restart without GitHub/hosting | Code, public settings and validated netDb are cached; RI freshness is limited to 36 hours. CI scenario prepared; long-term bootstrap refresh without hosting remains unfinished |
+| Restart without GitHub/hosting | Code, public settings and the validated netDb snapshot are cached; the browser also keeps its live netDb (every 15 minutes of uptime) and starts from it when the snapshot is unavailable. Records older than 36 hours are rejected, so warm restarts last while the client runs regularly; a first start needs bootstrap. Host-stopped CI scenario prepared |
 | TURN WebRTC | Configurable; NAT/TURN, CDN and physical mobile checks remain separate |
 | Native NTCP2/SSU2 camouflage | Not integrated into the native transport |
 | Desktop/Android UPnP | On by default with a switch; neutral description and User-Agent, per-gateway tags, IP published after a confirmed mapping. Unit/fixture tests exist; physical routers untested |

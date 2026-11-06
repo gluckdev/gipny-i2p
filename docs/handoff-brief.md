@@ -15,7 +15,8 @@ Gipny — мессенджер поверх I2P. Desktop и Android исполь
 GitHub Pages раздаёт приложение и обновления; сообщения, профиль и ключи
 обрабатываются на устройстве. Самостоятельность веб-клиента не отменяет доверия
 к загружаемому коду, потребности в I2P/мосте и свежих bootstrap-данных (RouterInfo
-не старше 36 часов). Долгосрочное обновление bootstrap без хостинга не завершено.
+не старше 36 часов). Браузер сохраняет свой живой netDb между запусками и
+стартует с него без снапшота; первый запуск по-прежнему требует bootstrap.
 
 ### Что сделано в rc3
 
@@ -45,7 +46,7 @@ GitHub Pages раздаёт приложение и обновления; соо
 Локально пройдены unit-тесты всех Rust-корней и UI/сайта. CI, живая доставка
 телефон ↔ ПК ↔ браузер, реальные NAT/TURN/IGD и crash-injection на устройстве —
 ещё нет. Открыто: Windows-захват журнала (CR-017), привязка `sign_pk` в X3DH init,
-модель владения DHT-именами, хранение live netDb для браузера.
+модель владения DHT-именами.
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
 данные можно менять без миграций; новые сообщения, ACK и состояние криптографии
@@ -77,7 +78,7 @@ and UI fixes with dead API/CSS/strings removed.
 Local unit tests pass for every Rust root and the UI/site. CI, live
 phone/PC/browser delivery, physical NAT/TURN/IGD and on-device crash injection
 are pending. Open: Windows log capture, binding `sign_pk` in X3DH inits, DHT name
-ownership and browser live-netDb persistence. Application builds belong in GitHub
+ownership. The browser now keeps its live netDb between starts. Application builds belong in GitHub
 Actions. Start with [current state](current-state.md), [documentation](README.md),
 [browser](browser-messenger.md), [files](file-transfer.md), [UPnP](upnp.md),
 [upstreams](upstreams-and-settings.md), [mirrors](site-mirrors.md),

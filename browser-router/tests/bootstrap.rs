@@ -1,4 +1,5 @@
 #![cfg(target_arch = "wasm32")]
+use emissary_core::runtime::Storage;
 use emissary_core::{
     crypto::{sha256::Sha256, SigningPrivateKey, StaticPrivateKey},
     primitives::{RouterAddress, RouterInfo},
@@ -6,11 +7,15 @@ use emissary_core::{
     Config,
 };
 use gipny_browser_router::{
-    bootstrap::{fetch_snapshot, verify_snapshot, MAX_DOWNLOAD_BYTES, MAX_TAR_BYTES},
+    bootstrap::{
+        fetch_snapshot, merge_routers, verify_archive, verify_snapshot, LiveNetDb,
+        MAX_DOWNLOAD_BYTES, MAX_TAR_BYTES,
+    },
     BrowserRuntime,
 };
 use rand::RngExt;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -192,4 +197,95 @@ async fn snapshot_fetch_enforces_http_stream_and_url_boundaries() {
             .unwrap()
             .contains("URL"));
     }
+}
+
+fn profile() -> emissary_core::Profile {
+    emissary_core::Profile {
+        is_connected: false,
+        last_activity: std::time::Duration::ZERO,
+        last_declined: None,
+        last_dial_failure: None,
+        num_accepted: 0,
+        num_connection: 0,
+        num_dial_failures: 0,
+        num_lookup_failures: 0,
+        num_lookup_no_responses: 0,
+        num_lookup_successes: 0,
+        num_rejected: 0,
+        num_selected: 0,
+        num_test_failures: 0,
+        num_test_successes: 0,
+        num_unaswered: 0,
+    }
+}
+
+fn router_id(info: &[u8]) -> String {
+    let router = emissary_core::primitives::RouterInfo::parse::<BrowserRuntime>(info).unwrap();
+    emissary_core::crypto::base64_encode(router.identity.id().to_vec())
+}
+
+#[wasm_bindgen_test]
+async fn live_netdb_keeps_learned_routers_for_the_next_start() {
+    let initial: Vec<_> = (0..16).map(|_| signed_info("8.8.8.8", 2)).collect();
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let sink = written.clone();
+    let live = LiveNetDb::new(&initial, move |archive| *sink.lock().unwrap() = archive);
+    assert_eq!(live.len(), 16);
+
+    // emissary hands over only newly discovered RouterInfos; unusable ones
+    // (private address, other network, mismatching id) are not kept.
+    let learned = signed_info("1.1.1.1", 2);
+    let private = signed_info("10.0.0.1", 2);
+    let foreign = signed_info("9.9.9.9", 3);
+    live.save_to_disk(vec![
+        (router_id(&learned), Some(learned.clone()), profile()),
+        (router_id(&private), Some(private), profile()),
+        (router_id(&foreign), Some(foreign), profile()),
+        (router_id(&initial[0]), None, profile()),
+        (
+            "not-this-router".into(),
+            Some(signed_info("1.0.0.1", 2)),
+            profile(),
+        ),
+    ]);
+    assert_eq!(live.len(), 17);
+    let archive = written.lock().unwrap().clone();
+    let restored = verify_archive(&archive, None).await.unwrap();
+    assert_eq!(restored.routers.len(), 17);
+    assert!(restored.routers.contains(&learned));
+
+    // Routers emissary drops go at the next backup.
+    live.remove_from_disk(vec![router_id(&learned)]);
+    live.save_to_disk(Vec::new());
+    let archive = written.lock().unwrap().clone();
+    assert_eq!(
+        verify_archive(&archive, None).await.unwrap().routers.len(),
+        16
+    );
+}
+
+#[wasm_bindgen_test]
+async fn startup_prefers_the_snapshot_and_falls_back_to_saved_routers() {
+    let published: Vec<_> = (0..16).map(|_| signed_info("8.8.8.8", 2)).collect();
+    let learned: Vec<_> = (0..4).map(|_| signed_info("1.1.1.1", 2)).collect();
+    let snapshot = || {
+        let bytes = archive(&published);
+        let digest = digest(&bytes);
+        async move { verify_snapshot(&bytes, &digest).await.unwrap() }
+    };
+    let saved = || {
+        let mut all = published.clone();
+        all.extend(learned.clone());
+        let bytes = archive(&all);
+        async move { verify_archive(&bytes, None).await.unwrap() }
+    };
+    // Both: the snapshot's routers first, saved ones added once each.
+    let merged = merge_routers(Some(snapshot().await), Some(saved().await)).unwrap();
+    assert_eq!(merged.routers.len(), 20);
+    assert_eq!(&merged.routers[..16], published.as_slice());
+    // Hosting gone (no snapshot): the saved routers alone still start.
+    let offline = merge_routers(None, Some(saved().await)).unwrap();
+    assert_eq!(offline.routers.len(), 20);
+    // Nothing at all is an error, not an empty router.
+    assert!(merge_routers(None, None).is_err());
 }
