@@ -7,3 +7,8 @@ i2p-embed/patches/*.patch -whitespace
 /Cargo.lock text eol=lf
 /core/relay/Cargo.lock text eol=lf
 /ui/package-lock.json text eol=lf
+
+# Vendored upstream sources are checked byte for byte against pinned hashes
+# (i2p-embed/check-source.py) on every OS: never convert their line endings,
+# but keep them readable in diffs.
+/i2p-embed/vendor/** -text diff
