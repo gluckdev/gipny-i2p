@@ -1871,7 +1871,7 @@ impl Core {
         let outcome = match self.updater.check_detailed(env!("CARGO_PKG_VERSION")).await {
             Ok(o) => o,
             Err(e) => {
-                gipny_libcore::debug_error!("[update] check err: {:?}", e);
+                eprintln!("[update] check err: {:?}", e);
                 return Err(e.into());
             }
         };
@@ -1957,7 +1957,7 @@ impl Core {
                 }
                 Err(e) => {
                     let _ = std::fs::remove_file(&apk_path);
-                    gipny_libcore::debug_error!("[update] Android APK install failed: {e}");
+                    eprintln!("[update] Android APK install failed: {e}");
                     let _ = ev.send(CoreEvent::UpdateFailed { reason: format!("APK install failed: {e}") }).await;
                     return Err(CoreError::Update(gipny_libcore::update::UpdateError::Unsupported(e)));
                 }

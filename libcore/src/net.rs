@@ -344,7 +344,7 @@ impl I2pNode {
                 self.relay_fail_count.store(0, Ordering::Relaxed);
                 crate::debug_trace!("[i2p] session rebuild succeeded; relay loop will resume on next attempt");
             }
-            Err(e) => crate::debug_error!("[i2p] session rebuild failed: {:?}", e),
+            Err(e) => eprintln!("[i2p] session rebuild failed: {:?}", e),
         }
     }
 
@@ -378,7 +378,7 @@ impl I2pNode {
             }
             Err(e) => {
                 self.hops.store(previous, Ordering::Relaxed);
-                crate::debug_error!("[i2p] could not rebuild at {hops} hops, staying at {previous}: {e:?}");
+                eprintln!("[i2p] could not rebuild at {hops} hops, staying at {previous}: {e:?}");
                 Err(e)
             }
         }

@@ -83,6 +83,7 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
 .section-heading { max-width: 650px; margin-bottom: 39px; }
 .section-heading h2 { margin-top: 14px; }
 .principle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+.principle-grid + .principle-grid { margin-top: 36px; padding-top: 36px; border-top: 1px solid var(--line); }
 .card-number { color: var(--mint); font-family: ui-monospace, monospace; font-size: .75rem; }
 .principle h3 { margin: 20px 0 14px; max-width: 260px; }
 .principle p { color: var(--muted); font-size: .9rem; line-height: 1.8; }

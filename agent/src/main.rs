@@ -86,7 +86,7 @@ fn parse_args() -> Args {
             "--cwd"     => a.cwd         = it.next().map(PathBuf::from),
             "--timeout" => a.timeout_secs = it.next().and_then(|s| s.parse().ok()),
             "--help" | "-h" => usage(),
-            other => { gipny_libcore::debug_error!("unknown flag: {other}"); usage(); }
+            other => { eprintln!("unknown flag: {other}"); usage(); }
         }
     }
     a
@@ -398,14 +398,14 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
         tokio::select! {
             _ = async { tokio::select! { _ = signal::ctrl_c() => {}, _ = terminate => {} } } => {
                 if stopping.is_some() {
-                    gipny_libcore::debug_error!("[agent] interrupted again — exiting now");
+                    eprintln!("[agent] interrupted again — exiting now");
                     break;
                 }
-                gipny_libcore::debug_error!("[agent] interrupted — telling the master, then exiting");
+                eprintln!("[agent] interrupted — telling the master, then exiting");
                 stopping = Some(begin_stop(&session, master_id).await);
             }
             _ = deadline => {
-                gipny_libcore::debug_error!("[agent] the master did not confirm the REVOKE in {}s — exiting anyway", REVOKE_WAIT.as_secs());
+                eprintln!("[agent] the master did not confirm the REVOKE in {}s — exiting anyway", REVOKE_WAIT.as_secs());
                 break;
             }
             ev = events.recv() => {
@@ -432,7 +432,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
                             }
                             CONSOLE_OFF => {
                                 if stopping.is_none() {
-                                    gipny_libcore::debug_error!("[agent] master switched the agent off");
+                                    eprintln!("[agent] master switched the agent off");
                                     stopping = Some(begin_stop(&session, master_id).await);
                                 }
                             }

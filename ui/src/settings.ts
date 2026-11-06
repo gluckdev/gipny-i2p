@@ -609,8 +609,8 @@ export class SettingsModal {
           );
         })(),
 
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.application_log')),
-        !usesBrowserCore() && (() => {
+        h('div', { class: 'divider-text' }, tr('settings.application_log')),
+        (() => {
           const panel = h('div', { class: 'application-log' },
             h('div', { class: 'hint' }, tr('settings.log_capability_loading')));
           const out = h('pre', { class: 'log-view hidden' });

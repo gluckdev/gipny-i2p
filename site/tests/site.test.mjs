@@ -60,6 +60,12 @@ test('both languages cover every rendered string and accessible label', () => {
   assert.match(messages.ru.browserLocal, /127\.0\.0\.1.*Chrome.*Firefox/);
   assert.match(messages.ru.browserTimeline, /эксперимент.*не выпущенный/);
   assert.match(messages.en.browserTimeline, /experiment.*not a released/);
+  assert.match(messages.ru.browserStandaloneBody, /WASM.*OPFS/);
+  assert.match(messages.en.browserStandaloneBody, /WASM.*OPFS/);
+  assert.match(messages.ru.i2pProTunnelsTitle, /Чесночная маршрутизация/);
+  assert.match(messages.en.i2pProTunnelsTitle, /Garlic routing/);
+  assert.match(messages.ru.i2pConBootstrapTitle, /холодный старт/i);
+  assert.match(messages.en.i2pConBootstrapTitle, /cold start/i);
 });
 
 test('future chat policy and contact consent are visibly planned, while current history and separate-copy limits remain explicit', () => {

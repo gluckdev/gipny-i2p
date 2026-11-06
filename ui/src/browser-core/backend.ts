@@ -3,6 +3,7 @@ import type { BootStatus, Contact, CoreEvent, GroupMember, Message, PendingAttac
 import { isValidI2pAddress } from '../contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './storage';
 import { BrowserRelay } from './relay';
+import { ActionLog, shortKey, shortAddress } from './log';
 import {
   allocate, base64, expireHistory, hex, loadState, newState, payload, pruneMessageOutbox, sameScope, unbase64, unhex, visible,
   type BrowserState, type Outbox, type PublicIdentity, type StoredMessage, type WireGroup, type WirePayload,
@@ -33,7 +34,10 @@ export class BrowserBackend {
   private hosted: RelayInfo['hosted'] = { state: 'off' };
   private networkConfig: Record<string, string> | null = null;
   private relayProbes = { attempted: 0, completed: 0, failed: 0 };
-  constructor(private emit: EventSink) {}
+  private log = new ActionLog();
+  constructor(private emit: EventSink) {
+    this.log.info('worker_init', 'browser core worker created');
+  }
 
   configure(config: Record<string, string> | null): void { this.networkConfig = config; }
   private require(): { engine: BrowserEngine; state: BrowserState; identity: PublicIdentity } {
@@ -41,7 +45,10 @@ export class BrowserBackend {
     return { engine: this.engine, state: this.state, identity: this.identity };
   }
   private event(value: CoreEvent): void { this.emit('core_event', value); }
-  private boot(stage: BootStatus['stage'], state: BootStatus['state'], detail: string): void { this.emit('boot_status', { stage, state, detail }); }
+  private boot(stage: BootStatus['stage'], state: BootStatus['state'], detail: string): void {
+    this.emit('boot_status', { stage, state, detail });
+    this.log.debug(`boot:${stage}`, `${state}${detail ? ' · ' + detail : ''}`);
+  }
   private info(): RelayInfo { return { mode: 'builtin', external: '', hosted: this.hosted, dial: { attempts: 0, last_error: this.hosted.state === 'failed' ? this.hosted.reason : null, unreachable_checks: 0, unreachable_error: null } }; }
   private relayChanged(): void { this.event({ RelayInfoChanged: { info: this.info() } }); }
 
@@ -65,6 +72,7 @@ export class BrowserBackend {
         if (writing) {
           // The new slot may already be durable. Continuing the old ratchet
           // would reuse message keys; require a fresh read of the two slots.
+          this.log.info('storage_fault', 'profile storage failed during a transaction');
           this.closeNow();
           this.emit('browser_fault', 'Profile storage failed; unlock again to recover the last complete transaction');
         } else {
@@ -83,6 +91,10 @@ export class BrowserBackend {
    * this worker; no long network operation is held inside the state queue. */
   closeNow(): void {
     this.closing = true;
+    if (this.engine || this.storage) {
+      this.log.info('vault_lock', 'keys wiped from worker memory');
+      this.log.snapshot();
+    }
     this.generation++;
     if (this.timer) clearTimeout(this.timer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -104,6 +116,7 @@ export class BrowserBackend {
     const opening = this.generation;
     const profile = profileName(text(args, 'profile'));
     if (create && (args.duressPass || args.maxAttempts)) throw new Error('Browser profiles do not support duress passwords or destructive attempt counters');
+    this.log.info(create ? 'vault_create' : 'vault_unlock', `profile ${profile}${passkey ? ' · passkey' : ''}`);
     this.boot('vault', 'active', create ? 'Creating encrypted browser profile' : 'Opening encrypted browser profile');
     const storage = await ProfileStorage.open(profile, create);
     if (opening !== this.generation || this.closing) { storage.close(); throw new Error('Profile opening was cancelled'); }
@@ -127,6 +140,7 @@ export class BrowserBackend {
       if (this.engine === engine && engine) this.closeNow();
       else { engine?.close(); engine?.free(); storage.close(); }
       this.boot('vault', 'failed', reason(error));
+      this.log.info('vault_failed', reason(error));
       throw error;
     } finally {
       if (Array.isArray(args.prf)) (args.prf as number[]).fill(0);
@@ -137,12 +151,19 @@ export class BrowserBackend {
     const engine = this.engine!;
     this.hosted = { state: 'starting' }; this.relayChanged();
     try {
-      if (!this.networkConfig) throw new Error('Network service is not configured; saved chats are available offline');
+      if (!this.networkConfig) { this.log.info('network_offline', 'no network service configured; offline only'); throw new Error('Network service is not configured; saved chats are available offline'); }
+      this.log.info('network_start', `bootstrap attempt ${attempt}`);
       const network = await engine.start_network(JSON.stringify(this.networkConfig), (raw: string) => {
         if (attempt !== this.generation) return;
-        try { this.emit('boot_status', JSON.parse(raw)); } catch { /* Reject malformed progress, never invent readiness. */ }
+        try {
+          const status = JSON.parse(raw) as BootStatus;
+          this.boot(status.stage, status.state, status.detail);
+        } catch { /* Reject malformed progress, never invent readiness. */ }
       });
-      if (attempt !== this.generation || this.closing) { network.close(); network.free(); return; }
+      if (attempt !== this.generation || this.closing) {
+        this.log.debug('network_abort', 'superseded by a newer attempt');
+        network.close(); network.free(); return;
+      }
       this.network = network;
       this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error));
       this.relay.start();
@@ -172,12 +193,17 @@ export class BrowserBackend {
           if (!this.state?.contacts.some(contact => contact.sign_pk === peer.key && contact.trust !== 2 && contact.request !== 'incoming')) break;
           this.relayProbes.attempted++;
           try {
+            this.log.debug('relay_probe', `${shortKey(peer.key)}${peer.address.startsWith(peer.key) ? '' : ` via ${shortAddress(peer.address)}`} · try ${retry + 1}/3`);
             await this.relay!.ping(peer.address);
-            if (active()) this.relayProbes.completed++;
+            if (active()) {
+              this.relayProbes.completed++;
+              this.log.info('relay_probe_ok', shortKey(peer.key));
+            }
             break;
           } catch {
             if (!active()) return;
             this.relayProbes.failed++;
+            this.log.debug('relay_probe_failed', `${shortKey(peer.key)} · try ${retry + 1}/3`);
             if (retry < 2) await new Promise(resolve => setTimeout(resolve, 10000));
           }
         }
@@ -186,6 +212,7 @@ export class BrowserBackend {
     await Promise.all([worker(), worker()]);
   }
   private networkFailed(error: string): void {
+    this.log.info('relay_failed', error);
     this.relay?.close(); this.relay = null;
     this.network?.close(); this.network?.free(); this.network = null;
     this.hosted = { state: 'failed', reason: error };
@@ -194,6 +221,7 @@ export class BrowserBackend {
       if (this.retryTimer) clearTimeout(this.retryTimer);
       this.retryTimer = setTimeout(() => {
         this.retryTimer = null;
+        this.log.info('network_retry', '30 s elapsed; restarting bootstrap');
         if (!this.closing && this.engine && this.hosted.state === 'failed') void this.startNetwork(++this.generation);
       }, 30000);
     }
@@ -233,6 +261,7 @@ export class BrowserBackend {
           const current = this.state?.outbox.find(value => value.key === item.key);
           if (!current?.blob || !this.relay || attempt !== this.generation || this.state?.contacts.some(value => value.sign_pk === item.peer && value.trust === 2)) continue;
           await this.relay.deposit(address, current.peer, current.blob);
+          this.log.debug('outbox_deposited', `to ${shortKey(current.peer)} · attempts ${current.attempts}`);
           let sent: number | null = null;
           await this.transact(state => {
             const deposited = state.outbox.find(value => value.key === item.key);
@@ -249,6 +278,7 @@ export class BrowserBackend {
           if (attempt !== this.generation || !this.state) break;
           await this.transact(state => { const current = state.outbox.find(value => value.key === item.key); if (current) { current.at = Date.now(); current.attempts = Math.max(1, current.attempts); } });
           this.event({ ContactReachability: { contact_id: contact.id, unreachable: true } });
+          this.log.debug('outbox_retry', `to ${shortKey(item.peer)} · attempts ${(this.state?.outbox.find(value => value.key === item.key))?.attempts ?? item.attempts} · ${reason(error)}`);
           // Keep the exact ciphertext for a later retry, including restart.
           if (item.row !== null) this.event({ MessageFailed: { message_id: item.row, reason: reason(error) } });
         }
@@ -258,6 +288,7 @@ export class BrowserBackend {
 
   private async receive(peer: string, bytes: Uint8Array): Promise<void> {
     if (this.state?.contacts.some(contact => contact.sign_pk === peer && contact.trust === 2)) return;
+    this.log.debug('message_rx', `envelope ${bytes.length} B from ${shortKey(peer)}`);
     const digestInput = new Uint8Array(32 + bytes.length); digestInput.set(unhex(peer)); digestInput.set(bytes, 32);
     const hash = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', digestInput)));
     const events: CoreEvent[] = [];
@@ -289,7 +320,11 @@ export class BrowserBackend {
         const row = state.messages.find(value => value.outgoing && value.origin === incoming.ack_for && sameScope(value, contactId, groupId));
         if (row) {
           state.outbox = state.outbox.filter(value => !(value.row === row.id && value.peer === peer));
-          if (!state.outbox.some(value => value.row === row.id)) { row.sent = true; row.delivered = true; events.push({ MessageDelivered: { message_id: row.id } }); }
+          if (!state.outbox.some(value => value.row === row.id)) {
+            row.sent = true; row.delivered = true;
+            events.push({ MessageDelivered: { message_id: row.id } });
+            this.log.info('message_ack', `message ${row.id} delivered to ${shortKey(peer)}`);
+          }
         }
       } else if (incoming.typing !== null) {
         if (contact.request !== 'incoming') events.push({ Typing: { contact_id: contactId, group_id: groupId, sender_sign_pk: groupId ? peer : null, typing: incoming.typing } });
@@ -319,11 +354,15 @@ export class BrowserBackend {
           const row: StoredMessage = { id: allocate(state), origin: incoming.origin_msg_id, author: peer, contact_id: contactId, group_id: groupId, sender_sign_pk: groupId ? peer : null, outgoing: false, body: incoming.body, sent_at: incoming.sent_at, sent: true, delivered: true, read: false, expires_at: incoming.ttl_ms === null ? null : incoming.sent_at + incoming.ttl_ms, reply_to: null, buttons: incoming.buttons, dm_seq: state.messages.filter(value => sameScope(value, contactId, groupId)).length + 1 };
           if (incoming.reply_to) row.reply_to = state.messages.find(value => value.author === hex(incoming.reply_to!.sender_sign_pk) && value.origin === incoming.reply_to!.origin_msg_id && sameScope(value, contactId, groupId))?.id || null;
           state.messages.push(row); contact.last_message_at = row.sent_at;
+          this.log.info('message_in', `message ${row.id} from ${shortKey(peer)}`);
           for (const attachment of incoming.attachments) state.attachments.push({ id: allocate(state), message_id: row.id, name: attachment.name, size: attachment.data.length, data: base64(attachment.data) });
           if (contact.request !== 'incoming' && visible(row)) events.push({ IncomingMessage: { contact_id: contactId, group_id: groupId, sender_sign_pk: row.sender_sign_pk, message_id: row.id, body: row.body, sent_at: row.sent_at, notify_sound: null, console_kind: null } });
         }
       }
-      if (ack) this.enqueue(state, peer, ack, null);
+      if (ack) {
+        this.enqueue(state, peer, ack, null);
+        this.log.debug('ack_tx', `ack for origin ${incoming.origin_msg_id} queued for ${shortKey(peer)}`);
+      }
       state.seen.push({ hash, peer, ack });
       // Preserve replay hashes for the profile's lifetime. Silently evicting
       // them could replay an old X3DH initial after its OTK-free fallback.
@@ -355,11 +394,14 @@ export class BrowserBackend {
     const onion = text(args, 'onion'); const relay = typeof args.relay === 'string' ? args.relay : null;
     if (!isValidI2pAddress(onion) || (relay !== null && !isValidI2pAddress(relay))) throw new Error('Invalid I2P destination');
     const contact: Contact = { id: allocate(state), sign_pk: sign, dh_pk: dh, onion, relay, name: text(args, 'name').slice(0, 96), trust: 0, created_at: Date.now(), last_seen: null, is_bot: false, pinned_at: null, last_message_at: null, agent_granted: false, request };
-    state.contacts.push(contact); return contact;
+    state.contacts.push(contact);
+    this.log.info('contact_add', `contact ${contact.name || contact.id} (${request})`);
+    return contact;
   }
   private getContact(state: BrowserState, id: number): Contact { const contact = state.contacts.find(value => value.id === id); if (!contact) throw new Error('Contact not found'); return contact; }
   private removeContact(state: BrowserState, id: number): void {
     const contact = this.getContact(state, id);
+    this.log.info('contact_remove', `contact ${contact.name || contact.id}`);
     const ids = new Set(state.messages.filter(value => value.contact_id === id).map(value => value.id));
     state.contacts = state.contacts.filter(value => value.id !== id);
     state.messages = state.messages.filter(value => value.contact_id !== id);
@@ -442,11 +484,16 @@ export class BrowserBackend {
     if (!recipients.length) throw new Error('No active recipients');
     for (const peer of recipients) { this.enqueue(state, peer.sign_pk, structuredClone(letter), row.id); peer.last_message_at = row.sent_at; }
     if (groupId) state.groups.find(value => value.id === groupId)!.last_message_at = row.sent_at;
+    this.log.info('message_send', `message ${row.id} to ${recipients.length} recipient(s)`);
     return row.id;
   }
 
   async invoke(command: string, args: Args = {}): Promise<unknown> {
-    if (command === 'init') { this.configure(args.config as Record<string, string> | null); return null; }
+    if (command === 'init') {
+      this.configure(args.config as Record<string, string> | null);
+      this.log.info('init', this.networkConfig ? 'network config received' : 'started without network config');
+      return null;
+    }
     if (command === 'retry_network') {
       if (this.engine && this.hosted.state === 'failed' && this.networkConfig) {
         if (this.retryTimer) clearTimeout(this.retryTimer); this.retryTimer = null;
@@ -468,7 +515,7 @@ export class BrowserBackend {
     }
     if (command === 'prewarm_network') return null;
     if (command === 'prewarm_status') return 'off';
-    if (command === 'current_version') return '0.5.0-rc1-browser';
+    if (command === 'current_version') return '0.5.0-rc2-browser';
     if (command === 'update_configured' || command === 'get_auto_update' || command === 'update_installs_itself' || command === 'update_asks_for_root') return false;
     if (command === 'check_update' || command === 'get_agent_mode') return null;
     if (command === 'browser_diagnostics') return { ...JSON.parse(public_network_metrics()), relay_probes: { ...this.relayProbes } };
@@ -477,6 +524,17 @@ export class BrowserBackend {
     if (command === 'get_router_settings') return { transit: 'frugal', yggdrasil: 'off' };
     if (command === 'get_dht_status') return { peers: 0, items: 0, bytes: 0, joined: false, stores: false, seeds: 0 };
     if (command === 'list_unreachable_contacts') return [];
+    // The application log viewer works without an unlocked profile.
+    if (command === 'log_settings') return { available: true, enabled: this.log.isEnabled, path: 'worker memory · browser DevTools console' };
+    if (command === 'set_log_enabled') {
+      const enabled = args.enabled === true;
+      this.log.info('log_enabled', enabled ? 'on' : 'off · buffer erased');
+      this.log.setEnabled(enabled);
+      return null;
+    }
+    if (command === 'read_debug_log') return this.log.text();
+    if (command === 'read_previous_log') return this.log.previous();
+    if (command === 'clear_debug_log') { this.log.clear(); this.log.info('log_cleared', 'action log erased'); return null; }
     const { state, engine, identity } = this.require();
     if (command === 'get_attachment_privacy') return state.ui.attachment_privacy !== 'false';
     if (command === 'my_card') return { sign_pk: identity.sign_pk, dh_pk: identity.dh_pk };
@@ -527,8 +585,8 @@ export class BrowserBackend {
     if (command === 'change_passphrase') { engine.change_password(text(args, 'old'), text(args, 'new')); return null; }
     if (command === 'enroll_passkey') { try { engine.enroll_passkey(new Uint8Array(args.credentialId as number[]), text(args, 'rpId'), new Uint8Array(args.salt as number[]), new Uint8Array(args.prf as number[])); } finally { if (Array.isArray(args.prf)) (args.prf as number[]).fill(0); } return null; }
     if (command === 'set_display_name') { state.displayName = text(args, 'name').slice(0, 64); return null; }
-    if (command === 'set_ui_data') { const json = text(args, 'json'); if (json.length > 256 * 1024) throw new Error('UI preference size limit'); JSON.parse(json); state.ui[text(args, 'key')] = json; return null; }
-    if (command === 'set_muted') { const key = text(args, 'targetKey'); state.muted = state.muted.filter(value => value !== key); if (args.muted === true) state.muted.push(key); return null; }
+    if (command === 'set_ui_data') { const json = text(args, 'json'); if (json.length > 256 * 1024) throw new Error('UI preference size limit'); JSON.parse(json); state.ui[text(args, 'key')] = json; this.log.debug('settings_update', `ui:${text(args, 'key')}`); return null; }
+    if (command === 'set_muted') { const key = text(args, 'targetKey'); state.muted = state.muted.filter(value => value !== key); if (args.muted === true) state.muted.push(key); this.log.debug('settings_update', `mute:${key}`); return null; }
     if (command === 'add_contact') return this.addContact(state, args).id;
     if (command === 'update_contact') { const contact = this.getContact(state, number(args, 'id')); const trust = number(args, 'trust'); if (trust > 2) throw new Error('Invalid contact trust'); contact.name = text(args, 'name').slice(0, 96); contact.trust = trust; return null; }
     if (command === 'set_contact_bot') { this.getContact(state, number(args, 'id')).is_bot = args.isBot === true; return null; }
@@ -539,6 +597,7 @@ export class BrowserBackend {
     }
     if (command === 'reset_contact_session') {
       const contact = this.getContact(state, number(args, 'id'));
+      this.log.info('contact_session_reset', `contact ${contact.name || contact.id}`);
       state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk || value.row !== null || value.payload !== null);
       const pending = state.outbox.filter(value => value.peer === contact.sign_pk);
       if (pending.some(value => !value.payload)) throw new Error('An older queued letter cannot be re-encrypted');
@@ -612,7 +671,7 @@ export class BrowserBackend {
     }
     if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); pruneMessageOutbox(state, rows); state.pinnedMessages = state.pinnedMessages.filter(id => !rows.has(id)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
     if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? this.getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
-    if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; return null; }
+    if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; this.log.debug('settings_update', 'attachment_privacy'); return null; }
     if (command === 'set_relay_mode') { if (args.mode !== 'builtin') throw new Error('This browser uses its own I2P destination'); return null; }
     if (command === 'set_auto_update' && args.enabled === false) return null;
     if (command === 'send_typing') {

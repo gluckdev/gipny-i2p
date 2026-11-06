@@ -28,6 +28,7 @@
       </a>
       <nav class="main-nav" aria-label="Основная навигация" data-i18n-aria="navLabel">
         <a href="#principles" data-i18n="navPrinciples">Как работает</a>
+        <a href="#i2p" data-i18n="navI2p">Сеть I2P</a>
         <a href="#downloads" data-i18n="navApps">Скачать</a>
         <a href="#browser" data-i18n="navBrowser">А в браузере?</a>
       </nav>
@@ -96,6 +97,21 @@
         <aside class="hosting-note" aria-label="Защита и её границы" data-i18n-aria="securityLabel"><p data-i18n="securityBoundary">Релеи видят служебные данные доставки, а интернет-провайдер может заметить использование I2P. Заражённое устройство может раскрыть переписку. Копии, которые собеседник сохранил отдельно, нельзя удалить удалённо.</p></aside>
       </section>
 
+      <section class="i2p-section section" id="i2p" aria-labelledby="i2p-title">
+        <div class="section-heading"><p class="eyebrow" data-i18n="i2pEyebrow">Технология I2P</p><h2 id="i2p-title" data-i18n="i2pTitle">Что даёт сеть I2P и в чём её компромиссы.</h2></div>
+        <p class="downloads-intro" data-i18n="i2pIntro">I2P (Invisible Internet Project) — децентрализованная оверлейная сеть поверх интернета. В отличие от сетей, созданных для выхода на обычные сайты, I2P спроектирована для прямого зашифрованного взаимодействия приложений внутри самой сети.</p>
+        <div class="principle-grid">
+          <article class="principle"><span class="card-number" aria-hidden="true">+01</span><h3 data-i18n="i2pProTunnelsTitle">Чесночная маршрутизация и однонаправленные туннели.</h3><p data-i18n="i2pProTunnelsBody">Трафик упаковывается в зашифрованные «зубчики» и идёт через отдельные входящие и исходящие цепочки узлов. Промежуточные участники не видят одновременно отправителя и получателя.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">+02</span><h3 data-i18n="i2pProIdentityTitle">Криптографические адреса вместо IP.</h3><p data-i18n="i2pProIdentityBody">Узлы находят друг друга по криптографическим назначениям (.b32.i2p) через распределённую базу netDb. Ваш реальный IP-адрес не передаётся собеседнику и не привязан к профилю.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">+03</span><h3 data-i18n="i2pProBuiltinTitle">Внутренняя сеть без выходных узлов.</h3><p data-i18n="i2pProBuiltinBody">Сообщения не покидают пределы I2P. Роутер уже встроен в приложения (C++ i2pd на устройствах и WASM-роутер в браузере) и не требует отдельной настройки.</p></article>
+        </div>
+        <div class="principle-grid">
+          <article class="principle"><span class="card-number" aria-hidden="true">−01</span><h3 data-i18n="i2pConBootstrapTitle">Долгий холодный старт.</h3><p data-i18n="i2pConBootstrapBody">Первое подключение занимает несколько минут: роутеру нужно получить список узлов (reseed), изучить базу сети netDb и построить цепочки туннелей.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">−02</span><h3 data-i18n="i2pConLatencyTitle">Задержки и накладные расходы.</h3><p data-i18n="i2pConLatencyBody">Многослойное шифрование и прохождение через несколько промежуточных узлов увеличивают отклик, расход трафика и нагрузку на батарею по сравнению с централизованными мессенджерами.</p></article>
+          <article class="principle"><span class="card-number" aria-hidden="true">−03</span><h3 data-i18n="i2pConVisibilityTitle">Видимость факта использования I2P.</h3><p data-i18n="i2pConVisibilityBody">Интернет-провайдер не видит ваших собеседников и содержимое писем, но может определить сам факт работы I2P-роутера по характерным соединениям с узлами сети.</p></article>
+        </div>
+      </section>
+
       <section class="downloads-section section" id="downloads" aria-labelledby="downloads-title">
         <div class="section-heading"><p class="eyebrow" data-i18n="downloadsEyebrow">Готовые пакеты</p><h2 id="downloads-title" data-i18n="downloadsTitle">Скачайте для своего устройства.</h2></div>
         <p class="downloads-intro" data-i18n="downloadsBody">Выберите систему, архитектуру и формат. Ниже — файлы опубликованного релиза; размер указан для скачиваемого пакета.</p>
@@ -129,6 +145,8 @@
           <p><a class="button button-primary" href="./app/" data-i18n="browserOpen">Открыть экспериментальный интерфейс</a></p>
           <p><a href="https://github.com/gluckdev/gipny-i2p/blob/main/core/README.md#gipny-web" data-i18n="browserSetup">Настройка локального gipny-web</a></p>
           <p class="browser-boundary" data-i18n="browserLocal">Нужен gipny-web на этом устройстве; браузер подключается к 127.0.0.1. Chrome может запросить доступ к локальной сети. Поддержка HTTPS → loopback в Firefox не проверена.</p>
+          <p class="browser-boundary" data-i18n="browserStandaloneTitle">Автономный браузерный мессенджер</p>
+          <p data-i18n="browserStandaloneBody">Отдельная сборка работает без локального gipny-web: встроенный WASM-роутер I2P запускается в Web Worker, а ключи и история хранятся в зашифрованном виде в OPFS на устройстве.</p>
           <p class="browser-boundary" data-i18n="browserBoundary">Перед вами сайт проекта. Он не отправляет и не принимает сообщения, не создаёт профили и не хранит ваши ключи.</p>
           <aside class="hosting-note" aria-label="О посещении сайта" data-i18n-aria="hostingLabel"><p data-i18n="hostingPrivacy">На сайте нет аналитики и внешних скриптов. Но его хостинг, GitHub Pages, видит запросы страниц, включая IP-адрес и время посещения. Открытие сайта само по себе не включает защиту I2P; сайт не получает ваши сообщения, контакты или ключи.</p></aside>
         </div>

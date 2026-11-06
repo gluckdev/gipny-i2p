@@ -166,7 +166,7 @@ fn save_peers(node: &Arc<Node>, db: &Arc<Db>) {
         return;
     }
     if let Err(e) = db.dht_peers_save(&known) {
-        crate::debug_error!("[dht] saving the node table failed: {e}");
+        eprintln!("[dht] saving the node table failed: {e}");
     }
 }
 

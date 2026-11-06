@@ -19,8 +19,8 @@ are historical, not setup instructions for this tree.
 
 ## Version and getting started
 
-The source version is **0.5.0-rc1**, a prerelease for testing: every package
-of it is built with the developer log, and auto-update does not offer it
+The source version is **0.5.0-rc2**, a prerelease for testing: every package
+of it is built with the full developer log across all clients, and auto-update does not offer it
 ([what is logged and how to move to 0.5.0](docs/release-diagnostics.md#пре-релиз-с-журналом)).
 The sections below marked 0.4.19 apply to it too. 0.4.19 includes complete
 EN/RU localization, required updater checksums, an atomic group outbox, the
@@ -495,14 +495,15 @@ same transport and cryptography; this does not grant them the agent's shell powe
 
 ## Release history and maintenance
 
-These sources use version **0.4.19**. Available packages and publication status
+These sources use version **0.5.0-rc2**. Available packages and publication status
 are listed on [GitHub Releases](https://github.com/gluckdev/gipny-i2p/releases).
 The [integration record](docs/today-2026-10-28.md) preserves CI/PR history;
 version-specific notes explain the changes:
 
 | Version | Historical focus | Notes |
 |---|---|---|
-| 0.5.0-rc1 | Prerelease for testing: every package carries the developer log, no auto-update; see Releases for packages | [Release notes](docs/releases/0.5.0-rc1.md), [log](docs/release-diagnostics.md#пре-релиз-с-журналом) |
+| 0.5.0-rc2 | Prerelease for testing: full action and diagnostic logging across all clients (including browser core), website I2P overview, i2pd `3ffe976` | [Release notes](docs/releases/0.5.0-rc2.md), [log](docs/release-diagnostics.md#пре-релиз-с-журналом) |
+| 0.5.0-rc1 | First 0.5.0 prerelease with the developer log | [Release notes](docs/releases/0.5.0-rc1.md) |
 | 0.4.19 | Protected storage, reliable delivery, EN/RU | [Release notes](docs/releases/0.4.19.md), [verification history](docs/today-2026-10-28.md) |
 | 0.4.18 | Previous version | [0.4.18](docs/releases/0.4.18.md) |
 | 0.4.17 | Router revision checks and documentation build filters | [0.4.17](docs/releases/0.4.17.md) |
