@@ -28,6 +28,10 @@ const UI_DATA_KEYS = new Set(['contact_folders', 'avatars', 'chat_prefs']);
 const uiKey = (args: Args): string => { const key = text(args, 'key'); if (!UI_DATA_KEYS.has(key)) throw new Error('Unknown UI preference'); return key; };
 /** Concurrent deposits; each holds at most one file part in memory. */
 const SEND_STREAMS = 4;
+/** Longer than any single network deadline: work this old is reported, at
+ * most once per STALL_REPORT_MS. */
+const STALL_MS = 120_000;
+const STALL_REPORT_MS = 60_000;
 const reason = (error: unknown): string => String(error instanceof Error ? error.message : error).slice(0, 500);
 
 /** The worker's public state and command adapter. Private material stays in
@@ -46,8 +50,14 @@ export class BrowserBackend {
   private generation = 0;
   private closing = false;
   private pumping = false;
-  /** Outbox keys being sent, at most SEND_STREAMS. */
-  private sending = new Set<string>();
+  /** Outbox keys being sent (at most SEND_STREAMS) and the step each is in. */
+  private sending = new Map<string, { stage: string; at: number }>();
+  /** When the running profile transaction started; for stall diagnostics. */
+  private transactSince: number | null = null;
+  private stallReported = 0;
+  /** Reports in the current episode; a deposit starts a new one. */
+  private stallReports = 0;
+  private lastDeposit = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -277,9 +287,32 @@ export class BrowserBackend {
         throw error;
       }
     };
-    const pending = this.queue.then(run);
+    const pending = this.queue.then(async () => {
+      this.transactSince = Date.now();
+      try { return await run(); } finally { this.transactSince = null; }
+    });
     this.queue = pending.catch(() => {});
     return pending;
+  }
+
+  /** Diagnostics only: once a minute, name work stalled far past the network
+   * deadlines — a profile transaction, a send slot and its step, or an outbox
+   * that has letters but deposited nothing (counts only, no content). */
+  private reportStalls(now = Date.now()): void {
+    if (now - this.stallReported < STALL_REPORT_MS || this.stallReports >= 5 || !this.state) return;
+    const age = (since: number): string => `${Math.round((now - since) / 1000)} s`;
+    const stalled: string[] = [];
+    if (this.transactSince !== null && now - this.transactSince >= STALL_MS) stalled.push(`transaction ${age(this.transactSince)}`);
+    for (const slot of this.sending.values()) if (now - slot.at >= STALL_MS) stalled.push(`send ${slot.stage} ${age(slot.at)}`);
+    const outbox = this.state.outbox;
+    const waiting = outbox.some(item => !item.deposited && canSendControls(this.state!, item.peer));
+    if (!stalled.length && !(waiting && now - this.lastDeposit >= STALL_MS)) return;
+    const parts = outbox.filter(item => item.file);
+    const flight = this.state.transfers.reduce((n, file) => n + (!file.incoming && file.status === 'sending' ? Object.keys(file.flight ?? {}).length : 0), 0);
+    stalled.push(`slots ${this.sending.size}/${SEND_STREAMS}`, `outbox ${outbox.length} (parts ${parts.length}, sealed ${parts.filter(item => item.blob !== null).length})`,
+      `due ${dueLetters(this.state, now, 8, this.sending).length}`, `parts in flight ${flight}`, `last deposit ${this.lastDeposit ? age(this.lastDeposit) : 'never'}`);
+    this.stallReported = now; this.stallReports++;
+    this.log.info('stall', `${stalled.join(' · ')}${this.pumping ? ' · outbox pass running' : ''}`);
   }
 
   /** Stop network immediately. In-progress writes are synchronous flushes in
@@ -341,7 +374,7 @@ export class BrowserBackend {
         resumeFiles(next, this.identity!, Date.now());
       }, inlineHistory);
       this.verifyReadyFiles();
-      this.sweepTimer = setInterval(() => { if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
+      this.sweepTimer = setInterval(() => { this.reportStalls(); if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
       this.boot('vault', 'done', 'Profile opened; keys remain in the WASM worker');
       const attempt = ++this.generation;
       void this.startNetwork(attempt);
@@ -478,7 +511,7 @@ export class BrowserBackend {
       const free = SEND_STREAMS - this.sending.size;
       if (free <= 0) return;
       for (const item of dueLetters(this.state, Date.now(), free, this.sending)) {
-        this.sending.add(item.key);
+        this.sending.set(item.key, { stage: 'start', at: Date.now() });
         void this.sendItem(item, attempt)
           .catch(error => { if (!this.closing) this.log.info('outbox_fault', reason(error)); })
           .finally(() => { this.sending.delete(item.key); if (attempt === this.generation) this.schedule(0); });
@@ -493,9 +526,11 @@ export class BrowserBackend {
     const contact = this.state.contacts.find(value => value.sign_pk === item.peer);
     if (!contact || !canSendControls(this.state, item.peer)) return;
     const address = contact.relay || contact.onion;
+    const step = (stage: string): void => { if (this.sending.has(item.key)) this.sending.set(item.key, { stage, at: Date.now() }); };
     let part: Uint8Array | null = null;
     try {
       if (item.file && item.blob === null) {
+        step('read');
         try { part = await this.outgoingPart(item); } catch (error) {
           if (attempt !== this.generation) return;
           const events: CoreEvent[] = [];
@@ -512,8 +547,10 @@ export class BrowserBackend {
       }
       // Bundle lookup and connect run outside the persistence queue.
       const encrypting = item.blob === null || item.deposited;
+      step('bundle');
       const bundle = encrypting && !this.engine!.has_session(item.peer) ? await this.relay.bundle(address, item.peer) : new Uint8Array();
       if (attempt !== this.generation || !this.relay) return;
+      step('encrypt');
       await this.transact((state, engine) => {
         if (attempt !== this.generation) return;
         const current = state.outbox.find(value => value.key === item.key);
@@ -531,19 +568,23 @@ export class BrowserBackend {
       part?.fill(0); part = null;
       const current = this.state?.outbox.find(value => value.key === item.key);
       if (!current?.blob || !this.relay || attempt !== this.generation || !this.state || !canSendControls(this.state, item.peer)) return;
+      step('deposit');
       await this.relay.deposit(address, current.peer, fromBase64(current.blob));
       if (attempt !== this.generation || !this.relay) return;
+      this.lastDeposit = Date.now(); this.stallReports = 0;
       this.relayAnswered = true;
       this.event({ ContactReachability: { contact_id: contact.id, unreachable: false } });
       this.boot('dht', 'skipped', 'Authenticated peer relay answered');
       this.log.debug('outbox_deposited', `to ${this.who(current.peer)} · attempts ${current.attempts}${current.resends ? ` · resend ${current.resends}` : ''}`);
       let sent: number | null = null;
+      step('settle');
       // The relay stored this ciphertext: from now on it is never sent again.
       await this.transact(state => { sent = settleDeposit(state, item.key, Date.now()); });
       if (sent !== null) this.event({ MessageSent: { message_id: sent } });
     } catch (error) {
       if (attempt !== this.generation || !this.state) return;
       const first = !item.deposited && !item.resends;
+      step('record failure');
       try {
         await this.transact(state => {
           const current = state.outbox.find(value => value.key === item.key);

@@ -251,7 +251,7 @@ export function queueReceipt(state: BrowserState, peer: string, letter: WirePayl
  * for reachable peers and within the snapshot-wide cap. Letters in `busy` are
  * being sent: never picked twice, not yet failures, and their parts keep their
  * per-peer slots. */
-export function dueLetters(state: BrowserState, now: number, limit = 8, busy: ReadonlySet<string> = new Set()): Outbox[] {
+export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { has(key: string): boolean } = new Set<string>()): Outbox[] {
   const silent = new Set(state.contacts.filter(contact => contact.trust === 2 || contact.request === 'incoming').map(contact => contact.sign_pk));
   const failing = new Set(state.outbox.filter(item => !busy.has(item.key) && item.blob !== null && !item.deposited && item.attempts > 0).map(item => item.peer));
   let sealed = state.outbox.filter(item => item.file && item.blob !== null).length;

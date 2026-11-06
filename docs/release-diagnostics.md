@@ -40,7 +40,9 @@ CLI-справка, OS-журналы и внешний захват stderr мо
 Веб-клиент хранит диагностические записи локально в браузере, не на GitHub: в
 памяти Worker и, после блокировки, в незашифрованной IndexedDB `gipny-browser-log`,
 доступной до разблокировки. В записях — номера контактов, не имена; ключи и
-адреса маскируются.
+адреса маскируются. Запись `stall` (не чаще раза в минуту, до пяти подряд)
+называет работу, застрявшую дольше двух минут: транзакцию профиля, шаг отправки
+или очередь без депозитов, только счётчиками.
 
 Журналы могут раскрывать адреса, идентификаторы, имена файлов и время действий.
 Пароли, ключи, токены, текст сообщений/команд и callback-данные не должны попадать
@@ -81,8 +83,10 @@ have the Unix-based general capture: its router file and available stderr are
 separate, and complete Windows capture remains work. The browser log is local
 browser storage, not GitHub storage: Worker memory and, after lock, the
 unencrypted IndexedDB `gipny-browser-log` readable before unlock. Entries carry
-contact numbers, not names; keys and addresses are masked. Stable builds delete
-that database at startup.
+contact numbers, not names; keys and addresses are masked. A `stall` entry (at
+most once a minute, five in a row) names work stuck for over two minutes — a
+profile transaction, a send step or an outbox with no deposits — as counts only.
+Stable builds delete that database at startup.
 
 Diagnostics can expose addresses, identifiers, filenames and timing. Passwords,
 keys, tokens, message/command bodies and callbacks must be excluded even in

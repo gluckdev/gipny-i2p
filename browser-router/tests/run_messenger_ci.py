@@ -368,7 +368,10 @@ def main():
             receipt['assertions'].append('password rotation mirrored across OPFS slots; old password rejected; identity and destination restored after page/worker restart')
             wait_for(lambda: ready(alice), 330, 'restored client destination')
             print('MESSENGER_PROGRESS restored client destination ready', flush=True)
-            wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 180, 'offline outbox recovered recipient')
+            # Alice's new router publishes new tunnels; Bob's copy of her old
+            # lease set fails first (dead streams, CANT_REACH_PEER) and his
+            # retries back off up to 60 s between attempts.
+            wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 300, 'offline outbox recovered recipient')
             wait_for(lambda: any(row['id'] == offline and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'offline message delivery receipt')
             rows = rpc(alice, 'list_messages', contactId=alice_contact)
             if len([row for row in rows if row['body'] == 'durable offline outbox']) != 1:
