@@ -48,7 +48,12 @@ jobs:
       - name: Read published stable releases for direct downloads
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq 'flatten | map(select(.draft == false and .prerelease == false)) | max_by(.published_at) // null' > "$RUNNER_TEMP/gipny-release.json"
+        # Every page, newest stable (non-draft, non-prerelease) release. gh
+        # refuses --slurp with --jq, so jq -s collects the pages instead.
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -s 'flatten | map(select(.draft == false and .prerelease == false)) | max_by(.published_at) // null' \
+            > "$RUNNER_TEMP/gipny-release.json"
       - name: Build public files
         run: node site/build.mjs _site "$RUNNER_TEMP/gipny-release.json"
       - name: Prepare the pinned browser router source
