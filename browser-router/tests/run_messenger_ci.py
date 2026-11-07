@@ -135,10 +135,20 @@ def wait_for(check, seconds, label):
     raise RuntimeError(f'deadline: {label}')
 
 
+STARTUP_FAILURES = []
+# One failed start (its own 300 s deadline), the client's 30 s retry delay and a
+# second start: what a person waits on a bad network before it gives up.
+STARTUP_WAIT = 300 + 30 + 300 + 30
+
+
 def ready(cdp):
     info = rpc(cdp, 'get_relay_info')
     if info['hosted']['state'] == 'failed':
-        raise RuntimeError('I2P client startup failed: ' + info['hosted']['reason'][:300])
+        # The client restarts its network 30 s later by itself; record why.
+        reason = 'I2P client startup failed: ' + info['hosted']['reason'][:300]
+        if not STARTUP_FAILURES or STARTUP_FAILURES[-1] != reason:
+            STARTUP_FAILURES.append(reason)
+        return False
     return info['hosted']['state'] == 'ready'
 
 
@@ -258,7 +268,7 @@ def main():
             receipt['assertions'].append('actual WebAuthn PRF helper enrollment and unlock with a virtual CTAP2 authenticator')
             create_ui(bob, 'bob', password_b)
             for client in clients:
-                wait_for(lambda: ready(client), 330, 'client destination tunnels')
+                wait_for(lambda: ready(client), STARTUP_WAIT, 'client destination tunnels')
             receipt['assertions'].append('two independent WASM client destinations ready over live I2P')
             print('MESSENGER_PROGRESS live destinations ready', flush=True)
             alice_card, bob_card = rpc(alice, 'my_card'), rpc(bob, 'my_card')
@@ -366,7 +376,7 @@ def main():
             if rpc(alice, 'my_b32') != alice_address or rpc(alice, 'my_card') != alice_card:
                 raise RuntimeError('destination or identity changed after worker restart')
             receipt['assertions'].append('password rotation mirrored across OPFS slots; old password rejected; identity and destination restored after page/worker restart')
-            wait_for(lambda: ready(alice), 330, 'restored client destination')
+            wait_for(lambda: ready(alice), STARTUP_WAIT, 'restored client destination')
             print('MESSENGER_PROGRESS restored client destination ready', flush=True)
             # Alice's new router publishes new tunnels; Bob's copy of her old
             # lease set fails first (dead streams, CANT_REACH_PEER) and his
@@ -421,7 +431,7 @@ def main():
             # The independent bridge remains available. Both fresh WASM routers
             # must reconnect and deliver while the application host stays down.
             unlock_ui(bob, 'bob', password_b)
-            wait_for(lambda: ready(alice) and ready(bob), 360, 'both routers reconnect without application hosting')
+            wait_for(lambda: ready(alice) and ready(bob), STARTUP_WAIT + 30, 'both routers reconnect without application hosting')
             no_host = rpc(bob, 'send_message', contactId=bob_contact, body='delivery without application hosting', attachments=[], ttlSecs=None, replyTo=None)
             wait_for(lambda: any(row['body'] == 'delivery without application hosting' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 180, 'message received with application host stopped')
             wait_for(lambda: any(row['id'] == no_host and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'end-to-end receipt without application hosting')
@@ -455,6 +465,8 @@ def main():
                 receipt['file_progress'][label] = 'unavailable'
         raise
     finally:
+        # Starts that failed and were retried by the client (public reasons).
+        receipt['startup_failures'] = STARTUP_FAILURES[-6:]
         for socket in sockets:
             socket.close()
         for process in browsers:
