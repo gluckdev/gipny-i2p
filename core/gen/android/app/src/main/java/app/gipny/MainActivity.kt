@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -26,6 +27,14 @@ class MainActivity : TauriActivity() {
     val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
     windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+    // Prerelease builds (version with a `-`, built with the full developer log)
+    // expose the webview to chrome://inspect over USB debugging, so a page that
+    // fails before it can draw is readable from a computer instead of being a
+    // blank screen. wry only logs console messages in debug builds, and a stable
+    // build never opens this door. See docs/release-diagnostics.md.
+    if (BuildConfig.DEBUG || BuildConfig.VERSION_NAME.contains('-')) {
+      WebView.setWebContentsDebuggingEnabled(true)
+    }
     super.onCreate(savedInstanceState)
     val svc = Intent(this, GipnyService::class.java)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

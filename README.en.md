@@ -24,7 +24,9 @@ with old experimental profiles is not currently required.
 
 1. Choose a package for your OS and architecture from
    [published releases](https://github.com/gluckdev/gipny-i2p/releases), when available.
-   Verify its [SHA256 checksum](docs/update-verification.md).
+   Verify its [SHA256 checksum](docs/update-verification.md). The Android client
+   needs a system WebView of Chromium 83 or newer (Huawei WebView 11 on EMUI 11
+   is the oldest supported).
 2. Create a local password-protected profile. Native storage requires a supported
    OS credential provider. Allow time for the embedded I2P router to build tunnels.
 3. Exchange [contact cards](docs/contact-cards.md) and compare fingerprints through

@@ -48,6 +48,14 @@ GitHub Pages раздаёт приложение и обновления; соо
 ещё нет. Открыто: Windows-захват журнала (CR-017), привязка `sign_pk` в X3DH init,
 модель владения DHT-именами.
 
+После rc3 (2026-11-07): на Honor KOZ-AL00 (Huawei WebView 11 = Chromium 83,
+без Google) rc3 открывался пустым экраном — бандл UI был собран под ES2022.
+Исправление: `WEBVIEW_FLOOR` (Chromium 83) в `ui/vite.config.ts`, шимы
+`ui/src/compat.ts`, гейт `ui/tests/webview-compat.test.mjs`, `chrome://inspect`
+в предрелизных Android-сборках; [журналы](release-diagnostics.md). Дальше по
+плану: экраны входа в один экран телефона (360×800) и i2pd с его туннелями в
+WASM для браузерного роутера.
+
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
 данные можно менять без миграций; новые сообщения, ACK и состояние криптографии
 обязаны сохраняться корректно. Runtime — Rust/C с C++ upstream i2pd; Python
@@ -83,5 +91,14 @@ Actions. Start with [current state](current-state.md), [documentation](README.md
 [browser](browser-messenger.md), [files](file-transfer.md), [UPnP](upnp.md),
 [upstreams](upstreams-and-settings.md), [mirrors](site-mirrors.md),
 [roadmap](roadmap.md) and the [rc3 notes](releases/0.5.0-rc3.md).
+
+After rc3 (2026-11-07): on an Honor KOZ-AL00 (Huawei WebView 11 = Chromium 83,
+no Google services) rc3 opened as a blank page because the UI bundle targeted
+ES2022. Fixed by `WEBVIEW_FLOOR` (Chromium 83) in `ui/vite.config.ts`, shims in
+`ui/src/compat.ts`, the `ui/tests/webview-compat.test.mjs` gate and
+`chrome://inspect` in prerelease Android builds; see
+[diagnostics](release-diagnostics.md). Next in plan: sign-in screens that fit
+one phone screen (360×800), and i2pd with its tunnels in WASM for the browser
+router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)

@@ -2,7 +2,7 @@
 
 ## Русский
 
-Всё, что видит пользователь. Одна кодовая база для десктопа, Android и автономного браузерного режима. Нативный бэкенд вызывается через Tauri (`invoke`), события приходят как `core_event`; браузерный адаптер сохраняет тот же API. Сборка — Vite (`npm run build` = `tsc --noEmit && vite build`).
+Всё, что видит пользователь. Одна кодовая база для десктопа, Android и автономного браузерного режима. Нативный бэкенд вызывается через Tauri (`invoke`), события приходят как `core_event`; браузерный адаптер сохраняет тот же API. Сборка — Vite (`npm run build` = `tsc --noEmit && vite build`) под `WEBVIEW_FLOOR` = Chromium 83 из `vite.config.ts`: это самая старая системная WebView, в которой работает Android-клиент (Huawei WebView 11 на EMUI 11); браузерная сборка (`vite.browser.config.ts`) рассчитана на современные браузеры.
 
 ## Точки входа и браузерное ядро
 
@@ -63,6 +63,8 @@
 | `src/i18n.ts`, `src/locales/en.ts`, `src/locales/ru.ts` | Язык устройства, типизированные ключи и полные словари; [правила поддержки](../docs/localization.md) |
 | `src/language-picker.ts`, `src/error-text.ts` | Выбор языка до входа и отображение известных ошибок backend |
 | `tests/localization.test.mjs` | DOM-проверки языков, черновика, подписок и вывода недоверенного текста |
+| `tests/webview-compat.test.mjs` | После `npm run build`: каждый скрипт `dist/` парсится без синтаксиса новее Chromium 83 (`\|\|=`, static blocks, top-level await…) и не вызывает API без шима |
+| `src/compat.ts` | Первый импорт `main.ts`: шимы `replaceChildren`, `Object.hasOwn`, `crypto.randomUUID` для WebView ниже Chromium 93; в новых движках ничего не делает |
 | `src/main.ts` | Точка входа |
 | `src/api.ts` | Все вызовы бэкенда (`Api.*`) и типы данных (`Contact`, `Message`, `UpdateInfo`, union `CoreEvent`…), карточка `encodeCard`/`decodeCard`/`isValidI2pAddress` |
 | `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
