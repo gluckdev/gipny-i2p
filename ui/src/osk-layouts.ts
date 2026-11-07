@@ -2,9 +2,10 @@
  * Key tables for the on-screen keyboard. A layout is three rows of letters;
  * the component adds shift, backspace and the bottom row itself. Shift is
  * `toUpperCase()` unless `shift` says otherwise (ß stays ß: 'SS' is a word,
- * not a key). Vietnamese uses Telex composition on its Latin keys.
+ * not a key). Vietnamese uses Telex composition on its Latin keys; Khmer's
+ * shift level uses explicit NiDA assignments.
  */
-export type LayoutId = 'ru' | 'en' | 'de' | 'vi';
+export type LayoutId = 'ru' | 'en' | 'de' | 'vi' | 'km';
 
 export interface Layout {
   id: LayoutId;
@@ -35,9 +36,30 @@ export const LAYOUTS: Readonly<Record<LayoutId, Layout>> = {
     id: 'vi', label: 'VI', compose: 'telex',
     rows: [split('qwertyuiop'), split('asdfghjkl'), split('zxcvbnm')],
   },
+  km: {
+    id: 'km', label: 'KM',
+    // NiDA in Q/A/Z order (ANSI backslash at the end of the Q row), from
+    // xkeyboard-config kh(basic). Four keys emit two code points on a level
+    // (A: ាំ, semicolon: ោះ, V: េះ, comma: ុំ/ុះ); a key is any string, so
+    // they stay where a Khmer typist expects them. The number row (ឥ ឲ) and
+    // the AltGr level are not on this page yet — see the plan.
+    rows: [
+      split('ឆឹេរតយុិោផៀឪឮ'),
+      ['ា', 'ស', 'ដ', 'ថ', 'ង', 'ហ', '្', 'ក', 'ល', 'ើ', '់'],
+      ['ឋ', 'ខ', 'ច', 'វ', 'ប', 'ន', 'ម', 'ុំ', '។', '៊'],
+    ],
+    shift: {
+      'ឆ': 'ឈ', 'ឹ': 'ឺ', 'េ': 'ែ', 'រ': 'ឬ', 'ត': 'ទ', 'យ': 'ួ',
+      'ុ': 'ូ', 'ិ': 'ី', 'ោ': 'ៅ', 'ផ': 'ភ', 'ៀ': 'ឿ', 'ឪ': 'ឧ', 'ឮ': 'ឭ',
+      'ា': 'ាំ', 'ស': 'ៃ', 'ដ': 'ឌ', 'ថ': 'ធ', 'ង': 'អ', 'ហ': 'ះ', '្': 'ញ',
+      'ក': 'គ', 'ល': 'ឡ', 'ើ': 'ោះ', '់': '៉',
+      'ឋ': 'ឍ', 'ខ': 'ឃ', 'ច': 'ជ', 'វ': 'េះ', 'ប': 'ព', 'ន': 'ណ', 'ម': 'ំ',
+      'ុំ': 'ុះ', '។': '៕', '៊': '?',
+    },
+  },
 };
 
-export const LAYOUT_IDS: readonly LayoutId[] = ['ru', 'en', 'de', 'vi'];
+export const LAYOUT_IDS: readonly LayoutId[] = ['ru', 'en', 'de', 'vi', 'km'];
 
 export function isLayoutId(id: string): id is LayoutId {
   return (LAYOUT_IDS as readonly string[]).indexOf(id) !== -1;

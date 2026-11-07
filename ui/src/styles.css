@@ -141,6 +141,8 @@ body {
   --kbd-offset: 0px;
 }
 
+[lang="km"], .lang-km { overflow-wrap: anywhere; word-break: normal; }
+
 
 
 /* The responsive rules live at the end of this file: they have to come after
@@ -2432,6 +2434,7 @@ body::before { background: none; }
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
+.osk[data-layout="km"] .osk-key { font-size: 20px; }
 .osk-key:active { background: var(--phosphor-faint); border-color: var(--phosphor); }
 .osk-fn { background: var(--surface-3); color: var(--text-dim); font-size: 14px; }
 .osk-wide { flex-grow: 1.5; }

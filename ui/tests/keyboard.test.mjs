@@ -48,8 +48,11 @@ test('every layout has three unique rows and a shifted form for each key', () =>
     const keys = layout.rows.flat();
     assert.equal(new Set(keys).size, keys.length, `${layout.id} has no duplicate keys`);
     for (const key of keys) {
-      assert.equal([...key].length, 1, `${layout.id}: ${key} is one character`);
-      assert.equal([...shifted(layout, key)].length, 1, `${layout.id}: shift(${key}) is one character`);
+      // Khmer keys may carry a vowel with its sign (two code points); any
+      // other layout is one character per key on both levels.
+      const limit = layout.id === 'km' ? 2 : 1;
+      assert.ok([...key].length >= 1 && [...key].length <= limit, `${layout.id}: ${key} is at most ${limit} code point(s)`);
+      assert.ok([...shifted(layout, key)].length >= 1 && [...shifted(layout, key)].length <= limit, `${layout.id}: shift(${key}) is at most ${limit} code point(s)`);
     }
   }
   assert.equal(shifted(LAYOUTS.en, 'q'), 'Q');
@@ -57,7 +60,7 @@ test('every layout has three unique rows and a shifted form for each key', () =>
   assert.equal(shifted(LAYOUTS.de, 'ß'), 'ß', 'ß does not become SS');
   assert.ok(LAYOUTS.ru.rows.flat().includes('ё') && LAYOUTS.ru.rows.flat().includes('ъ'));
   assert.ok(['ä', 'ö', 'ü', 'ß'].every((c) => LAYOUTS.de.rows.flat().includes(c)));
-  assert.ok(isLayoutId('ru') && isLayoutId('vi') && !isLayoutId('xx'));
+  assert.ok(isLayoutId('ru') && isLayoutId('vi') && isLayoutId('km') && !isLayoutId('xx'));
   assert.deepEqual(LAYOUTS.vi.rows.map((row) => row.join('')), ['qwertyuiop', 'asdfghjkl', 'zxcvbnm']);
   assert.equal(LAYOUTS.vi.label, 'VI');
   assert.equal(LAYOUTS.vi.compose, 'telex');
@@ -124,6 +127,43 @@ test('Telex emits and clears all five NFC tones for each vowel in both cases', (
       }
     }
   }
+});
+
+test('Khmer keys cover the NiDA layout', () => {
+  const layout = LAYOUTS.km;
+  assert.equal(layout.label, 'KM');
+  // NiDA's ANSI Q/A/Z rows from xkeyboard-config kh(basic); four keys emit
+  // two code points on a level (A, semicolon, V, comma).
+  const cps = (s) => [...s].map((c) => c.codePointAt(0));
+  const base = [
+    [0x1786, 0x17b9, 0x17c1, 0x179a, 0x178f, 0x1799, 0x17bb, 0x17b7, 0x17c4, 0x1795, 0x17c0, 0x17aa, 0x17ae],
+    [0x17b6, 0x179f, 0x178a, 0x1790, 0x1784, 0x17a0, 0x17d2, 0x1780, 0x179b, 0x17be, 0x17cb],
+    [0x178b, 0x1781, 0x1785, 0x179c, 0x1794, 0x1793, 0x1798, [0x17bb, 0x17c6], 0x17d4, 0x17ca],
+  ];
+  const shift = [
+    [0x1788, 0x17ba, 0x17c2, 0x17ac, 0x1791, 0x17bd, 0x17bc, 0x17b8, 0x17c5, 0x1797, 0x17bf, 0x17a7, 0x17ad],
+    [[0x17b6, 0x17c6], 0x17c3, 0x178c, 0x1792, 0x17a2, 0x17c7, 0x1789, 0x1782, 0x17a1, [0x17c4, 0x17c7], 0x17c9],
+    [0x178d, 0x1783, 0x1787, [0x17c1, 0x17c7], 0x1796, 0x178e, 0x17c6, [0x17bb, 0x17c7], 0x17d5, 0x003f],
+  ];
+  const one = (list) => list.map((c) => (c.length === 1 ? c[0] : c));
+  assert.deepEqual(layout.rows.map((row) => one(row.map(cps))), base);
+  assert.deepEqual(layout.rows.map((row) => one(row.map((c) => cps(shifted(layout, c))))), shift);
+  const keys = layout.rows.flat();
+  assert.deepEqual(Object.keys(layout.shift).sort(), [...keys].sort(), 'every NiDA key changes on Shift');
+  const levels = [...keys, ...keys.map((c) => shifted(layout, c))];
+  assert.ok(levels.every((c) => !/[a-z]/i.test(c)), 'neither level has Latin letters');
+  const coverage = new Set(levels.flatMap((s) => [...s]));
+  const missing = (first, last) => Array.from({ length: last - first + 1 }, (_, i) => first + i)
+    .filter((cp) => !coverage.has(String.fromCodePoint(cp)));
+  // All 33 modern consonants; SHA/SSO (Pali/Sanskrit) live on NiDA's AltGr level.
+  assert.deepEqual(missing(0x1780, 0x17a2), [0x179d, 0x179e]);
+  assert.deepEqual(missing(0x17b6, 0x17c5), [], 'all 16 dependent vowel signs');
+  const independentVowels = [...'ឥឦឧឩឪឫឬឭឮឯឰឱឲឳ'];
+  assert.deepEqual(independentVowels.filter((c) => coverage.has(c)), [...'ឧឪឬឭឮ'], 'the other NiDA vowels sit on the number row or AltGr — next slice');
+  for (const cp of [0x17c6, 0x17c7, 0x17c9, 0x17ca, 0x17cb, 0x17d2]) {
+    assert.ok(coverage.has(String.fromCodePoint(cp)), `NiDA sign U+${cp.toString(16)} is available`);
+  }
+  assert.deepEqual(missing(0x17c6, 0x17d1), [0x17c8, 0x17cc, 0x17cd, 0x17ce, 0x17cf, 0x17d0, 0x17d1]);
 });
 
 test('insert, backspace and caret moves respect graphemes and selections', () => {
@@ -405,6 +445,49 @@ test('the Vietnamese panel composes Telex in the focused field', () => {
     input.remove();
     localStorage.removeItem('gipny.osk.layouts');
     uninstallOsk();
+    setOskMode('auto'); resetOskActive();
+  }
+});
+
+test('the Khmer panel inserts a consonant and dependent vowel in order', () => {
+  setOskMode('on'); resetOskActive();
+  uninstallOsk();
+  const panel = installOsk();
+  assert.ok(panel);
+  const input = h('input', { type: 'text' });
+  const events = [];
+  input.addEventListener('input', (e) => events.push([e.inputType, e.data]));
+  document.body.append(input);
+  try {
+    input.focus();
+    if (!panel.visible) fire(input, 'focusin');
+    localStorage.setItem('gipny.osk.layouts', 'km');
+    setLang('ru'); setLang('en');
+    for (let i = 0; i < enabledLayouts().length && panel.layout !== 'km'; i++) press(panel, fnKey('layout'));
+    assert.equal(panel.layout, 'km');
+    assert.equal(panel.el.dataset.layout, 'km');
+    assert.equal(panel.currentPage, 'letters');
+    press(panel, charKey('ក'));
+    press(panel, charKey('ិ'));
+    assert.deepEqual([...input.value], ['\u1780', '\u17b7']);
+    assert.deepEqual(events, [['insertText', 'ក'], ['insertText', 'ិ']]);
+    assert.equal(input.selectionStart, 2);
+    assert.equal(document.activeElement, input);
+
+    press(panel, fnKey('shift'));
+    press(panel, charKey('គ'));
+    assert.ok(keyButton(panel, charKey('ក')), 'one-shot Shift restores the Khmer base level');
+    press(panel, fnKey('shift'));
+    press(panel, charKey('ី'));
+    assert.deepEqual([...input.value], ['\u1780', '\u17b7', '\u1782', '\u17b8']);
+    assert.equal(input.selectionStart, 4);
+    press(panel, fnKey('layout'));
+    assert.equal(panel.el.dataset.layout, 'en', 'the Khmer font rule stops applying when the layout changes');
+  } finally {
+    uninstallOsk();
+    input.remove();
+    localStorage.removeItem('gipny.osk.layouts');
+    setLang('ru'); setLang('en');
     setOskMode('auto'); resetOskActive();
   }
 });

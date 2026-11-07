@@ -321,6 +321,7 @@ export class Osk {
 
     this.rows.replaceChildren(...rows);
     this.el.setAttribute('data-page', this.page);
+    this.el.setAttribute('data-layout', this.layout);
   }
 }
 
