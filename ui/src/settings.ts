@@ -5,7 +5,7 @@ import { Api, isTauri, usesBrowserCore, encodeCard } from './api';
 import type { RouterSettings, TransitProfile } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
-import { getLang, setLang, type Lang } from './i18n';
+import { LANGS, getLang, setLang } from './i18n';
 import { getOskMode, setOskMode } from './osk-mode';
 import type { OskMode } from './osk-mode';
 import type { Store } from './state';
@@ -202,12 +202,8 @@ export class SettingsModal {
 
         h('div', { class: 'divider-text' }, tr('settings.language')),
         (() => {
-          const choices: { id: Lang; title: string }[] = [
-            { id: 'ru', title: tr('settings.lang_ru') },
-            { id: 'en', title: tr('settings.lang_en') },
-          ];
           const current = getLang();
-          const rows = choices.map(({ id, title }) => {
+          const rows = LANGS.map(({ id, label }) => {
             const r = h('input', {
               type: 'radio', name: 'language', id: `opt-lang-${id}`,
             }) as HTMLInputElement;
@@ -223,7 +219,7 @@ export class SettingsModal {
             return h('label', { class: 'opt', for: `opt-lang-${id}` },
               r,
               h('span', { class: 'opt-text' },
-                h('span', { class: 'opt-title' }, title)),
+                h('span', { class: 'opt-title' }, label)),
             );
           });
           return h('div', { class: 'opt-group' }, ...rows);

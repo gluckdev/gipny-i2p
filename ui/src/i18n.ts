@@ -1,18 +1,30 @@
 /** Device-local language preference. No account, vault or network access. */
 import { ru } from './locales/ru.ts';
 import { en } from './locales/en.ts';
+import { de } from './locales/de.ts';
 
-export type Lang = 'ru' | 'en';
+export type Lang = 'ru' | 'en' | 'de';
 export type TranslationKey = keyof typeof ru;
-export const translations = { ru, en } as const;
+export const translations = { ru, en, de } as const;
+export const LANGS: readonly { id: Lang; label: string }[] = [
+  { id: 'ru', label: 'Русский' },
+  { id: 'en', label: 'English' },
+  { id: 'de', label: 'Deutsch' },
+];
+const locales: Record<Lang, string> = { ru: 'ru-RU', en: 'en-GB', de: 'de-DE' };
 const KEY = 'gipny.lang';
 
-/** An explicit choice wins. Otherwise Russian only for a Russian system — a
- *  Russian locale among the preferred ones, or a Russian keyboard layout —
- *  and English for everyone else. The website follows the same rule. */
+function isLang(value: string | null): value is Lang {
+  return LANGS.some(({ id }) => id === value);
+}
+
+/** An explicit choice wins; Russian locale/layout detection takes priority
+ *  over other preferred languages. English is the fallback. */
 export function detectLang(saved: string | null, languages: readonly string[], russianLayout = false): Lang {
-  if (saved === 'ru' || saved === 'en') return saved;
-  return russianLayout || languages.some((tag) => /^ru(?:-|$)/i.test(tag ?? '')) ? 'ru' : 'en';
+  if (isLang(saved)) return saved;
+  if (russianLayout || languages.some((tag) => /^ru(?:-|$)/i.test(tag ?? ''))) return 'ru';
+  return LANGS.find(({ id }) => id !== 'ru' && id !== 'en' &&
+    languages.some((tag) => new RegExp(`^${id}(?:-|$)`, 'i').test(tag ?? '')))?.id ?? 'en';
 }
 
 /** Letters only a Russian layout has together (Ukrainian lacks ы/ъ/э,
@@ -39,10 +51,10 @@ function applyDocumentLang(): void {
 applyDocumentLang();
 
 export function getLang(): Lang { return currentLang; }
-export function getLocale(): string { return currentLang === 'ru' ? 'ru-RU' : 'en-GB'; }
+export function getLocale(): string { return locales[currentLang]; }
 
 export function setLang(lang: Lang): void {
-  if (lang !== 'ru' && lang !== 'en') return;
+  if (!isLang(lang)) return;
   // Persist an explicit choice even if it matches the detected language.
   saved = lang;
   try { localStorage.setItem(KEY, lang); } catch { /* keep working in memory */ }
@@ -60,9 +72,9 @@ function switchTo(lang: Lang): void {
 // (and its webviews). A Russian layout switches to Russian unless the person
 // has chosen a language; it is a detection, so it is not saved.
 type LayoutNavigator = Navigator & { keyboard?: { getLayoutMap?: () => Promise<Map<string, string>> } };
-if (typeof navigator !== 'undefined' && saved !== 'ru' && saved !== 'en' && currentLang !== 'ru') {
+if (typeof navigator !== 'undefined' && !isLang(saved) && currentLang !== 'ru') {
   (navigator as LayoutNavigator).keyboard?.getLayoutMap?.()
-    .then((map) => { if (saved !== 'ru' && saved !== 'en' && isRussianLayout(map.values())) switchTo('ru'); })
+    .then((map) => { if (!isLang(saved) && isRussianLayout(map.values())) switchTo('ru'); })
     .catch(() => { /* No layout information: the locale decides. */ });
 }
 
