@@ -7,14 +7,20 @@
 //
 // Run after `npm run build`. The browser build (browser-dist) is not covered:
 // it targets current browsers and uses top-level await by design.
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 
 const dist = new URL('../dist/', import.meta.url).pathname;
+if (!existsSync(join(dist, 'assets'))) {
+  // The browser-only CI job builds browser-dist and never dist/; the gate's
+  // subject is the Tauri bundle, and the `ui` job builds it before testing.
+  console.log('webview-compat: no dist/ (Tauri build) here — nothing to hold to Chromium 83; `npm run build` makes it');
+  process.exit(0);
+}
 const files = [join(dist, 'theme-init.js'), ...readdirSync(join(dist, 'assets')).filter(f => f.endsWith('.js')).map(f => join(dist, 'assets', f))];
-if (files.length < 2) throw new Error('webview-compat: run `npm run build` first; dist is empty');
+if (files.length < 2) throw new Error('webview-compat: dist/ holds no scripts; run `npm run build`');
 
 // APIs newer than Chromium 83 that nothing shims. Shimmed ones (src/compat.ts):
 // replaceChildren, Object.hasOwn, crypto.randomUUID. Method names are checked
