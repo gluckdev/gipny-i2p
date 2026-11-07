@@ -21,6 +21,12 @@ export function insertText(input: TextState, text: string): TextState {
   return { value, start: caret, end: caret };
 }
 
+/** Composition replaces a suffix before the caret along with any selection. */
+export function replaceBeforeCaret(input: TextState, count: number, text: string): TextState {
+  const s = clamp(input);
+  return insertText({ ...s, start: Math.max(0, s.start - Math.max(0, count)) }, text);
+}
+
 const isLowSurrogate = (c: number): boolean => c >= 0xdc00 && c <= 0xdfff;
 const isHighSurrogate = (c: number): boolean => c >= 0xd800 && c <= 0xdbff;
 /** Marks that belong to the character before them: combining diacritics,

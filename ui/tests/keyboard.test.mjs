@@ -12,7 +12,8 @@ import { Window } from 'happy-dom';
 // same compiler as production, like the other UI tests.
 const dir = await mkdtemp(join(tmpdir(), 'gipny-osk-'));
 await build({ configFile: false, logLevel: 'silent', build: {
-  outDir: dir, emptyOutDir: false, rolldownOptions: { output: { banner: 'const Event = window.Event;' } }, lib: { entry: 'tests/entry.ts', formats: ['es'], fileName: () => 'entry.mjs' },
+  outDir: dir, emptyOutDir: false, rolldownOptions: { output: { banner: 'const Event = window.Event;' } },
+  lib: { entry: { entry: 'tests/entry.ts', telex: 'src/osk-telex.ts' }, formats: ['es'], fileName: (_, name) => `${name}.mjs` },
 } });
 const win = new Window({ url: 'http://localhost/' });
 for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement',
@@ -21,8 +22,9 @@ for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'E
 }
 win.__TAURI_INTERNALS__ = {};
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
+const { telexCompose } = await import(pathToFileURL(join(dir, 'telex.mjs')).href);
 const { LAYOUTS, LAYOUT_IDS, SYMBOL_PAGES, DIGIT_ROWS, EMOJI, shifted, isLayoutId,
-  insertText, deleteBackward, moveCaret, graphemeStart,
+  insertText, replaceBeforeCaret, deleteBackward, moveCaret, graphemeStart,
   isTextLikeType, isTextField, oskActive, resetOskActive, getOskMode, setOskMode,
   installOsk, uninstallOsk, enabledLayouts, setViewportOffset, h, setLang, translations } = ui;
 
@@ -55,13 +57,73 @@ test('every layout has three unique rows and a shifted form for each key', () =>
   assert.equal(shifted(LAYOUTS.de, 'ß'), 'ß', 'ß does not become SS');
   assert.ok(LAYOUTS.ru.rows.flat().includes('ё') && LAYOUTS.ru.rows.flat().includes('ъ'));
   assert.ok(['ä', 'ö', 'ü', 'ß'].every((c) => LAYOUTS.de.rows.flat().includes(c)));
-  assert.ok(isLayoutId('ru') && !isLayoutId('xx'));
+  assert.ok(isLayoutId('ru') && isLayoutId('vi') && !isLayoutId('xx'));
+  assert.deepEqual(LAYOUTS.vi.rows.map((row) => row.join('')), ['qwertyuiop', 'asdfghjkl', 'zxcvbnm']);
+  assert.equal(LAYOUTS.vi.label, 'VI');
+  assert.equal(LAYOUTS.vi.compose, 'telex');
+  assert.equal(shifted(LAYOUTS.vi, 'a'), 'A');
   for (const page of SYMBOL_PAGES) {
     const keys = page.flat();
     assert.equal(new Set(keys).size, keys.length, 'symbols are unique within a page');
   }
   assert.deepEqual(DIGIT_ROWS.flat().filter((c) => /\d/.test(c)).sort(), [...'0123456789']);
   assert.equal(new Set(EMOJI).size, EMOJI.length, 'emoji are unique');
+});
+
+function typeTelex(keys, before = '') {
+  for (const key of keys) {
+    const composed = telexCompose(before, key);
+    before = composed ? before.slice(0, before.length - composed.replace) + composed.text : before + key;
+  }
+  return before;
+}
+
+test('Telex composes Vietnamese letters and tones', () => {
+  for (const [keys, expected] of [
+    ['vieetj', 'việt'], ['ddawng', 'đăng'], ['tieengs', 'tiếng'], ['tiengs', 'tiéng'],
+    ['hoaf', 'hoà'], ['xoong', 'xông'], ['quas', 'quá'], ['thuyr', 'thuỷ'],
+    ['aaa', 'aa'], ['toans', 'toán'], ['toansz', 'toan'], ['VIEETJ', 'VIỆT'],
+    ['aa', 'â'], ['ee', 'ê'], ['oo', 'ô'], ['aw', 'ă'], ['ow', 'ơ'], ['uw', 'ư'], ['dd', 'đ'],
+    ['AA', 'Â'], ['Aa', 'Â'], ['aA', 'â'], ['Vieetj', 'Việt'],
+    ['aass', 'âs'], ['ass', 'as'], ['aff', 'af'], ['arr', 'ar'], ['axx', 'ax'], ['ajj', 'aj'],
+    ['eee', 'ee'], ['ooo', 'oo'], ['aww', 'aw'], ['oww', 'ow'], ['uww', 'uw'], ['ddd', 'dd'],
+    ['asf', 'à'], ['aasz', 'â'], ['asa', 'ấ'], ['AAa', 'Aa'], ['ASs', 'As'],
+    ['hoef', 'hoè'], ['hoanf', 'hoàn'], ['laauj', 'lậu'], ['thuwowngr', 'thưởng'],
+    ['ddangw', 'đăng'], ['tieengs hoaf', 'tiếng hoà'], ['vieetj\ns', 'việt\ns'],
+  ]) {
+    const actual = typeTelex(keys);
+    assert.equal(actual, expected, keys);
+    assert.equal(actual.normalize('NFC'), actual, `${keys} is NFC`);
+  }
+  assert.equal(typeTelex('a', typeTelex('aa')), 'aa', 'the third a undoes â');
+  assert.equal(typeTelex('z', typeTelex('toans')), 'toan', 'z removes only the tone');
+  assert.deepEqual(telexCompose('prefix 😀 viêt', 'j'), { replace: 4, text: 'việt' }, 'only the trailing syllable is replaced');
+  assert.equal(typeTelex('s', 'ă'), 'ắ');
+  for (const [before, key] of [
+    ['a', 'k'], ['a', '.'], ['a', '1'], ['a', '😀'], ['a', 'ss'], ['a', ''],
+    ['', 'w'], ['tr', 'w'], ['', 's'], ['tr', 's'], ['a', 'z'],
+    ['a ', 's'], ['a1', 's'], ['a!', 's'], ['a😀', 's'], ['aЖ', 's'],
+    ['a\n', 's'], ['a\r', 's'], ['a\r\n', 's'], ['a\u2028', 's'], ['a\u2029', 's'],
+  ]) assert.equal(telexCompose(before, key), null, `${JSON.stringify(before)} + ${JSON.stringify(key)} is literal`);
+});
+
+test('Telex emits and clears all five NFC tones for each vowel in both cases', () => {
+  for (const [base, tones] of [
+    ['a', 'áàảãạ'], ['ă', 'ắằẳẵặ'], ['â', 'ấầẩẫậ'], ['e', 'éèẻẽẹ'], ['ê', 'ếềểễệ'], ['i', 'íìỉĩị'],
+    ['o', 'óòỏõọ'], ['ô', 'ốồổỗộ'], ['ơ', 'ớờởỡợ'], ['u', 'úùủũụ'], ['ư', 'ứừửữự'], ['y', 'ýỳỷỹỵ'],
+  ]) {
+    for (const upper of [false, true]) {
+      const vowel = upper ? base.toUpperCase() : base;
+      for (let i = 0; i < 5; i++) {
+        const key = upper ? 'SFRXJ'[i] : 'sfrxj'[i];
+        const expected = upper ? tones[i].toUpperCase() : tones[i];
+        assert.equal(typeTelex(key, vowel), expected, `${vowel} + ${key}`);
+        assert.equal(expected.normalize('NFC'), expected);
+        assert.equal(typeTelex(key, expected), vowel + key, 'repeating a tone emits the literal modifier');
+        assert.equal(typeTelex('z', expected), vowel, 'clearing a tone preserves the vowel shape and case');
+      }
+    }
+  }
 });
 
 test('insert, backspace and caret moves respect graphemes and selections', () => {
@@ -82,6 +144,15 @@ test('insert, backspace and caret moves respect graphemes and selections', () =>
   assert.deepEqual(moveCaret({ value: 'a😀b', start: 1, end: 1 }, 1), { value: 'a😀b', start: 3, end: 3 });
   assert.deepEqual(moveCaret({ value: 'abc', start: 1, end: 2 }, 1), { value: 'abc', start: 2, end: 2 }, 'a selection collapses to its edge');
   assert.deepEqual(moveCaret({ value: 'abc', start: 3, end: 3 }, 1), { value: 'abc', start: 3, end: 3 });
+});
+
+test('composition replaces the suffix before the caret and any selection', () => {
+  assert.deepEqual(replaceBeforeCaret({ value: '😀viêt!', start: 6, end: 6 }, 4, 'việt'), { value: '😀việt!', start: 6, end: 6 });
+  assert.deepEqual(replaceBeforeCaret({ value: 'viêtOLD!', start: 4, end: 7 }, 4, 'việt'), { value: 'việt!', start: 4, end: 4 });
+  assert.deepEqual(replaceBeforeCaret({ value: 'â!', start: 1, end: 1 }, 1, 'aa'), { value: 'aa!', start: 2, end: 2 });
+  assert.deepEqual(replaceBeforeCaret({ value: 'ab', start: 9, end: 9 }, 1, 'X'), { value: 'aX', start: 2, end: 2 });
+  assert.deepEqual(replaceBeforeCaret({ value: 'ab!', start: 2, end: 2 }, 9, 'X'), { value: 'X!', start: 1, end: 1 });
+  assert.deepEqual(replaceBeforeCaret({ value: 'ab!', start: 2, end: 2 }, -1, 'X'), { value: 'abX!', start: 3, end: 3 });
 });
 
 test('text-like fields are the ones that would bring up a system keyboard', () => {
@@ -126,6 +197,8 @@ test('the layout key cycles the UI language, English and hand-added layouts', ()
   assert.deepEqual(enabledLayouts(), ['en']);
   localStorage.setItem('gipny.osk.layouts', 'de, xx ,ru');
   assert.deepEqual(enabledLayouts(), ['en', 'de', 'ru'], 'unknown ids are dropped, order kept');
+  localStorage.setItem('gipny.osk.layouts', 'vi, en, vi');
+  assert.deepEqual(enabledLayouts(), ['en', 'vi'], 'Vietnamese joins the cycle without duplicates');
   localStorage.removeItem('gipny.osk.layouts');
   assert.deepEqual(Object.keys(translations.en).filter((k) => k.startsWith('osk.')).length, 10);
 });
@@ -252,6 +325,88 @@ test('the panel comes up for a focused field, types into it and goes away', asyn
   uninstallOsk();
   input.remove(); area.remove(); number.remove();
   setOskMode('auto'); resetOskActive();
+});
+
+test('the Vietnamese panel composes Telex in the focused field', () => {
+  setOskMode('on'); resetOskActive();
+  uninstallOsk();
+  const panel = installOsk();
+  assert.ok(panel);
+  const input = h('input', { type: 'text' });
+  const events = [];
+  input.addEventListener('input', (e) => events.push([e.inputType, e.data]));
+  try {
+    localStorage.setItem('gipny.osk.layouts', 'vi');
+    setLang('en'); setLang('ru'); setLang('en');
+    document.body.append(input);
+    input.focus();
+    if (!panel.visible) fire(input, 'focusin');
+    for (let i = 0; i < LAYOUT_IDS.length && panel.layout !== 'vi'; i++) press(panel, fnKey('layout'));
+    assert.equal(panel.layout, 'vi');
+    assert.equal(panel.currentPage, 'letters');
+
+    for (const key of 'vieetj') press(panel, charKey(key));
+    assert.equal(input.value, 'việt');
+    assert.equal(input.selectionStart, 4);
+    assert.equal(input.selectionEnd, 4);
+    assert.equal(document.activeElement, input);
+    assert.deepEqual(events, [
+      ['insertText', 'v'], ['insertText', 'i'], ['insertText', 'e'],
+      ['insertText', 'viê'], ['insertText', 't'], ['insertText', 'việt'],
+    ], 'each key emits one input event with the replacement text');
+
+    input.value = '😀 viêt tail';
+    input.setSelectionRange(7, 7);
+    press(panel, charKey('j'));
+    assert.equal(input.value, '😀 việt tail', 'composition preserves text on both sides of the syllable');
+    assert.equal(input.selectionStart, 7);
+
+    input.value = 'viêtOLD!';
+    input.setSelectionRange(4, 7);
+    press(panel, charKey('j'));
+    assert.equal(input.value, 'việt!', 'composition also replaces the selection');
+    assert.equal(input.selectionStart, 4);
+    assert.equal(input.selectionEnd, 4);
+
+    input.value = 'â!';
+    input.setSelectionRange(1, 1);
+    press(panel, charKey('a'));
+    assert.equal(input.value, 'aa!');
+    assert.equal(input.selectionStart, 2, 'undo advances the caret past the literal modifier');
+
+    input.value = '';
+    input.setSelectionRange(0, 0);
+    press(panel, fnKey('shift'));
+    press(panel, charKey('V'));
+    for (const key of 'ieetj') press(panel, charKey(key));
+    assert.equal(input.value, 'Việt', 'one-shot shift releases during composition');
+
+    input.value = '';
+    input.setSelectionRange(0, 0);
+    press(panel, fnKey('shift')); press(panel, fnKey('shift'));
+    for (const key of 'VIEETJ') press(panel, charKey(key));
+    assert.equal(input.value, 'VIỆT', 'caps lock composes uppercase vowels');
+    press(panel, fnKey('shift'));
+
+    press(panel, fnKey('symbols'));
+    press(panel, charKey('1'));
+    press(panel, fnKey('emoji'));
+    press(panel, charKey('😀'));
+    assert.equal(input.value, 'VIỆT1😀', 'other pages insert literally');
+
+    press(panel, fnKey('layout'));
+    assert.equal(panel.layout, 'en');
+    input.value = '';
+    input.setSelectionRange(0, 0);
+    for (const key of 'vieetj') press(panel, charKey(key));
+    assert.equal(input.value, 'vieetj', 'composition is limited to the Vietnamese layout');
+  } finally {
+    input.blur();
+    input.remove();
+    localStorage.removeItem('gipny.osk.layouts');
+    uninstallOsk();
+    setOskMode('auto'); resetOskActive();
+  }
 });
 
 test('fields the panel did not create are marked when they enter the document', async () => {

@@ -20,8 +20,9 @@ import { t as tr, getLang, onLangChange } from './i18n';
 import { isTextField, oskActive, isTextLikeType } from './osk-mode';
 import { LAYOUTS, SYMBOL_PAGES, DIGIT_ROWS, EMOJI, shifted, isLayoutId } from './osk-layouts';
 import type { LayoutId } from './osk-layouts';
-import { insertText, deleteBackward } from './osk-edit';
+import { insertText, replaceBeforeCaret, deleteBackward } from './osk-edit';
 import type { TextState } from './osk-edit';
+import { telexCompose } from './osk-telex';
 
 type Page = 'letters' | 'symbols' | 'symbols2' | 'emoji' | 'digits';
 type Shift = 'off' | 'once' | 'caps';
@@ -232,7 +233,10 @@ export class Osk {
   private type(text: string): void {
     const s = this.state();
     if (!s) return;
-    this.apply(insertText(s, text), 'insertText', text);
+    const composed = this.page === 'letters' && LAYOUTS[this.layout].compose === 'telex'
+      ? telexCompose(s.value.slice(0, s.start), text) : null;
+    const next = composed ? replaceBeforeCaret(s, composed.replace, composed.text) : insertText(s, text);
+    this.apply(next, 'insertText', composed?.text ?? text);
     if (this.shift === 'once') { this.shift = 'off'; this.render(); }
   }
 

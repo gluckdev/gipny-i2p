@@ -2,10 +2,9 @@
  * Key tables for the on-screen keyboard. A layout is three rows of letters;
  * the component adds shift, backspace and the bottom row itself. Shift is
  * `toUpperCase()` unless `shift` says otherwise (ß stays ß: 'SS' is a word,
- * not a key). Vietnamese (Telex) and Khmer (NiDA) are the next slice — see
- * docs/plans/2026-11-08-own-keyboard.md.
+ * not a key). Vietnamese uses Telex composition on its Latin keys.
  */
-export type LayoutId = 'ru' | 'en' | 'de';
+export type LayoutId = 'ru' | 'en' | 'de' | 'vi';
 
 export interface Layout {
   id: LayoutId;
@@ -13,6 +12,7 @@ export interface Layout {
   label: string;
   rows: readonly (readonly string[])[];
   shift?: Readonly<Record<string, string>>;
+  compose?: 'telex';
 }
 
 const split = (row: string): string[] => [...row];
@@ -31,9 +31,13 @@ export const LAYOUTS: Readonly<Record<LayoutId, Layout>> = {
     rows: [split('qwertzuiopü'), split('asdfghjklöä'), split('yxcvbnmß')],
     shift: { 'ß': 'ß' },
   },
+  vi: {
+    id: 'vi', label: 'VI', compose: 'telex',
+    rows: [split('qwertyuiop'), split('asdfghjkl'), split('zxcvbnm')],
+  },
 };
 
-export const LAYOUT_IDS: readonly LayoutId[] = ['ru', 'en', 'de'];
+export const LAYOUT_IDS: readonly LayoutId[] = ['ru', 'en', 'de', 'vi'];
 
 export function isLayoutId(id: string): id is LayoutId {
   return (LAYOUT_IDS as readonly string[]).indexOf(id) !== -1;
