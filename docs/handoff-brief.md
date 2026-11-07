@@ -64,8 +64,10 @@ GitHub Pages раздаёт приложение и обновления; соо
 QR в карточке показывается до 340 px вместо 200. Экран загрузки говорит «сеть не
 отвечает», если за 30 с ни один узел не ответил (`gipny_router_peers` в shim →
 `Router::peers` → `network-none`): на Honor с Wi-Fi без интернета он молчал все
-10 минут до таймаута. Дальше по плану: i2pd с его туннелями в WASM для
-браузерного роутера.
+10 минут до таймаута. Регистрация спрашивает имя один раз: имя профиля на
+устройстве выводится из него (`ui/src/profile-name.ts`: транслитерация,
+`[A-Za-z0-9_-]{1,32}`, уникальность только по локальному списку). Дальше по
+плану: i2pd с его туннелями в WASM для браузерного роутера.
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
 данные можно менять без миграций; новые сообщения, ACK и состояние криптографии
@@ -120,7 +122,9 @@ centre-square pass at full resolution was added, decoding moved to a worker
 200. The loading screen now says that nothing on the network answers when no
 router has replied for 30 s (`gipny_router_peers` in the shim → `Router::peers`
 → `network-none`); on the Honor's internet-less Wi-Fi it stayed silent for the
-full ten-minute timeout. Next in plan: i2pd with its tunnels in WASM for the
-browser router.
+full ten-minute timeout. Registration asks for one name: the on-device profile
+name is derived from it (`ui/src/profile-name.ts`: transliteration,
+`[A-Za-z0-9_-]{1,32}`, unique on this device only). Next in plan: i2pd with its
+tunnels in WASM for the browser router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)

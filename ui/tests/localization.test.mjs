@@ -48,6 +48,24 @@ const deferred = () => {
 };
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
 
+test('the profile name is derived from the display name, unique on this device', () => {
+  const { profileSlug, profileNameFor, PROFILE_NAME_MAX } = ui;
+  assert.equal(profileSlug('Alice'), 'alice');
+  assert.equal(profileSlug('Honor Test'), 'honor-test');
+  assert.equal(profileSlug('  Анна  Щукина '), 'anna-shchukina');
+  assert.equal(profileSlug('Zoë Müller-Weiß'), 'zoe-muller-wei');
+  assert.equal(profileSlug('ខ្មែរ'), '', 'a script without transliteration leaves nothing');
+  assert.equal(profileNameFor('ខ្មែរ', []), 'profile');
+  assert.equal(profileNameFor('Alice', ['alice']), 'alice-2');
+  assert.equal(profileNameFor('ALICE', ['alice', 'alice-2']), 'alice-3');
+  const long = 'x'.repeat(40);
+  assert.equal(profileNameFor(long, []).length, PROFILE_NAME_MAX);
+  assert.equal(profileNameFor(long, ['x'.repeat(32)]).length, PROFILE_NAME_MAX, 'the suffix fits inside the limit');
+  for (const name of [profileNameFor('Анна', []), profileNameFor('a b_c', []), profileNameFor(long, ['x'.repeat(32)])]) {
+    assert.match(name, /^[A-Za-z0-9_-]{1,32}$/, 'what the core accepts as a profile name');
+  }
+});
+
 test('v3 cards match Rust and Python vectors and reject malformed canonical encodings', () => {
   for (const vector of cardFixtures.valid) {
     const source = vector.input;

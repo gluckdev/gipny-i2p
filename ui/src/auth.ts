@@ -1,5 +1,6 @@
 import { errorText } from './error-text';
 import { languagePicker } from './language-picker';
+import { profileNameFor } from './profile-name';
 import { t as tr } from './i18n';
 import { Api, usesBrowserCore } from './api';
 import type { Store, BootStep, BootStepId } from './state';
@@ -8,8 +9,8 @@ import { salonBackdrop, salonEmblem } from './profile-salon';
 
 export class AuthCreate extends View {
   el: HTMLElement;
-  private nameI: HTMLInputElement;
   private displayI: HTMLInputElement;
+  private nameHint: HTMLElement;
   private passI: HTMLInputElement;
   private confirmI: HTMLInputElement;
   private duressI: HTMLInputElement;
@@ -19,12 +20,20 @@ export class AuthCreate extends View {
 
   constructor(private store: Store) {
     super();
-    this.nameI = h('input', {
-      class: 'input', placeholder: tr('auth.e_g_alice'), autofocus: true, maxlength: '32',
-    });
+    // One name (owner, 2026-11-07): the one contacts see. The profile's name
+    // on this device is derived from it (profile-name.ts) and shown, not asked.
     this.displayI = h('input', {
-      class: 'input', placeholder: tr('auth.visible_to_contacts'), maxlength: '64',
+      class: 'input', placeholder: tr('auth.visible_to_contacts'), autofocus: true, maxlength: '64',
     });
+    this.nameHint = h('div', { class: 'hint' });
+    const paintNameHint = (): void => {
+      const display = this.displayI.value.trim();
+      this.nameHint.textContent = display
+        ? tr('auth.name_hint', { p0: profileNameFor(display, store.profiles.get()) })
+        : tr('auth.display_name_hint');
+    };
+    this.displayI.addEventListener('input', paintNameHint);
+    paintNameHint();
     this.passI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.passphrase') });
     this.confirmI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.confirm_passphrase') });
     this.duressI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.duress_passphrase_optional') });
@@ -42,12 +51,7 @@ export class AuthCreate extends View {
         h('div', { class: 'auth-title' }, tr('auth.new_profile_title')),
         h('div', { class: 'auth-sub' }, tr('auth.new_profile_sub')),
         h('div', { class: 'field' },
-          h('label', null, tr('auth.profile_name')), this.nameI,
-          h('div', { class: 'hint' }, tr('auth.profile_name_hint')),
-        ),
-        h('div', { class: 'field' },
-          h('label', null, tr('auth.display_name')), this.displayI,
-          h('div', { class: 'hint' }, tr('auth.display_name_hint')),
+          h('label', null, tr('auth.name')), this.displayI, this.nameHint,
         ),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
         h('div', { class: 'field' }, h('label', null, tr('auth.confirm_pass')), this.confirmI),
@@ -83,7 +87,6 @@ export class AuthCreate extends View {
 
   private async create(): Promise<void> {
     this.err.textContent = '';
-    const profile = this.nameI.value.trim();
     const display = this.displayI.value.trim();
     const pass = this.passI.value;
     const conf = this.confirmI.value;
@@ -91,13 +94,10 @@ export class AuthCreate extends View {
     const wipe = this.wipeC.checked;
     const max = parseInt(this.attemptsI.value) || 0;
 
-    if (!profile) { this.err.textContent = tr('auth.profile_name_required'); return; }
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(profile)) {
-      this.err.textContent = tr('auth.profile_name_letters_digits_and_up_to_32');
-      return;
-    }
     if (!display) { this.err.textContent = tr('auth.display_name_required_your_contacts_will_see_this'); return; }
     if (display.length > 64) { this.err.textContent = tr('auth.display_name_too_long_max_64'); return; }
+    // Unique on this device only; the list is what the device has right now.
+    const profile = profileNameFor(display, this.store.profiles.get());
     if (pass.length < 8) { this.err.textContent = tr('auth.passphrase_too_short_min_8'); return; }
     if (pass !== conf) { this.err.textContent = tr('auth.passphrases_do_not_match'); return; }
     if (duress && duress === pass) { this.err.textContent = tr('auth.duress_must_differ_from_primary'); return; }

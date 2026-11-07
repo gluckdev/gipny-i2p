@@ -4,6 +4,7 @@ export * from '../src/view';
 export * from '../src/api';
 export * from '../src/state';
 export * from '../src/auth';
+export * from '../src/profile-name';
 export * from '../src/app';
 export * from '../src/about';
 export * from '../src/contact';
