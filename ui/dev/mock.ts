@@ -360,7 +360,13 @@ async function drive(): Promise<void> {
     (await waitFor(() => byText('.ctx-menu-item', t('sidebar.new_contact'))))?.click();
   }
   if (withOsk) {
-    (await waitFor(() => document.querySelector<HTMLElement>('.chat-input textarea') ?? document.querySelector<HTMLElement>('input.input, textarea')))?.focus();
+    // The scene's view may rebuild its form once data arrives; focus the
+    // field that is there once the dust settles, and again if it was replaced.
+    const field = (): HTMLElement | null => document.querySelector<HTMLElement>('.chat-input textarea') ?? document.querySelector<HTMLElement>('input.input, textarea');
+    await waitFor(field);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    field()?.focus();
+    setTimeout(() => { if (!(document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement)) field()?.focus(); }, 800);
   }
 }
 
