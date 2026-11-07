@@ -43,6 +43,11 @@ const EVERY_MS = 90;
 /** How often the live path spends a pass on the full sensor resolution. */
 const FINE_EVERY = 4;
 
+/** The worker gets this long per frame; three passes take about two seconds
+ * on a slow phone, so a frame still unanswered here means a worker that is
+ * not going to answer. */
+const FRAME_DEADLINE_MS = 10_000;
+
 /** One canvas for every decode, reused: a fresh element per frame is a
  * per-frame allocation the GC gets to hear about. */
 const work = document.createElement('canvas');
@@ -100,6 +105,8 @@ export class QrScanner {
   private worker: Worker | null = null;
   /** A frame is with the worker; the loop skips frames until it answers. */
   private decoding = false;
+  /** A frame the worker never answers for ends the worker, not the scan. */
+  private frameTimer: number | null = null;
 
   constructor(private onResult: (text: string) => void, private onError: (message: string) => void) {
     this.video = h('video', { class: 'qr-video', playsinline: 'true', muted: 'true' }) as HTMLVideoElement;
@@ -152,11 +159,12 @@ export class QrScanner {
       try {
         this.worker = new Worker(new URL('./qr-worker.ts', import.meta.url), { type: 'module' });
         this.worker.onmessage = (event: MessageEvent<QrReply>) => {
+          this.clearFrameTimer();
           this.decoding = false;
           if (this.stopped) return;
           if (event.data.text) { this.stop(); this.onResult(event.data.text); }
         };
-        this.worker.onerror = () => { this.worker?.terminate(); this.worker = null; this.decoding = false; };
+        this.worker.onerror = () => this.dropWorker();
       } catch { this.worker = null; }
     }
     this.frame = requestAnimationFrame(this.tick);
@@ -193,7 +201,12 @@ export class QrScanner {
     this.frame = requestAnimationFrame(this.tick);
   };
 
-  /** Hand the current frame to the worker, unless it is still on the last one. */
+  /** Hand the current frame to the worker, unless it is still on the last one.
+   *
+   * Anything that keeps the worker from answering — a bitmap this engine will
+   * not make from a video, a worker that dies, a reply that never comes —
+   * ends the worker, and the next tick decodes on the main thread instead.
+   * The scan goes on; only the thread changes. */
   private sendFrame(): void {
     const w = this.video.videoWidth;
     const hgt = this.video.videoHeight;
@@ -204,7 +217,20 @@ export class QrScanner {
     createImageBitmap(this.video).then((bitmap) => {
       if (this.stopped || !this.worker) { bitmap.close(); this.decoding = false; return; }
       this.worker.postMessage({ bitmap, passes }, [bitmap]);
-    }).catch(() => { this.decoding = false; });
+      this.frameTimer = window.setTimeout(() => this.dropWorker(), FRAME_DEADLINE_MS);
+    }).catch(() => this.dropWorker());
+  }
+
+  /** Give up on the worker; the main-thread passes take over from the next tick. */
+  private dropWorker(): void {
+    this.clearFrameTimer();
+    this.worker?.terminate();
+    this.worker = null;
+    this.decoding = false;
+  }
+
+  private clearFrameTimer(): void {
+    if (this.frameTimer != null) { clearTimeout(this.frameTimer); this.frameTimer = null; }
   }
 
   /** The main-thread fallback: the same passes as the worker's, on this frame. */
@@ -224,6 +250,7 @@ export class QrScanner {
     this.stopped = true;
     if (this.frame != null) cancelAnimationFrame(this.frame);
     this.frame = null;
+    this.clearFrameTimer();
     this.worker?.terminate();
     this.worker = null;
     this.stream?.getTracks().forEach((t) => t.stop());
