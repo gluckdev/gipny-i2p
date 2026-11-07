@@ -107,6 +107,10 @@ screen (650 px of 740 in `dev/preview.html`, duress block still in view);
 `dev/mock.ts` gained `select`/`unlock` scenes and the preview checks the card
 height. The app root stretches as a flex item (`.app-root`): Chromium 83
 resolved its `height: 100%` to the content height, leaving a light band under
-short screens such as the loading one. Next in plan: i2pd with its tunnels in WASM for the browser router.
+short screens such as the loading one. QR scanning: a card is a dense code and
+the Honor's 1080p stream never read it; the camera is now asked for 2560×1920, a
+centre-square pass at full resolution was added, decoding moved to a worker
+(`ui/src/qr-worker.ts`), and the card's QR is shown at up to 340 px instead of
+200. Next in plan: i2pd with its tunnels in WASM for the browser router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)
