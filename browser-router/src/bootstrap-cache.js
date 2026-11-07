@@ -48,7 +48,8 @@ const liveKey = () => new URL('/__gipny-public-netdb/live/v1', globalThis.locati
 
 export async function loadLiveNetDb() {
   try {
-    const response = await (await caches.open(LIVE)).match(liveKey());
+    // match() with cacheName does not create an empty cache on a first start.
+    const response = await caches.match(liveKey(), { cacheName: LIVE });
     if (!response) return null;
     const bytes = new Uint8Array(await response.arrayBuffer());
     return bytes.length && bytes.length <= LIMIT ? bytes : null;

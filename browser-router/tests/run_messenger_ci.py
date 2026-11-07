@@ -397,9 +397,9 @@ def main():
                   if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return key+' oversize';
                   peers=true;
                 } else if(key==='gipny-public-netdb-live-v1') {
-                  // Optional until the router first saves what it learned.
-                  if(requests.length!==1 || new URL(requests[0].url).pathname!=='/__gipny-public-netdb/live/v1') return key+' holds '+paths(requests);
-                  if((await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return key+' oversize';
+                  // Optional (and may be empty) until the router first saves what it learned.
+                  if(requests.length>1 || requests.some(request=>new URL(request.url).pathname!=='/__gipny-public-netdb/live/v1')) return key+' holds '+paths(requests);
+                  if(requests.length && (await (await cache.match(requests[0])).arrayBuffer()).byteLength>4*1024*1024) return key+' oversize';
                 } else if(!key.startsWith('gipny-shell-')) return 'unexpected cache '+key.slice(0,80);
                 else if(requests.some(request=>/browser-config|snapshot|vault|attachments/.test(new URL(request.url).pathname))) return key+' holds '+paths(requests.filter(request=>/browser-config|snapshot|vault|attachments/.test(new URL(request.url).pathname)));
               }
