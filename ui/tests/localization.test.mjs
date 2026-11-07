@@ -882,3 +882,25 @@ test('settings omit relay diagnostics, APK catalog and log controls in either bu
     }
   } finally { logSettings = previous; app.destroy(); }
 });
+
+test('the on-screen keyboard setting reads and writes gipny.osk', async () => {
+  const store = chatStore(); const app = new App(store); document.body.append(app.el);
+  const previousLang = getLang();
+  try {
+    setLang('en');
+    localStorage.removeItem('gipny.osk');
+    const modal = new ui.SettingsModal(store, app, () => {});
+    document.body.append(modal.el); await tick();
+    const radios = { auto: modal.el.querySelector('#opt-osk-auto'), on: modal.el.querySelector('#opt-osk-on'), off: modal.el.querySelector('#opt-osk-off') };
+    for (const id of ['auto', 'on', 'off']) assert.ok(radios[id], `radio opt-osk-${id} is rendered`);
+    assert.equal(radios[localStorage.getItem('gipny.osk') ?? 'auto'].checked, true, 'the checked radio mirrors gipny.osk');
+    radios.on.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.osk'), 'on');
+    assert.equal(radios.on.checked, true);
+    radios.auto.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.osk'), 'auto');
+  } finally {
+    localStorage.removeItem('gipny.osk');
+    setLang(previousLang); app.destroy();
+  }
+});

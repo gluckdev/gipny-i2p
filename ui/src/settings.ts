@@ -6,6 +6,8 @@ import type { RouterSettings, TransitProfile } from './api';
 import { getTheme, setTheme } from './theme';
 import type { Theme } from './theme';
 import { getLang, setLang, type Lang } from './i18n';
+import { getOskMode, setOskMode } from './osk-mode';
+import type { OskMode } from './osk-mode';
 import type { Store } from './state';
 import { h, busy, humanSize } from './view';
 import type { App } from './app';
@@ -225,6 +227,39 @@ export class SettingsModal {
             );
           });
           return h('div', { class: 'opt-group' }, ...rows);
+        })(),
+
+        h('div', { class: 'divider-text' }, tr('settings.osk')),
+        h('div', { class: 'hint', style: { marginBottom: '8px' } }, tr('settings.osk_hint')),
+        (() => {
+          // The choice is read once per page load (oskActive() caches it), so
+          // unlike theme or language it cannot apply while the app runs.
+          const choices: { id: OskMode; title: string }[] = [
+            { id: 'auto', title: tr('settings.osk_auto') },
+            { id: 'on', title: tr('settings.osk_on') },
+            { id: 'off', title: tr('settings.osk_off') },
+          ];
+          const note = h('div', { class: 'hint hidden', style: { marginTop: '6px' } });
+          const current = getOskMode();
+          const rows = choices.map(({ id, title }) => {
+            const r = h('input', {
+              type: 'radio', name: 'osk', id: `opt-osk-${id}`,
+            }) as HTMLInputElement;
+            r.checked = id === current;
+            r.addEventListener('change', () => {
+              if (r.checked) {
+                setOskMode(id);
+                note.classList.remove('hidden');
+                note.textContent = tr('settings.osk_restart');
+              }
+            });
+            return h('label', { class: 'opt', for: `opt-osk-${id}` },
+              r,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, title)),
+            );
+          });
+          return h('div', { class: 'opt-group' }, ...rows, note);
         })(),
 
         h('div', { class: 'divider-text' }, tr('settings.theme')),
