@@ -169,7 +169,12 @@ a:hover { text-decoration: underline; }
    Chromium 83 (Huawei WebView 11) resolved that percentage to the content
    height on the phone, and every screen shorter than the viewport — the
    loading screen while a profile connects, for one — ended in a band of the
-   light body background. */
+   light body background. The main screen's single grid row is explicit for
+   the same engine: its implicit `auto` row kept the content height (365 px of
+   800 on the Honor) instead of stretching, so the contact list stopped
+   mid-screen; the phone layout below makes .main a flex column, which that
+   engine sizes correctly (an explicit 1fr row did not help). Measured live
+   through DevTools on the phone. */
 .app-root { flex: 1 1 auto; min-height: 0; }
 
 .auth {
@@ -2570,9 +2575,12 @@ select.input { width: 100%; text-overflow: ellipsis; }
      skips the next; a newer one lets the dvh line win. */
   html, body, #app, .main { height: calc(100vh - var(--kbd-offset, 0px)) !important; }
   html, body, #app, .main { height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
-  .main { grid-template-columns: minmax(0, 1fr) !important; }
-  .main > .sidebar { grid-column: 1; grid-row: 1; border-right: none; }
-  .main > .stack.grow { grid-column: 1; grid-row: 1; }
+  /* One pane at a time, as a flex column rather than a one-column grid: on
+     Chromium 83 the grid's row kept the content height inside a `calc()`-sized
+     .main (365 px of 800 on the Honor), a flex item fills it. */
+  .main { display: flex; flex-direction: column; }
+  .main > .sidebar { flex: 1 1 auto; min-height: 0; border-right: none; }
+  .main > .stack.grow { flex: 1 1 auto; min-height: 0; }
   .main:not(.has-chat) > .stack.grow { display: none !important; }
   .main.has-chat > .sidebar { display: none !important; }
 
