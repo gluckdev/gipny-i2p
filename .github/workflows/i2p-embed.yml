@@ -391,7 +391,9 @@ jobs:
     timeout-minutes: 30
     # Someone else's service, and the GitHub API unauthenticated from a
     # shared exit (60 requests an hour for everyone behind it): red here is
-    # read in the summary, and does not fail the run.
+    # read in the summary, and does not fail the run. While GitHub has only
+    # prereleases it is red with "no stable release yet": the API answered
+    # and the updater named it, but there is no file to download.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
