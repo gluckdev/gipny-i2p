@@ -2209,7 +2209,11 @@ body::before { background: none; }
 
 /* --- QR: sharing a card and reading one ------------------------------------- */
 .card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
-.card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
+/* As large as the card allows: the other phone's camera reads this code, and a
+   gipny card is a dense one (owner, 2026-11-07: «размер QR должен больше»). The
+   white padding is the quiet zone a reader needs. `height: auto` keeps the
+   SVG's own square ratio on engines without `aspect-ratio`. */
+.card-qr svg { width: min(100%, 340px); height: auto; border-radius: 12px; background: #fff; padding: 10px; box-sizing: border-box; }
 .card-qr .hint { text-align: center; max-width: 280px; }
 .qr-slot { margin-bottom: 10px; }
 /* The picker is driven by its own button; the input itself is never shown. */

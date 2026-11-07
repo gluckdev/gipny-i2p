@@ -76,7 +76,7 @@
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
 | `src/actions.ts` | Контекстные меню (`ContextMenu`, `attachContextMenu`, `messageMenuItems`), `PinnedBanner`, `EditInline` |
 | `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки и **сканирование QR** камерой через `QrScanner`) |
-| `src/qr-scan.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением |
+| `src/qr-scan.ts`, `src/qr-worker.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением. У камеры просится 2560×1920; каждый раунд — весь кадр в 1280, через раз центральный квадрат (80 % короткой стороны) в полном разрешении, каждый 4-й — весь кадр в 2048 с инверсией: карточка — плотный код (~177 модулей), с 1080p-потока его читает только центральный проход. Декодирование в Worker (ImageBitmap → OffscreenCanvas): на телефоне проход стоит 150–900 мс и в главном потоке дёргал бы превью; без Worker/OffscreenCanvas — те же проходы в главном потоке |
 | `src/group.ts` | `GroupModal`, `CreateGroupModal` |
 | `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
 | `src/settings.ts` | `SettingsModal`: доступные настройки приватности, профиля и платформы; Relay/Relay network/APK/log удалены |
