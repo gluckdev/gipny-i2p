@@ -2698,10 +2698,14 @@ select.input { width: 100%; text-overflow: ellipsis; }
 .salon-wing:last-child { transform: skewX(-30deg); }
 .salon-dial {
   display: grid; place-items: center; position: relative; width: 68px; height: 68px; border-radius: 50%;
-  border: 1px solid #ddc690; outline: 1px solid #79613d; outline-offset: 3px;
+  border: 1px solid #ddc690;
   background: radial-gradient(circle, #27332b 52%, #17221b 53% 65%, #9c8250 66% 67%, #272a1e 68%);
   box-shadow: 0 4px 16px #0008, inset 0 1px 2px #fff4;
 }
+/* The outer ring is a pseudo-element, not an outline: an outline ignores
+   border-radius before Chromium 94 and drew a square around the dial on the
+   Honor's WebView (Chromium 83). */
+.salon-dial::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid #79613d; pointer-events: none; }
 .salon-dial::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; border: 1px dashed #cbb47b80; animation: salon-movement 90s linear infinite; }
 .salon-monogram { color: #ead3a2; font: 31px/1 Georgia, 'Times New Roman', serif; text-shadow: 0 1px #000; }
 .salon-wordmark { text-align: center; font-size: 15px; font-weight: 500; letter-spacing: .42em; padding-left: .42em; color: #dec798; }
