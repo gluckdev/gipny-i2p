@@ -55,7 +55,10 @@ GitHub Pages раздаёт приложение и обновления; соо
 в предрелизных Android-сборках; [журналы](release-diagnostics.md). Экраны входа на
 телефоне (≤ 600px) стали плотнее, чтобы создание профиля помещалось в один экран
 (650 px из 740 в `dev/preview.html`, блок «под принуждением» на виду); `dev/mock.ts`
-получил сцены `select`/`unlock`, превью проверяет высоту карточки. Дальше по
+получил сцены `select`/`unlock`, превью проверяет высоту карточки. Корень
+приложения растягивается как flex-элемент (`.app-root`): на Chromium 83
+`height: 100%` давал высоту контента, и под коротким экраном (загрузка профиля)
+была светлая полоса. Дальше по
 плану: i2pd с его туннелями в WASM для браузерного роутера.
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
@@ -102,6 +105,8 @@ ES2022. Fixed by `WEBVIEW_FLOOR` (Chromium 83) in `ui/vite.config.ts`, shims in
 [diagnostics](release-diagnostics.md). The sign-in screens are denser on phones (≤ 600px) so profile creation fits one
 screen (650 px of 740 in `dev/preview.html`, duress block still in view);
 `dev/mock.ts` gained `select`/`unlock` scenes and the preview checks the card
-height. Next in plan: i2pd with its tunnels in WASM for the browser router.
+height. The app root stretches as a flex item (`.app-root`): Chromium 83
+resolved its `height: 100%` to the content height, leaving a light band under
+short screens such as the loading one. Next in plan: i2pd with its tunnels in WASM for the browser router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)

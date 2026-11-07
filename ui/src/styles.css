@@ -165,6 +165,12 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar-thumb:hover { background: var(--phosphor-dim); }
 
 #app { display: flex; flex-direction: column; }
+/* The app's root fills #app as a flex item, not only through `height: 100%`:
+   Chromium 83 (Huawei WebView 11) resolved that percentage to the content
+   height on the phone, and every screen shorter than the viewport — the
+   loading screen while a profile connects, for one — ended in a band of the
+   light body background. */
+.app-root { flex: 1 1 auto; min-height: 0; }
 
 .auth {
   flex: 1;

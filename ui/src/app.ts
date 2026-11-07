@@ -21,7 +21,7 @@ export class App extends View {
 
   constructor(private store: Store) {
     super();
-    this.el = h('div', { class: 'stack', style: { height: '100%' } });
+    this.el = h('div', { class: 'stack app-root', style: { height: '100%' } });
     this.sub(store.view, (v) => this.render(v));
     this.sub(store.selectedChat, () => this.closeModals(), false);
     this.sub(store.toast, (t) => this.renderToast(t));
