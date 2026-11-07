@@ -1,10 +1,15 @@
 import init from '../../../browser-router/pkg/gipny_browser_router.js';
 import { BrowserBackend } from './backend';
+import { WorkerRtcSocket } from './rtc-transport';
 
 const scope = globalThis as unknown as {
   onmessage: ((event: MessageEvent) => void) | null;
-  postMessage(message: unknown): void;
+  postMessage(message: unknown, transfer?: Transferable[]): void;
 };
+Object.assign(globalThis, {
+  gipnyRtcSocket: (endpoint: string, protocol: string) => new WorkerRtcSocket(endpoint, protocol,
+    (url, auth, port) => scope.postMessage({ event: 'rtc_connect', endpoint: url, protocol: auth }, [port])),
+});
 const backend = new BrowserBackend((event, payload) => scope.postMessage({ event, payload }));
 const ready = init();
 scope.onmessage = (event: MessageEvent): void => {
@@ -14,7 +19,10 @@ scope.onmessage = (event: MessageEvent): void => {
     try {
       await ready;
       const result = await backend.invoke(request.command as string, request.args as Record<string, unknown> | undefined);
-      scope.postMessage({ id: request.id, result });
+      if (result instanceof Uint8Array) {
+        const bytes = new Uint8Array(result); result.fill(0);
+        scope.postMessage({ id: request.id, result: bytes }, [bytes.buffer]);
+      } else scope.postMessage({ id: request.id, result });
     } catch (error) {
       scope.postMessage({ id: request.id, error: String(error instanceof Error ? error.message : error).slice(0, 1000) });
     }

@@ -24,8 +24,9 @@ const { t, setLang, getLang, translations, App, Store, Api } = ui;
 
 const calls = [];
 let logSettings = { available: true, enabled: false, path: '/tmp/example.log' };
-ui.mockIPC((cmd) => {
+ui.mockIPC((cmd, args) => {
   calls.push(cmd);
+  if (cmd === 'message_files') return Object.fromEntries((args?.messageIds ?? []).map(id => [id, { attachments: [], progress: [] }]));
   if (cmd === 'log_settings' && logSettings instanceof Error) return Promise.reject(logSettings);
   const responses = {
     get_contact_folders: [], get_avatar_choices: {}, get_chat_prefs: { ttlSecs: null, ttlChosen: true },
@@ -33,7 +34,7 @@ ui.mockIPC((cmd) => {
     link_stats: { lane: 'normal', our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: null }, get_relay_info: null, get_relay_address: '', my_b32: '',
     update_configured: false, list_apk_artifacts: { version: '0.4.18', artifacts: [] },
     current_version: '0.4.18', get_attachment_privacy: true, get_clear_on_lock: false,
-    get_agent_mode: null, get_router_settings: { transit: 'balanced', yggdrasil: 'off' },
+    get_agent_mode: null, get_router_settings: { transit: 'balanced', upnp: 'on' },
     log_settings: logSettings,
     my_bundle: { sign_pk: 'a'.repeat(64), dh_pk: 'b'.repeat(64), signed_prekey: 'c'.repeat(64), signed_prekey_sig: 'd'.repeat(128), one_time_prekey: null },
   };
@@ -132,6 +133,12 @@ test('locale choice respects saved preferences and handles unavailable storage',
   assert.equal(ui.detectLang(null, ['ru-RU']), 'ru');
   assert.equal(ui.detectLang(null, ['de-DE']), 'en');
   assert.equal(ui.detectLang('invalid', []), 'en');
+  assert.equal(ui.detectLang(null, ['en-US', 'ru-RU']), 'ru', 'any preferred Russian locale');
+  assert.equal(ui.detectLang(null, ['uk-UA', 'be-BY']), 'en', 'other Cyrillic locales are not Russian');
+  assert.equal(ui.detectLang(null, ['en-US'], true), 'ru', 'a Russian keyboard layout');
+  assert.equal(ui.detectLang('en', ['ru-RU'], true), 'en', 'an explicit choice wins');
+  assert.equal(ui.isRussianLayout('йцукенгшщзхъфывапролджэячсмитьбю'.split('')), true);
+  assert.equal(ui.isRussianLayout('йцукенгшщзхїфівапролджєячсмитьбю'.split('')), false);
   const old = win.localStorage.setItem;
   win.localStorage.setItem = () => { throw new Error('storage disabled'); };
   assert.doesNotThrow(() => setLang('ru'));
@@ -357,7 +364,7 @@ test('a cancelled boot ignores and releases a late progress subscription', async
     subscription.resolve(() => { released++; }); await opening;
     handler({ stage: 'relay', state: 'done', detail: 'stale' });
     assert.equal(released, 1);
-    assert.equal(store.bootLog.get().length, 0);
+    assert.ok(store.bootSteps.get().every(step => step.state === 'idle'));
     assert.equal(store.view.get(), 'profile-select');
   } finally { store.endBoot(); Api.onBootStatus = original; }
 });
@@ -488,8 +495,10 @@ test('peer history banners use explicit live preferences independently of messag
         store.handleEvent({ PeerHistorySaving: { contact_id: 1, save_history: choice } });
         for (const expires_at of [null, Date.now() + 3600_000]) {
           store.messages.set(new Map([['contact:1', [{ id: 9, outgoing: false, body: 'hello', sent_at: Date.now(), group_id: null, console: null, expires_at }]]]));
-          const text = t(choice === true ? 'chat.peer_saves_history' : choice === false ? 'chat.peer_doesnt_save_history' : 'chat.peer_history_unknown');
-          assert.equal(app.el.querySelector('.peer-history-note').textContent, text);
+          const note = app.el.querySelector('.peer-history-note');
+          if (choice == null) { assert.equal(note.classList.contains('hidden'), true, 'an unreported preference shows nothing'); continue; }
+          assert.equal(note.textContent, t(choice ? 'chat.peer_saves_history' : 'chat.peer_doesnt_save_history'));
+          assert.equal(note.classList.contains('hidden'), false);
         }
       }
       store.selectedChat.set({ kind: 'group', id: 'team' }); await tick();
@@ -603,7 +612,7 @@ test('system installer handoff preserves retry and never offers an installed-ver
   }
 });
 
-test('DM deletion keeps numbered gaps, removes actions and stays silent in both locales', async () => {
+test('DM notices survive automatic receipts and disappear only after explicit human confirmation', async () => {
   const previousList = Api.listMessages;
   const previousUnread = Api.unreadCount;
   try {
@@ -632,19 +641,20 @@ test('DM deletion keeps numbered gaps, removes actions and stays silent in both 
         assert.ok(remove, 'both participants can delete either authorship');
         remove.onClick(); assert.equal(invoked, 1);
       }
-      server = server.map((item) => item.id === 202 ? { ...item, body: '', deleted_at: Date.now(), delete_pending: true } : item);
+      server = server.map((item) => item.id === 202 ? { ...item, body: '', deleted_at: Date.now(), delete_pending: true, deletion_notice: { deleted_at: Date.now(), by_sender: false, can_ack: false } } : item);
       const oldResponse = deferred();
       const staleRows = [message(303, 3, true), message(202, 2, false), message(101, 1, true)];
       Api.listMessages = () => oldResponse.promise;
       const staleLoad = store.loadMessages({ kind: 'contact', id: 1 });
       Api.listMessages = async () => server.map((item) => ({ ...item })).reverse();
-      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: true } });
+      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: true, deletion_notice: server[1].deletion_notice } });
       await tick();
       oldResponse.resolve(staleRows); await staleLoad;
       const gap = app.el.querySelector('[data-mid="202"]');
       assert.ok(gap.classList.contains('msg-deleted'));
-      assert.ok(gap.textContent.includes(t('chat.deleted_number', { number: 2 })));
-      assert.ok(gap.textContent.includes(t('chat.deletion_pending')));
+      assert.ok(gap.textContent.includes(t('chat.deleted_by_you')));
+      assert.ok(gap.textContent.includes(t('chat.deletion_waiting_ok')));
+      assert.equal(gap.querySelector('.deletion-ok'), null, 'the initiator cannot dismiss their own notice');
       assert.ok(!gap.textContent.includes('private'));
       assert.equal(gap.querySelectorAll('button, img, video, .attachment').length, 0);
       assert.ok(app.el.querySelector('[data-mid="101"] .msg-number').textContent.includes('#1'));
@@ -659,9 +669,13 @@ test('DM deletion keeps numbered gaps, removes actions and stays silent in both 
       assert.equal(store.messages.get().get('contact:1').find((item) => item.id === 202).body, '');
       assert.equal(store.fileProgress.get().has(202), false);
       server = server.map((item) => item.id === 202 ? { ...item, delete_pending: false } : item);
-      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: false } });
+      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: false, deletion_notice: server[1].deletion_notice } });
       await tick();
-      assert.ok(app.el.querySelector('[data-mid="202"]').textContent.includes(t('chat.deletion_confirmed')));
+      assert.ok(app.el.querySelector('[data-mid="202"]'), 'automatic ACK keeps the notice');
+      server = server.map(item => item.id === 202 ? { ...item, deletion_notice: null } : item);
+      store.handleEvent({ MessageDeleted: { contact_id: 1, message_id: 202, deleted_at: server[1].deleted_at, pending: false, deletion_notice: null } });
+      await tick();
+      assert.equal(app.el.querySelector('[data-mid="202"]'), null, 'human confirmation dismisses it');
       assert.equal(store.messages.get().get('contact:1').find((item) => item.id === 202).dm_seq, 2);
       assert.equal(sounds, 0); assert.equal(notifications, 0);
       app.destroy();
@@ -713,7 +727,7 @@ test('only active chat content is cached and stale list/pinned replies cannot re
 });
 
 test('destroy and deletion clear chat-owned plaintext/images and reject late attachment replies', async () => {
-  const previous = { load: Api.loadAttachment, list: Api.listAttachments,
+  const previous = { load: Api.loadAttachment, files: Api.messageFiles,
     messages: Api.listMessages, unread: Api.unreadCount,
     create: URL.createObjectURL, revoke: URL.revokeObjectURL };
   const created = [], revoked = [];
@@ -732,13 +746,13 @@ test('destroy and deletion clear chat-owned plaintext/images and reject late att
     chat.consoleHistory = ['private command']; chat.consoleDraft = 'private console draft';
     const lateImage = deferred(), lateNames = deferred();
     Api.loadAttachment = () => lateImage.promise;
-    Api.listAttachments = () => lateNames.promise;
+    Api.messageFiles = () => lateNames.promise;
     const opening = chat.openImageLazy(10, 'late.png', 7);
-    chat.attachmentCache.clear();
-    const listing = chat.loadAttachmentsFor(7, document.createElement('div'));
+    chat.fileCache.clear(); chat.attachmentCache.clear();
+    chat.queueFiles(7); await tick();
     store.selectedChat.set({ kind: 'contact', id: 2 });
-    lateImage.resolve('c2VjcmV0'); lateNames.resolve([{ id: 10, name: 'late private name', size: 2 }]);
-    await Promise.all([opening, listing]);
+    lateImage.resolve('c2VjcmV0'); lateNames.resolve({ 7: { attachments: [{ id: 10, name: 'late private name', size: 2 }], progress: [] } });
+    await opening; await tick();
     assert.deepEqual(revoked, created);
     assert.equal(chat.input.value, ''); assert.equal(chat.replyTo, null);
     assert.deepEqual(chat.pending, []); assert.deepEqual(chat.consoleHistory, []); assert.equal(chat.consoleDraft, '');
@@ -758,7 +772,7 @@ test('destroy and deletion clear chat-owned plaintext/images and reject late att
     deletedImage.resolve('c2VjcmV0'); await beforeDelete; await tick();
     assert.equal(created.length, 1); assert.equal(current.imageDataCache.size, 0);
   } finally {
-    app.destroy(); Api.loadAttachment = previous.load; Api.listAttachments = previous.list;
+    app.destroy(); Api.loadAttachment = previous.load; Api.messageFiles = previous.files;
     Api.listMessages = previous.messages; Api.unreadCount = previous.unread;
     URL.createObjectURL = previous.create; URL.revokeObjectURL = previous.revoke;
   }
@@ -822,39 +836,22 @@ test('closed context menus release document handlers and do not attach them afte
   }
 });
 
-test('release settings expose disabled diagnostics without log controls in either language', async () => {
+test('settings omit relay diagnostics, APK catalog and log controls in either build policy', async () => {
   const store = chatStore(); const app = new App(store); document.body.append(app.el);
   const previous = logSettings;
   try {
-    logSettings = { available: false, enabled: false, path: '' };
-    for (const lang of ['en', 'ru']) {
+    for (const available of [false, true]) for (const lang of ['en', 'ru']) {
+      logSettings = { available, enabled: available, path: available ? '/tmp/example.log' : '' };
       setLang(lang);
       const before = calls.length;
       const modal = new ui.SettingsModal(store, app, () => {});
       document.body.append(modal.el); await tick();
-      const panel = modal.el.querySelector('.application-log');
-      assert.equal(panel.textContent, t('settings.log_unavailable_release'));
-      assert.equal(panel.querySelectorAll('input, button, pre').length, 0);
-      assert.ok(!calls.slice(before).some((cmd) => /read_.*log|set_log_enabled|clear_debug_log/.test(cmd)));
+      assert.equal(modal.el.querySelector('.application-log'), null);
+      for (const key of ['settings.application_log', 'settings.android_app', 'settings.relay', 'about.relay_network']) {
+        assert.ok(![...modal.el.querySelectorAll('.divider-text')].some(node => node.textContent === t(key)));
+      }
+      assert.ok(!calls.slice(before).some(cmd => /log_settings|read_.*log|set_log_enabled|clear_debug_log|list_apk_artifacts/.test(cmd)));
       modal.el.remove();
     }
-    logSettings = { available: true, enabled: false, path: '/tmp/example.log' };
-    const modal = new ui.SettingsModal(store, app, () => {});
-    document.body.append(modal.el); await tick();
-    const checkbox = modal.el.querySelector('.application-log input');
-    assert.equal(checkbox.checked, false);
-    checkbox.checked = true; checkbox.dispatchEvent(new win.Event('change')); await tick();
-    assert.equal(calls.at(-1), 'set_log_enabled');
-    assert.ok(modal.el.querySelector('.application-log').textContent.includes('/tmp/example.log'));
-    modal.el.remove();
-    logSettings = new Error('IPC unavailable');
-    const failed = new ui.SettingsModal(store, app, () => {});
-    document.body.append(failed.el); await tick();
-    assert.equal(failed.el.querySelector('.application-log').textContent, t('settings.log_capability_failed'));
-    assert.equal(failed.el.querySelectorAll('.application-log input, .application-log button').length, 0);
-    failed.el.remove();
-  } finally {
-    logSettings = previous;
-    app.destroy();
-  }
+  } finally { logSettings = previous; app.destroy(); }
 });

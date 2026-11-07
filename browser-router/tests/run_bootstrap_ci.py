@@ -31,10 +31,15 @@ class Assets(BaseHTTPRequestHandler):
         paths = {
             '/': self.server.root / 'tests/bootstrap-page/index.html',
             '/probe.js': self.server.root / 'tests/bootstrap-page/probe.js',
-            '/pkg/gipny_browser_router.js': self.server.root / 'pkg/gipny_browser_router.js',
-            '/pkg/gipny_browser_router_bg.wasm': self.server.root / 'pkg/gipny_browser_router_bg.wasm',
             '/snapshot.tar.gz': self.server.snapshot,
         }
+        # The whole wasm-bindgen output: the module imports its JS snippets
+        # (pkg/snippets/<crate>/src/bootstrap-cache.js), not just two files.
+        pkg = (self.server.root / 'pkg').resolve()
+        if self.path.startswith('/pkg/') and self.path.endswith(('.js', '.wasm')):
+            candidate = (pkg / self.path[len('/pkg/'):]).resolve()
+            if candidate.is_relative_to(pkg) and candidate.is_file():
+                paths[self.path] = candidate
         if self.path == '/config.json':
             if self.headers.get('Sec-Fetch-Site') != 'same-origin':
                 self.send_error(403)
@@ -101,7 +106,7 @@ def profile(root, output, snapshot, candidates, name, cpu_rate):
     with tempfile.TemporaryDirectory(prefix='browser-bootstrap-') as private:
         try:
             with (output / f'forwarder-{name}.log').open('w') as log:
-                forwarder = subprocess.Popen([sys.executable, 'forwarder/server.py',
+                forwarder = subprocess.Popen([str(root / 'forwarder/target/release/gipny-forwarder'),
                     '--host', '127.0.0.1:18767', '--origin', 'http://127.0.0.1:18770',
                     '--capability-file', str(cap_file), '--candidates', str(candidates),
                     '--max-connections', '24', '--session-seconds', '600', '--idle-seconds', '120',

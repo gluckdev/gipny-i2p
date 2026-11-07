@@ -1,90 +1,67 @@
-# docs — решения, оценки, планы, заметки к релизам и передача дел
+# Документация / Documentation
 
-Код в `docs/` не лежит. Здесь фиксируется, **почему** проект устроен так, как устроен, и что из этого ещё актуально.
+## Русский
 
-Основная техническая документация — на русском; [English project guide](../README.en.md)
-даёт английский вход в проект, а интерфейс поддерживает обе локали. Начинайте с
-[текущего состояния на 2026-10-28](today-2026-10-28.md), затем открывайте
-документ нужной подсистемы. `v0.4.19` опубликован 2026-10-29 из `fb46047`;
-изменения объединённой ветки вошли в этот релиз; предыдущий релиз — `0.4.18`.
+Основной язык — русский; английское описание следует вторым в каждом текущем
+руководстве. Срез исходников: **2026-11-06**, базовый `a6e41ca`; изменения
+транспорта и документации в рабочей копии требуют собственной проверки CI.
+Номер версии не означает опубликованный релиз.
 
-Роутер десктопного и мобильного приложений, а также headless-агента и релея
-работает **внутри процесса**: Rust `i2p-embed` → C++ shim → `libi2pd`.
-SAMv3, отдельный daemon и внешний router CLI не нужны. В автономном браузерном
-мессенджере (`ui/browser.html`) используется отдельный WASM-рантайм client-only
-emissary в Dedicated Worker с WSS-форвардером ([docs/browser-messenger.md](browser-messenger.md)).
-Команды с `GIPNY_SAM_PORT`, `--sam`, `yosemite` и `RouterHandle` в старых оценках, планах
-и release notes относятся к архиву. Они не являются инструкцией запуска этого
-дерева. Историю не переписываем; текущую архитектуру показывает исправленный
-[architecture.svg](assets/architecture.svg), сборку — корневые README и
-[workflow guide](../.github/workflows/README.md).
+Начните с [README](../README.md), [состояния функций](current-state.md) и
+[модели безопасности](../SECURITY.md). Откройте
+[браузерный клиент](https://gluckdev.github.io/gipny-i2p/app/browser.html)
+или [руководство браузера](browser-messenger.md): работоспособность сети
+зависит от опубликованной конфигурации форвардера и свежего netDb.
 
-## Что здесь
-
-| Файл | Что это | Статус | Когда обновлять |
-|---|---|---|---|
-| [browser-messenger.md](browser-messenger.md) | Архитектура, OPFS, passkey PRF, PWA и размещение автономного клиента | Draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144). `fa60b02`: полный двухбраузерный CI acceptance, восстановление очереди и offline-история PASS; 46 WASM, 89 session и 14 routing-path тестов, обе холодные загрузки, платформы и CodeQL PASS. Физические телефоны и публичный хостинг не проверены | Вместе с Worker/RPC, хранилищем, passkey, форвардером и проверками CI |
-| [Браузерный I2P runtime, 2026-11-01](plans/2026-11-01-browser-router-wasm.md) | План проверки WASM и [отдельный runtime](../browser-router/README.md) для закреплённого emissary-core с проверяемым client-only патчем | `6b37dc2`, CI `41281997598`: 27 тестов и 2 холодных live bootstrap PASS; JS/WASM и 303 RI доставлены по HTTP, готовность от навигации за 197/107 с, по 5 roundtrip с удержанием 32/34 с; линейная память до 5,90/6,62 МБ | Реальный мобильный браузер, время построения путей и доставка между двумя браузерами |
-| [Локальный веб-режим, 2026-10-31](plans/2026-10-31-web-local-mode.md) | Решение владельца, loopback capability и статический Pages UI | Эксперимент от 2026-10-31 (сопряжение `ui/index.html` с нативным клиентом `gipny-web`); реальные браузеры/платформы не подтверждены | При изменении протокола сопряжения, модели доверия и результатов проверок |
-| [today-2026-10-28.md](today-2026-10-28.md) | Состав объединённой ветки, границы реализации и отдельно проверенные результаты | Снимок 2026-10-28; выпущено в v0.4.19 (2026-10-29) | После интеграции, общих проверок и перед выпуском |
-| [localization.md](localization.md) | Полный перевод UI на английский с сохранением русского: выбор языка, состояние, ошибки, проверки | Выпущено в v0.4.19 (2026-10-29) | Вместе с каждым изменением UI и его обещаний |
-| [contact-cards.md](contact-cards.md) | Короткий v3, полные public keys, b32 hashes, checksum, legacy imports и общие golden vectors | `38892f6` и `a66d223`: 7 Rust card tests и UI cases PASS; живой lookup отдельно | При изменении export/import, QR, installer parsers, адресации или границ длины |
-| [dht/README.md](../dht/README.md) | Обнаружение держателей, fair health probes, Get.closer, bounded work и churn fixture | `0fd14f2`: 19 unit + 10 sim PASS, 16 churn placements; live I2P отдельно | При изменении admission, lookup/get, обслуживания или периодов репликации |
-| `handoff-brief.md` | Бриф для того, кто подхватывает проект: что сделано, какие решения приняты владельцем и почему, открытые вопросы, полезные приёмы, соглашения по коммитам. Разделы датированы. | **Актуальный**, главный вход | После каждой заметной работы — новый датированный раздел: что сделано, какие решения, что не проверено |
-| `relay-independence.md` | Как уйти от единственного релея: варианты A–D, реализованный C (релей в карточке), встроенные релеи, затем «Решение (2026-09-17)» — сеть релеев по решению владельца, её модель угроз и пять фаз. | **Актуальный** (разделы «Состояние» и «Решение») | При изменении модели доставки или модели угроз сети релеев |
-| [group-delivery.md](group-delivery.md) | Атомарный group outbox: полная подготовка, одна транзакция metadata + recipients, очередь до ACK каждого получателя, срок и ограничения | `0460e2f` + `c246d86`; выпущено в v0.4.19 (2026-10-29) | При изменении исходящей подготовки, групповой очереди, ACK или срока повторов |
-| [update-verification.md](update-verification.md) | Обязательный SHA256, fail-closed manifest, ограниченные ответы и атомарная публикация скачанного файла | `7a7bc21`; выпущено в v0.4.19 (2026-10-29) | При изменении download API, проверки или установки обновлений |
-| [platform-updates.md](platform-updates.md) | Матрица app/agent assets, установка на разных ОС, Windows bootstrap и ограничения | Код объединённой ветки; итоговые проверки фиксируются отдельно | При изменении release targets, asset picker, install или restart |
-| [build-release.md](build-release.md) | GitHub Actions как среда сборки; происхождение исходников, native dependencies, manifests и release gates | Требование владельца 2026-10-28; результаты каждого run отдельно | При изменении toolchain, CI, источников или состава пакетов |
-| [message-deletion.md](message-deletion.md) | Удаление DM у обоих участников: постоянные номера/tombstones, durable delete/ACK, chunks, timers и backup | `a66d223`: 8 DB + 2 wire cases и UI-регрессии PASS; live I2P отдельно | При изменении DM identity, удаления, очистки, таймеров или восстановления |
-| [memory-security.md](memory-security.md) | Защищённые ключевые containers, scoped exposures, process hardening и active-only WebView copies | `a66d223`: Linux libcore 175/175, first_run 9/9, UI 18/18 PASS; не гарантия всей RAM или GC-стирания | При изменении lifetime ключей, native/IPC/JS copies и lock cleanup |
-| [device-bound-storage.md](device-bound-storage.md) | OS credential providers, SQLCipher/vault binding, fail-closed headless и явный перенос | `93295f1`: Linux и оба native macOS Keychain PASS; новый Windows quota retry ещё требует CI | При изменении provider, legacy migration/refusal, export/import и установщиков служб |
-| [openwrt.md](openwrt.md) | Статический агент для выбранных musl targets, ABI/ISA, ресурсы, установщик и пределы проверки | `38892f6` и `a66d223`: все 4 target jobs PASS; runtime на роутере и выпуск отдельно | При изменении targets, sysroot, native dependencies или installer |
-| [release-diagnostics.md](release-diagnostics.md) | Релиз без подробных журналов; диагностика разработки и тестов, native logger, capability UI и проверки | Реализовано в интеграционной ветке, выпущено в v0.4.19 (2026-10-29) | При изменении release-профиля, журналирования, переменных диагностики или UI журнала |
-| [site/README.md](../site/README.md) | Статический EN/RU сайт проекта и правила Pages deployment; граница с будущим браузерным клиентом | `4453081` включён в объединённую ветку; публикация отдельно | При изменении сайта, CI или способа публикации |
-| `releases/<версия>.md` | Текст «Что нового» к версии, на русском, для пользователей. `.github/scripts/release-notes.sh` вставляет его в начало страницы релиза на GitHub. | Файл текущей версии — актуальный, старые — история | Перед тегом: создать `docs/releases/<новая версия>.md` в коммите с поднятием версии |
-| `plans/2026-09-16-agent-mode.md` | План режима агента: консоль в чате и отдельный `gipny-agent`. | Исторический: реализовано | Не обновлять; новые планы — новым файлом `plans/<дата>-<тема>.md` |
-| `plans/2026-09-16-inspection.md` | Инспекция 16.09 (режим агента, релиз 0.4.0, security) и план починки, с отметками о выполнении. | Исторический | Не обновлять |
-| `i2p-transport-evaluation.md` | Почему go-i2p не годился как транспорт и был заменён на i2pd. | Архив оценки; описанный SAM transport и удалённые probes не используются | Только как источник истории при новой оценке роутера |
-| `go-i2p-leaseset-analysis.md` | Раскрывает ли go-i2p IP через LeaseSet (#49), по чтению исходников. | Исторический | Не обновлять |
-| `plans/2026-09-17-borrowing-from-others.md` | Идеи изучения Briar, SimpleX SMP, libsignal, OpenMLS, Mimir, MuWire и i2pchat, включая лицензии. | Исследовательский backlog; снимок архитектуры и SAM-примеры исторические | При возобновлении — новая оценка по текущим исходникам |
-| `plans/2026-09-17-eepsite-on-github.md` | Идея сайта/зеркала релизов внутри I2P на воркере GitHub. | Исследовательский план; не реализован статическим сайтом Pages, SAM-примеры исторические | После отдельного решения по I2P hosting |
-| `plans/2026-09-24-dht-seed-status.md` | Где остановилась фаза 5 сети релеев, разбор каждого падения e2e, порядок выпуска 0.4.11, что за владельцем. | Исторический: фаза 5 влита (#98), 0.4.11 выпущен; раздел «За владельцем» актуален | Не обновлять |
-| `plans/2026-09-24-embedded-i2pd.md` | Решение владельца о роутере внутри процесса, таблица выполненных шагов и найденные ограничения. | История реализованного перехода (#101, #102); начальный SAM-план устарел | Новое поведение описывать в текущих component README и handoff |
-| `plans/2026-09-24-netdb-rendezvous-evaluation.md` | NetDb i2p (зашифрованный ослеплённый LeaseSet2) как L0 — поиск текущего адреса контакта; сеть релеев остаётся L1 — хранение писем. | **Актуальный**, решение не принято (ключ на пользователя или на пару) | Когда решат про ключ встречи |
-| `plans/2026-09-24-stability-tests.md` | План нагрузки, симуляции сети, живых прогонов, фаззинга и Android. | Backlog; часть локальных регрессий уже добавлена, старый SAM-дефект — история | По мере добавления тестов, с отдельным результатом каждого прогона |
-| `plans/…` (остальные), `patches/…` | Планы перед реализацией и патчи времён оценок. | Исторические | Не обновлять |
-| `i2p-datagrams-evaluation.md` | Оценка датаграмм для presence/typing и голоса (#38). | Историческое обоснование отказа; SAMv3/yosemite API больше нет | При возвращении темы — новая оценка in-process API |
-| [assets/architecture.svg](assets/architecture.svg) | Текущая схема Rust + C++ shim + libi2pd, relay и DHT | Обновлена 2026-10-28 без SAM | Вместе с изменением архитектуры и обоих README |
-| `assets/banner.svg`, `assets/sequence.svg` | Баннер и упрощённая схема обмена через один релей | Sequence показывает relay exchange, не всю DHT/ACK модель | Вместе с изменением соответствующего описания в README |
-
-## Куда вносить правки
-
-| Задача | Файл |
+| Задача | Руководство |
 |---|---|
-| Описать, что вошло в версию, для пользователей | `docs/releases/<версия>.md` |
-| Зафиксировать решение владельца или итог работы для следующего разработчика | `docs/handoff-brief.md`, новый датированный раздел |
-| Изменилась модель доставки, релеев или сети | `docs/relay-independence.md` + раздел в `handoff-brief.md` |
-| Изменилась атомарность группы, ACK или обновлятор | `docs/group-delivery.md` / `docs/update-verification.md` + оба корневых README |
-| Изменились диагностические сборки или сайт | `docs/release-diagnostics.md` / `site/README.md` + актуальный снимок |
-| Изменились детали автономного браузерного мессенджера | `docs/browser-messenger.md` + `browser-router/README.md` |
-| Большой план перед реализацией | Новый `docs/plans/<ГГГГ-ММ-ДД>-<тема>.md` |
-| Картинки в корневом README | `docs/assets/*.svg` |
-| Инструкции «где что в коде» | Не здесь, а `README.md` в соответствующем каталоге кода |
+| Пользоваться WASM-клиентом, хранить профиль, настроить сеть | [Браузер](browser-messenger.md) |
+| Разместить WSS/WebRTC транспорт | [Rust-форвардер](../browser-router/forwarder/README.md) |
+| Понять текущее состояние и планы | [Матрица функций](current-state.md), [планы](roadmap.md) |
+| Обновить upstream и проверить настройки | [Источники и настройки](upstreams-and-settings.md) |
+| Сборка, provenance, релиз | [GitHub Actions](build-release.md), [workflows](../.github/workflows/README.md) |
+| Установить или обновить native клиент | [Платформы](platform-updates.md), [проверка обновления](update-verification.md), [OpenWrt](openwrt.md) |
+| Защита профиля, памяти, журналов | [Device binding](device-bound-storage.md), [RAM](memory-security.md), [diagnostics](release-diagnostics.md) |
+| Контакты и доставка | [Карточки](contact-cards.md), [группы](group-delivery.md), [удаление](message-deletion.md) |
+| Размеры, хранение и подтверждения вложений | [Передача файлов](file-transfer.md) |
+| Сеть роутера, UPnP | [UPnP](upnp.md), [источники и настройки](upstreams-and-settings.md) |
+| Что нового в версии | [0.5.0-rc3](releases/0.5.0-rc3.md), [передача контекста](handoff-brief.md) |
+| Android и переводы | [JNI](android-jni-build.md), [локализация](localization.md) |
+| Карта исходников | [Core](../core/README.md), [libcore](../libcore/README.md), [UI](../ui/README.md), [DHT](../dht/README.md), [agent](../agent/README.md), [bot SDK](../bot-sdk/README.md) |
+| Сайт проекта и его независимость от переписки | [Site](../site/README.md), [план зеркал Tor/I2P](site-mirrors.md) |
 
-## Инварианты и грабли
+Native — Rust/Tauri → i2p-embed → C++ libi2pd. Web — WASM/Worker/OPFS →
+WSS или WebRTC → Rust-форвардер → I2P. Отдельный локальный `gipny-web`
+удалён. Упоминания SAM, daemon gateway или Python production forwarder в старых
+планах не являются текущей инструкцией.
 
-- `docs/releases/<версия>.md` попадает на **публичную** страницу релиза как есть: пишите для пользователей, по-русски, без внутренних деталей и без обещаний того, что ещё не проверено.
-- Имя файла должно совпадать с версией из `core/tauri.conf.json` без `v` (`0.4.3.md`). Иначе `release-notes.sh` его не найдёт и страница выйдет без раздела «Что нового»: сборка при этом не падает.
-- Исторические документы не переписываются задним числом. Если вывод устарел, в актуальном документе появляется новый раздел со ссылкой (так сделано в `relay-independence.md`).
-- В `handoff-brief.md` действует соглашение: коммиты идут от git-пользователя владельца и без трейлеров ИИ-соавторства.
-- Технические документы ведутся по-русски; `README.en.md` — поддерживаемый английский вход.
-  Интерфейс и новые пользовательские инструкции должны учитывать обе локали.
-- Документация постоянно актуализируется с кодом. Проверяйте не только наличие
-  ссылки, но и соответствие её источника обещанному содержимому; новые знания
-  записывайте в handoff и профильном блобе.
+### Исторические материалы
 
-## Как проверить
+`plans/`, `releases/`, `today-2026-10-28.md`, `handoff-brief.md`,
+`relay-independence.md`, оценки старых транспортов и корневой `MIGRATION-i2p.md`
+сохраняют решения и результаты своих дат. Они не заменяют матрицу текущего
+состояния. [Старые результаты браузерного CI](archive/browser-validation-2026-11-01.md)
+относятся к указанным SHA и не подтверждают новый Rust/WebRTC транспорт.
+Планы не следует читать как список готовых возможностей.
 
-- Как `docs/releases/<версия>.md` ляжет на страницу релиза, показывает ручной запуск `release` на ветке: превью в summary джобы `release page` и в артефакте `release-page-preview`.
-- Markdown смотрится на GitHub в самой ветке или PR.
+## English
+
+Russian is primary; English follows in current guides. Source snapshot:
+2026-11-06, baseline `a6e41ca`. Working-tree transport/documentation changes need
+new CI evidence. A source version is not a published release.
+
+Start with the [English README](../README.en.md), [feature status](current-state.md)
+and [security model](../SECURITY.md). The table above links browser setup,
+forwarder operation, upstream/configuration, builds/releases, platform updates,
+profile/memory/logging security, contact cards, delivery, Android, localization,
+router UPnP, the 0.5.0-rc3 notes and component maps. Each current guide provides
+an English section.
+
+Native clients embed i2pd through Rust/C++ FFI. The web client uses
+WASM/Worker/OPFS with WSS or WebRTC via a Rust transport forwarder. The separate
+local `gipny-web` gateway is removed. Historical SAM/daemon/Python-forwarder
+instructions are not current deployment instructions.
+
+Dated plans, release notes, the old handoff brief and migration/evaluation papers
+are historical evidence. Their claims apply only to their dates and revisions;
+they do not establish current feature readiness or validate the new transport.

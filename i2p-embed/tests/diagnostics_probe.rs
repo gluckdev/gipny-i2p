@@ -12,7 +12,7 @@ fn main() {
     for persisted in [None, Some("debug"), Some("off")] {
         assert_eq!(diagnostics::capture_enabled(Some("1"), persisted), available);
     }
-    assert!(!diagnostics::capture_enabled(Some("0"), Some("debug")));
+    assert_eq!(diagnostics::capture_enabled(Some("0"), Some("debug")), available);
     assert_eq!(diagnostics::router_log_path(Some("i2pd.log")).is_some(), available);
     let options = vec!["--loglevel=debug".into(), "--loglevel".into(), "info".into()];
     assert_eq!(diagnostics::router_options(&options, Some("debug")),

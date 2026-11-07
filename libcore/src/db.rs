@@ -11,7 +11,16 @@ use zeroize::Zeroizing;
 use crate::security::MasterKey;
 
 mod dm;
-pub use dm::{DmDelete, DmFileUpdate, DmReference};
+pub use dm::{DmDelete, DmDeletionNotice, DmFileUpdate, DmReference, PeerEvent, is_peer_event_kind,
+    PEER_EVENT_COPIED, PEER_EVENT_SAVED, PEER_EVENT_SCREENSHOT, PEER_EVENT_RECEIPT_OFFSET};
+mod file_transfer;
+pub use file_transfer::FileBatch;
+mod message_commit;
+pub use message_commit::{IncomingCommit, NewOutgoingDm};
+mod group_wire;
+pub use group_wire::MAX_GROUP_MEMBERS;
+mod inbox;
+pub use inbox::{is_transient, InboxLetter, INBOX_TTL_MS};
 
 pub const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -730,6 +739,7 @@ impl Db {
                 ON groups(pinned_at, last_message_at);
         ")?;
         Self::migrate_dm(conn)?;
+        Self::migrate_inbox(conn)?;
         Ok(())
     }
 
@@ -1709,6 +1719,7 @@ impl Db {
             .query_map(params![file_id.as_slice()], Self::map_file_peer)?.collect_rows())
     }
 
+    #[cfg(test)]
     pub fn file_peer_save(&self, p: &FilePeer) -> Result<()> {
         self.with_conn(|c| { c.execute(
             "UPDATE file_out_peer SET next = ?3, acked = ?4, resend = ?5, last_sent_at = ?6, last_ack_at = ?7, failed = ?8
@@ -1726,7 +1737,8 @@ impl Db {
             "INSERT OR IGNORE INTO file_in (file_id, contact_id, message_id, name, size, sha256, chunk_size, path, key, bits, received, created_at)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
              WHERE EXISTS(SELECT 1 FROM messages WHERE id=?3 AND deleted_at IS NULL)
-                AND NOT EXISTS(SELECT 1 FROM dm_deleted_files WHERE contact_id=?2 AND file_id=?1)",
+                AND NOT EXISTS(SELECT 1 FROM dm_deleted_files WHERE contact_id=?2 AND file_id=?1)
+                AND NOT EXISTS(SELECT 1 FROM file_completed WHERE contact_id=?2 AND file_id=?1)",
             params![f.file_id.as_slice(), f.contact_id, f.message_id, f.name, f.size as i64, f.sha256.as_slice(),
                     f.chunk_size, f.path, f.key, f.bits, f.received, f.created_at])? > 0))
     }

@@ -18,6 +18,4 @@ export * from '../src/chat';
 export * from '../src/actions';
 export * from '@tauri-apps/api/mocks';
 
-export * from '../src/web-transport';
-export * from '../src/pairing';
 export * from '../src/browser-files';

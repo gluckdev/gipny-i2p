@@ -1,0 +1,70 @@
+name: CI watchdog
+
+# Infrastructure failures are not results. When GitHub cannot provide a hosted
+# runner (macOS arm64 capacity: "The job was not acquired by Runner"), loses
+# one mid-job or shuts it down, the run is re-run here automatically instead of
+# waiting for someone to notice. Real test/build failures and runs cancelled by
+# a newer push are left alone. Bounded: at most two automatic re-runs per run.
+#
+# workflow_run is read from the default branch, so this takes effect once the
+# file is on main. Release runs are never re-run automatically.
+
+on:
+  workflow_run:
+    workflows:
+      - i2p-embed
+      - build
+      - security fast
+      - Browser router WASM
+      - codeql
+      - OpenWrt static agent
+      - Project website
+      - e2e-i2pd
+      - agent installers
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: ci-watchdog-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  rerun-infrastructure-failures:
+    if: >-
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled')
+      && github.event.workflow_run.run_attempt < 3
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Re-run jobs that never got (or lost) a runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          # Messages GitHub attaches to a job that failed for lack of a runner,
+          # not because of anything in this repository.
+          infra='was not acquired by Runner|lost communication with the server|runner has received a shutdown signal|hosted runner encountered an error'
+          jobs=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | "\(.id)\t\(.name)"')
+          hit=""
+          while IFS=$'\t' read -r id name; do
+            [ -n "$id" ] || continue
+            if gh api "repos/$REPO/check-runs/$id/annotations" --jq '.[].message' | grep -qE "$infra"; then
+              echo "infrastructure: $name"
+              hit=1
+            fi
+          done <<< "$jobs"
+          if [ -z "$hit" ]; then
+            echo "$WORKFLOW attempt $ATTEMPT: no infrastructure failure, nothing to do"
+            exit 0
+          fi
+          echo "$WORKFLOW attempt $ATTEMPT: re-running failed jobs"
+          gh run rerun "$RUN_ID" --repo "$REPO" --failed

@@ -64,3 +64,6 @@ __pycache__/
 
 # Локальный age-ключ релея (DHT_SEED_AGE_KEY) — никогда не коммитить
 .relay-age-key
+
+# Private local review notes for independent review. Never publish unresolved findings.
+/reports/codex-review/

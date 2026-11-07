@@ -1,169 +1,102 @@
-# gipny-browser-router — I2P runtime и браузерный мессенджер (WASM)
+# Browser router — WASM и транспорт / WASM and transport
 
-Этот отдельный Rust workspace реализует `emissary_core::runtime::Runtime` и
-криптографический движок `BrowserEngine` для целевой платформы
-`wasm32-unknown-unknown`. Upstream emissary закреплён на публичном commit
-`5e696a90276c316ebc5ec3a1d0815b02f17516ef` в `emissary-source.json`.
-Патч `patches/client-only-ntcp2.patch` добавляет исходящий клиентский режим без TCP-listener,
-а также поддержку работы in-process `ClientHandle` / `ClientSession` через
-`Runtime::memory_stream_pair()`. Скрипт `scripts/prepare_emissary.py` проверяет точный SHA
-исходников и diff патча, формируя `emissary-provenance.json`.
-Сборки и выполнение тестов проводятся исключительно в GitHub Actions.
+## Русский
 
-## Архитектура и компоненты
+Отдельный Rust workspace предоставляет client-only I2P runtime, криптографию
+мессенджера и зашифрованный browser vault. Точка входа пользователя —
+`ui/browser.html`; [руководство](../docs/browser-messenger.md) описывает хранение,
+размещение и конфигурацию. Отдельного native `gipny-web` больше нет.
 
-Runtime предоставляет браузерные часы (`web-time`), криптографический генератор случайных чисел
-через `getrandom/wasm_js`, gzip на чистом Rust (`flate2`), задачи `spawn_local`, `JoinSet`
-и таймеры. Дескрипторы JavaScript изолированы в локальных задачах worker; наружу в
-структуры emissary отдаются исключительно типобезопасные Rust-каналы, удовлетворяющие
-требованиям `Send` и `Sync`. Небезопасных реализаций `unsafe impl Send/Sync` нет.
-
-- **Сетевой транспорт (`socket.rs`, `network.rs`):** `BrowserTcpStream` передаёт поток байтов
-  бинарными WebSocket-сообщениями к доверенному форвардеру. Вызов
-  `configure_forwarder_authenticated(endpoint, capability)` передаёт токен авторизации
-  в WebSocket subprotocol `gipny.ntcp2.v1.<token>`, не помещая capability в URL; приватное debug-логирование handshake запрещено.
-  Транспорт `wss://` обязателен везде, кроме loopback (`ws://`). Очереди ограничены
-  восемью сообщениями (`QUEUE_DEPTH = 8`) размером до 64 КиБ. `BrowserTcpStream::memory_pair()`
-  создаёт ограниченный байтовый пайп в памяти для in-process сессии роутера без открытия портов.
-  Структура `BrowserNetwork` управляет сессией `ClientSession<BrowserRuntime>`, отслеживает
-  лимиты одновременных потоков (до 16 активных потоков, до 8 входящих accept) и обеспечивает
-  строгие таймауты подключения (90 с) и чтения (120 с).
-- **Управление задачами и отмена (`tasks.rs`):** `TaskScope` изолирует задачи одного запуска
-  роутера на поток браузера. При завершении работы или ошибке `abort_all()` гарантированно
-  прерывает все дочерние задачи.
-- **Криптографический движок (`engine.rs`):** WASM-актор `BrowserEngine` инкапсулирует
-  все приватные криптографические ключи личности (`Identity`), ключи сессий Double Ratchet,
-  подписанные прекеи (SPK) и одноразовые прекеи (OTK: целевой пул 20, максимум 256).
-  Приватные байты `ClientIdentity` emissary и ключи сессий никогда не попадают в JavaScript.
-  Поддерживаются до 1024 одновременных сессий и до 3 альтернативных сессий на контакт
-  для предотвращения гонок сообщений. Коллизии одновременной инициализации разрешаются
-  детерминированным правилом `ours_stands` (побеждает меньший ключ подписи).
-  Все модификации приватного состояния выполняются через двухфазные транзакции
-  (`begin` → `seal` → `commit` / `rollback`).
-- **Хранилище профиля (`vault.rs`):** Зашифрованные записи профиля используют
-  XChaCha20-Poly1305 AEAD для аутентификации заголовка, номера поколения и данных.
-  Внешняя контрольная сумма SHA-256 выявляет неполные или повреждённые записи до передачи ключей.
-  Шифрование мастер-ключа паролем выполняется через Argon2id (64 МиБ памяти, 3 итерации, 1 поток).
-  Passkey поддерживается исключительно через расширение WebAuthn PRF (32 байта реального секрета).
-  Профиль использует два чередующихся слота (`vault-a.bin`, `vault-b.bin`) в OPFS; при смене пароля
-  (`change_password`) новый зашифрованный мастер-ключ зеркалируется в оба слота.
-- **Вспомогательные UI-функции (`ui_helpers.rs`):** Генерация SVG для QR-кода карточки контакта
-  (`contact_qr_svg`), экспорт публичного бандла (`bundle_info`) и очистка вложений
-  (`clean_attachment`) с лимитом размера 1 МиБ на инлайн-файл.
-- **Очистка метаданных (`sanitizer.rs`):** Встроенный чистый модуль очистки метаданных
-  (подключается из `core/src/sanitizer.rs`): форматы JPEG, PNG и WebP очищаются нативно
-  без сторонних библиотек. Для формата PDF очистка в WASM заблокирована (`clean_pdf` возвращает ошибку);
-  пользователь может явно отключить фильтр метаданных в настройках для отправки документа как есть.
-- **Снапшот NetDb (`bootstrap.rs`):** Загрузка архива `tar.gz` по HTTPS/loopback, распаковка
-  в памяти и пакетная проверка подписей RouterInfo перед стартом роутера.
-- **Форвардер (`forwarder/server.py`):** Проксирует зашифрованные байты WS ↔ TCP.
-  Проверяет строгие Host/Origin, единственный capability-subprotocol и цель по списку
-  разрешённых IPv4-адресов пэров из проверенного NetDb. Для не-loopback адресов обязателен TLS.
-- **Нативные бинарники (`src/bin/`):** `prepare-netdb`, `collect-netdb` и `native-peer`
-  собираются в CI с feature `native-peer`. `build.rs` динамически считывает реальный
-  gitlink submodule `third_party/i2pd` (`ls-tree HEAD third_party/i2pd`), передавая ревизию
-  в манифест через `GIPNY_BROWSER_I2PD_REVISION`, вместо устаревших фиксированных строк.
-  Основной репозиторий закреплён на ревизии i2pd `62c013003233df3cc8ab6563563848ff3c316330`.
-
-## Карта файлов компонента
-
-| Файл | Назначение |
+| Код | Ответственность |
 |---|---|
-| `src/lib.rs` | Экспорты рантайма `BrowserRuntime`, `BrowserTcpStream`, `BrowserJoinSet`, `BrowserInstant`, `BrowserTimer`, probe-функции |
-| `src/socket.rs` | WebSocket-транспорт к форвардеру, каналы `Send`/`Sync`, `memory_pair()` для локальных сессий |
-| `src/tasks.rs` | `TaskScope`, трекинг асинхронных задач, корректное прерывание и очистка |
-| `src/engine.rs` | WASM-актор `BrowserEngine`: ключи личности, сессии X3DH/Double Ratchet, транзакции |
-| `src/network.rs` | `BrowserNetwork`: интеграция с `ClientSession` emissary, управление потоками и таймаутами |
-| `src/vault.rs` | Зашифрованные записи профиля (XChaCha20-Poly1305, Argon2id 64 МиБ, WebAuthn PRF passkey, 2 слота) |
-| `src/ui_helpers.rs` | `clean_attachment` (лимит 1 МиБ), `contact_qr_svg`, `bundle_info` |
-| `../core/src/sanitizer.rs` | Очистка метаданных JPEG/PNG/WebP; отклонение PDF в WASM; управление фильтром |
-| `src/bootstrap.rs` | Скачивание и валидация снапшота NetDb в памяти (SHA256, проверка подписей RI) |
-| `src/ntcp2.rs` | Валидация RouterInfo и тестовое рукопожатие NTCP2 data-phase |
-| `src/router.rs` | Запуск exploratory-пула туннелей (`run_exploratory`) |
-| `src/metrics.rs` | Числовые метрики рантайма и `public_network_metrics()` для диагностики lookup/ключей/потоков без идентификаторов и ключевого материала |
-| `src/unsupported.rs` | Заглушки неподдерживаемых операций (`BrowserTcpListener`, `BrowserUdpSocket`) |
-| `src/bin/prepare-netdb.rs` | Формирование снапшота NetDb и TSV-списка кандидатов для форвардера |
-| `src/bin/collect-netdb.rs` | Сбор NetDb через нативный i2pd в CI |
-| `src/bin/native-peer.rs` | Тестовый нативный пэр для проверок NTCP2-рукопожатия |
-| `build.rs` | Определение актуального коммита i2pd через gitlink (`ls-tree`) и сборка C++ фикстуры |
-| `forwarder/server.py` | Внешний шлюз WebSocket ↔ TCP с проверкой подлинности и allowlist |
+| `src/engine.rs` | Identity, X3DH/ratchet, begin/seal/commit/rollback, сессии и прекеи |
+| `src/vault.rs` | AEAD vault, Argon2id, поколения и обёртки master key |
+| `src/network.rs` | ClientSession, лимиты потоков, startup/stop и таймауты |
+| `src/socket.rs` | Ограниченный байтовый поток WSS/WebRTC; local memory pairs |
+| `src/tasks.rs` | TaskScope и отмена задач при остановке роутера |
+| `src/bootstrap.rs`, `src/ntcp2.rs` | Проверка netDb/RouterInfo, адресов, портов, свежести и NTCP2 |
+| `src/ui_helpers.rs` | Карточки/QR и ограниченные inline-вложения |
+| `forwarder/` | Отдельный Rust WSS/WebRTC → TCP сервис без ключей переписки |
+| `tests/` | WASM и browser/I2P сценарии; Python используется как CI-инструмент |
 
-## Границы режимов и функциональности
+Emissary закреплён в `emissary-source.json`. `scripts/prepare_emissary.py`
+проверяет SHA и точный diff `patches/client-only-ntcp2.patch`, создаёт
+`emissary-provenance.json` и отказывается заменять неизвестные локальные правки.
+Патч включает client-only NTCP2, memory stream и особенности client sessions.
+Актуальный gitlink native i2pd берётся из дерева Git, а не из dirty checkout.
 
-Браузерный мессенджер исполняется на стороне клиента в веб-воркере.
-Для Rust-буферов ключей используется `zeroize`; это не гарантия физического
-стирания всей памяти браузера. На диске профиль хранится в чередующихся
-зашифрованных слотах OPFS.
+Криптография/I2P работают в Worker. Для WebRTC объект `RTCPeerConnection`
+находится в Window; MessagePort передаёт только ограниченные транспортные байты.
+`BrowserTcpStream` содержит Rust-каналы без `unsafe impl Send/Sync` для JS.
+Стоп роутера отменяет также драйверы внешних сокетов. WSS и WebRTC выбираются
+явно; fallback отсутствует. Native TCP/UDP в WASM отсутствуют.
 
-Ограничения браузерного режима:
+Данные шифруются до форвардера. Он проверяет Host/Origin/capability и подписанный
+RouterInfo, ограничивает назначения, соединения, кадры, время и объём. Порты
+NTCP2 проходят общую политику `ntcp2::is_allowed_ntcp2_port` (не ниже 1024, без
+сервисных портов) в мосту, `prepare-netdb`, bootstrap и `BrowserTcpStream`.
+WebRTC дополнительно фильтрует SDP/ICE; по умолчанию браузеру нужен TURN, для
+`all` за NAT — STUN. Квоты Window/Worker для MessagePort байтовые: 128 КиБ на
+отправку (как `MAX_BUFFERED` в `socket.rs`) и 1 МиБ на приём.
+Подробнее: [forwarder](forwarder/README.md), [модель угроз](../SECURITY.md).
 
-- **Размеры данных:** инлайн-вложения до 1 МиБ на сообщение; суммарный размер профиля до 16 МиБ.
-- **Неподдерживаемая нативная функциональность:** нативный узел DHT, консоль агента и выполнение
-  команд ОС, транзитная маршрутизация чужого трафика, потоковая передача больших составных файлов,
-  сеть Yggdrasil, системные установщики и duress-пароли требуют будущей реализации.
-  Неподдерживаемые вызовы возвращают явные ошибки.
-- **Хостинг и развёртывание:** подробные инструкции по настройке сервера, TLS-форвардера и формата
-  конфигурационного файла `browser-config.json` приведены в руководстве
-  [docs/browser-messenger.md](../docs/browser-messenger.md).
+Профиль ограничен 16 МиБ, потоковые файлы — 2 ГиБ и доступной квотой OPFS
+с резервом 64 МиБ. Предпросмотр/очистка в памяти — до 32 МиБ. Нет native
+DHT/agent/OS commands, duress и гарантий OS keychain.
+PDF metadata sanitizer в WASM недоступен: отправка без очистки требует явного
+выбора. WebAuthn PRF зависит от браузера/аутентификатора.
 
-## Текущий статус проекта и валидация
+### Проверка
 
-Спайк роутера [PR #143](https://github.com/gluckdev/gipny-i2p/pull/143) влит в `main`
-(`318b2d5`). Мессенджер разрабатывается в draft
-[PR #144](https://github.com/gluckdev/gipny-i2p/pull/144), ветка `feat/browser-messenger`.
-На `fa60b02` прошёл полный автоматизированный acceptance: обмен двух браузеров,
-квитанции, вложение, PRF, блокировка контакта, восстановление профиля с доставкой
-очереди и offline-история при выключенном HTTP-сервере. Прошли 46 WASM-тестов,
-89 session и 14 routing-path тестов, NTCP2 и обе холодные загрузки, платформенная
-матрица и CodeQL. Физические устройства и публичный хостинг ещё не проверены.
-Точные результаты и размеры:
-[docs/browser-messenger.md](../docs/browser-messenger.md#validation-and-artifacts).
+Сборка и исполняемые тесты — **только GitHub Actions**,
+[Browser router WASM](../.github/workflows/browser-router.yml):
 
-## Исторические контрольные замеры
+1. `forwarder`: Rust format, unit/integration tests, release binary.
+2. `wasm`: locked builds, запрет native dependencies в WASM, browser UI и Chrome tests.
+3. `ntcp2`: native peer, реальные NTCP2, cold bootstrap, два браузера с WSS и
+   WebRTC, восстановление vault/очереди, публичные receipts без секретов.
 
-Все приведённые ниже данные относятся к фиксированным историческим точкам разработки и отделены
-от текущего расширенного модуля мессенджера:
+Артефакты: `browser-forwarder-linux`, `browser-messenger-pwa`,
+`browser-router-wasm`, `browser-bootstrap-module` и evidence для NTCP2/bootstrap/
+мессенджера. Файл с capability и приватные browser profiles не публикуются.
+Текущая реализация WebRTC ещё не подтверждена новым CI. CI fixture использует
+локальный ICE; это не проверка внешнего TURN, CDN или физических телефонов.
+[Исторические измерения](../docs/archive/browser-validation-2026-11-01.md)
+отделены от текущего статуса.
 
-- **`d1eccd7` (CI run [41269666409](https://github.com/gluckdev/gipny-i2p/actions/runs/41269666409)):**
-  Ранний модуль `runtime_probe()` занимал **649 825 байт** (базовые часы, RNG, gzip).
-- **`b912f01` (CI run [41272794574](https://github.com/gluckdev/gipny-i2p/actions/runs/41272794574)):**
-  Модуль с NTCP2-пробой занимал **1 451 904 байта**. Пройдены 9 runtime-тестов, 5 тестов форвардера,
-  3 NTCP2-теста. Рукопожатие с локальным фикстурным пэром — 191 мс, с публичным пэром — 491 мс.
-- **`d18630c` (CI run [41277188521](https://github.com/gluckdev/gipny-i2p/actions/runs/41277188521)):**
-  Модуль с полным роутером и exploratory-пулом — **3 403 781 байт**.
-  Успешный прогон `EXPLORATORY_PASS`: 10 соединений, 3/3 туннеля по 2 хопа, 7 roundtrip,
-  40 секунд непрерывного удержания, линейная память WASM — 5 111 808 байт.
-- **`6b37dc2` (CI run [41281997598](https://github.com/gluckdev/gipny-i2p/actions/runs/41281997598)):**
-  Холодный бутстрап из снапшота NetDb (303 проверенных RI, tar.gz 168 043 байта).
-  Размер модуля после `wasm-bindgen`: **2 012 452 байта WASM + 29 579 байт JS** (исходный
-  сырой release WASM — 3 603 680 байт). Достигнута сетевая готовность в эмуляции Chrome.
+## English
 
-## Проверки и артефакты в GitHub Actions
+This standalone Rust workspace implements client-only I2P, messenger crypto and
+an encrypted browser vault. Users enter through `ui/browser.html`; see the
+[browser guide](../docs/browser-messenger.md). The native local gateway is removed.
 
-В соответствии с регламентом проекта, компиляция и выполнение тестов производятся исключительно
-в окружении GitHub Actions через workflow [Browser router WASM](../.github/workflows/browser-router.yml).
-Локальные инструкции по сборке и запуску не предусмотрены.
+The source table above maps the engine (identity/ratchet/transactions), vault
+(AEAD/Argon2id/generations), network lifecycle, bounded socket adapters, task
+cancellation, signed bootstrap/NTCP2 verification, UI helpers, Rust forwarder
+and CI fixtures. Emissary is pinned by `emissary-source.json`; preparation checks
+both the exact commit and client-only patch, records provenance, and refuses
+unknown local edits. Native i2pd uses the committed gitlink.
 
-### Задачи workflow
+Crypto/I2P run in a Worker. RTCPeerConnection runs in Window and exchanges
+bounded ciphertext bytes through MessagePorts. Rust stream objects contain
+channels, without unsafe Send/Sync claims for JS objects. Router shutdown also
+cancels socket drivers. Transport is explicitly WSS or WebRTC, with no fallback
+or browser native TCP/UDP. The Rust forwarder authenticates, verifies RouterInfo
+and bounds destinations, sessions, frames, time and bytes. NTCP2 ports pass the
+shared `ntcp2::is_allowed_ntcp2_port` policy (at least 1024, no service ports) in
+the bridge, `prepare-netdb`, bootstrap and `BrowserTcpStream`. RTC adds SDP/ICE
+checks; the browser defaults to relay-only ICE requiring TURN (`all` behind NAT
+needs STUN). Window/Worker MessagePort quotas are byte based: 128 KiB outbound
+(matching `MAX_BUFFERED` in `socket.rs`) and 1 MiB inbound.
 
-1. **`wasm`:**
-   - Подготовка закреплённого emissary с проверкой контрольных сумм (`prepare_emissary.py`).
-   - Сборка core и release WASM с флагом `--locked`.
-   - Проверка графа зависимостей на отсутствие нативных библиотек (Tokio, OpenSSL, SQLCipher).
-   - Сборка пакета мессенджера (`wasm-pack build --target web`) и сборка UI (`npm run build:browser`).
-   - Исполнение модульных и интеграционных тестов в headless Chrome (рантайм, бутстрап, хранилище).
-   - Тестирование граничных условий Python-форвардера.
-2. **`ntcp2`:**
-   - Сборка нативного тестового пэра и утилит NetDb на базе проверенного исходного кода `third_party/i2pd`.
-   - Реальные рукопожатия NTCP2 из Chrome через промежуточный форвардер.
-   - Сценарии холодного старта роутера из скачанного снапшота NetDb.
-   - Сквозной интеграционный тест обмена сообщениями между двумя изолированными браузерами (`run_messenger_ci.py`).
+Browser limits are a 16 MiB profile and streaming files up to 2 GiB within
+available OPFS quota, reserving 64 MiB. Previews/cleaning use at most 32 MiB.
+Native DHT, agent commands, duress and OS keychain guarantees are unavailable. PDF cleaning is unavailable in WASM; unfiltered sending requires
+an explicit choice. Passkey PRF support varies.
 
-### Формируемые артефакты CI
-
-- `browser-messenger-pwa`: Готовая сборка клиентского веб-приложения (`ui/browser-dist/`).
-- `browser-router-wasm`: Скомпилированный release WASM-модуль, контрольные суммы SHA256, хэш коммита и лицензия.
-- `browser-bootstrap-module`: Пакет `pkg/` с сгенерированными JS-биндингами и тестовой страницей бутстрапа.
-- `browser-ntcp2-evidence`: Журналы рукопожатий NTCP2, списки кандидатов NetDb и логи форвардера.
-- `browser-bootstrap-evidence`: Снапшот NetDb, квитанции времени инициализации (`receipt-*.json`) и логи Chrome.
-- `browser-messenger-evidence`: Публичные квитанции сквозного теста мессенджера (`receipt.json`) и логи сессий.
+Builds and executable tests run only in GitHub Actions: Rust forwarder checks,
+locked WASM/UI builds and Chrome tests, native NTCP2/cold bootstrap, and two
+browser messenger scenarios over WSS and RTC. Artifacts include source/hash
+provenance and public receipts, never capabilities or private profiles. New RTC
+code still needs CI. Local ICE fixtures do not validate external TURN/CDN or
+physical phones. Historical measurements are linked separately above.

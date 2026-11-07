@@ -581,6 +581,48 @@ mod implementation {
 
     #[wasm_bindgen]
     impl BrowserEngine {
+        pub fn new_attachment_key(&self, storage_id: &str) -> Result<Vec<u8>, JsValue> {
+            let id = parse_hex32(storage_id)?;
+            self.inner
+                .borrow()
+                .committed_state()?
+                .vault
+                .attachment_key(&id)
+                .map_err(|e| JsValue::from_str(&e))
+        }
+
+        pub fn seal_attachment_part(
+            &self,
+            storage_id: &str,
+            token: &[u8],
+            index: u32,
+            data: &[u8],
+        ) -> Result<Vec<u8>, JsValue> {
+            let id = parse_hex32(storage_id)?;
+            self.inner
+                .borrow()
+                .committed_state()?
+                .vault
+                .attachment_part(&id, token, index, data, false)
+                .map_err(|e| JsValue::from_str(&e))
+        }
+
+        pub fn open_attachment_part(
+            &self,
+            storage_id: &str,
+            token: &[u8],
+            index: u32,
+            data: &[u8],
+        ) -> Result<Vec<u8>, JsValue> {
+            let id = parse_hex32(storage_id)?;
+            self.inner
+                .borrow()
+                .committed_state()?
+                .vault
+                .attachment_part(&id, token, index, data, true)
+                .map_err(|e| JsValue::from_str(&e))
+        }
+
         /// Creates a brand new profile with fresh keys, emissary ClientIdentity,
         /// and an initialized Vault.
         pub fn create(profile: &str, password: &str) -> Result<BrowserEngine, JsValue> {

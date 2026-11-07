@@ -14,11 +14,13 @@
  *   scene = list | chat | console | settings | identity | add-contact | agent | auth | boot
  *   theme = light | dark
  *   lang = en | ru
+ *   demo = 1   presentable fixtures for screenshots (dev/demo.ts)
  */
 import { t, setLang } from '../src/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AgentMaster, Attachment, Contact, Group, GroupMember, Message } from '../src/api';
 import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT, encodeCard } from '../src/api';
+import { demoFixtures } from './demo';
 
 const params = new URLSearchParams(location.search);
 const requestedLang = params.get('lang');
@@ -150,10 +152,29 @@ const agentMaster: AgentMaster | null = scene === 'agent'
 type Args = Record<string, unknown> | undefined;
 const num = (a: Args, k: string): number => Number((a ?? {})[k] ?? 0);
 
+let displayName = 'admin@workstation-with-a-rather-long-hostname';
+let chatWith = 'Анна';
+let serverName = 'gpu-worker-17';
 let folders = JSON.stringify([
   { id: 'f-infra', name: 'Инфраструктура', collapsed: false, contacts: [1, 4, 5] },
   { id: 'f-empty', name: 'Пустая папка с очень длинным названием, которое не помещается', collapsed: true, contacts: [] },
 ]);
+
+// ?demo=1 swaps the hostile fixtures for presentable ones, in place.
+if (params.get('demo') === '1') {
+  const demo = demoFixtures(requestedLang === 'en' ? 'en' : 'ru', now, hex, msg, DEST);
+  contacts.splice(0, contacts.length, ...demo.contacts);
+  groups.splice(0, groups.length, ...demo.groups);
+  members.splice(0, members.length, ...demo.members);
+  for (const key of Object.keys(byContact)) delete byContact[Number(key)];
+  Object.assign(byContact, demo.byContact);
+  for (const key of Object.keys(byGroup)) delete byGroup[key];
+  Object.assign(byGroup, demo.byGroup);
+  for (const key of Object.keys(attachments)) delete attachments[Number(key)];
+  Object.assign(attachments, demo.attachments);
+  folders = demo.folders;
+  ({ displayName, chatWith, serverName } = demo);
+}
 
 let avatars = '{}';
 // The lane the preview is in, so ТУРБО and НИТРО can actually be pressed and
@@ -174,16 +195,16 @@ mockIPC(async (cmd, payload) => {
     case 'my_onion': return DEST;
     case 'my_fingerprint': return hex('5e');
     case 'my_bundle': return { sign_pk: hex('00'), dh_pk: hex('01'), signed_prekey: hex('aa'), signed_prekey_sig: hex('bb') + hex('cc'), one_time_prekey: null, one_time_id: null };
-    case 'get_display_name': return 'admin@workstation-with-a-rather-long-hostname';
+    case 'get_display_name': return displayName;
     case 'get_relay_address': return relayStarting ? '' : RELAY;
     case 'get_attachment_privacy': return true;
     case 'get_relay_info': return {
       mode: 'builtin', external: '',
       hosted: relayStarting ? { state: 'starting' } : { state: 'ready', address: RELAY },
     };
-    case 'list_unreachable_contacts': return scene === 'chat' ? [2] : [];
+    case 'list_unreachable_contacts': return scene === 'chat' && params.get('demo') !== '1' ? [2] : [];
     case 'get_agent_mode': return agentMaster;
-    case 'get_router_settings': return { transit: 'balanced', yggdrasil: 'auto' };
+    case 'get_router_settings': return { transit: 'balanced', upnp: 'on' };
     case 'update_configured': return false;
     case 'current_version': return '0.4.1';
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };
@@ -224,11 +245,16 @@ mockIPC(async (cmd, payload) => {
     case 'unread_count': return num(a, 'contactId') === 2 ? 1 : 0;
     case 'group_unread_count': return 2;
     // Newest first, as the core returns them; the store reverses.
-    case 'list_messages': return [...(byContact[num(a, 'contactId')] ?? [])].reverse();
+    case 'list_messages': {
+      const before = (a ?? {}).beforeId;
+      const rows = (byContact[num(a, 'contactId')] ?? []).filter((m) => typeof before !== 'number' || m.id < before);
+      return [...rows].reverse().slice(0, num(a, 'limit') || 100);
+    }
     case 'list_group_messages': return [...(byGroup[String((a ?? {})['groupId'])] ?? [])].reverse();
     case 'list_pinned_contact': return num(a, 'contactId') === 2 ? [byContact[2]![1]] : [];
     case 'list_pinned_group': return [];
     case 'list_attachments': return attachments[num(a, 'messageId')] ?? [];
+    case 'message_files': return Object.fromEntries(((a ?? {}).messageIds as number[] ?? []).map((id) => [id, { attachments: attachments[id] ?? [], progress: [] }]));
     case 'load_attachment': return PIXEL;
     case 'list_media_contact': case 'list_media_group': case 'search_messages': return [];
     case 'message_position': return null;
@@ -262,10 +288,14 @@ async function drive(): Promise<void> {
   if (scene === 'auth') return;
   // profile-select → unlock → main
   (await waitFor(() => byText('.auth-card button', /\bops$/)))?.click();
-  const pass = await waitFor(() => document.querySelector<HTMLInputElement>('input[placeholder="пароль"]'));
+  const pass = await waitFor(() => document.querySelector<HTMLInputElement>('.auth-card input[type="password"]'));
   if (pass) {
     (pass as HTMLInputElement).value = 'preview';
-    byText('.auth-card button', t('auth.open_btn'))?.click();
+    // The button stays disabled until the unlock options have loaded.
+    (await waitFor(() => {
+      const open = byText('.auth-card button', t('auth.open_btn')) as HTMLButtonElement | undefined;
+      return open && !open.disabled ? open : null;
+    }))?.click();
   }
   const { emit: emitBoot } = await import('@tauri-apps/api/event');
   // The boot screen is driven by `boot_status`; replay a plausible sequence so
@@ -307,9 +337,9 @@ async function drive(): Promise<void> {
     await waitFor(() => document.querySelector<HTMLElement>('.chat-header'));
   };
 
-  if (scene === 'chat') await openContact('Анна');
+  if (scene === 'chat') await openContact(chatWith);
   if (scene === 'console' || scene === 'agent') {
-    await openContact('gpu-worker-17');
+    await openContact(serverName);
     if (scene === 'console') (await waitFor(() => byText('.agent-controls button', t('chat.mode_console'))))?.click();
   }
   if (scene === 'settings') document.querySelector<HTMLElement>(`.icon-btn[title="${t('sidebar.settings')}"]`)?.click();

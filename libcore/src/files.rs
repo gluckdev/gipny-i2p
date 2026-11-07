@@ -13,13 +13,15 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::crypto::AttachmentCipher;
-use crate::db::{Db, NewAttachment, NewGroupAttachment, NewOutgoingGroup};
-use crate::session::{WireFileAck, WireFileOffer};
+use crate::db::{Db, IncomingCommit, NewAttachment, NewGroupAttachment, NewOutgoingDm, NewOutgoingGroup};
+use crate::session::{WireFileAck, WireFileOffer, WirePayload};
 
 /// Attachments up to this size still ride inside their letter.
 pub const INLINE_MAX: usize = 128 * 1024;
+pub const INLINE_MESSAGE_MAX: usize = 1024 * 1024;
 /// Plaintext bytes per part: with the letter around it and the ratchet on
 /// top, a part fits the 256 KiB padding bucket — through any relay and the
 /// relay network alike.
@@ -31,11 +33,50 @@ pub const CHUNK_SIZE: u32 = 192 * 1024;
 pub const WINDOW: u32 = 16;
 /// Largest file sent in parts.
 pub const MAX_FILE_BYTES: u64 = 2 << 30;
+/// Bound receiver bitmaps even when a peer advertises tiny chunks.
+pub const MAX_PARTS: u32 = MAX_FILE_BYTES.div_ceil(CHUNK_SIZE as u64) as u32;
+pub const MAX_MESSAGE_FILES: usize = 16;
+pub const MAX_INCOMING_FILES: usize = 64;
+pub const MAX_INCOMING_PER_CONTACT: usize = 16;
+const MAX_FILE_NAME_BYTES: usize = 1024;
 
-/// Files created while preparing one group message. Only a successful database
+/// The same offer bounds as the browser, checked before disk preparation.
+pub fn validate_message_files(payload: &WirePayload) -> crate::db::Result<()> {
+    if payload.files.len().saturating_add(payload.attachments.len()) > MAX_MESSAGE_FILES {
+        return Err(crate::db::DbError::TooLarge);
+    }
+    let mut ids = std::collections::HashSet::new();
+    for offer in &payload.files {
+        if offer.size > MAX_FILE_BYTES || offer.name.len() > MAX_FILE_NAME_BYTES
+            || offer.chunk_size == 0 || offer.chunk_size > CHUNK_SIZE
+            || chunk_count(offer.size, offer.chunk_size) > MAX_PARTS || !ids.insert(offer.file_id) {
+            return Err(crate::db::DbError::State);
+        }
+    }
+    if payload.attachments.iter().any(|a| a.name.len() > MAX_FILE_NAME_BYTES) {
+        return Err(crate::db::DbError::TooLarge);
+    }
+    if payload.attachments.iter().fold(0usize, |total, a| total.saturating_add(a.data.len())) > INLINE_MESSAGE_MAX {
+        return Err(crate::db::DbError::TooLarge);
+    }
+    Ok(())
+}
+
+/// Introductions can carry ordinary content and file offers, never commands or
+/// file bytes in separate parts before the user accepts the contact.
+pub fn is_request_content(payload: &WirePayload) -> bool {
+    payload.group.is_none() && payload.typing.is_none() && payload.edit_of.is_none()
+        && payload.pin.is_none() && payload.ack_for.is_none() && payload.callback_data.is_none()
+        && payload.console.is_none() && payload.file_ack.is_none() && payload.file_chunk.is_none()
+        && payload.file_cancel.is_none() && payload.wipe.is_none() && payload.origin_msg_id > 0
+        && payload.dm.as_ref().is_none_or(|dm| dm.kind == 0)
+        && (!payload.body.is_empty() || !payload.attachments.is_empty() || !payload.files.is_empty())
+}
+
+/// Files created while preparing one message. Only a successful database
 /// commit transfers ownership to the message. Ordinary preparation/SQL errors
 /// delete these files; process death can leave encrypted, unreferenced orphans.
-pub struct StagedGroupAttachments {
+pub struct StagedAttachments {
     directory: PathBuf,
     paths: Vec<PathBuf>,
     attachments: Vec<NewGroupAttachment>,
@@ -43,7 +84,7 @@ pub struct StagedGroupAttachments {
     failed: bool,
 }
 
-impl StagedGroupAttachments {
+impl StagedAttachments {
     pub fn new(directory: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(directory)?;
         Ok(Self { directory: directory.to_path_buf(), paths: Vec::new(), attachments: Vec::new(), published: false, failed: false })
@@ -65,6 +106,10 @@ impl StagedGroupAttachments {
     }
 
     fn stage_inline(&mut self, name: &str, data: &[u8]) -> io::Result<()> {
+        self.check_next(name)?;
+        if self.inline_bytes().saturating_add(data.len()) > INLINE_MESSAGE_MAX {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "inline attachment budget exceeded"));
+        }
         let cipher = AttachmentCipher::generate();
         let encrypted = cipher.encrypt_chunk(0, &[], data).map_err(io::Error::other)?;
         let (mut file, path) = self.new_file()?;
@@ -86,6 +131,7 @@ impl StagedGroupAttachments {
     }
 
     fn stage_parts(&mut self, name: &str, source: impl Read) -> io::Result<()> {
+        self.check_next(name)?;
         let cipher = AttachmentCipher::generate();
         let (file, path) = self.new_file()?;
         drop(file);
@@ -112,19 +158,65 @@ impl StagedGroupAttachments {
         }).collect()
     }
 
+    /// Excess small attachments use the same streamed path as large files so
+    /// the combined inline letter remains readable by every client.
+    pub fn can_inline(&self, size: usize) -> bool {
+        size <= INLINE_MAX && self.inline_bytes().saturating_add(size) <= INLINE_MESSAGE_MAX
+    }
+
+    fn inline_bytes(&self) -> usize {
+        self.attachments.iter().filter(|a| a.attachment.chunk_size.is_none())
+            .map(|a| a.attachment.size as usize).sum()
+    }
+
     pub fn publish(mut self, db: &Db, group: &NewOutgoingGroup<'_>) -> crate::db::Result<i64> {
         if self.failed { return Err(crate::db::DbError::State); }
+        self.sync_directory()?;
         let id = db.commit_outgoing_group(group, &self.attachments)?;
         self.published = true;
         Ok(id)
     }
+
+    pub fn publish_dm(mut self, db: &Db, message: &NewOutgoingDm<'_>) -> crate::db::Result<i64> {
+        if self.failed { return Err(crate::db::DbError::State); }
+        self.sync_directory()?;
+        let id = db.commit_outgoing_dm(message, &self.attachments)?;
+        self.published = true;
+        Ok(id)
+    }
+
+    pub fn publish_incoming(mut self, db: &Db, contact_id: i64, payload: &WirePayload) -> crate::db::Result<IncomingCommit> {
+        if self.failed || self.attachments.iter().any(|a| a.file_offer.is_some()) { return Err(crate::db::DbError::State); }
+        self.sync_directory()?;
+        let mut attachments: Vec<_> = self.attachments.iter().map(|a| a.attachment.clone()).collect();
+        let result = db.commit_incoming_message(contact_id, payload, &attachments);
+        for attachment in &mut attachments { attachment.key.zeroize(); }
+        let result = result?;
+        // Duplicate/tombstone races must discard this attempt's disk staging.
+        self.published = result.inserted;
+        Ok(result)
+    }
+
+    fn check_next(&self, name: &str) -> io::Result<()> {
+        if name.len() > MAX_FILE_NAME_BYTES || self.attachments.len() >= MAX_MESSAGE_FILES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "too many files or file name too long"));
+        }
+        Ok(())
+    }
+
+    fn sync_directory(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        File::open(&self.directory)?.sync_all()?;
+        Ok(())
+    }
 }
 
-impl Drop for StagedGroupAttachments {
+impl Drop for StagedAttachments {
     fn drop(&mut self) {
         if !self.published {
             for path in &self.paths { let _ = std::fs::remove_file(path); }
         }
+        for attachment in &mut self.attachments { attachment.attachment.key.zeroize(); }
     }
 }
 /// A receiver acknowledges at least this often, in parts: every one. The
@@ -153,6 +245,9 @@ fn slot(chunk_size: u32, index: u32) -> u64 {
 
 /// Seal `src` into `dest` part by part. Returns its size and sha256.
 pub fn seal_from(mut src: impl Read, dest: &Path, cipher: &AttachmentCipher, chunk_size: u32) -> io::Result<(u64, [u8; 32])> {
+    if chunk_size == 0 || chunk_size > CHUNK_SIZE {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid file chunk size"));
+    }
     let mut out = File::create(dest)?;
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; chunk_size as usize];
@@ -162,6 +257,9 @@ pub fn seal_from(mut src: impl Read, dest: &Path, cipher: &AttachmentCipher, chu
         if n == 0 && index > 0 {
             break;
         }
+        if size + n as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "file larger than MAX_FILE_BYTES"));
+        }
         hash.update(&buf[..n]);
         let sealed = cipher.encrypt_chunk(index as u64, &[], &buf[..n]).map_err(io::Error::other)?;
         out.write_all(&sealed)?;
@@ -169,9 +267,6 @@ pub fn seal_from(mut src: impl Read, dest: &Path, cipher: &AttachmentCipher, chu
         index += 1;
         if n < buf.len() {
             break;
-        }
-        if size > MAX_FILE_BYTES {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "file larger than MAX_FILE_BYTES"));
         }
     }
     out.sync_all()?;
@@ -206,9 +301,16 @@ pub fn write_part(path: &Path, cipher: &AttachmentCipher, size: u64, chunk_size:
         return Err(io::Error::new(io::ErrorKind::InvalidData, "part does not fit the offered file"));
     }
     let sealed = cipher.encrypt_chunk(index as u64, &[], data).map_err(io::Error::other)?;
+    let first = !path.exists();
     let mut f = OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
     f.seek(SeekFrom::Start(slot(chunk_size, index)))?;
     f.write_all(&sealed)?;
+    // Never acknowledge a part whose ciphertext is still only in a write cache.
+    f.sync_all()?;
+    #[cfg(unix)]
+    if first { if let Some(parent)=path.parent() { File::open(parent)?.sync_all()?; } }
+    #[cfg(not(unix))]
+    let _ = first;
     Ok(())
 }
 
@@ -250,6 +352,9 @@ pub struct Received {
 }
 
 impl Received {
+    pub fn completed(total:u32) -> Self {
+        Self { bits:vec![u8::MAX;total.div_ceil(8) as usize],total,count:total }
+    }
     pub fn new(total: u32) -> Self {
         Self { bits: vec![0; total.div_ceil(8) as usize], total, count: 0 }
     }
@@ -347,7 +452,7 @@ impl Sending {
                 }
             }
             flow.recovered();
-            self.resend.retain(|&m| m >= self.acked);
+            self.resend.retain(|&m| m >= self.acked && !held(m));
             self.resend.sort_unstable();
             return;
         }
@@ -363,7 +468,7 @@ impl Sending {
         if let Some(at) = lost {
             flow.on_loss(at, now);
         }
-        self.resend.retain(|&m| m >= self.acked);
+        self.resend.retain(|&m| m >= self.acked && !held(m));
         self.resend.sort_unstable();
     }
 
@@ -674,7 +779,7 @@ mod group_staging_tests {
         let path = dir.path().join("sender.db");
         let attachment_dir = dir.path().join("attachments");
         let (db, recipients) = setup(&path);
-        let mut staged = StagedGroupAttachments::new(&attachment_dir).unwrap();
+        let mut staged = StagedAttachments::new(&attachment_dir).unwrap();
         let existing = attachment_dir.join("unrelated");
         std::fs::write(&existing, b"keep this").unwrap();
         staged.inline("small", b"inline bytes").unwrap();
@@ -711,7 +816,7 @@ mod group_staging_tests {
         let dir = tempfile::tempdir().unwrap();
         let (db, recipients) = setup(&dir.path().join("sender.db"));
         let attachment_dir = dir.path().join("attachments");
-        let mut staged = StagedGroupAttachments::new(&attachment_dir).unwrap();
+        let mut staged = StagedAttachments::new(&attachment_dir).unwrap();
         staged.inline("already staged", b"small").unwrap();
         assert!(staged.parts("broken", BrokenSource { remaining: CHUNK_SIZE as usize }).is_err());
         assert!(staged.publish(&db, &draft(&recipients)).is_err());
@@ -725,7 +830,7 @@ mod group_staging_tests {
         let path = dir.path().join("sender.db");
         let attachment_dir = dir.path().join("attachments");
         let (db, recipients) = setup(&path);
-        let mut staged = StagedGroupAttachments::new(&attachment_dir).unwrap();
+        let mut staged = StagedAttachments::new(&attachment_dir).unwrap();
         staged.inline("inline", b"small").unwrap();
         let bytes = vec![42; CHUNK_SIZE as usize + 7];
         let source = dir.path().join("source.bin");

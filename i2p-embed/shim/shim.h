@@ -40,10 +40,25 @@ GIPNY_API void gipny_router_stop(void);
 /* Tell the router the machine's network changed (Transports::SetOnline). */
 GIPNY_API void gipny_router_set_online(int online);
 /* How many router infos the netDb holds: 0 means we have never reached the
- * network (a reseed that did not come through). The one signal that says
- * whether plain IP is getting us anywhere, which is what the Yggdrasil
- * fallback is decided on. Negative if the router is not up. */
+ * network (a reseed that did not come through). Negative if the router is
+ * not up. */
 GIPNY_API int gipny_router_netdb_routers(void);
+/* Only the router's active IPv4 transport listeners, never application ports.
+ * 1: UPnP wanted (either port may still be 0); 0: disabled by configuration
+ * (upnp.enabled=false, hidden router); -1: the router is not running. */
+GIPNY_API int gipny_router_upnp_ports(uint16_t *tcp, uint16_t *udp);
+/* The gateway's external IPv4 address. The UPnP manager calls this only after
+ * a mapping on that gateway was confirmed. */
+GIPNY_API void gipny_router_upnp_external(const char *ip);
+GIPNY_API int gipny_router_upnp_random(uint8_t *token16);
+/* HMAC-SHA256 over `data`; 1 on success. Derives per-gateway UPnP tags. */
+GIPNY_API int gipny_router_upnp_hmac(const uint8_t *key, size_t key_len, const uint8_t *data,
+                                     size_t data_len, uint8_t *out32);
+/* Shutdown: make miniupnpc HTTP exchanges already in flight stop at their next
+ * received chunk. Exchanges started afterwards are unaffected. */
+GIPNY_API void gipny_router_upnp_abort(void);
+GIPNY_API void gipny_router_stop_hook(void (*hook)(void));
+GIPNY_API void gipny_router_network_hook(void (*hook)(int));
 
 /* Fresh keys: base64 private keys (what DestinationKind::Persistent held). */
 GIPNY_API char *gipny_keys_generate(void);
@@ -60,6 +75,8 @@ GIPNY_API gipny_dest *gipny_dest_create(const char *private_b64, int publish,
 GIPNY_API void gipny_dest_destroy(gipny_dest *dest);
 /* Its LeaseSet is up and it has outbound tunnels. */
 GIPNY_API int gipny_dest_is_ready(const gipny_dest *dest);
+/* Thread-safe pool snapshots: bit 0 inbound, bit 1 outbound. Not a delivery ACK. */
+GIPNY_API int gipny_dest_tunnel_directions(const gipny_dest *dest);
 /* Base64 public destination. */
 GIPNY_API char *gipny_dest_address(const gipny_dest *dest);
 

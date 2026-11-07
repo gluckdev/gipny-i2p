@@ -1,9 +1,22 @@
-//! Bounded, memory-only ingestion of the release netDb tar.gz format.
+//! Bounded ingestion of the release netDb tar.gz format with a public local cache.
 //! The archive digest identifies the chosen snapshot; every usable RouterInfo
 //! is independently signature/freshness/network checked before it reaches core.
+//!
+//! Besides the published snapshot, the routers this browser learned while
+//! running are kept between sessions ([`LiveNetDb`]), so a restart is warm even
+//! when the snapshot cannot be fetched or has outlived its 36 hours. Both are
+//! public RouterInfos and go through the same per-record checks.
 use crate::{ntcp2::verified_peer, BrowserRuntime};
-use emissary_core::{crypto::sha256::Sha256, runtime::Runtime};
-use std::{collections::BTreeSet, io::Read, time::Duration};
+use emissary_core::{
+    crypto::{base64_encode, sha256::Sha256},
+    runtime::Runtime,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::{Read, Write},
+    sync::Mutex,
+    time::Duration,
+};
 
 pub const MAX_DOWNLOAD_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TAR_BYTES: usize = 16 * 1024 * 1024;
@@ -12,6 +25,7 @@ const MAX_ENTRIES: usize = 4096;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct SnapshotReceipt {
+    pub from_cache: bool,
     pub compressed_bytes: usize,
     pub tar_bytes: usize,
     pub entries: usize,
@@ -31,6 +45,9 @@ pub struct Snapshot {
     pub receipt: SnapshotReceipt,
 }
 
+/// Fewer usable RouterInfos than this and an archive is not worth starting from.
+pub const MIN_ROUTERS: usize = 16;
+
 fn expected_digest(value: &str) -> Result<[u8; 32], String> {
     if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("snapshot SHA256 must contain 64 hex digits".into());
@@ -43,13 +60,17 @@ fn expected_digest(value: &str) -> Result<[u8; 32], String> {
     Ok(bytes)
 }
 
-fn inflate(bytes: &[u8], expected: &str) -> Result<(Vec<u8>, SnapshotReceipt), String> {
+fn inflate(bytes: &[u8], expected: Option<&str>) -> Result<(Vec<u8>, SnapshotReceipt), String> {
     if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD_BYTES {
         return Err("snapshot compressed size limit".into());
     }
     let started = web_time::Instant::now();
-    if Sha256::new().update(bytes).finalize_new() != expected_digest(expected)? {
-        return Err("snapshot SHA256 mismatch".into());
+    // The published snapshot is pinned by digest; the local live archive has
+    // none, and relies on the per-record checks below like every archive.
+    if let Some(expected) = expected {
+        if Sha256::new().update(bytes).finalize_new() != expected_digest(expected)? {
+            return Err("snapshot SHA256 mismatch".into());
+        }
     }
     let digest_ms = started.elapsed().as_millis();
     let started = web_time::Instant::now();
@@ -81,6 +102,11 @@ fn inflate(bytes: &[u8], expected: &str) -> Result<(Vec<u8>, SnapshotReceipt), S
 }
 
 pub async fn verify_snapshot(bytes: &[u8], expected: &str) -> Result<Snapshot, String> {
+    verify_archive(bytes, Some(expected)).await
+}
+
+/// As [`verify_snapshot`], for an archive not pinned by a published digest.
+pub async fn verify_archive(bytes: &[u8], expected: Option<&str>) -> Result<Snapshot, String> {
     let (tar_bytes, mut receipt) = inflate(bytes, expected)?;
     let started = web_time::Instant::now();
     let mut archive = tar::Archive::new(tar_bytes.as_slice());
@@ -143,7 +169,7 @@ pub async fn verify_snapshot(bytes: &[u8], expected: &str) -> Result<Snapshot, S
             BrowserRuntime::delay(Duration::from_millis(1)).await;
         }
     }
-    if routers.len() < 16 {
+    if routers.len() < MIN_ROUTERS {
         return Err(format!(
             "snapshot has too few usable RouterInfos: {}",
             routers.len()
@@ -153,6 +179,152 @@ pub async fn verify_snapshot(bytes: &[u8], expected: &str) -> Result<Snapshot, S
     receipt.parse_verify_ms = started.elapsed().as_millis();
     receipt.wasm_memory_bytes_after_verify = crate::router::wasm_memory_bytes();
     Ok(Snapshot { routers, receipt })
+}
+
+/// A RouterInfo the browser can start from: signed, on the I2P network, fresh,
+/// with a public IPv4 NTCP2 address. Returns its router id and publication time.
+fn usable(bytes: &[u8]) -> Option<(String, u64)> {
+    let peer = verified_peer(bytes).ok()?;
+    is_public_ipv4(peer.address.ip()).then(|| {
+        (
+            base64_encode(peer.router.identity.id().to_vec()),
+            *peer.router.published.date(),
+        )
+    })
+}
+
+/// Start from the published snapshot first (its routers are the ones the
+/// bridge lets us dial), then fill up with what earlier sessions learned.
+/// With no snapshot, the live set alone is enough if it is large enough.
+pub fn merge_routers(
+    snapshot: Option<Snapshot>,
+    live: Option<Snapshot>,
+) -> Result<Snapshot, String> {
+    let (mut base, extra) = match (snapshot, live) {
+        (Some(snapshot), live) => (snapshot, live.map(|l| l.routers).unwrap_or_default()),
+        (None, Some(live)) => (live, Vec::new()),
+        (None, None) => return Err("no usable netDb snapshot or saved routers".into()),
+    };
+    let mut seen: BTreeSet<String> = base
+        .routers
+        .iter()
+        .filter_map(|b| usable(b).map(|(id, _)| id))
+        .collect();
+    for bytes in extra {
+        if base.routers.len() >= MAX_RECORDS {
+            break;
+        }
+        if let Some((id, _)) = usable(&bytes) {
+            if seen.insert(id) {
+                base.routers.push(bytes);
+            }
+        }
+    }
+    if base.routers.len() < MIN_ROUTERS {
+        return Err(format!(
+            "too few usable RouterInfos: {}",
+            base.routers.len()
+        ));
+    }
+    base.receipt.accepted = base.routers.len();
+    Ok(base)
+}
+
+/// The routers this browser knows, kept for the next start.
+///
+/// emissary backs its profile storage up every 15 minutes of uptime through
+/// [`emissary_core::runtime::Storage`]: it hands over only the RouterInfos
+/// discovered since the last backup and names the routers it dropped. The full
+/// set is therefore kept here, starting from what the router was built with,
+/// and written out whole as a snapshot-format archive after each backup.
+pub struct LiveNetDb {
+    routers: Mutex<BTreeMap<String, (u64, Vec<u8>)>>,
+    persist: Box<dyn Fn(Vec<u8>) + Send + Sync>,
+}
+
+impl LiveNetDb {
+    pub fn new(initial: &[Vec<u8>], persist: impl Fn(Vec<u8>) + Send + Sync + 'static) -> Self {
+        let routers = initial
+            .iter()
+            .filter_map(|bytes| usable(bytes).map(|(id, at)| (id, (at, bytes.clone()))))
+            .collect();
+        Self {
+            routers: Mutex::new(routers),
+            persist: Box::new(persist),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.routers.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    /// The current set as a gzip'd tar in the snapshot layout, newest first,
+    /// within [`MAX_RECORDS`].
+    pub fn archive(&self) -> Vec<u8> {
+        let mut records: Vec<(String, u64, Vec<u8>)> = self
+            .routers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(id, (at, bytes))| (id.clone(), *at, bytes.clone()))
+            .collect();
+        records.sort_by(|a, b| b.1.cmp(&a.1));
+        records.truncate(MAX_RECORDS);
+        let mut tar = tar::Builder::new(Vec::new());
+        for (id, _, bytes) in &records {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            // The I2P base64 alphabet has no '/', so the id is a plain name.
+            if tar
+                .append_data(
+                    &mut header,
+                    format!("r{}/routerInfo-{id}.dat", &id[..1]),
+                    bytes.as_slice(),
+                )
+                .is_err()
+            {
+                return Vec::new();
+            }
+        }
+        let Ok(tar) = tar.into_inner() else {
+            return Vec::new();
+        };
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        if gzip.write_all(&tar).is_err() {
+            return Vec::new();
+        }
+        gzip.finish().unwrap_or_default()
+    }
+}
+
+impl emissary_core::runtime::Storage for LiveNetDb {
+    fn save_to_disk(&self, routers: Vec<(String, Option<Vec<u8>>, emissary_core::Profile)>) {
+        {
+            let mut known = self.routers.lock().unwrap_or_else(|p| p.into_inner());
+            for (id, bytes, _profile) in routers {
+                let Some(bytes) = bytes else { continue };
+                // Only what a later start could use; a newer copy replaces an older one.
+                if let Some((usable_id, at)) = usable(&bytes) {
+                    if usable_id == id && known.get(&id).is_none_or(|(old, _)| *old <= at) {
+                        known.insert(id, (at, bytes));
+                    }
+                }
+            }
+        }
+        let archive = self.archive();
+        if !archive.is_empty() && archive.len() <= MAX_DOWNLOAD_BYTES {
+            (self.persist)(archive);
+        }
+    }
+
+    fn remove_from_disk(&self, routers: Vec<String>) {
+        let mut known = self.routers.lock().unwrap_or_else(|p| p.into_inner());
+        for id in routers {
+            known.remove(&id);
+        }
+    }
 }
 
 /// Literal public IPv4 targets supported by the current browser transport.
@@ -183,6 +355,51 @@ mod browser {
     use wasm_bindgen::{prelude::*, JsCast};
     use wasm_bindgen_futures::JsFuture;
 
+    #[wasm_bindgen(module = "/src/bootstrap-cache.js")]
+    extern "C" {
+        #[wasm_bindgen(js_name = loadBootstrap)]
+        fn load_bootstrap(digest: &str) -> js_sys::Promise;
+        #[wasm_bindgen(js_name = saveBootstrap)]
+        fn save_bootstrap(digest: &str, bytes: &[u8]) -> js_sys::Promise;
+        #[wasm_bindgen(js_name = removeBootstrap)]
+        fn remove_bootstrap(digest: &str) -> js_sys::Promise;
+        #[wasm_bindgen(js_name = loadLiveNetDb)]
+        fn load_live_netdb() -> js_sys::Promise;
+        #[wasm_bindgen(js_name = saveLiveNetDb)]
+        fn save_live_netdb(bytes: &[u8]) -> js_sys::Promise;
+    }
+
+    /// Routers to start from: the published snapshot (fetched or cached) and
+    /// what earlier sessions learned. Either alone will do; a hosting outage
+    /// after the snapshot's 36 hours no longer means a cold start.
+    pub async fn bootstrap_routers(url: &str, digest: &str) -> Result<Snapshot, String> {
+        let published = fetch_snapshot(url, digest).await;
+        let live = match JsFuture::from(load_live_netdb()).await {
+            Ok(value) => match value.dyn_into::<js_sys::Uint8Array>() {
+                Ok(bytes) if bytes.length() as usize <= MAX_DOWNLOAD_BYTES => {
+                    verify_archive(&bytes.to_vec(), None).await.ok()
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        let failure = published.as_ref().err().cloned();
+        merge_routers(published.ok(), live).map_err(|e| match failure {
+            Some(fetch) => format!("{fetch}; {e}"),
+            None => e,
+        })
+    }
+
+    /// The store handed to emissary: each backup writes the archive to the
+    /// public live cache in the background.
+    pub fn live_netdb(initial: &[Vec<u8>]) -> std::sync::Arc<LiveNetDb> {
+        std::sync::Arc::new(LiveNetDb::new(initial, |archive| {
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = JsFuture::from(save_live_netdb(&archive)).await;
+            });
+        }))
+    }
+
     struct AbortFetch(web_sys::AbortController);
     impl Drop for AbortFetch {
         fn drop(&mut self) {
@@ -204,6 +421,18 @@ mod browser {
             return Err(
                 "snapshot URL requires HTTPS or loopback HTTP, without credentials/fragment".into(),
             );
+        }
+        if let Ok(cached) = JsFuture::from(load_bootstrap(digest)).await {
+            if let Ok(bytes) = cached.dyn_into::<js_sys::Uint8Array>() {
+                if bytes.length() as usize <= MAX_DOWNLOAD_BYTES {
+                    if let Ok(mut snapshot) = verify_snapshot(&bytes.to_vec(), digest).await {
+                        snapshot.receipt.from_cache = true;
+                        return Ok(snapshot);
+                    }
+                }
+                // Stale, damaged or wrongly signed caches never bypass validation.
+                let _ = JsFuture::from(remove_bootstrap(digest)).await;
+            }
         }
         let abort =
             AbortFetch(web_sys::AbortController::new().map_err(|_| "fetch abort controller")?);
@@ -284,6 +513,7 @@ mod browser {
         drop(abort);
         let mut snapshot = verify_snapshot(&bytes, digest).await?;
         snapshot.receipt.download_ms = download_ms;
+        let _ = JsFuture::from(save_bootstrap(digest, &bytes)).await;
         Ok(snapshot)
     }
 
@@ -330,4 +560,4 @@ mod browser {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use browser::fetch_snapshot;
+pub use browser::{bootstrap_routers, fetch_snapshot, live_netdb};

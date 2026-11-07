@@ -1,13 +1,13 @@
 {
   "name": "gipny-ui",
-  "version": "0.5.0-rc2",
+  "version": "0.5.0-rc3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "build:browser": "tsc --noEmit && vite build --config vite.browser.config.ts",
     "preview": "vite preview",
-    "test": "node tests/localization.test.mjs && node tests/web-transport.test.mjs"
+    "test": "node tests/localization.test.mjs && node tests/browser.test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

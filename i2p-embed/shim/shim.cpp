@@ -7,11 +7,15 @@
 #include <utility>
 
 #include <atomic>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -27,6 +31,9 @@
 #include "RouterContext.h"
 #include "Streaming.h"
 #include "Transports.h"
+#include "NTCP2.h"
+#include "SSU2.h"
+#include "TunnelPool.h"
 #include "api.h"
 #include "util.h"
 
@@ -72,6 +79,8 @@ bool parse_remote(const char *remote, i2p::data::IdentHash &out) {
 }
 
 std::atomic<bool> running{false};
+std::atomic<void (*)(void)> stop_hook{nullptr};
+std::atomic<void (*)(int)> network_hook{nullptr};
 
 // What the host last said about the machine's network, kept so that an answer
 // given before the router existed is not thrown away. Android's connectivity
@@ -87,9 +96,15 @@ std::atomic<bool> running{false};
 // SetOnline call it never used to make.
 std::atomic<int> online_wanted{-1};
 
+// Bumped at shutdown: miniupnpc's HTTP guard (shim/gipny_upnp_limits.h) reads
+// this, so an exchange with the gateway that is already in flight gives up at
+// its next received chunk instead of holding the exit for its full timeout.
+std::atomic<unsigned> upnp_abort_epoch{0};
+
 // Stop once, whoever asks first: gipny_router_stop, or the process exiting.
 void stop_router() {
 	if (!running.exchange(false)) return;
+	if (auto hook = stop_hook.load()) hook();
 	i2p::api::StopI2P();
 	i2p::api::TerminateI2P();
 }
@@ -173,6 +188,7 @@ void gipny_router_set_online(int online) {
 	// Remembered either way: whether or not the router is up, this is the
 	// machine's current network and start applies it.
 	online_wanted.store(online != 0 ? 1 : 0);
+	if (auto hook = network_hook.load()) hook(online != 0 ? 1 : 0);
 	// A PeerTest on transports that are not running is not ours to risk, so the
 	// call below waits for start. That is what the pending value is for.
 	if (!running.load()) return;
@@ -187,6 +203,59 @@ int gipny_router_netdb_routers(void) {
 	// network that does not work.
 	if (!running.load()) return -1;
 	return i2p::data::netdb.GetNumRouters();
+}
+
+void gipny_router_stop_hook(void (*hook)(void)) { stop_hook.store(hook); }
+void gipny_router_network_hook(void (*hook)(int)) {
+	network_hook.store(hook);
+	const int wanted = online_wanted.load();
+	if (hook && wanted >= 0) hook(wanted);
+}
+
+int gipny_router_upnp_random(uint8_t *token16) {
+	return token16 && RAND_bytes(token16, 16) == 1;
+}
+
+int gipny_router_upnp_ports(uint16_t *tcp, uint16_t *udp) {
+	if (!tcp || !udp) return -1;
+	*tcp = 0; *udp = 0;
+	// Not "disabled": a router that is stopping must not read as an
+	// instruction to delete mappings (running drops before the stop hook).
+	if (!running.load()) return -1;
+	try {
+		bool enabled = false;
+		i2p::config::GetOption("upnp.enabled", enabled);
+		if (!enabled || i2p::context.IsHidden()) return 0;
+		auto ntcp = i2p::transport::transports.GetNTCP2Server();
+		auto ssu = i2p::transport::transports.GetSSU2Server();
+		auto addresses = i2p::context.GetRouterInfo().GetAddresses();
+		if (addresses) for (const auto &address : *addresses) {
+			if (!address || address->host.is_v6() || !address->port) continue;
+			if (address->IsNTCP2() && ntcp && !ntcp->UsingProxy()) *tcp = address->port;
+		}
+		if (ssu && !ssu->UsesProxy()) *udp = ssu->GetPort(true);
+		return 1;
+	} catch (...) { return -1; }
+}
+
+int gipny_router_upnp_hmac(const uint8_t *key, size_t key_len, const uint8_t *data,
+                           size_t data_len, uint8_t *out32) {
+	if (!key || !data || !out32 || key_len > static_cast<size_t>(INT_MAX)) return 0;
+	unsigned int length = 0;
+	if (!HMAC(EVP_sha256(), key, static_cast<int>(key_len), data, data_len, out32, &length)) return 0;
+	return length == 32 ? 1 : 0;
+}
+
+void gipny_router_upnp_abort(void) { upnp_abort_epoch.fetch_add(1); }
+unsigned gipny_upnp_abort_epoch(void) { return upnp_abort_epoch.load(); }
+
+void gipny_router_upnp_external(const char *ip) {
+	if (!running.load() || !ip) return;
+	try {
+		boost::system::error_code ec;
+		auto address = boost::asio::ip::make_address(ip, ec);
+		if (!ec && address.is_v4() && !i2p::util::net::IsInReservedRange(address)) i2p::context.UpdateAddress(address);
+	} catch (...) { /* A malformed gateway response must not escape the C ABI. */ }
 }
 
 char *gipny_keys_generate(void) {
@@ -241,6 +310,13 @@ void gipny_dest_destroy(gipny_dest *dest) {
 
 int gipny_dest_is_ready(const gipny_dest *dest) {
 	return dest && dest->dest && dest->dest->IsReady() ? 1 : 0;
+}
+
+int gipny_dest_tunnel_directions(const gipny_dest *dest) {
+	if (!dest || !dest->dest) return 0;
+	auto pool = dest->dest->GetTunnelPool();
+	if (!pool) return 0;
+	return (pool->HasInboundTunnels() ? 1 : 0) | (pool->HasOutboundTunnels() ? 2 : 0);
 }
 
 char *gipny_dest_address(const gipny_dest *dest) {

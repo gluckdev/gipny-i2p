@@ -3,6 +3,8 @@ pub mod agent;
 pub mod card;
 pub mod crypto;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod data_lock;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod device_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod db;

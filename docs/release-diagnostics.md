@@ -1,165 +1,99 @@
-# Диагностика в релизах и тестовых сборках
+# Журналы по типу сборки / Diagnostics by build type
 
-Требование владельца от 2026-10-28: выпускать приложение без подробного
-диагностического журнала; диагностику сохранять для разработки и наших тестов.
-Реализовано в ветке `feat/today-integration-20261028`, выпущено в `v0.4.19`
-(2026-10-29).
-Исходная база исправлений — `main` `26487a5`.
+## Русский
 
-Решение владельца от 2026-11-02: **пре-релиз для тестеров выходит с журналом**
-(`v0.5.0-rc1`, уровень `Full`), стабильный релиз — без него (`Null`). Раздел
-[«Пре-релиз с журналом»](#пре-релиз-с-журналом) ниже.
+Текущее требование владельца от **2026-11-06**: стабильный релиз не содержит
+подробного журнала, предрелизная/разработческая/тестовая сборка всегда ведёт его.
+Пользователь не включает и не выключает журнал. Блок Application log удалён из
+общих настроек desktop, Android и браузера.
 
-## Поведение сборок
-
-Колонка `--release` — стабильный релиз. Пре-релиз `--release` с
-`GIPNY_RELEASE_LOGS=full` ведёт себя как правая колонка.
-
-| Поведение | `--release` | Обычная сборка для разработки, unit tests, `--profile diagnostics`, пре-релиз |
+| Поведение | Stable | Prerelease / development / tests |
 |---|---|---|
-| Захват stderr приложением в `debug.log`, ротация в `debug.prev.log` | Отключены константой времени компиляции и удаляются оптимизатором; новые файлы не создаются | На Unix доступны, по умолчанию включены |
-| `GIPNY_DEBUG_LOG`, прежний `log.conf`, переключатель UI | Не включают журнал | Управляют захватом при следующем запуске |
-| `log_settings` | `available=false`, `enabled=false`, пустой `path` | Возвращает доступность и выбранное состояние |
-| Чтение и включение журнала через IPC | Отклоняются | Доступны |
-| Подробности пакетов, ратчета, контактов, частей файлов | `debug_trace!` не вычисляет аргументы и не печатает | Печатаются в stderr |
-| Файл встроенного роутера `i2pd.log` | Не открывается | Открывается, если вызывающая сторона передала путь |
-| Уровень встроенного роутера | Принудительно `warn`; `GIPNY_I2P_LOGLEVEL` игнорируется | `info` по умолчанию в приложении; допустим явный уровень |
+| Уровень приложения | `Null` | `Full` |
+| Runtime env, прежний `log.conf`, UI | Не меняют политику | Не меняют политику |
+| `debug_trace!` / `debug_error!` | Ветви отсутствуют после оптимизации; аргументы не вычисляются | Вывод включён |
+| Native router | `warn` в stderr, без файла | `debug`; файл при переданном пути |
+| Browser diagnostic store | Не создаётся; оставшаяся от пре-релиза база IndexedDB удаляется при старте | Кольцевой журнал в памяти Worker; при блокировке копия в IndexedDB `gipny-browser-log` (номера контактов, без имён и ключей), стирается очисткой и удалением профиля |
 
-Операционные предупреждения и ошибки остаются в stderr: например, сбой установки
-обновления, записи базы, запуска или пересборки роутера. Вывод справки CLI,
-публичной карточки агента/бота и адреса выделенного релея остаётся доступен
-оператору. Это не обещание пустого stderr или отсутствия журналов операционной
-системы: внешний сборщик stderr может сохранять такие сообщения.
+`i2p-embed/src/diagnostics.rs` задаёт compile-time policy. Release workflow
+передаёт `GIPNY_RELEASE_LOGS=full` при сборке предрелиза; для stable значение
+пустое. Это переменная **сборки**, а не переключатель установленного приложения.
+`build-provenance.py` проверяет её согласованность с версией и публикует
+`developer_log` в манифестах. `ui/build-policy.ts` выбирает browser policy по
+режиму разработки/предрелизному номеру версии; настройки пользователя её не меняют.
 
-Настройки релизного профиля явные: `debug=0`, `debug-assertions=false`,
-`strip=true`. Профиль `diagnostics` наследует оптимизацию релиза, включая
-настройки криптографических пакетов, но включает `debug=1`, `debug-assertions=true`,
-отключает LTO и снятие символов. Workflow выпуска продолжает использовать
-`--release`; профиль `diagnostics` не публикуется как релиз.
+Native `Router::start` нормализует аргументы логирования до запуска C++.
+Shim выставляет уровень до `InitI2P` и передаёт настоящий stderr-поток;
+передача null в upstream API могла бы создать собственный файл даже в stable.
+Core и SessionManager используют общие macros. Операционные ошибки в stderr,
+CLI-справка, OS-журналы и внешний захват stderr могут существовать и в stable;
+это не подробный журнал приложения.
 
-## Режимы разработческого лога
+### Где находятся данные
 
-Для разработки и диагностических сборок действуют два режима уровня лога:
+На Unix (Linux/macOS/Android) приложение перехватывает stderr в `debug.log`
+с ротацией в `debug.prev.log`; у native router есть отдельный `i2pd.log`.
+Агент и выделенный релей выводят диагностику в stderr для своего оператора.
+На Windows существующий общий capture основан на Unix `dup2` и не переносится:
+`debug.log` GUI пока не создаётся этим механизмом, остаётся журнал роутера и
+доступный процессу stderr. Полноценный Windows capture требует отдельной работы.
+Веб-клиент хранит диагностические записи локально в браузере, не на GitHub: в
+памяти Worker и, после блокировки, в незашифрованной IndexedDB `gipny-browser-log`,
+доступной до разблокировки. В записях — номера контактов, не имена; ключи и
+адреса маскируются. Запись `stall` (не чаще раза в минуту, до пяти подряд)
+называет работу, застрявшую дольше двух минут: транзакцию профиля, шаг отправки
+или очередь без депозитов, только счётчиками.
 
-| Режим | Уровень | Что пишет |
-|---|---|---|
-| Debug period | `Full` | Все действия, каждая строка с обязательным timestamp (`HH:MM:SS.mmm`, capture в `debug.log`); ошибки идут через `debug_error!` |
-| Release / выключено | `Null` | Журнал не пишется |
+Журналы могут раскрывать адреса, идентификаторы, имена файлов и время действий.
+Пароли, ключи, токены, текст сообщений/команд и callback-данные не должны попадать
+в них даже в предрелизе. Перед публикацией evidence проверяйте содержимое;
+профили, дампы OPFS и приватные конфигурации не являются публичным артефактом CI.
+Старые файлы от предыдущих версий не исчезают автоматически после установки
+stable; duress/явная очистка имеют собственную границу, внешние копии сохраняются.
 
-`LogLevel` объявлен в `i2p-embed/src/diagnostics.rs`; дефолт — `Full` при
-`diagnostics::AVAILABLE` (разработка, тесты, пре-релиз), `Null` в стабильном
-релизе. Переключение из кода —
-`gipny_libcore::diagnostics::set_log_level(LogLevel::Full | LogLevel::Null)`.
+### Проверка
 
-## Где применяется политика
+Сборки и исполняемые проверки выполняются **в GitHub Actions**. Основные
+сценарии: `scripts/check-release-diagnostics.sh`, policy unit tests,
+`i2p-embed/tests/diagnostics_probe.rs`, UI-тесты отсутствия переключателя и
+проверки provenance/ELF. Они проверяют stable без trace-строки и без вычисления
+аргументов, неизменяемый `Full` предрелиза и отсутствие обхода через env/старые
+настройки. Результаты прежних SHA не подтверждают текущую правку.
 
-`i2p-embed/src/diagnostics.rs` содержит общую политику и макросы `debug_trace!`
-и `debug_error!`; `gipny_libcore` реэкспортирует их. Доступность — константа
-`diagnostics::AVAILABLE = cfg!(any(debug_assertions, test)) || RELEASE_LOGS`,
-где `RELEASE_LOGS` истинна, только если при компиляции `i2p-embed` переменная
-`GIPNY_RELEASE_LOGS` равна ровно `full`. Макросы проверяют эту константу, а не
-`#[cfg]`: `#[cfg]` внутри `macro_rules!` вычислялся бы в вызывающем crate и не
-видел бы переменную. Захват stderr в приложении стоит за той же константой. Поэтому
-старый файл настроек или переменная окружения при запуске не могут включить
-захват в стабильном релизе.
+## English
 
-`Router::start` нормализует аргументы `--loglevel` и запрещает путь журнала на
-границе `i2p-embed`, в том числе для выделенного релея. Native shim устанавливает
-уровень `i2p::log::Logger` **до** `InitI2P`, чтобы не поставить подробный стартовый
-вывод в очередь. Для stderr он передаёт в `StartI2P` настоящий поток: нулевой поток
-в upstream API сам открывает `<datadir>/gipny-i2pd.log`.
+Owner requirement dated **2026-11-06**: stable releases omit detailed diagnostics;
+prerelease/developer/test builds always enable them. There is no runtime toggle,
+and the Application log section is removed from desktop, Android and browser
+settings. Stable uses `Null`, diagnostic builds use `Full`; legacy settings and
+runtime environment cannot alter the policy.
 
-Подробный вывод отправки и приёма в `Core`, `SessionManager` и библиотеках проходит
-через `debug_trace!`. Текст консольной команды, тело сообщения и callback-данные
-не выводятся даже в диагностической сборке. Произвольная ошибка обработчика бота
-тоже не копируется в stderr: её детали остаются в записи dead letter в базе,
-которую оператор открывает отдельно. Диагностические файлы всё равно содержат
-метаданные: адреса релеев, имена вложений, идентификаторы контактов и тайминги.
+The native policy lives in `i2p-embed/src/diagnostics.rs`. Release CI supplies
+compile-time `GIPNY_RELEASE_LOGS=full` for prereleases and an empty value for
+stable; provenance validates version consistency and records `developer_log`.
+The browser build uses `ui/build-policy.ts` and its prerelease version. Router
+options are normalized before C++ startup: stable uses stderr warnings without
+a file, diagnostics use debug/file logging. Stable may still emit operational
+errors or be observed by OS/external stderr collectors; it does not promise an
+empty process output.
 
-Старые журналы от прежних версий автоматически не удаляются. Релиз их не читает
-через IPC; существующая очистка при duress wipe и команда очистки по-прежнему
-удаляют `debug.log` и `debug.prev.log`. При необходимости старый `i2pd.log` удаляют
-из каталога роутера отдельно. Политика не меняет формат сообщений, криптографию,
-хранение сетевого состояния или файл `router.hint` с настройками запуска.
+Unix native apps capture stderr in `debug.log`/`debug.prev.log`; the router has
+`i2pd.log`. Agents/relays expose stderr to operators. Windows GUI does not yet
+have the Unix-based general capture: its router file and available stderr are
+separate, and complete Windows capture remains work. The browser log is local
+browser storage, not GitHub storage: Worker memory and, after lock, the
+unencrypted IndexedDB `gipny-browser-log` readable before unlock. Entries carry
+contact numbers, not names; keys and addresses are masked. A `stall` entry (at
+most once a minute, five in a row) names work stuck for over two minutes — a
+profile transaction, a send step or an outbox with no deposits — as counts only.
+Stable builds delete that database at startup.
 
-## Пре-релиз с журналом
+Diagnostics can expose addresses, identifiers, filenames and timing. Passwords,
+keys, tokens, message/command bodies and callbacks must be excluded even in
+prereleases. Inspect evidence before publication; profiles, OPFS dumps and private
+configuration do not belong in public CI artifacts. Installing stable does not
+automatically erase older logs or external copies.
 
-`release.yml` вычисляет уровень один раз в job `version`: версия с дефисом
-(`0.5.0-rc1`) даёт `release_logs=full`, без дефиса — пустое значение. Desktop,
-relay, agent, OpenWrt (вход `release-logs` у `openwrt.yml`), Android router и
-Android APK получают его как `GIPNY_RELEASE_LOGS`. `build-provenance.py`:
-
-- отклоняет значение, отличное от пустого и `full`, и `full` при версии без
-  дефиса — стабильный релиз с журналом не собирается;
-- пишет `developer_log: true|false` в манифест каждой сборки, то есть в
-  `BUILD-MANIFEST.json` на странице релиза;
-- отказывает в публикации, если сборки одного релиза расходятся по этому полю.
-
-ELF-проверка OpenWrt (`check-openwrt-elf.py`) в стабильном релизе требует, чтобы
-строк `[relay-wire] recv ` и `[agent] executing command with ` в бинарнике агента
-не было, а в пре-релизе (`--developer-log`, его передаёт `openwrt-build.sh` при
-`GIPNY_RELEASE_LOGS=full`) — чтобы были обе: манифест не может заявить журнал,
-которого в бинарнике нет.
-
-Что пишет пре-релиз: `debug.log`/`debug.prev.log` в каталоге приложения
-(Linux, macOS, Android), `i2pd.log` встроенного роутера, stderr агента и
-выделенного релея (journald, консоль). Там есть идентификаторы контактов и
-сообщений, адреса релеев и destination, имена вложений, события ратчета и
-тайминги. Тела сообщений, callback-данные и текст консольных команд по
-политике ниже не выводятся; команда агента журналируется только размером. На Windows приложение не перехватывает
-stderr (`install_log_capture` — `dup2`, только Unix), GUI-процесс его теряет:
-`debug.log` там нет, есть `i2pd.log` и вывод агента в консоли.
-
-Обновления: `/releases/latest` не отдаёт пре-релизы, поэтому 0.4.19 не получит
-rc автоматически — его ставят вручную. Сборка `0.5.0-rc1` считает себя старше
-0.4.19 и младше 0.5.0 (`installed_version` в `libcore/src/update.rs`), так что
-стабильный 0.5.0 придёт ей обычным автообновлением и заменит журналирующие
-бинарники. Старые `debug.log` при этом не удаляются: их стирает команда очистки
-журнала или duress wipe.
-
-## Сборка и проверки
-
-Для разработки и unit tests достаточно обычного `cargo test`. Для длительного
-прогона оптимизированных бинарей с диагностикой:
-
-```bash
-cargo build --locked --profile diagnostics -p gipny-agent -p e2e-harness
-GIPNY_I2P_LOGLEVEL=debug target/diagnostics/gipny-agent --help
-```
-
-В приложении для разработки `GIPNY_DEBUG_LOG=0` отключает захват;
-`GIPNY_DEBUG_LOG=1` включает его поверх сохранённого `off`. При отсутствии
-распознанного значения действует `log.conf` (`off` отключает, иначе включено).
-Поддерживаются также `true/on/debug` и `false/off`. Нативный роутер принимает
-`critical`, `error`, `warn`, `info`, `debug`; неизвестный уровень заменяется на
-`info` в диагностической сборке.
-
-Быстрая проверка без линковки native роутера и без полной пересборки с fat LTO:
-
-```bash
-bash scripts/check-release-diagnostics.sh
-cd ui
-npm test
-npm run build
-```
-
-Первый скрипт компилирует **тот же** production policy-модуль через `rustc` в трёх
-режимах: стабильный release, release с `GIPNY_RELEASE_LOGS=full` и разработка.
-Он проверяет запрет обхода через env/старые настройки, выбор уровня и
-пути native журнала, отсутствие вычисления аргументов макроса в стабильном release
-и отсутствие контрольной диагностической строки в его binary/stderr, а в
-пре-релизе — наличие этой строки в stderr. Стабильная и разработческая сборки
-запускаются с явно снятой `GIPNY_RELEASE_LOGS`, даже если job пре-релиза её
-экспортировал. Затем выполняет семь unit tests политики; модуль подключается как
-`mod diagnostics`, как в `i2p-embed`, иначе `$crate::diagnostics` в макросах не
-разрешается. Скрипт добавлен в существующий Rust CI job и в OpenWrt workflow.
-Правила провенанса пре-релиза проверяет `.github/scripts/test-build-provenance.py`.
-UI-тесты проверяют EN/RU parity, отсутствие ложного переключателя и кнопок в
-релизе, рабочее управление в диагностической сборке и сбой проверки capability.
-
-Проверено 2026-10-28: rustc probe и 4 unit tests политики прошли; UI tests — 8/8.
-2026-11-02 (локально, rustc 1.93.0): три режима probe и 7 unit tests прошли,
-контрольная строка отсутствует и при `opt-level=s` релизного профиля.
-Это локальная проверка политики и интерфейса. Она не доказывает поведение
-установленного release APK/десктопного пакета или живого I2P; существующие e2e
-workflows и их проверки не переводились массово на другой профиль.
+Builds/executable checks run in GitHub Actions: policy probes, unit/UI tests,
+provenance and ELF inspection verify immutable logging and absent stable traces.
+Historical passing results do not validate this working-tree change.

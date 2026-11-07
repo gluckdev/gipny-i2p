@@ -1,13 +1,29 @@
-/** Ring-buffer action log for the browser core. Every line is written to the
- * worker console (`DevTools → Consoles → [worker]`, Debug/Verbose levels) and
- * kept in memory so `read_debug_log` / `read_previous_log` can serve the
- * in-app viewer. Message bodies never enter the log — ids, key prefixes and
- * byte counts only. */
+/** Ring-buffer action log for the browser core (prerelease builds only). Every
+ * line is written to the worker console (`DevTools → Consoles → [worker]`,
+ * Debug/Verbose levels) and kept in memory so `read_debug_log` /
+ * `read_previous_log` can serve the in-app viewer. Lines name local contact
+ * ids, sizes and states only: no message text, names, keys or I2P addresses.
+ *
+ * On lock the current session is copied to IndexedDB (`gipny-browser-log`) so
+ * the viewer can show the previous session. That copy is NOT encrypted and is
+ * shared by every profile of this origin; clearing the log deletes it, and a
+ * stable build deletes any copy an earlier prerelease left behind. */
 const CAP = 2048;
 const EMPTY = '(журнал пуст)';
+const DIAGNOSTICS = typeof __GIPNY_DIAGNOSTICS__ !== 'undefined' && __GIPNY_DIAGNOSTICS__;
+export const LOG_DATABASE = 'gipny-browser-log';
+export const LOG_LOCATION = DIAGNOSTICS
+  ? `worker memory · DevTools console · IndexedDB "${LOG_DATABASE}" (previous session; not encrypted; shared by browser profiles)`
+  : 'disabled in this build';
 
-export const shortKey = (key: string): string => key.slice(0, 12);
-export const shortAddress = (address: string): string => address.slice(0, 24);
+/** Last line of defence for error texts from lower layers: mask anything
+ * shaped like a key, hash, I2P address or long base64 destination. */
+export function scrubLog(text: string): string {
+  return text
+    .replace(/\b[a-z2-7]{52,}\.b32\.i2p\b/gi, '[i2p address]')
+    .replace(/\b[0-9a-f]{24,}\b/gi, '[key]')
+    .replace(/[A-Za-z0-9+/~=-]{80,}/g, '[destination]');
+}
 
 function stamp(date = new Date()): string {
   const two = (n: number): string => String(n).padStart(2, '0');
@@ -16,60 +32,77 @@ function stamp(date = new Date()): string {
 
 type Level = 'debug' | 'info';
 
-function readStore(key: string): Promise<string> {
+function withStore<T>(fallback: T, action: (db: IDBDatabase, done: (value: T) => void) => void): Promise<T> {
   return new Promise(resolve => {
-    if (!('indexedDB' in globalThis)) return resolve('');
-    const open = indexedDB.open('gipny-browser-log', 1);
-    open.onupgradeneeded = () => open.result.createObjectStore('logs');
-    open.onerror = () => resolve('');
-    open.onsuccess = () => {
-      const db = open.result;
-      const row = db.transaction('logs').objectStore('logs').get(key);
-      row.onerror = () => { db.close(); resolve(''); };
-      row.onsuccess = () => { db.close(); resolve(typeof row.result === 'string' ? row.result : ''); };
-    };
+    if (!('indexedDB' in globalThis)) return resolve(fallback);
+    try {
+      const open = indexedDB.open(LOG_DATABASE, 1);
+      open.onupgradeneeded = () => open.result.createObjectStore('logs');
+      open.onerror = () => resolve(fallback);
+      open.onsuccess = () => {
+        const db = open.result;
+        try { action(db, value => { db.close(); resolve(value); }); } catch { db.close(); resolve(fallback); }
+      };
+    } catch { resolve(fallback); }
+  });
+}
+
+function readStore(key: string): Promise<string> {
+  if (!DIAGNOSTICS) return Promise.resolve('');
+  return withStore('', (db, done) => {
+    const row = db.transaction('logs').objectStore('logs').get(key);
+    row.onerror = () => done('');
+    row.onsuccess = () => done(typeof row.result === 'string' ? row.result : '');
   });
 }
 
 function writeStore(key: string, value: string): Promise<void> {
+  if (!DIAGNOSTICS) return Promise.resolve();
+  return withStore(undefined, (db, done) => {
+    const row = db.transaction('logs', 'readwrite').objectStore('logs').put(value, key);
+    row.onerror = () => done(undefined);
+    row.onsuccess = () => done(undefined);
+  });
+}
+
+/** Remove the persisted copy (any build). Resolves even if it is absent. */
+export function deleteLogStore(): Promise<void> {
   return new Promise(resolve => {
     if (!('indexedDB' in globalThis)) return resolve();
-    const open = indexedDB.open('gipny-browser-log', 1);
-    open.onupgradeneeded = () => open.result.createObjectStore('logs');
-    open.onerror = () => resolve();
-    open.onsuccess = () => {
-      const db = open.result;
-      const row = db.transaction('logs', 'readwrite').objectStore('logs').put(value, key);
-      row.onerror = () => { db.close(); resolve(); };
-      row.onsuccess = () => { db.close(); resolve(); };
-    };
+    try {
+      const request = indexedDB.deleteDatabase(LOG_DATABASE);
+      request.onsuccess = request.onerror = request.onblocked = () => resolve();
+    } catch { resolve(); }
   });
 }
 
 export class ActionLog {
-  private enabled = true;
   private rows: string[] = [];
+
+  constructor() {
+    // A stable build must not keep an earlier prerelease's unencrypted copy.
+    if (!DIAGNOSTICS) void deleteLogStore();
+  }
 
   debug(action: string, detail = ''): void { this.write('debug', action, detail); }
   info(action: string, detail = ''): void { this.write('info', action, detail); }
 
   private write(level: Level, action: string, detail: string): void {
-    if (!this.enabled) return;
-    const line = `[${stamp()}] [gipny-browser] ${action}${detail ? ' · ' + detail : ''}`;
+    if (!DIAGNOSTICS) return;
+    const line = `[${stamp()}] [gipny-browser] ${action}${detail ? ' · ' + scrubLog(detail) : ''}`;
     console[level](line);
     this.rows.push(line);
     if (this.rows.length > CAP) this.rows.splice(0, this.rows.length - CAP);
   }
 
-  get isEnabled(): boolean { return this.enabled; }
+  get isEnabled(): boolean { return DIAGNOSTICS; }
 
-  /** Matches the Tauri core's toggle semantics: switching off erases the log. */
-  setEnabled(on: boolean): void { this.enabled = on; if (!on) this.rows = []; }
-  clear(): void { this.rows = []; }
+  /** Erase the current session and the persisted previous-session copy. */
+  async clear(): Promise<void> { this.rows = []; await deleteLogStore(); }
   text(): string { return this.rows.join('\n') || EMPTY; }
 
   /** The ring buffer dies with the worker, so the viewer needs a copy of the
    * current session in IndexedDB to reset it to the previous session. */
-  snapshot(): void { void writeStore('previous', this.rows.join('\n')); }
+  snapshot(): void { if (DIAGNOSTICS) void writeStore('previous', this.rows.join('\n')); }
   previous(): Promise<string> { return readStore('previous').then(copy => copy || EMPTY); }
 }

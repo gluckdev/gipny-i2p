@@ -30,6 +30,8 @@ mod vault;
 pub use ui_helpers::clean_attachment;
 #[cfg(target_arch = "wasm32")]
 pub use ui_helpers::contact_qr_svg;
+#[cfg(target_arch = "wasm32")]
+pub use ui_helpers::{attachment_passed_name, attachment_passes_through, AttachmentHasher};
 
 use std::{
     future::Future,

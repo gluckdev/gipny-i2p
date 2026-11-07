@@ -1,66 +1,104 @@
 # Безопасность / Security
 
-*English summary at the end.*
+## Русский
 
-## Куда сообщать об уязвимости
+Gipny — экспериментальный мессенджер поверх I2P. Сквозное шифрование,
+анонимность сети и защита устройства решают разные задачи. Наличие этих
+механизмов не означает независимого аудита или гарантии против любого противника.
+Текущее состояние исходников и непроверенные возможности указаны в
+[матрице функций](docs/current-state.md).
 
-Не открывайте публичный issue с деталями. Используйте приватный отчёт GitHub:
-**Security → Report a vulnerability** —
-<https://github.com/gluckdev/gipny-i2p/security/advisories/new>.
-Если эта форма недоступна, откройте issue **без деталей** («есть уязвимость,
-нужен канал») — вам ответят, как передать описание.
+### Сообщить об уязвимости
 
-В отчёте полезно: версия (`Настройки → Обновления` или имя файла со страницы
-релиза), платформа, шаги воспроизведения, что именно раскрывается или ломается.
+Используйте [приватный отчёт GitHub](https://github.com/gluckdev/gipny-i2p/security/advisories/new).
+Если форма недоступна, создайте issue **без технических подробностей** с просьбой
+предоставить приватный канал. Укажите версию/commit, платформу, воспроизведение,
+наблюдаемый ущерб и ожидаемое поведение. Не прикладывайте настоящий профиль,
+пароли, ключи или переписку. Локальное ревью до исправления не публикуется.
 
-## Что ждать
+Целевой срок подтверждения отчёта — семь дней. Принятые исправления и имя автора
+(по его желанию) описываются после доступности обновления. Ветка 0.5.0 сейчас
+содержит prerelease-код; обозначение RC не равно стабильному выпуску. Старые
+release notes — история, а не подтверждение поддержки или доступного скачивания.
 
-- Подтверждение получения — в течение 7 дней.
-- Исправление выходит отдельным патч-релизом; в его заметках уязвимость
-  описывается после того, как обновление доступно на всех платформах.
-- Отчёт, который принят, упоминается в заметках релиза с указанием автора,
-  если автор этого хочет.
+### Границы защиты
 
-## Поддерживаемые версии
+| Граница | Реализуемая защита | Что остаётся видимым или возможным |
+|---|---|---|
+| Сообщение | X3DH, Double Ratchet и аутентификация до передачи в I2P | Собеседник видит текст и может его сохранить; отсутствие потерь требует отдельных проверок состояния и ACK |
+| Native сеть | Встроенный i2pd, маршруты I2P | Провайдер видит сетевую активность; глобальная корреляция трафика не исключена |
+| Browser сеть | Client-only I2P в WASM; внешний WSS или WebRTC переносит NTCP2-шифротекст | Форвардер видит выбранный I2P-узел, время и объём; WSS/signaling и TURN имеют собственных операторов |
+| Native профиль | SQLCipher/vault и OS credential provider | Разблокированная ОС, native/GUI copies и crash/swap требуют отдельной модели угроз |
+| Browser профиль | AEAD-слоты OPFS, пароль/Argon2id, поддерживаемый WebAuthn PRF | Нет native mlock, SQLCipher или гарантии аппаратной привязки; удаление данных origin может уничтожить профиль |
+| Обновления | Обязательный SHA256, лимиты загрузки, provenance | Digest на той же странице релиза не является независимой подписью издателя |
 
-| Версия | Исправления безопасности |
-| ------ | ------------------------ |
-| 0.4.x  | да                       |
-| < 0.4  | нет — обновитесь         |
+WSS может проходить через совместимый CDN. WebRTC использует ICE/DTLS/SCTP;
+обычный HTTP/CDN-прокси не становится TURN. В WebRTC выбран `relay` по умолчанию:
+нужны TURN credentials. Явный `all` разрешает непосредственный путь до
+форвардера и раскрытие IP ему. Сигнализация WSS всё равно может раскрывать IP
+её оператору. Прямого WebRTC между собеседниками и скрытого переключения
+транспортов нет. Эти механизмы **не доказывают неразличимость трафика**.
+Новые WebRTC-изменения требуют CI и проверок NAT/TURN/реальных устройств.
 
-## Что считается уязвимостью здесь
+Ключи I2P и ratchet в браузере обрабатывает Rust Worker; отображаемый текст и
+вводимый пароль неизбежно проходят через UI. Компрометация кода origin,
+расширения или браузерного процесса может обойти эту изоляцию. Web hosting
+не получает профиль или сообщения через API приложения, но контролирует
+загружаемый код. Сервер байтового транспорта — отдельная граница доверия.
 
-В зоне ответственности проекта: криптография и протокол (`libcore`), релей
-(`core/relay`, `libcore/src/relay_server.rs`), сеть релеев (`dht`,
-`libcore/src/dht_client.rs`), режим агента и `gipny-agent`, приложение
-(`core`, `ui`, Android-обвязка). Особенно интересны: чтение или подмена
-сообщений третьей стороной, раскрытие отправителя релею или сети, чтение
-или подмена записей в сети релеев тем, кому они не адресованы, выполнение
-команд агентом не от мастера, обход блокировки или удаления контакта.
+Удаление, TTL и очистка RAM ограничивают доступные приложению копии; они не
+стирают скриншоты, резервные копии и данные на чужом устройстве. Не обещается
+защита от root/скомпрометированной ОС. Ошибки проверки полномочий, lifecycle,
+входных лимитов и обращения с секретами в нашем коде всё равно принимаются.
+Проблемы upstream i2pd направляйте также в
+[PurpleI2P/i2pd](https://github.com/PurpleI2P/i2pd).
 
-Не сюда: уязвимости самого `i2pd` (сообщайте в [PurpleI2P/i2pd](https://github.com/PurpleI2P/i2pd));
-атаки, требующие root или физического доступа к разблокированному устройству;
-деанонимизация свойствами сети I2P как таковой.
+Стабильные native releases должны иметь `Null` diagnostics. В RC разрешён
+явный developer log; он не должен содержать секреты. Browser diagnostics
+имеют отдельный lifecycle и не наследуют автоматически native гарантии.
+См. [журналы](docs/release-diagnostics.md), [RAM](docs/memory-security.md),
+[привязку профиля](docs/device-bound-storage.md) и [браузер](docs/browser-messenger.md).
 
-### Отдельная браузерная граница (WASM / Web Worker)
+## English
 
-Браузерная версия мессенджера (`browser-router` / PWA) имеет собственную отдельную
-границу доверия:
+Gipny is experimental. End-to-end encryption, I2P anonymity and device security
+are separate protections, not an independent audit or a universal guarantee.
+See the [current feature matrix](docs/current-state.md) for implementation and
+validation boundaries.
 
-- Приватные ключи содержатся исключительно в Rust Web Worker (`BrowserEngine`), а профиль сохраняется в шифрованных слотах OPFS (Argon2id 64 MiB, PRF passkeys).
-- В браузере **отсутствуют** нативные гарантии ОС: нет `mlock`/`mprotect` и `PROT_NONE`, нет SQLCipher, нет аппаратного keychain, duress-паролей и деструктивного стирания по счётчику попыток.
-- Атаки, использующие вредоносные браузерные расширения, компрометацию хостинга страницы, инспекцию незаблокированной памяти процесса браузера или сборщика мусора JS, находятся вне модели угроз браузерной границы.
-- WSS-форвардеры выполняют байтовую ретрансляцию с проверкой allowlist подписанных RouterInfo и не терминируют сквозные Noise-сессии NTCP2.
+Report privately through [GitHub Security](https://github.com/gluckdev/gipny-i2p/security/advisories/new).
+If unavailable, ask for a private channel in an issue without technical details.
+Include version/commit, platform, reproduction and impact, never real profiles,
+keys, passwords or conversations. The acknowledgement target is seven days;
+accepted fixes and optional credit are announced after an update is available.
+The 0.5.0 source tree is prerelease code. Historical release notes do not prove
+current support or downloadable assets. Unfixed review details stay private.
 
----
+Messages use X3DH and Double Ratchet before transport. Recipients can retain
+plaintext. Native clients embed i2pd; browsers run a client-only I2P router in
+WASM. Providers still observe network activity; global traffic correlation is
+not excluded. WSS/WebRTC forwarders see entry peers, timing and volume, without
+terminating NTCP2 or holding messenger keys. WSS can use a compatible CDN;
+WebRTC uses ICE/DTLS/SCTP and needs a separate TURN service for relay-only ICE.
+`relay` is the WebRTC default; explicit `all` exposes the client IP to the
+forwarder. WSS signaling can still expose IP to its operator. There is no direct
+contact-to-contact RTC or automatic transport fallback. None of this proves
+traffic indistinguishability. New RTC code still needs CI, NAT/TURN and device
+acceptance.
 
-**English.** Report vulnerabilities privately via
-<https://github.com/gluckdev/gipny-i2p/security/advisories/new> (or an issue
-without details asking for a channel). Acknowledgement within 7 days; fixes
-ship as patch releases. Supported: 0.4.x. Out of scope: i2pd itself
-(upstream), attacks needing root or an unlocked device, I2P network-level
-deanonymisation.
-*Browser WASM boundary note:* Private keys stay in the Rust Web Worker and OPFS
-is encrypted, but the browser lacks OS memory locking (mlock), SQLCipher,
-hardware keychain, duress, or tamper wipe counters. Hostile extensions, origin
-compromise, and browser memory inspection are out of scope.
+Native profiles use SQLCipher/vault with an OS credential provider. Browser
+profiles use encrypted OPFS slots, Argon2id and supported WebAuthn PRF, without
+native memory locking, SQLCipher or guaranteed hardware binding. Rust Worker
+owns I2P/ratchet keys; UI still handles displayed text and password input.
+Origin-code compromise, hostile extensions or a compromised browser/OS can
+bypass that isolation. Static hosting supplies executable code, although the
+application does not upload profiles or messages to it. Transport forwarding
+is a distinct trust boundary.
+
+Deletion, TTL and memory clearing cannot erase recipient screenshots, backups
+or copies beyond application control. Our authorization, bounds, lifecycle and
+secret-handling bugs remain in scope; report upstream i2pd defects upstream too.
+Mandatory update hashes and provenance do not replace independent publisher
+signatures. Stable native releases require Null diagnostics; RC builds may
+explicitly enable developer logs without secrets. Browser logging has separate
+storage and lifecycle. See the linked detailed guides above.

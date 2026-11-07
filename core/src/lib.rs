@@ -1,6 +1,5 @@
 pub mod core;
-pub mod web_server;
-pub mod data_lock;
+pub use gipny_libcore::data_lock;
 mod notify;
 mod sanitizer;
 #[cfg(any(target_os = "android", test))]
@@ -84,22 +83,9 @@ impl Prewarm {
     }
 }
 
-/// Where the level lives. Not a profile setting: capture starts before any
-/// vault is open, and a log that only begins after unlocking would miss the
-/// part people actually need — the router, the boot, the crash before that.
-fn log_level_path(base_dir: &std::path::Path) -> std::path::PathBuf {
-    base_dir.join("log.conf")
-}
-
-/// Capture is a developer/test/prerelease capability. A stable release ignores
-/// old settings and environment overrides, including an existing `log.conf`.
-fn log_enabled(base_dir: &std::path::Path) -> bool {
-    if !gipny_libcore::diagnostics::AVAILABLE { return false; }
-    let environment = std::env::var("GIPNY_DEBUG_LOG").ok();
-    let persisted = std::fs::read_to_string(log_level_path(base_dir)).ok();
-    gipny_libcore::diagnostics::capture_enabled(
-        environment.as_deref(), persisted.as_deref(),
-    )
+/// Logging is a build capability, not a per-profile or runtime preference.
+fn log_enabled(_base_dir: &std::path::Path) -> bool {
+    gipny_libcore::diagnostics::AVAILABLE
 }
 
 /// Redirect this process's stderr into a file, one timestamped line at a time.
@@ -259,12 +245,12 @@ pub fn run() {
             accept_contact_request, decline_contact_request,
             set_contact_bot, reset_contact_session,
             get_agent_mode, set_agent_mode, send_console_command, send_agent_off,
-            list_messages, message_position, unread_count, mark_read, delete_message, clear_dm_chat,
+            list_messages, message_position, unread_count, mark_read, delete_message, acknowledge_deletion_notices, report_peer_event, clear_dm_chat,
             send_message, send_message_paths, send_edit, send_edit_group,
             forward_message,
             list_attachments, load_attachment, save_attachment, save_paste_temp,
             list_media_contact, list_media_group, search_messages,
-            files_progress, cancel_files,
+            files_progress, message_files, cancel_files,
             list_muted, set_muted,
             paste_clipboard_image,
             press_button, press_group_button,
@@ -276,7 +262,7 @@ pub fn run() {
             pin_chat, unpin_chat,
             check_update, install_update, update_installs_itself, update_asks_for_root, restart_app, dismiss_update, get_auto_update, set_auto_update, current_version,
             list_apk_artifacts, download_apk,
-            read_debug_log, read_previous_log, log_settings, set_log_enabled, clear_debug_log,
+            read_debug_log, read_previous_log, log_settings, clear_debug_log,
             export_identity, import_identity_to_profile,
             send_typing,
             play_notify_sound,
@@ -298,7 +284,17 @@ pub fn run() {
                 let ctx = app.state::<AppCtx>();
                 match data_lock::DataDirLock::acquire(&ctx.base_dir) {
                     Ok(lock) => { app.manage(lock); }
-                    Err(error) => eprintln!("WARNING: {error} Continuing desktop startup without the advisory lock."),
+                    // A second writer of the same profile would overwrite the
+                    // first one's ratchet state: refuse to start, visibly.
+                    Err(error) if data_lock::held_elsewhere(&error) => {
+                        use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                        app.dialog().message(format!("{error}\n\nЗакройте другой экземпляр gipny и запустите снова.\nClose the other gipny instance and start again."))
+                            .title("gipny")
+                            .kind(MessageDialogKind::Error)
+                            .blocking_show();
+                        std::process::exit(1);
+                    }
+                    Err(error) => eprintln!("WARNING: {error} Continuing without the advisory lock."),
                 }
             }
             if let Ok(dir) = app.path().app_cache_dir() {
@@ -438,6 +434,9 @@ pub(crate) struct MessageDto {
     pub(crate) dm_seq: Option<i64>,
     pub(crate) deleted_at: Option<i64>,
     pub(crate) delete_pending: bool,
+    pub(crate) deletion_notice: Option<gipny_libcore::db::DmDeletionNotice>,
+    /// What the contact reported doing with this message (copy, save, screenshot).
+    pub(crate) peer_events: Vec<gipny_libcore::db::PeerEvent>,
     pub(crate) buttons: Option<Vec<Vec<ButtonDto>>>,
     pub(crate) reply_to: Option<i64>,
     /// Console framing: a command, its output, or an agent-mode marker.
@@ -459,6 +458,8 @@ pub(crate) fn attach_extras(db: &gipny_libcore::db::Db, dtos: &mut [MessageDto])
     let consoles = db.load_settings_batch("console_", &ids).map_err(err)?;
     for dto in dtos.iter_mut() {
         dto.delete_pending = dto.deleted_at.is_some() && db.dm_delete_pending(dto.id).map_err(err)?;
+        if dto.deleted_at.is_some() {dto.deletion_notice=db.dm_deletion_notice(dto.id).map_err(err)?;}
+        else if dto.contact_id.is_some() && dto.group_id.is_none() { dto.peer_events = db.peer_events(dto.id).map_err(err)?; }
         if let Some(bytes) = map.get(&dto.id) {
             if let Ok(wire) = bincode::deserialize::<Vec<Vec<gipny_libcore::WireButton>>>(bytes) {
                 dto.buttons = Some(wire.into_iter()
@@ -487,7 +488,7 @@ impl From<Message> for MessageDto {
             outgoing: matches!(m.direction, gipny_libcore::db::Direction::Out),
             body: m.body, sent_at: m.sent_at,
             sent: m.sent, delivered: m.delivered, read: m.read, expires_at: m.expires_at,
-            dm_seq: m.dm_seq, deleted_at: m.deleted_at, delete_pending: false,
+            dm_seq: m.dm_seq, deleted_at: m.deleted_at, delete_pending: false, deletion_notice: None, peer_events: Vec::new(),
             buttons: None,
             reply_to: m.reply_to,
             console: None,
@@ -561,8 +562,8 @@ const SETTING_MUTES: &str = "muted_targets";
 /// How much transit traffic the bundled router carries. See
 /// [`gipny_libcore::router::TransitProfile`] — this is an anonymity setting.
 const SETTING_ROUTER_TRANSIT: &str = "router_transit";
-/// Whether the router also speaks over a Yggdrasil mesh, when one is running.
-const SETTING_ROUTER_YGGDRASIL: &str = "router_yggdrasil";
+/// Whether the router may ask the home gateway to open its ports (UPnP).
+const SETTING_ROUTER_UPNP: &str = "router_upnp";
 
 pub(crate) fn parse_group_id(s: &str) -> Result<Vec<u8>, String> {
     hex_decode(s).ok_or_else(|| "bad group id".to_string())
@@ -701,6 +702,10 @@ fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
             "session" => ("session", "active"),
             "session-done" => ("session", "done"),
             "session-failed" => ("session", "failed"),
+            "inbound" => ("inbound", "active"),
+            "inbound-done" => ("inbound", "done"),
+            "outbound" => ("outbound", "active"),
+            "outbound-done" => ("outbound", "done"),
             "tunnels" => ("tunnels", "active"),
             "tunnels-done" => ("tunnels", "done"),
             "tunnels-failed" => ("tunnels", "failed"),
@@ -744,7 +749,7 @@ fn resolve_bundled_router(app: &AppHandle) {
 /// password is typed — and the router has to start before that. So the last
 /// values used are left beside the profile in the clear.
 ///
-/// This deliberately persists the transit/Yggdrasil choices in cleartext,
+/// This deliberately persists the transit/UPnP choices in cleartext,
 /// independently of diagnostics (release has no router log). It contains no
 /// keys or messages and is inside the profile directory for a duress wipe.
 fn router_hint_path(dir: &std::path::Path) -> std::path::PathBuf {
@@ -754,16 +759,16 @@ fn router_hint_path(dir: &std::path::Path) -> std::path::PathBuf {
 fn read_router_hint(dir: &std::path::Path) -> gipny_libcore::router::RouterSettings {
     let raw = std::fs::read_to_string(router_hint_path(dir)).unwrap_or_default();
     let mut it = raw.split_whitespace();
-    gipny_libcore::router::RouterSettings {
-        transit: gipny_libcore::router::TransitProfile::parse(it.next().unwrap_or_default()),
-        yggdrasil: gipny_libcore::router::Yggdrasil::parse(it.next().unwrap_or_default()),
-    }
+    let transit = gipny_libcore::router::TransitProfile::parse(it.next().unwrap_or_default());
+    // Named, so a hint of an older layout cannot be misread: absent means on.
+    let upnp = it.find_map(|word| word.strip_prefix("upnp=")).unwrap_or_default();
+    gipny_libcore::router::RouterSettings { transit, upnp: gipny_libcore::router::Upnp::parse(upnp) }
 }
 
 fn write_router_hint(dir: &std::path::Path, s: gipny_libcore::router::RouterSettings) {
     let _ = std::fs::write(
         router_hint_path(dir),
-        format!("{} {}\n", s.transit.as_str(), s.yggdrasil.as_str()),
+        format!("{} upnp={}\n", s.transit.as_str(), s.upnp.as_str()),
     );
 }
 
@@ -891,6 +896,8 @@ async fn take_prewarmed(
     // The screen's own listener may have attached after these stages went by.
     boot_status(app, "router", "done", "router ready (started before unlocking)");
     boot_status(app, "session", "done", "address ready");
+    boot_status(app, "inbound", "done", "inbound tunnels ready before unlocking");
+    boot_status(app, "outbound", "done", "outbound tunnels ready before unlocking");
     boot_status(app, "tunnels", "done", "tunnels built before unlocking");
     Some(ready)
 }
@@ -958,11 +965,11 @@ async fn boot(
             .and_then(|v| String::from_utf8(v).ok())
             .map(|v| gipny_libcore::router::TransitProfile::parse(&v))
             .unwrap_or_default(),
-        yggdrasil: db.get_setting(SETTING_ROUTER_YGGDRASIL)
+        upnp: db.get_setting(SETTING_ROUTER_UPNP)
             .ok()
             .flatten()
             .and_then(|v| String::from_utf8(v).ok())
-            .map(|v| gipny_libcore::router::Yggdrasil::parse(&v))
+            .map(|v| gipny_libcore::router::Upnp::parse(&v))
             .unwrap_or_default(),
     };
     // So the next launch can start the router before the password (the vault
@@ -1380,6 +1387,17 @@ async fn delete_message(id: i64, ctx: State<'_, AppCtx>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn acknowledge_deletion_notices(contact_id:i64, message_ids:Vec<i64>, ctx:State<'_,AppCtx>) -> Result<(),String> {
+    core_of(&ctx).await?.acknowledge_deletion_notices(contact_id,&message_ids).map_err(err)
+}
+
+/// `kind`: 5 text copied, 6 attachment saved, 7 screenshot shortcut.
+#[tauri::command]
+async fn report_peer_event(message_id: i64, kind: u8, ctx: State<'_, AppCtx>) -> Result<(), String> {
+    core_of(&ctx).await?.report_peer_event(message_id, kind).map_err(err)
+}
+
+#[tauri::command]
 async fn clear_dm_chat(contact_id:i64, ctx:State<'_,AppCtx>) -> Result<usize,String> {
     core_of(&ctx).await?.clear_dm_contact(contact_id).map_err(err)
 }
@@ -1614,6 +1632,7 @@ struct FileProgressDto {
     done: u32,
     total: u32,
     incoming: bool,
+    status: String,
 }
 
 /// Files of a message still moving in parts (not yet attachments, or not yet
@@ -1621,7 +1640,28 @@ struct FileProgressDto {
 #[tauri::command]
 async fn files_progress(message_id: i64, ctx: State<'_, AppCtx>) -> Result<Vec<FileProgressDto>, String> {
     let rows = core_of(&ctx).await?.files_progress(message_id).map_err(err)?;
-    Ok(rows.into_iter().map(|(name, size, done, total, incoming)| FileProgressDto { name, size, done, total, incoming }).collect())
+    Ok(rows.into_iter().map(|(name, size, done, total, incoming, status)| FileProgressDto { name, size, done, total, incoming, status }).collect())
+}
+
+#[derive(Serialize)]
+struct MessageFilesDto { attachments:Vec<AttachmentDto>, progress:Vec<FileProgressDto> }
+
+/// One bounded request for the visible history, also after reopening a chat.
+#[tauri::command]
+async fn message_files(message_ids:Vec<i64>, ctx:State<'_,AppCtx>) -> Result<std::collections::HashMap<i64,MessageFilesDto>,String> {
+    if message_ids.len()>500 || message_ids.iter().any(|id|*id<=0) {return Err("invalid file history window".into());}
+    let core=core_of(&ctx).await?;
+    let mut result=std::collections::HashMap::new();
+    for id in message_ids {
+        let attachments=core.db().list_attachments(id).map_err(err)?.into_iter().map(|a|AttachmentDto {
+            id:a.id,message_id:a.message_id,name:a.name,size:a.size,
+        }).collect();
+        let progress=core.files_progress(id).map_err(err)?.into_iter().map(|(name,size,done,total,incoming,status)|FileProgressDto {
+            name,size,done,total,incoming,status,
+        }).collect();
+        result.insert(id,MessageFilesDto {attachments,progress});
+    }
+    Ok(result)
 }
 
 /// Stop sending a message's files in parts.
@@ -1972,8 +2012,13 @@ async fn list_pinned_group(group_id: String, ctx: State<'_, AppCtx>) -> Result<V
 struct RouterSettingsDto {
     /// "frugal" | "balanced" | "generous"
     transit: String,
-    /// "off" | "auto" | "on"
-    yggdrasil: String,
+    /// "on" | "off"; absent from an older UI means on.
+    #[serde(default = "upnp_default")]
+    upnp: String,
+}
+
+fn upnp_default() -> String {
+    gipny_libcore::router::Upnp::default().as_str().to_string()
 }
 
 #[tauri::command]
@@ -1982,10 +2027,11 @@ async fn get_router_settings(ctx: State<'_, AppCtx>) -> Result<RouterSettingsDto
     let transit = db.get_setting(SETTING_ROUTER_TRANSIT).map_err(err)?
         .and_then(|v| String::from_utf8(v).ok())
         .unwrap_or_else(|| gipny_libcore::router::TransitProfile::default().as_str().to_string());
-    let yggdrasil = db.get_setting(SETTING_ROUTER_YGGDRASIL).map_err(err)?
+    let upnp = db.get_setting(SETTING_ROUTER_UPNP).map_err(err)?
         .and_then(|v| String::from_utf8(v).ok())
-        .unwrap_or_else(|| gipny_libcore::router::Yggdrasil::default().as_str().to_string());
-    Ok(RouterSettingsDto { transit, yggdrasil })
+        .map(|v| gipny_libcore::router::Upnp::parse(&v).as_str().to_string())
+        .unwrap_or_else(upnp_default);
+    Ok(RouterSettingsDto { transit, upnp })
 }
 
 /// Stored for the next start. i2pd reads these from its command line and has no
@@ -1999,13 +2045,13 @@ async fn set_router_settings(
     // Normalise through the parser so an unknown value cannot be stored.
     let transit = gipny_libcore::router::TransitProfile::parse(&settings.transit);
     db.set_setting(SETTING_ROUTER_TRANSIT, transit.as_str().as_bytes()).map_err(err)?;
-    let ygg = gipny_libcore::router::Yggdrasil::parse(&settings.yggdrasil);
-    db.set_setting(SETTING_ROUTER_YGGDRASIL, ygg.as_str().as_bytes()).map_err(err)?;
+    let upnp = gipny_libcore::router::Upnp::parse(&settings.upnp);
+    db.set_setting(SETTING_ROUTER_UPNP, upnp.as_str().as_bytes()).map_err(err)?;
     // Keep the plaintext hint in step, or the next launch prewarms a router
     // with the old knobs and then throws it away once the vault says otherwise.
     if let Some(p) = ctx.profile.lock().await.clone() {
         if let Ok(dir) = profile_dir(&ctx, &p) {
-            write_router_hint(&dir, gipny_libcore::router::RouterSettings { transit, yggdrasil: ygg });
+            write_router_hint(&dir, gipny_libcore::router::RouterSettings { transit, upnp });
         }
     }
     Ok(())
@@ -2187,20 +2233,6 @@ fn log_settings(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, String> {
             ctx.base_dir.join("debug.log").display().to_string()
         } else { String::new() },
     }))
-}
-
-/// Takes effect at the next launch: the capture replaces this process's stderr
-/// once, at startup, and there is no way back to a file descriptor that is gone.
-#[tauri::command]
-fn set_log_enabled(enabled: bool, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    if !gipny_libcore::diagnostics::AVAILABLE {
-        return Err("diagnostic logging is unavailable in release builds".into());
-    }
-    std::fs::write(log_level_path(&ctx.base_dir), if enabled { "debug" } else { "off" }).map_err(err)?;
-    if !enabled {
-        scrub_debug_log(&ctx.base_dir);
-    }
-    Ok(())
 }
 
 /// Wipe what has been written so far, for handing the app to someone else.

@@ -104,56 +104,54 @@ pub(crate) fn note(progress: &Option<BootProgress>, stage: &str, detail: impl As
     }
 }
 
-/// When to carry i2p over a Yggdrasil mesh as well as plain IP.
+/// Whether the router asks the home gateway to forward its transport ports.
 ///
-/// Yggdrasil is a different underlay, so it is a way in when the normal way is
-/// blocked — i2p peers and reseed servers are both blockable. It needs a
-/// Yggdrasil node already running on this machine; i2pd looks up the local mesh
-/// address and does not provide one. With none present the router carries on
-/// over plain IP, so turning this on is harmless even when nothing is there.
+/// On, inbound peers reach the router directly and tunnels build sooner. The
+/// price is that the gateway's table — readable by every device on the LAN,
+/// and by whoever manages an ISP-provided router — shows that this machine runs
+/// a P2P program. Off, the UPnP worker never starts: no SSDP search, no rule,
+/// no file. The rule names neither the app nor anything that links networks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Yggdrasil {
-    /// Never. Plain IP only.
-    Off,
-    /// Not unless asked: the same as `Off` for the in-process router, kept
-    /// so stored settings keep their meaning.
+pub enum Upnp {
     #[default]
-    Auto,
-    /// Always announce over the mesh.
     On,
+    Off,
 }
 
-impl Yggdrasil {
+impl Upnp {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Off => "off",
-            Self::Auto => "auto",
             Self::On => "on",
+            Self::Off => "off",
         }
     }
 
-    /// Unknown values fall back to the default rather than erroring: a setting
-    /// written by a newer build must not stop the router from starting.
+    /// Only an explicit "off" turns it off: a value from a newer build, or a
+    /// hint written before this setting existed, keeps the default.
     pub fn parse(raw: &str) -> Self {
         match raw.trim() {
             "off" => Self::Off,
-            "on" => Self::On,
-            _ => Self::Auto,
+            _ => Self::On,
         }
+    }
+
+    /// i2pd's `upnp.enabled`; the embedded manager reads it at router start.
+    pub fn enabled(self) -> bool {
+        matches!(self, Self::On)
     }
 }
 
 /// Router knobs the user can change.
 ///
-/// Both are persisted per profile and only read when the router starts: i2pd
+/// All are persisted per profile and only read when the router starts: i2pd
 /// takes these from its command line, and its runtime setters are not wired to
-/// anything reachable from outside the process. Changing either therefore needs
+/// anything reachable from outside the process. Changing any therefore needs
 /// the router restarted, which drops built tunnels — so the UI says so rather
 /// than pretending the change is instant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RouterSettings {
     pub transit: TransitProfile,
-    pub yggdrasil: Yggdrasil,
+    pub upnp: Upnp,
 }
 
 /// Fewer known routers than this and the bundled snapshot is laid out: i2pd
@@ -244,6 +242,25 @@ pub(crate) fn bundled_seed() -> Option<PathBuf> {
         }
     }
     candidates.into_iter().find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn upnp_is_on_unless_explicitly_off() {
+        assert_eq!(RouterSettings::default().upnp, Upnp::On);
+        assert_eq!(Upnp::parse("off"), Upnp::Off);
+        assert_eq!(Upnp::parse(" off\n"), Upnp::Off);
+        for raw in ["on", "", "auto", "OFF?"] {
+            assert_eq!(Upnp::parse(raw), Upnp::On, "{raw:?}");
+        }
+        for value in [Upnp::On, Upnp::Off] {
+            assert_eq!(Upnp::parse(value.as_str()), value);
+        }
+        assert!(Upnp::On.enabled() && !Upnp::Off.enabled());
+    }
 }
 
 #[cfg(test)]

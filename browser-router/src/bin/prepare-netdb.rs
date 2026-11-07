@@ -3,7 +3,10 @@
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     use emissary_core::crypto::{base64_encode, sha256::Sha256};
-    use gipny_browser_router::{bootstrap::is_public_ipv4, ntcp2::verified_peer};
+    use gipny_browser_router::{
+        bootstrap::is_public_ipv4,
+        ntcp2::{is_allowed_ntcp2_port, verified_peer, MAX_PUBLIC_TARGETS, MAX_TARGET_ROWS},
+    };
     use std::{fs, path::Path};
 
     fn files(path: &Path, output: &mut Vec<std::path::PathBuf>) {
@@ -29,7 +32,7 @@ fn main() {
     );
     let root = Path::new(&args[1]);
     let limit: usize = args[3].parse().expect("max peers");
-    assert!((1..=2048).contains(&limit));
+    assert!((1..=MAX_PUBLIC_TARGETS).contains(&limit));
     let snapshot_mode = args.len() == 5;
     let mut paths = if snapshot_mode {
         Vec::new()
@@ -52,6 +55,9 @@ fn main() {
                 continue;
             }
         };
+        // verified_peer already applies the port policy; keep the forwarder's
+        // allowlist invariant explicit at the point where rows are emitted.
+        assert!(is_allowed_ntcp2_port(peer.address.port()));
         let fixture = path == root.join("router.info");
         if fixture && !peer.address.ip().is_loopback() {
             panic!("fixture must publish loopback");
@@ -83,6 +89,9 @@ fn main() {
         eprintln!("NETDB_NOT_READY public={public} rejected={rejected:?}");
         std::process::exit(2);
     }
+    // At most MAX_PUBLIC_TARGETS public rows plus the single router.info
+    // fixture row: exactly what the forwarder's load_targets accepts.
+    assert!(rows.len() <= MAX_TARGET_ROWS);
     fs::write(&args[2], rows.join("\n") + "\n").expect("candidates TSV");
     if snapshot_mode {
         assert!(public >= 16, "snapshot needs at least 16 public peers");

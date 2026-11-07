@@ -4,8 +4,9 @@ import { dirname, resolve } from 'node:path';
 import { messages } from './main.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
-export const publicFiles = ['index.html', 'styles.css', 'main.js', 'assets/logo.svg'];
-export const catalogKeys = ['catalogRelease', 'catalogAdvanced', 'catalogAdvancedNote', 'catalogAgents', 'catalogRelays', 'catalogOpenWrt', 'catalogSource', 'catalogVerification'];
+export const screenshots = ['chat-ru-desktop', 'chat-en-desktop', 'chat-ru-mobile', 'chat-en-mobile'].map(name => `assets/screens/${name}.webp`);
+export const publicFiles = ['index.html', 'styles.css', 'main.js', 'assets/logo.svg', ...screenshots];
+export const catalogKeys = ['catalogRelease', 'catalogSystem', 'catalogChoose', 'catalogDownload', 'catalogAll', 'catalogHelp', 'catalogUnavailable'];
 
 const repository = 'https://github.com/gluckdev/gipny-i2p';
 const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -81,50 +82,45 @@ export function releaseCatalog(release) {
   return { tag: release.tag_name, url: release.html_url, assets };
 }
 
-function icon(kind) {
-  const shapes = {
-    windows: '<path d="M3 4l8-1v8H3zm10-1 8-1v9h-8zM3 13h8v8l-8-1zm10 0h8v9l-8-1z"/>',
-    linux: '<path d="M8 9c0-4 1-7 4-7s4 3 4 7c0 2 3 5 3 8 0 3-3 4-7 4s-7-1-7-4c0-3 3-6 3-8z" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="8" r="1"/><circle cx="14" cy="8" r="1"/><path d="m10 11 2 2 2-2z"/>',
-    macos: '<rect x="3" y="3" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="1.5"/>',
-    android: '<path d="M5 10h14v9H5zM5 8c1-7 13-7 14 0z"/><path d="m7 2 2 3m8-3-2 3M3 11v7m18-7v7M8 19v3m8-3v3" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="6" r=".7" fill="var(--background)"/><circle cx="15" cy="6" r=".7" fill="var(--background)"/>',
-    router: '<rect x="3" y="12" width="18" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 12V4m12 8V4M9 16h1m3 0h1" fill="none" stroke="currentColor" stroke-width="1.5"/>',
-  };
-  return '<svg class="platform-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor">' + shapes[kind] + '</svg>';
-}
-
-function assetLink(asset, advanced = false) {
-  const size = (asset.size / 1_000_000).toFixed(1) + ' MB';
-  const label = (advanced ? asset.platform + ' · ' : '') + asset.arch;
-  return '<a class="download-file" data-download-asset="' + escapeHtml(asset.name) + '" href="' + escapeHtml(asset.url) + '" title="' + escapeHtml(asset.name) + '" aria-label="' + escapeHtml(asset.platform + ' · ' + asset.arch + ' · ' + asset.format + ' · ' + size) + '">' +
-    '<span class="download-architecture">' + escapeHtml(label) + '</span><span class="download-file-info">' + escapeHtml(asset.format + ' · ' + size) + '</span><span class="download-arrow" aria-hidden="true">↓</span></a>';
+/** One preferred native package per platform/architecture; full catalog stays in Releases. */
+export function nativeChoices(catalog) {
+  const choices = new Map();
+  for (const asset of catalog.assets.filter(asset => asset.group === 'native')) {
+    const key = asset.platform + '/' + asset.arch;
+    if (!choices.has(key) || asset.format === 'AppImage') choices.set(key, asset);
+  }
+  return [...choices.values()];
 }
 
 export function renderCatalog(catalog) {
-  const cards = ['Windows', 'Linux', 'macOS', 'Android'].map(platform => {
-    const assets = catalog.assets.filter(asset => asset.group === 'native' && asset.platform === platform);
-    if (!assets.length) return '';
-    return '<article class="download-platform"><h3>' + icon(assets[0].icon) + escapeHtml(platform) + '</h3><div class="download-files">' + assets.map(asset => assetLink(asset)).join('') + '</div></article>';
+  const options = nativeChoices(catalog).map(asset => {
+    const architecture = /ARM64/.test(asset.arch) ? 'arm64' : asset.arch === 'ARMv7' ? 'arm' : 'x64';
+    const label = asset.platform + ' · ' + asset.arch + ' · ' + asset.format;
+    const size = (asset.size / 1_000_000).toFixed(1) + ' MB';
+    return '<option value="' + escapeHtml(asset.url) + '" data-platform="' + escapeHtml(asset.platform) +
+      '" data-architecture="' + architecture + '" data-download-asset="' + escapeHtml(asset.name) +
+      '" data-size="' + size + '">' + escapeHtml(label) + '</option>';
   }).join('');
-  const advanced = [['agents', 'catalogAgents'], ['relays', 'catalogRelays'], ['openwrt', 'catalogOpenWrt']].map(([group, label]) => {
-    const assets = catalog.assets.filter(asset => asset.group === group);
-    if (!assets.length) return '';
-    return '<section class="download-component"><h4>' + translated(label) + '</h4><div class="download-grid">' +
-      assets.map(asset => '<div class="download-platform download-component-file">' + icon(asset.icon) + assetLink(asset, true) + '</div>').join('') + '</div></section>';
-  }).join('');
-  const extra = catalog.assets.filter(asset => ['metadata', 'source'].includes(asset.group)).map(asset =>
-    '<a href="' + escapeHtml(asset.url) + '">' + (asset.group === 'source' ? translated('catalogSource') : escapeHtml(asset.name)) + '</a>').join('');
   return [
-    '<p class="catalog-release">' + translated('catalogRelease') + ' <a href="' + escapeHtml(catalog.url) + '">' + escapeHtml(catalog.tag) + '</a></p>',
-    '<div class="download-grid">' + cards + '</div>',
-    advanced ? '<details class="download-advanced"><summary>' + translated('catalogAdvanced') + '</summary><p class="download-advanced-note">' + translated('catalogAdvancedNote') + '</p>' + advanced + '</details>' : '',
-    extra ? '<p class="catalog-verification">' + translated('catalogVerification') + '</p><div class="catalog-resources">' + extra + '</div>' : '',
+    '<p class="catalog-release">' + translated('catalogRelease') + ' <span>' + escapeHtml(catalog.tag) + '</span></p>',
+    '<div class="download-choice" id="download-choice" hidden>',
+    '<label for="download-system">' + translated('catalogSystem') + '</label>',
+    '<select id="download-system" aria-describedby="download-help"><option value="" data-i18n="catalogChoose">' + escapeHtml(messages.ru.catalogChoose) + '</option>' + options + '</select>',
+    '<p id="download-help" class="download-help">' + translated('catalogHelp') + '</p>',
+    '<p id="download-unavailable" hidden>' + translated('catalogUnavailable') + '</p>',
+    '<a id="download-primary" class="button button-primary" hidden></a>',
+    '<p id="download-detail" class="download-help" aria-live="polite"></p>',
+    '</div>',
+    '<p class="catalog-fallback"><a href="' + repository + '/releases" data-i18n="catalogAll">' + escapeHtml(messages.ru.catalogAll) + '</a></p>',
   ].join('\n');
 }
 
 export async function build(output, release) {
   const destination = resolve(output);
   if (destination === root) throw new Error('Build output must differ from the source directory');
-  const catalog = release === undefined ? undefined : renderCatalog(releaseCatalog(release));
+  // null is an authenticated API observation that no stable release exists.
+  // Invalid release objects still fail validation; never invent asset links.
+  const catalog = release == null ? undefined : renderCatalog(releaseCatalog(release));
   for (const file of publicFiles) {
     const target = resolve(destination, file);
     await mkdir(dirname(target), { recursive: true });

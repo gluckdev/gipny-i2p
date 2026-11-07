@@ -1,191 +1,82 @@
-# Сайт gipny-i2p для GitHub Pages
+# Сайт проекта / Project site
 
-Статический сайт проекта с загрузками приложений и ссылками на исходники.
-Исходные тексты и выбор языка обновлены **2026-10-29**: русский по умолчанию,
-English по явному выбору. Проверки этой правки выполняются в GitHub Actions;
-локальные application tests и сборки не запускались.
+## Русский
 
-Это статический лендинг с загрузками нативных сборок и ссылками на исходники.
-Сайт не создаёт профили, не получает сообщения, контакты или ключи.
-Хостинг статического сайта полностью отделён от развёртывания мессенджера.
-В проекте строго разделяются три разные веб-поверхности:
-1. **Статический сайт (`site/`)** — маркетинг и ссылки на бинарные релизы, чистая статика с CSP `connect-src 'none'`.
-2. **Прежний loopback WebUI (`ui/index.html`, `/app/`)** — сопряжение через локальный WebSocket (`ws://127.0.0.1:*`) с нативным клиентом `gipny-web`.
-3. **Автономный браузерный мессенджер (`ui/browser.html`)** — PWA на базе Dedicated Worker, client-only emissary WASM роутера (2 хопа, без transit/SSU2/SAM/I2CP listeners), OPFS (2 слота, Argon2id/WebAuthn PRF) и WSS-форвардера к allowlist IPv4 RouterInfo (приватные ключи не покидают браузер).
+`site/` — короткая публичная страница: что такое Gipny, что доступно,
+ограничения безопасности, скачивание и переход к WASM-клиенту.
+Это не сервер переписки. Языки RU и EN с одинаковым набором ключей: русский
+выбирается для русской локали или русской раскладки клавиатуры, иначе английский;
+`?lang=` и переключатель на странице важнее. Без JavaScript показывается русский.
+Секция «Как это выглядит» берёт снимки из `assets/screens/` (демонстрационный
+профиль `ui/dev/demo.ts`, `?demo=1`); снимок подбирается под язык через `:lang()`.
 
-Ранние оценки со сроками «до весны 2027 года» относились к этапу предварительного исследования и не являются описанием текущей архитектуры. Автономный браузерный стек реализован в ветке `feat/browser-messenger` (draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144), после влитого spike PR #143 `318b2d5`). На `fa60b02` полный CI acceptance прошёл, включая доставку после восстановления профиля и offline-историю с выключенным HTTP-сервером. Физические мобильные устройства и публичный хостинг не проверены и не развёрнуты; это ещё не production-ready релиз.
+- `index.html`: семантическая разметка, fallback-текст и ссылка `./app/browser.html`.
+- `main.js`: RU/EN тексты, выбор языка и определение ОС/архитектуры локально,
+  без аналитики и передачи сведений об устройстве.
+- `build.mjs`: `_site/`, каталог GitHub Releases и проверка имён/размеров assets.
+  Пустой каталог означает отсутствие доступного релиза, без вымышленных ссылок.
+- `tests/site.test.mjs`: тексты, локализация, ссылки, каталог и publication policy.
+- `tests/browser-check.mjs`: визуальное/браузерное поведение в CI.
 
-Раздел «В планах» отражает требование владельца от **2026-10-29**: «Поговорили
-и забыли», история без сохранения по умолчанию с предупреждением и предложением
-зашифрованного локального хранения в каждом новом чате, имена для обмена вроде
-`@Петрович666`, запросы с уведомлением и появление контакта только после принятия.
-Это будущая политика, не поведение 0.4.19: текущие приложения сохраняют историю
-локально. Имена не объявлены центральными аккаунтами и не заменяют сверку ключей;
-отдельные копии и снимки экрана остаются возможны. Здесь добавлено только описание
-плана, код мессенджера не изменён.
+Блок загрузки показывает одну ссылку на подходящий нативный пакет и ссылку
+на все релизы GitHub. Если архитектура скрыта браузером, посетитель выбирает её
+из списка; MacIntel сам по себе не доказывает наличие процессора Intel.
+Для Linux предпочтён AppImage; DEB и серверные компоненты остаются в релизах.
+Для неподдерживаемой ОС предлагается веб-клиент. Без JavaScript работает
+ссылка на все релизы. Раздел WASM объясняет локальное выполнение, отсутствие
+сервера переписки GitHub, роль моста и границы повторного запуска без хостинга.
+[Зеркала Tor/I2P с префиксом gipny](../docs/site-mirrors.md) пока только в плане.
 
-Карточки загрузки содержат прямые ссылки на каждый распознанный бинарный пакет
-последнего опубликованного стабильного релиза. Сначала идут Windows, Linux,
-macOS и Android; агенты, relay и OpenWrt — в раскрываемом разделе. Для файла
-указаны архитектура, формат и размер в десятичных MB. Значки платформ — локальный
-inline SVG; отсутствующая архитектура не получает выдуманную ссылку.
+[Pages workflow](../.github/workflows/pages.yml) собирает сайт и WASM UI из одного
+SHA, помещает клиент в `_site/app/`, проверяет публичную конфигурацию через
+`scripts/prepare-browser-config.py`. Переменная репозитория
+`GIPNY_BROWSER_CONFIG_JSON` публикуется как `app/browser-config.json`.
+Это **публичные** данные, не место для master/API credentials. TURN credentials
+должны быть ограниченными и обновляемыми. Без конфигурации доступна только
+локальная offline-работа, сетевую готовность страница не обещает.
 
-## Состав
+Внешние snapshot, WSS/Rust bridge и TURN настраивает оператор;
+см. [размещение](../docs/browser-messenger.md#hosting-preparation).
+Публикация Pages разрешена workflow только для доверенного `main`, после
+проверок. Подготовка исходников не означает deploy. App builds и executable UI
+checks выполняются в GitHub Actions; локально допустимы проверки текстов/данных.
 
-| Файл | Назначение |
-|---|---|
-| `index.html` | Полная русская версия без JavaScript, семантические секции, SEO/Open Graph и CSP |
-| `styles.css` | Адаптивные карточки, видимый фокус, мягкая схема доставки и reduced motion |
-| `main.js` | Полные тексты EN/RU и переключатель; без сетевых вызовов и хранилища |
-| `assets/logo.svg` | Точная копия родного [значка приложения](../core/icons/icon.svg) |
-| `build.mjs` | Валидирует release JSON и встраивает каталог в HTML; публикует только четыре файла |
-| `tests/site.test.mjs` | Проверки переводов, поведения переключателя, путей, CSP, контраста, артефакта и условий deployment |
-| [pages.yml](../.github/workflows/pages.yml) | Проверки на PR и публикация рассмотренной ветки `main` |
+Текст не должен обещать неразличимость трафика, защиту от захваченной ОС,
+гарантированное удаление у получателя или реализованные лишь в планах функции.
+WSS через CDN и WebRTC через ICE/TURN объясняются отдельно.
 
-По умолчанию сайт открывается по-русски независимо от языка браузера.
-Явные `?lang=en` / `?lang=ru` имеют приоритет; неизвестное значение даёт русский.
-Переключатель меняет `html[lang]`, тексты, title, description, Open Graph и
-доступные имена. Выбор остаётся в URL без перезагрузки и сохраняется при повторном
-открытии той же ссылки; остальные параметры, префикс пути и fragment не теряются.
-Переход по истории URL обновляет язык. Cookies и localStorage не используются;
-ранее выбранный English сохраняется в ссылке `?lang=en`.
+## English
 
-Без JavaScript остаются русские тексты, метаданные, навигация и работающие
-ссылки загрузки, а переключатель скрыт. Поэтому поисковые роботы и генераторы
-превью, не исполняющие JavaScript, получают русскую версию даже для `?lang=en`.
-Отдельных статических EN/RU страниц сейчас нет.
+`site/` is the short public landing page: purpose, available features, security
+limits, downloads and entry to the WASM messenger. It is not a messaging server.
+RU and EN share the same keys: Russian for a Russian locale or keyboard layout,
+otherwise English; `?lang=` and the page switch win. Without JavaScript the page
+is Russian. App screenshots in `assets/screens/` come from the demo profile
+(`ui/dev/demo.ts`, `?demo=1`) and follow the page language through `:lang()`.
 
-## Проверки и просмотр
+`index.html` contains markup and `./app/browser.html`; `main.js` handles language
+and copy, and detects the device locally without sending that information;
+`build.mjs` prepares `_site/` and validates the release asset catalogue.
+An empty catalogue produces no invented download links. Data/copy checks live in
+`tests/site.test.mjs`; browser behavior is tested in CI.
 
-Workflow [pages.yml](../.github/workflows/pages.yml) использует Node.js 24
-и выполняет следующие команды из корня репозитория; `npm install` не нужен:
+Downloads show one selected native package plus GitHub Releases. Hidden CPU
+architecture requires an explicit selection; MacIntel does not prove an Intel
+processor. Linux prefers AppImage; DEB and server components remain in Releases.
+Unsupported systems are offered the web client. Releases also work without JS.
+The WASM section explains local execution, GitHub's hosting role, independent
+transport and limits of restarting without hosting. [Tor/I2P mirrors with gipny
+prefixes](../docs/site-mirrors.md) are planned, not deployed.
 
-```bash
-node --test --test-isolation=none site/tests/site.test.mjs
-node site/build.mjs _site "$RUNNER_TEMP/gipny-release.json"
-```
+The Pages workflow builds the site and WASM UI from one SHA and places the app
+under `_site/app/`. The validated repository variable
+`GIPNY_BROWSER_CONFIG_JSON` becomes public `app/browser-config.json`; never put
+master/API secrets there. Use bounded, renewable TURN credentials. Without a
+network configuration the client provides local offline functionality only.
+Operators separately provide the netDb snapshot, Rust bridge and TURN service.
+Deployment requires trusted main and passing workflow checks. Preparing sources
+is not deployment; application builds/tests run in GitHub Actions.
 
-Тесты проверяют русский HTML без JavaScript, равенство словарей и видимых текстов,
-SEO/Open Graph и доступные имена, сохранение явного English, переключение и
-историю URL, относительные пути, CSP и состав артефакта. Результат новой правки
-нужно брать из её CI-запуска; приведённая ниже история его не заменяет.
-
-Второй аргумент CLI — локальный файл с полным JSON-ответом
-`gh api repos/gluckdev/gipny-i2p/releases/latest`. Экспорт `build(output, release?)`
-принимает разобранный объект. Без него сохраняется копирование исходных четырёх
-файлов и ссылка на страницу релизов; production workflow передаёт JSON обязательно.
-Этот вход сборки не попадает в public output. Браузер не вызывает GitHub API,
-не использует хранилище и сохраняет CSP `connect-src 'none'`.
-
-Builder требует опубликованный стабильный релиз `gluckdev/gipny-i2p`, правильный
-tag, положительные размеры и статус assets `uploaded`. Каждый URL должен точно
-соответствовать репозиторию, tag и имени файла. Дубликаты, неизвестные пакеты и
-подозрительные URL останавливают сборку; метаданные экранируются. В 0.4.18 есть
-13 бинарных пакетов; для 0.4.19 (опубликован 2026-10-29) по плану 20, включая
-новые агенты macOS/Windows и четыре musl target; фактический состав assets здесь
-не сверен. Архив исходников, SHA256SUMS и манифесты
-показываются отдельно, если присутствуют в assets. Будущий номер версии сам по
-себе не создаёт ссылок. Builder проверяет метаданные публикации, но не скачивает
-каждый пакет и не подменяет проверку SHA256 пользователем.
-
-Фикстуры покрывают оба набора, пропущенные архитектуры, неверные публикации,
-URL, размеры, статусы, инъекции и allowlist. Карточки сжимаются до контейнера,
-длинные архитектуры переносятся; download links имеют высоту не менее 60 px.
-Схема отправитель → I2P → собеседник подсвечивается последовательно только при
-`prefers-reduced-motion: no-preference`: меняются лишь opacity и transform.
-При reduced motion анимация, включая псевдоэлементы, выключена. Workflow проверяет
-Chrome на ширинах 320/360/390/768/1440 px в RU/EN и с reduced motion, сохраняя
-screenshots и результаты. Новая браузерная проверка локально не запускалась.
-
-Для предпросмотра используйте готовый артефакт CI, раздаваемый HTTP-сервером.
-Префикс `/gipny-i2p/` повторяет project Pages: локальные ресурсы подключены
-относительно страницы. Открытие `index.html` через `file://` не эквивалентно
-предпросмотру ES modules. Обычная ссылка показывает русский, `?lang=en` — English.
-
-Историческая проверка первоначальной версии **2026-10-28**: **9/9** автоматических
-проверок, сборка четырёх файлов,
-просмотр в headless Chrome при ширине 1440 px на английском и 390 px на русском.
-Дополнительно выполнена браузерная проверка переключения языка и метаданных,
-сохранения фокуса и префикса, отсутствия горизонтального скролла и реальной
-блокировки внешнего `fetch` директивой `connect-src`: **10/10** условий.
-Загрузки внешних ресурсов в самой странице отсутствуют. Публикация на Pages
-и установка нативных приложений этими проверками не подтверждаются. Этот результат
-не приписывается правке русского языка от 2026-10-29.
-
-## Публикация
-
-PR с изменением `site/**` или workflow запускает проверки и сохраняет артефакт
-`github-pages` на три дня. Job deployment на PR не запускается и не получает
-прав `pages: write` / `id-token: write`.
-
-Публикация разрешена только для `refs/heads/main`: push с изменениями сайта
-или ручной `workflow_dispatch`, а также успешное завершение workflow `release`
-на `main` в том же репозитории. Последнее событие обновляет каталог из уже
-опубликованных assets. Для `workflow_run` checkout берётся из доверенной `main`;
-checkout и артефакты запуска-источника не исполняются. Неуспешный или чужой
-release-run не проходит gate. Ручной запуск другой ветки только проверяет
-и собирает артефакт. Владелец отдельно выбирает GitHub Actions источником в
-Settings → Pages; `configure-pages` получает `enablement: false` и не включает
-Pages автоматически. Workflow не создаёт storage accounts или backend.
-
-Major-версии проверены по официальным release API **2026-10-28**:
-[checkout v7](https://github.com/actions/checkout/releases/tag/v7.0.1),
-[setup-node v7](https://github.com/actions/setup-node/releases/tag/v7.1.0),
-[configure-pages v6](https://github.com/actions/configure-pages/releases/tag/v6.0.0),
-[upload-pages-artifact v5](https://github.com/actions/upload-pages-artifact/releases/tag/v5.0.0),
-[deploy-pages v5](https://github.com/actions/deploy-pages/releases/tag/v5.0.1).
-Политика событий и разрешений опирается на
-[официальный deploy-pages](https://github.com/actions/deploy-pages#security-considerations).
-
-## Граница приватности
-
-JavaScript, CSS и SVG раздаются с того же origin. Внешних библиотек, шрифтов,
-CDN, аналитики, форм, сервис-воркера и backend нет. CSP разрешает только локальные
-ресурсы, запрещает соединения приложения и отправку форм; переводы вставляются
-через `textContent`. Эта страница не участвует в переписке.
-
-Загрузка публичного сайта остаётся обычным HTTP-запросом: GitHub Pages видит
-IP-адрес и время посещения. Приватность общения нативного клиента через I2P
-не распространяется автоматически на посещение Pages или переход к загрузке
-на GitHub. Это коротко обозначено и в текстах сайта на обоих языках.
-
-
-## Разделение веб-поверхностей: Pages, loopback WebUI и браузерный мессенджер
-
-Важно не смешивать три сетевые и прикладные поверхности:
-
-### 1. Статический лендинг Pages (`site/`)
-Project Pages без CNAME: `https://gluckdev.github.io/gipny-i2p/`.
-`build.mjs` сохраняет относительные ссылки лендинга (`publicFiles`). Лендинг не открывает
-соединений (`connect-src 'none'`), не работает с ключами, базами или пирами I2P и
-служит только для витрины проекта и дистрибуции нативных релизов.
-
-### 2. Экспериментальный loopback app/ (`ui/index.html`)
-Шаг `pages.yml` собирает интерфейс с `VITE_BASE=/gipny-i2p/app/` и копирует `ui/dist/`
-в `_site/app/`. Итоговый адрес интерфейса: `https://gluckdev.github.io/gipny-i2p/app/`.
-Это единый default URL в `core/src/web_server.rs::PAGES_APP_URL`.
-UI сопрягается по `ws://127.0.0.1:*` с установленным локальным `gipny-web` (где
-работают `libi2pd` и нативное ядро); см.
-[описание запуска и модели защиты](../core/README.md#gipny-web).
-Chrome может запросить доступ к локальной сети; Firefox и HTTPS →
-`ws://127.0.0.1` в реальных браузерах ещё не проверены.
-Хостинг на Pages раздаёт только UI-код; переписка через Pages не идёт.
-
-### 3. Автономный браузерный мессенджер (`ui/browser.html`)
-Автономная точка входа мессенджера собрана в отдельный артефакт `browser-messenger-pwa`
-в workflow [Browser router WASM](../.github/workflows/browser-router.yml).
-Он **не развёрнут на статическом GitHub Pages лендинге**.
-Для его публичной работы требуется отдельный HTTPS-хостинг со статикой `browser.html`
-и `browser-config.json` (snapshot URL, capability, WSS forwarder URL), а также
-запущенный TLS WSS-форвардер (`browser-router/forwarder/server.py`) к проверенным
-IPv4-узлам NetDb.
-Вся криптография и client-only роутер работают прямо в Dedicated Worker браузера;
-профиль хранится в OPFS (до 16 МиБ, 1 MiB inline-вложения; в браузере нет `mlock`/`mprotect`,
-нет DHT, удалённой консоли агента, транзита или нативного duress-вайпа).
-
-Разработка ведётся в draft [PR #144](https://github.com/gluckdev/gipny-i2p/pull/144)
-(ветка `feat/browser-messenger`). Сборка и тесты осуществляются **исключительно в GitHub Actions**
-(на `fa60b02` прошли release PWA/WASM, 46 WASM-тестов, оба холодных старта
-и полный сквозной сценарий двух браузеров, включая восстановление и offline-историю).
-Подробная инструкция: [docs/browser-messenger.md](../docs/browser-messenger.md) и
-[browser-router/README.md](../browser-router/README.md).
+Copy must distinguish implemented behavior, plans and validation. It must not
+promise traffic indistinguishability, protection from a compromised OS, or
+forced erasure at a recipient. CDN WSS and ICE/TURN RTC are distinct paths.

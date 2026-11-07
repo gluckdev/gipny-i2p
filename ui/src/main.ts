@@ -1,5 +1,4 @@
 import { isTauri, usesBrowserCore } from './api';
-import { pairWeb } from './pairing';
 import { clearBrowserFiles } from './browser-files';
 import { Store } from './state';
 import { App } from './app';
@@ -16,7 +15,7 @@ if (!root) throw new Error('no #app');
 let store: Store;
 let app: App;
 async function start(): Promise<void> {
-  if (!isTauri && !usesBrowserCore()) await pairWeb(root!);
+  if (!isTauri && !usesBrowserCore()) throw new Error('Open browser.html to use the browser messenger');
   store = new Store();
   app = new App(store);
   root!.replaceChildren(app.el);
@@ -27,14 +26,6 @@ void start().catch(error => {
   const message = document.createElement('div');
   message.className = 'auth err'; message.textContent = errorText(error);
   root!.replaceChildren(message);
-});
-window.addEventListener('gipny-pairing-required', () => {
-  // The pairing form owns failures until bootstrap; never reload its inputs.
-  if (!store) return;
-  // Reload discards the old UI/listeners and any rendered plaintext.
-  clearBrowserFiles();
-  try { window.sessionStorage.removeItem('gipny.web.pairing'); } catch { /* storage may be blocked */ }
-  window.location.reload();
 });
 
 window.addEventListener('keydown', (e) => {

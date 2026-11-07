@@ -240,6 +240,14 @@ fn main() -> Result<()> {
 
 async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> {
     let data_dir = data_dir(&args)?;
+    // Held for the whole run: a second agent on this directory would keep its
+    // own ratchet state for the same database.
+    // Filesystems without advisory locks (some USB sticks on routers) only warn.
+    let _data_lock = match gipny_libcore::data_lock::DataDirLock::acquire(&data_dir) {
+        Ok(lock) => Some(lock),
+        Err(e) if gipny_libcore::data_lock::held_elsewhere(&e) => return Err(e.into()),
+        Err(e) => { eprintln!("WARNING: {e} Continuing without the advisory lock."); None }
+    };
     let master_card = load_master(&args, &data_dir)?;
     // The agent's own relay is separate from the master's: this is only about
     // reaching the master to deliver a message, which needs a relay-bearing card

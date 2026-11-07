@@ -16,10 +16,9 @@ const fn release_logs_requested(value: Option<&str>) -> bool {
     }
 }
 
-use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Developer log level. Stable release builds pin to [`LogLevel::Null`];
-/// developer and prerelease builds ([`AVAILABLE`]) default to
+/// developer and prerelease builds ([`AVAILABLE`]) pin to
 /// [`LogLevel::Full`], the debug period: every action is
 /// logged, each line stamped by the stderr capture (`HH:MM:SS.mmm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,12 +40,6 @@ impl LogLevel {
         }
     }
 
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::Full => 1,
-            Self::Null => 0,
-        }
-    }
 }
 
 impl Default for LogLevel {
@@ -72,39 +65,20 @@ impl std::str::FromStr for LogLevel {
     }
 }
 
-static LEVEL: AtomicU8 = AtomicU8::new(if AVAILABLE { LogLevel::Full.rank() } else { LogLevel::Null.rank() });
-
-/// The developer log level in effect: Full in developer/test/prerelease builds,
-/// Null in a stable release; [`set_log_level`] overrides it from code.
-pub fn current_level() -> LogLevel {
-    match LEVEL.load(Ordering::Relaxed) {
-        0 => LogLevel::Null,
-        _ => LogLevel::Full,
-    }
+/// Immutable build policy: Full in developer/prerelease, Null in stable.
+pub const fn current_level() -> LogLevel {
+    if AVAILABLE { LogLevel::Full } else { LogLevel::Null }
 }
 
-/// Set the developer log level at runtime — the debug period: Full, off: Null.
-pub fn set_log_level(level: LogLevel) {
-    LEVEL.store(level.rank(), Ordering::Relaxed);
-}
+pub const fn is_enabled() -> bool { AVAILABLE }
 
-/// Whether the developer log level allows output: the debug period (`Full`).
-pub fn is_enabled() -> bool {
-    current_level() == LogLevel::Full
-}
-
+/// Legacy callers may supply settings, but runtime input cannot change policy.
 pub fn capture_enabled(environment: Option<&str>, persisted: Option<&str>) -> bool {
     capture_for(AVAILABLE, environment, persisted)
 }
 
-fn capture_for(available: bool, environment: Option<&str>, persisted: Option<&str>) -> bool {
-    if !available { return false; }
-    match environment.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("1" | "true" | "on" | "debug") => return true,
-        Some("0" | "false" | "off") => return false,
-        _ => {}
-    }
-    !persisted.is_some_and(|value| value.trim().eq_ignore_ascii_case("off"))
+fn capture_for(available: bool, _environment: Option<&str>, _persisted: Option<&str>) -> bool {
+    available
 }
 
 pub fn router_log_path(requested: Option<&str>) -> Option<&str> {
@@ -117,24 +91,20 @@ pub fn router_options(options: &[String], environment: Option<&str>) -> Vec<Stri
     router_options_for(AVAILABLE, options, environment)
 }
 
-fn router_options_for(available: bool, options: &[String], environment: Option<&str>) -> Vec<String> {
+fn router_options_for(available: bool, options: &[String], _environment: Option<&str>) -> Vec<String> {
     let mut out = Vec::with_capacity(options.len() + 1);
-    let mut requested = None;
     let mut args = options.iter().peekable();
     while let Some(arg) = args.next() {
-        if let Some(level) = arg.strip_prefix("--loglevel=") {
-            requested = Some(level);
+        if arg.starts_with("--loglevel=") {
         } else if arg == "--loglevel" {
             if args.peek().is_some_and(|value| !value.starts_with('-')) {
-                requested = args.next().map(String::as_str);
+                args.next();
             }
         } else {
             out.push(arg.clone());
         }
     }
-    let level = if available {
-        environment.or(requested).filter(|level| matches!(*level, "critical" | "error" | "warn" | "info" | "debug")).unwrap_or("info")
-    } else { "warn" };
+    let level = if available { "debug" } else { "warn" };
     out.push(format!("--loglevel={level}"));
     out
 }
@@ -178,14 +148,12 @@ mod tests {
     }
 
     #[test]
-    fn developer_capture_defaults_on_and_honors_explicit_settings() {
-        assert!(capture_for(true, None, None));
-        assert!(capture_for(true, None, Some("debug")));
-        assert!(!capture_for(true, None, Some(" OFF\n")));
-        assert!(capture_for(true, Some("1"), Some("off")));
-        assert!(!capture_for(true, Some("0"), Some("debug")));
-        assert!(!capture_for(true, Some("false"), None));
-        assert!(!capture_for(true, Some("unknown"), Some("off")));
+    fn prerelease_capture_cannot_be_disabled_by_runtime_settings() {
+        for environment in [None,Some("0"),Some("off"),Some("false"),Some("unknown")] {
+            for persisted in [None,Some("off"),Some("debug")] {
+                assert!(capture_for(true,environment,persisted));
+            }
+        }
     }
 
     #[test]
@@ -194,12 +162,9 @@ mod tests {
         let release = router_options_for(false, &options, Some("debug"));
         assert_eq!(release, ["--datadir=example", "--notransit", "--loglevel=warn"]);
         assert_eq!(router_options_for(true, &options, Some("debug")).last().unwrap(), "--loglevel=debug");
-        assert_eq!(router_options_for(true, &[], None), ["--loglevel=info"]);
-        assert_eq!(router_options_for(true, &[], Some("invalid")), ["--loglevel=info"]);
+        assert_eq!(router_options_for(true, &[], None), ["--loglevel=debug"]);
+        assert_eq!(router_options_for(true, &[], Some("invalid")), ["--loglevel=debug"]);
     }
-
-    /// The level is process-global and tests run in parallel threads.
-    static LEVEL_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn prerelease_log_switch_accepts_only_full() {
@@ -211,7 +176,6 @@ mod tests {
 
     #[test]
     fn developer_trace_evaluates_arguments_in_tests() {
-        let _level = LEVEL_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let observed = std::cell::Cell::new(false);
         debug_trace!("diagnostics test: {}", { observed.set(true); "enabled" });
         assert!(observed.get());
@@ -231,14 +195,8 @@ mod tests {
     }
 
     #[test]
-    fn level_filter_accepts_full_and_falls_to_null() {
-        let _level = LEVEL_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous = current_level();
-        set_log_level(LogLevel::Null);
-        assert!(!is_enabled());
-        set_log_level(LogLevel::Full);
+    fn current_policy_is_fixed_by_the_build() {
+        assert_eq!(current_level(),LogLevel::Full);
         assert!(is_enabled());
-        set_log_level(previous);
-        assert_eq!(current_level(), LogLevel::Full);
     }
 }

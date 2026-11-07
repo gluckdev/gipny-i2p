@@ -8,27 +8,12 @@ export function registerBrowserFile(file: File): string {
 }
 export function forgetBrowserFiles(paths: string[]): void { paths.forEach((path) => files.delete(path)); }
 export function clearBrowserFiles(): void { files.clear(); }
-export async function browserAttachments(paths: string[]): Promise<{ name: string; data: string }[]> {
-  const result = [];
-  for (const path of paths) {
+export function selectedBrowserFiles(paths: string[]): File[] {
+  if (paths.length > 16) throw new Error('Message size limit');
+  return paths.map(path => {
     const file = files.get(path);
     if (!file) throw new Error('Please select the file again');
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = '';
-    for (let offset = 0; offset < bytes.length; offset += 8192) binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-    result.push({ name: file.name, data: btoa(binary) });
-  }
-  paths.forEach((path) => files.delete(path));
-  return result;
-}
-export function downloadBrowserFile(base64: string, name: string): void {
-  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
-  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (file.size > 2 * 1024 * 1024 * 1024) throw new Error('File size limit is 2 GiB');
+    return file;
+  });
 }

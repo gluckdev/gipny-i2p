@@ -91,6 +91,10 @@ impl Lanes {
 /// sits idle this long (same limits as libcore's relay_server).
 const DHT_MAX_REQUESTS: usize = 64;
 const DHT_IDLE: Duration = Duration::from_secs(60);
+/// Streams served at once, and how long a new one may stay silent before its
+/// first frame: unauthenticated streams must not hold tasks without bound.
+const MAX_CLIENTS: usize = 1024;
+const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(60);
 /// A client says something at least every 20 s (a ping, if nothing else); one
 /// silent this long is gone, though its close never came. Its connection is
 /// dropped and what it was given goes to the key's others — kept, it went on
@@ -216,16 +220,20 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let mut inbound = dest.accept();
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CLIENTS));
     let stop = shutdown_signal();
     tokio::pin!(stop);
     loop {
         tokio::select! {
             stream = inbound.recv() => {
                 let Some(stream) = stream else { anyhow::bail!("the relay destination stopped accepting") };
+                // Full: close the new stream rather than queue it.
+                let Ok(permit) = permits.clone().try_acquire_owned() else { continue };
                 let storage = storage.clone();
                 let connections = connections.clone();
                 let dht = dht.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
                         i2p_embed::debug_trace!("[relay] client disconnected: {}", e);
                     }
@@ -297,7 +305,8 @@ where S: AsyncRead + AsyncWrite + Unpin + Send
     rand::rng().fill_bytes(&mut challenge);
     send_frame(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
-    let auth: ClientToRelay = recv_frame(&mut stream).await?;
+    let auth: ClientToRelay = tokio::time::timeout(FIRST_FRAME_DEADLINE, recv_frame(&mut stream)).await
+        .map_err(|_| anyhow::anyhow!("no first frame in time"))??;
     let (sign_pk, signature, signed, owner) = match auth {
         ClientToRelay::AuthV2 { sign_pk, signature } => {
             (sign_pk, signature, auth_v2_message(&destination_hash, &challenge), true)

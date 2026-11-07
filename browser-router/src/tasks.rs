@@ -32,6 +32,8 @@ impl TaskScope {
         })
     }
 
+    // Called only from the wasm-only `network` module.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn abort_all(&self) {
         let handles = {
             let mut state = self.0.lock().unwrap();
@@ -68,6 +70,11 @@ where
     F: Future + Send + 'static,
     F::Output: Send,
 {
+    spawn_local(future);
+}
+
+/// Track JS-backed socket drivers in the same router lifetime as core tasks.
+pub(crate) fn spawn_local<F: Future + 'static>(future: F) {
     let scope = CURRENT.with(|slot| slot.borrow().clone());
     if let Some(scope) = scope {
         let (abort, registration) = AbortHandle::new_pair();

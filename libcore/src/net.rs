@@ -6,7 +6,7 @@
 //! destination) and operates over an abstract [`DuplexStream`].
 //!
 //! The router is libi2pd compiled in ([`crate::embedded`], `i2p-embed`): no
-//! SAM, no router process, no local port. A node is one destination of ours
+//! SAM, no router process, no local proxy listener. A node is one destination of ours
 //! on it, outbound only.
 
 use std::path::Path;
@@ -71,7 +71,7 @@ pub fn min_hops() -> u8 {
 ///
 /// With the profile on, `profile` is the answer: it is the more specific
 /// instruction, and the server daemon sets `GIPNY_SERVER_HOPS=1` for itself
-/// before the router starts (`web_server.rs`, `boot_core_web`), which would
+/// before the router starts, which would
 /// otherwise pin every fast run to one hop and leave `GIPNY_FAST_HOPS=0` looking
 /// like it had been answered. With it off, only `server` speaks — one number
 /// set by accident should not turn the whole profile on.
@@ -182,7 +182,7 @@ impl I2pNode {
     /// deliberately regenerated every session for unlinkability. Nothing is
     /// persisted to disk; the key stays within a session only (for `recreate`).
     /// `settings` configures the router, when this is the first node of the
-    /// process to start it — transit share and Yggdrasil.
+    /// process to start it — transit share and UPnP.
     pub async fn start(data_dir: &Path, settings: crate::router::RouterSettings) -> Result<Self> {
         Self::start_with_progress(data_dir, settings, None).await
     }
@@ -202,7 +202,7 @@ impl I2pNode {
         // moment the router was up — before a single tunnel existed — and to
         // file the real wait, building them, under "session", whose completion
         // line even said "tunnels built".
-        note(&progress, "router", "starting the i2p router inside the app (no local ports)");
+        note(&progress, "router", "starting the i2p router inside the app");
         let router = crate::embedded::router(data_dir, settings)
             .map_err(|e| {
                 note(&progress, "router-failed", format!("the router did not start: {e}"));
@@ -222,13 +222,26 @@ impl I2pNode {
             })?;
         let address = dest.address().to_string();
         note(&progress, "session-done", format!("address {}", short_addr(&address)));
-        note(&progress, "tunnels", "building this address's tunnels — the longest wait of a first start");
-        dest.ready(Duration::from_secs(600)).await
-            .map_err(|e| {
-                note(&progress, "tunnels-failed", format!("the tunnels did not come up: {e}"));
-                NetError::I2p(format!("tunnels: {e}"))
-            })?;
-        note(&progress, "tunnels-done", "tunnels built");
+        let deadline=tokio::time::Instant::now()+Duration::from_secs(600);
+        let mut last=None;
+        loop {
+            let directions=dest.tunnel_directions_ready();
+            if last!=Some(directions) {
+                note(&progress,if directions.0 {"inbound-done"} else {"inbound"},"inbound tunnel pool state");
+                note(&progress,if directions.1 {"outbound-done"} else {"outbound"},"outbound tunnel pool state");
+                if directions.0 && directions.1 {
+                    note(&progress,"tunnels","checking the destination lease and outbound readiness");
+                }
+                last=Some(directions);
+            }
+            if dest.is_ready() {break;}
+            if tokio::time::Instant::now()>=deadline {
+                note(&progress,"tunnels-failed","destination readiness timed out");
+                return Err(NetError::I2p("tunnels: readiness timed out".into()));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        note(&progress, "tunnels-done", "destination ready");
         Ok(Self {
             dest: Mutex::new(Arc::new(dest)),
             address,

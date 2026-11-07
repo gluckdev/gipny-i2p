@@ -30,6 +30,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
@@ -48,6 +50,8 @@ jobs:
           key: i2p-embed
       - name: build
         run: cargo build --release -p i2p-embed --tests
+      - name: UPnP ownership and real HTTP IGD fixture
+        run: cargo test --locked --release -p i2p-embed --lib 'upnp::'
       - name: live test over i2p
         env:
           I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
@@ -76,6 +80,8 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '15.0'
     steps:
       - uses: actions/checkout@v7
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
@@ -98,6 +104,8 @@ jobs:
           otool -L "$bin"
           foreign="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' | grep -vE '^(/usr/lib/|/System/Library/)' || true)"
           [ -z "$foreign" ] || { echo "links what a user's Mac does not have: $foreign"; exit 1; }
+      - name: UPnP ownership and real HTTP IGD fixture
+        run: cargo test --locked --release -p i2p-embed --lib 'upnp::'
       - name: live test over i2p
         env:
           I2P_EMBED_TEST_DIR: ${{ runner.temp }}/i2p-embed
@@ -120,6 +128,8 @@ jobs:
       VCPKG_TRIPLET: x64-windows-static-md
     steps:
       - uses: actions/checkout@v7
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: Native Windows source-build tools
         shell: pwsh
         run: .github/scripts/windows-source-tools.ps1
@@ -147,6 +157,8 @@ jobs:
       - name: device storage regressions with native Windows DPAPI
         shell: bash
         run: cargo test --locked --release -p gipny-libcore --lib device_binding::tests
+      - name: UPnP ownership and real HTTP IGD fixture
+        run: cargo test --locked --release -p i2p-embed --lib 'upnp::'
       - name: live test over i2p
         shell: bash
         env:
@@ -171,6 +183,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: current reseed certificates (upstream i2pd now, not the pin)
         run: scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - name: pins
@@ -229,6 +243,12 @@ jobs:
           NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
           for sym in gipny_router_init gipny_router_start gipny_dest_create \
                      gipny_dest_connect gipny_stream_recv gipny_stream_send \
+                     gipny_router_upnp_ports gipny_router_upnp_external \
+                     gipny_router_upnp_random gipny_router_upnp_hmac gipny_router_upnp_abort \
+                     gipny_router_stop_hook gipny_router_network_hook gipny_ssdp_location_matches \
+                     upnpDiscoverDevices freeUPNPDevlist miniwget_getaddr parserootdesc \
+                     UPNP_GetStatusInfo UPNP_GetExternalIPAddress UPNP_GetSpecificPortMappingEntry \
+                     UPNP_AddPortMapping UPNP_DeletePortMapping GetUPNPUrls FreeUPNPUrls \
                      Java_app_gipny_GipnyService_nativeNetworkChanged; do
             "$NM" --dynamic --defined-only "$LIB" | grep -q "$sym" || { echo "libi2pd.so does not export $sym"; exit 1; }
           done
@@ -252,6 +272,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
@@ -303,6 +325,8 @@ jobs:
           - { key: restart, what: '10 MiB, the recipient restarting midway', both_first: '0', big_file: '10485760', restart: '1' }
     steps:
       - uses: actions/checkout@v7
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
@@ -371,6 +395,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+      - name: Verify pinned miniupnpc sources
+        run: python3 i2p-embed/check-source.py
       - name: check out i2pd
         run: |
           git submodule update --init --depth 1 third_party/i2pd
