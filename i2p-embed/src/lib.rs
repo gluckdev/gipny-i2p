@@ -45,6 +45,7 @@ mod ffi {
         pub fn gipny_router_stop();
         pub fn gipny_router_set_online(online: c_int);
         pub fn gipny_router_netdb_routers() -> c_int;
+        pub fn gipny_router_peers() -> c_int;
         pub fn gipny_keys_generate() -> *mut c_char;
         pub fn gipny_keys_public(private_b64: *const c_char) -> *mut c_char;
         pub fn gipny_dest_create(
@@ -187,6 +188,18 @@ impl Router {
     /// from the router itself, not guessed or read from a log.
     pub fn netdb_routers(&self) -> Option<usize> {
         let n = unsafe { ffi::gipny_router_netdb_routers() };
+        (n >= 0).then_some(n as usize)
+    }
+
+    /// How many routers the transports hold a session with, or `None` if the
+    /// router is not up.
+    ///
+    /// Zero long after start is the answer to "is this device online": nothing
+    /// has answered, which is not the same as tunnels that are slow to build.
+    /// On a phone whose Wi-Fi had no internet this stayed at zero for the
+    /// whole ten minutes the destination waited (Honor, 2026-11-07).
+    pub fn peers(&self) -> Option<usize> {
+        let n = unsafe { ffi::gipny_router_peers() };
         (n >= 0).then_some(n as usize)
     }
 }

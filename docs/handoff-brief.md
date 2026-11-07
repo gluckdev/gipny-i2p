@@ -58,8 +58,14 @@ GitHub Pages раздаёт приложение и обновления; соо
 получил сцены `select`/`unlock`, превью проверяет высоту карточки. Корень
 приложения растягивается как flex-элемент (`.app-root`): на Chromium 83
 `height: 100%` давал высоту контента, и под коротким экраном (загрузка профиля)
-была светлая полоса. Дальше по
-плану: i2pd с его туннелями в WASM для браузерного роутера.
+была светлая полоса. Сканер QR: карточка — плотный код, с 1080p-потока Honor его
+не читал; теперь у камеры просится 2560×1920, добавлен проход по центральному
+квадрату в полном разрешении, декодирование ушло в Worker (`ui/src/qr-worker.ts`),
+QR в карточке показывается до 340 px вместо 200. Экран загрузки говорит «сеть не
+отвечает», если за 30 с ни один узел не ответил (`gipny_router_peers` в shim →
+`Router::peers` → `network-none`): на Honor с Wi-Fi без интернета он молчал все
+10 минут до таймаута. Дальше по плану: i2pd с его туннелями в WASM для
+браузерного роутера.
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
 данные можно менять без миграций; новые сообщения, ACK и состояние криптографии
@@ -111,6 +117,10 @@ short screens such as the loading one. QR scanning: a card is a dense code and
 the Honor's 1080p stream never read it; the camera is now asked for 2560×1920, a
 centre-square pass at full resolution was added, decoding moved to a worker
 (`ui/src/qr-worker.ts`), and the card's QR is shown at up to 340 px instead of
-200. Next in plan: i2pd with its tunnels in WASM for the browser router.
+200. The loading screen now says that nothing on the network answers when no
+router has replied for 30 s (`gipny_router_peers` in the shim → `Router::peers`
+→ `network-none`); on the Honor's internet-less Wi-Fi it stayed silent for the
+full ten-minute timeout. Next in plan: i2pd with its tunnels in WASM for the
+browser router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)

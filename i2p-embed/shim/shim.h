@@ -43,6 +43,11 @@ GIPNY_API void gipny_router_set_online(int online);
  * network (a reseed that did not come through). Negative if the router is
  * not up. */
 GIPNY_API int gipny_router_netdb_routers(void);
+/* How many routers the transports hold a session with right now. 0 for long
+ * after start means nothing answers — the device is offline or the network
+ * blocks the transports — which is a different thing from tunnels that are
+ * merely slow to build. Negative if the router is not up. */
+GIPNY_API int gipny_router_peers(void);
 /* Only the router's active IPv4 transport listeners, never application ports.
  * 1: UPnP wanted (either port may still be 0); 0: disabled by configuration
  * (upnp.enabled=false, hidden router); -1: the router is not running. */

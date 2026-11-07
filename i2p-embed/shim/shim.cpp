@@ -205,6 +205,11 @@ int gipny_router_netdb_routers(void) {
 	return i2p::data::netdb.GetNumRouters();
 }
 
+int gipny_router_peers(void) {
+	if (!running.load()) return -1;
+	return (int)std::min<size_t>(i2p::transport::transports.GetNumPeers(), INT_MAX);
+}
+
 void gipny_router_stop_hook(void (*hook)(void)) { stop_hook.store(hook); }
 void gipny_router_network_hook(void (*hook)(int)) {
 	network_hook.store(hook);

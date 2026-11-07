@@ -70,7 +70,7 @@
 | `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
 | `src/view.ts` | Основа: `View` (подписки `sub`), `h()` для создания элементов, `avatar()` (инициалы и цвет от ключа), форматтеры (`fmtTime`, `fmtAgo`, `short`, `humanSize`, `trustLabel`…), `logo` |
 | `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal` |
-| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные |
+| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные; вердикт роутера `network: none` (30 с без единого узла — устройство без интернета) показывается строкой `.boot-network` (`bootNetwork`), не сбоем шага; в превью `scene=boot&network=none` |
 | `src/profile.ts` | Выбор профиля `ProfileSelect` |
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |

@@ -107,6 +107,7 @@ export const en = {
   "auth.net_building": "i2p network: building tunnels, you can type password now",
   "auth.net_ready": "i2p network: tunnels ready",
   "boot.title": "Opening profile",
+  "boot.no_network": "Nothing on the network answers: check that this device has internet. The router keeps trying.",
   "boot.sub": "First launch takes a few minutes: the router finds i2p peers and builds tunnels. Subsequent launches are faster.",
   "boot.elapsed": "elapsed {time} s",
   "boot.enter_now": "Open chats now",

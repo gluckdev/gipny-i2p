@@ -321,6 +321,15 @@ test('resumed startup hides step rows and waits for profile data before reportin
       await store.beginBoot('alice', fresh);
       const view = new ui.AuthBooting(store); views.push(view); document.body.append(view.el);
       boot({ stage: 'vault', state: 'done', detail: 'opened' });
+      // The router's offline verdict is a line of its own, not a failed step.
+      const networkLine = view.el.querySelector('.boot-network');
+      assert.equal(networkLine.classList.contains('hidden'), true);
+      boot({ stage: 'network', state: 'none', detail: 'no router has answered in 30s' });
+      assert.equal(networkLine.classList.contains('hidden'), false, 'an offline verdict is shown');
+      assert.equal(networkLine.textContent, t('boot.no_network'));
+      assert.equal(store.bootSteps.get().some((s) => s.state === 'failed'), false, 'and no step is marked failed by it');
+      boot({ stage: 'network', state: 'ok', detail: '3 router(s) connected' });
+      assert.equal(networkLine.classList.contains('hidden'), true, 'and withdrawn once a router answers');
       hidden = true; document.dispatchEvent(new win.Event('visibilitychange'));
       hidden = false; document.dispatchEvent(new win.Event('visibilitychange'));
       assert.equal(store.bootResuming.get(), !fresh);

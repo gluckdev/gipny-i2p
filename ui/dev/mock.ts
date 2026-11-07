@@ -16,6 +16,7 @@
  *   theme = light | dark
  *   lang = en | ru
  *   demo = 1   presentable fixtures for screenshots (dev/demo.ts)
+ *   network = none   the `boot` scene also shows the router's offline verdict
  */
 import { t, setLang } from '../src/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
@@ -308,6 +309,10 @@ async function drive(): Promise<void> {
     ['router', 'active', 'starting in-process libi2pd', 200],
     ['tunnels', 'active', 'building tunnels: 1s of 180s', 1200],
     ['tunnels', 'active', 'building tunnels: 6s of 180s', 1500],
+    ...(params.get('network') === 'none'
+      ? [['network', 'none', 'no router has answered in 30s: is this device online?', 800] as [string, string, string, number],
+         ['network', 'ok', '3 router(s) connected', 4000] as [string, string, string, number]]
+      : []),
     ['tunnels', 'done', 'embedded router ready', 1500],
     ['session', 'active', 'generating ephemeral destination for this session...', 300],
     ['session', 'done', 'embedded destination ready', 1200],

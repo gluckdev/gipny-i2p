@@ -266,6 +266,7 @@ export class AuthBooting extends View {
   private titleEl: HTMLElement;
   private summaryEl: HTMLElement;
   private detailsEl: HTMLElement;
+  private networkEl: HTMLElement;
   private rows = new Map<BootStepId, HTMLElement>();
   private elapsedEl: HTMLElement;
   private progressEl: HTMLElement;
@@ -308,9 +309,13 @@ export class AuthBooting extends View {
 
     this.titleEl = h('h1', { class: 'boot-title' }, tr('auth.gipny_system_initialization'));
     this.summaryEl = h('p', { class: 'boot-status hidden', role: 'status', 'aria-live': 'polite' });
+    // Shown when the router reports that nothing on the network has answered
+    // for long enough that the device looks offline; withdrawn when it does.
+    // Ten silent minutes on a Wi-Fi without internet is what this replaces.
+    this.networkEl = h('p', { class: 'boot-network hidden', role: 'status', 'aria-live': 'polite' }, tr('boot.no_network'));
     this.detailsEl = h('div', { class: 'boot-details' },
       h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
-      h('p', { class: 'boot-sub' }, tr('boot.sub')), list);
+      h('p', { class: 'boot-sub' }, tr('boot.sub')), list, this.networkEl);
     this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
         languagePicker(),
@@ -328,6 +333,7 @@ export class AuthBooting extends View {
     );
 
     this.sub(store.bootSteps, (steps) => this.paint(steps));
+    this.sub(store.bootNetwork, (verdict) => this.networkEl.classList.toggle('hidden', verdict !== 'none'));
     this.sub(store.bootCanEnter, (can) => this.enterBtn.classList.toggle('hidden', !can));
     this.sub(store.bootResuming, (resuming) => {
       this.detailsEl.classList.toggle('hidden', resuming);

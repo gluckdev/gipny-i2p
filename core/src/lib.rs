@@ -709,6 +709,11 @@ fn boot_progress(app: &AppHandle) -> gipny_libcore::router::BootProgress {
             "tunnels" => ("tunnels", "active"),
             "tunnels-done" => ("tunnels", "done"),
             "tunnels-failed" => ("tunnels", "failed"),
+            // Not a step: a verdict on the network while the tunnel steps run.
+            // "none" — nothing has answered for long enough that the device
+            // looks offline; "ok" — something did, after such a verdict.
+            "network-none" => ("network", "none"),
+            "network-ok" => ("network", "ok"),
             // Anything else is a stage this screen has no row for. It used to
             // be reported as "router active", which meant a stage nobody had
             // heard of lit up a step that was doing something else entirely.
