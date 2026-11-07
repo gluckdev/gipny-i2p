@@ -505,7 +505,7 @@ async fn run_update_loop(db: Arc<Db>, data_dir: PathBuf, node: Arc<I2pNode>) {
             if !auto_update_allowed(setting.as_deref(), std::env::var("GIPNY_NO_AUTO_UPDATE").ok().as_deref()) { return Ok(()); }
             let info = match updater.check_detailed(env!("CARGO_PKG_VERSION")).await? {
                 CheckOutcome::Update(info) => info,
-                CheckOutcome::UpToDate { .. } | CheckOutcome::Dismissed { .. } => return Ok(()),
+                CheckOutcome::UpToDate { .. } | CheckOutcome::Dismissed { .. } | CheckOutcome::NoStableRelease => return Ok(()),
                 CheckOutcome::NoAsset { latest, wanted } => bail!("release {latest} has no required agent package {wanted}"),
                 CheckOutcome::UnsupportedInstall { latest } => bail!("release {latest} cannot update this agent target"),
                 CheckOutcome::NotConfigured => bail!("agent update transport is unavailable"),
