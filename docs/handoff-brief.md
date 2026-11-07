@@ -66,7 +66,9 @@ QR в карточке показывается до 340 px вместо 200. Э
 `Router::peers` → `network-none`): на Honor с Wi-Fi без интернета он молчал все
 10 минут до таймаута. Регистрация спрашивает имя один раз: имя профиля на
 устройстве выводится из него (`ui/src/profile-name.ts`: транслитерация,
-`[A-Za-z0-9_-]{1,32}`, уникальность только по локальному списку). Дальше по
+`[A-Za-z0-9_-]{1,32}`, уникальность только по локальному списку). Живая переписка
+браузер ↔ телефон проверена локально (`browser-router/tests/run_browser_phone.py`,
+Honor: запрос и сообщение за 32 с, ответ за 2 с). Дальше по
 плану: i2pd с его туннелями в WASM для браузерного роутера.
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
@@ -124,7 +126,9 @@ router has replied for 30 s (`gipny_router_peers` in the shim → `Router::peers
 → `network-none`); on the Honor's internet-less Wi-Fi it stayed silent for the
 full ten-minute timeout. Registration asks for one name: the on-device profile
 name is derived from it (`ui/src/profile-name.ts`: transliteration,
-`[A-Za-z0-9_-]{1,32}`, unique on this device only). Next in plan: i2pd with its
+`[A-Za-z0-9_-]{1,32}`, unique on this device only). Live browser ↔ phone
+messaging was verified locally (`browser-router/tests/run_browser_phone.py`,
+Honor: request and message in 32 s, reply in 2 s). Next in plan: i2pd with its
 tunnels in WASM for the browser router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)
