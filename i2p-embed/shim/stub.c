@@ -16,6 +16,7 @@ void gipny_router_start(const char *log_path) { (void)log_path; }
 void gipny_router_stop(void) {}
 void gipny_router_set_online(int online) { (void)online; }
 int gipny_router_netdb_routers(void) { return -1; }
+int gipny_router_peers(void) { return -1; }
 int gipny_router_upnp_ports(uint16_t *tcp, uint16_t *udp) {
 	if (tcp) *tcp = 0;
 	if (udp) *udp = 0;

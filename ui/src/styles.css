@@ -165,6 +165,17 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar-thumb:hover { background: var(--phosphor-dim); }
 
 #app { display: flex; flex-direction: column; }
+/* The app's root fills #app as a flex item, not only through `height: 100%`:
+   Chromium 83 (Huawei WebView 11) resolved that percentage to the content
+   height on the phone, and every screen shorter than the viewport — the
+   loading screen while a profile connects, for one — ended in a band of the
+   light body background. The main screen's single grid row is explicit for
+   the same engine: its implicit `auto` row kept the content height (365 px of
+   800 on the Honor) instead of stretching, so the contact list stopped
+   mid-screen; the phone layout below makes .main a flex column, which that
+   engine sizes correctly (an explicit 1fr row did not help). Measured live
+   through DevTools on the phone. */
+.app-root { flex: 1 1 auto; min-height: 0; }
 
 .auth {
   flex: 1;
@@ -2198,7 +2209,11 @@ body::before { background: none; }
 
 /* --- QR: sharing a card and reading one ------------------------------------- */
 .card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
-.card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
+/* As large as the card allows: the other phone's camera reads this code, and a
+   gipny card is a dense one (owner, 2026-11-07: «размер QR должен больше»). The
+   white padding is the quiet zone a reader needs. `height: auto` keeps the
+   SVG's own square ratio on engines without `aspect-ratio`. */
+.card-qr svg { width: min(100%, 340px); height: auto; border-radius: 12px; background: #fff; padding: 10px; box-sizing: border-box; }
 .card-qr .hint { text-align: center; max-width: 280px; }
 .qr-slot { margin-bottom: 10px; }
 /* The picker is driven by its own button; the input itself is never shown. */
@@ -2272,6 +2287,7 @@ body::before { background: none; }
 }
 .boot-progress-text { width: 4ch; text-align: right; color: #33ff66; font-variant-numeric: tabular-nums; }
 .boot-sub { margin: 0; color: #789382; font-size: 11px; line-height: 1.6; }
+.boot-network { margin: 6px 0 0; padding: 8px 10px; border: 1px solid #a3772a66; border-radius: 6px; color: #e0b35a; font-size: 11px; line-height: 1.5; }
 .boot-status { margin: 24px 0; color: #b6cdbd; }
 .boot-steps { display: grid; gap: 3px; margin: 20px 0; }
 .boot-step {
@@ -2317,6 +2333,7 @@ body::before { background: none; }
   .boot-title { margin-bottom: 6px; font-size: 12px; letter-spacing: .04em; }
   .boot-progress { margin: 12px 0 6px; gap: 10px; }
   .boot-sub { font-size: 10.5px; line-height: 1.4; }
+  .boot-network { font-size: 10.5px; }
   .boot-steps { margin: 10px 0; gap: 2px; }
   .boot-step { flex-wrap: wrap; gap: 2px 8px; padding: 5px 6px; }
   .boot-step-label { font-size: 11.5px; }
@@ -2560,10 +2577,16 @@ select.input { width: 100%; text-overflow: ellipsis; }
   }
   .auth-card { width: 100% !important; max-width: 100% !important; padding: 16px !important; }
 
+  /* vh first: a WebView without dvh (Chromium < 108) keeps this line and
+     skips the next; a newer one lets the dvh line win. */
+  html, body, #app, .main { height: calc(100vh - var(--kbd-offset, 0px)) !important; }
   html, body, #app, .main { height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
-  .main { grid-template-columns: minmax(0, 1fr) !important; }
-  .main > .sidebar { grid-column: 1; grid-row: 1; border-right: none; }
-  .main > .stack.grow { grid-column: 1; grid-row: 1; }
+  /* One pane at a time, as a flex column rather than a one-column grid: on
+     Chromium 83 the grid's row kept the content height inside a `calc()`-sized
+     .main (365 px of 800 on the Honor), a flex item fills it. */
+  .main { display: flex; flex-direction: column; }
+  .main > .sidebar { flex: 1 1 auto; min-height: 0; border-right: none; }
+  .main > .stack.grow { flex: 1 1 auto; min-height: 0; }
   .main:not(.has-chat) > .stack.grow { display: none !important; }
   .main.has-chat > .sidebar { display: none !important; }
 
@@ -2618,6 +2641,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .modal-backdrop { align-items: stretch; }
   .modal, .modal-wide {
     width: 100% !important; max-width: 100vw !important;
+    height: 100vh; max-height: 100vh !important;
     height: 100dvh; max-height: 100dvh !important;
     border: none !important; border-radius: 0 !important;
     padding-bottom: var(--safe-bottom);
@@ -2642,6 +2666,10 @@ select.input { width: 100%; text-overflow: ellipsis; }
    * vanishes in landscape would leave no way to turn it off. */
   .chat-input-meta .chat-e2e { display: none; }
 }
+
+/* The checkbox and the button row of the sign-in forms; a phone tightens both. */
+.auth-chk { margin-bottom: 14px; }
+.auth-actions { margin-top: 18px; gap: 8px; }
 
 /* The language choice is available before the vault is opened. */
 .auth-language { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 12px 0; font-size: 12px; }
@@ -2690,10 +2718,14 @@ select.input { width: 100%; text-overflow: ellipsis; }
 .salon-wing:last-child { transform: skewX(-30deg); }
 .salon-dial {
   display: grid; place-items: center; position: relative; width: 68px; height: 68px; border-radius: 50%;
-  border: 1px solid #ddc690; outline: 1px solid #79613d; outline-offset: 3px;
+  border: 1px solid #ddc690;
   background: radial-gradient(circle, #27332b 52%, #17221b 53% 65%, #9c8250 66% 67%, #272a1e 68%);
   box-shadow: 0 4px 16px #0008, inset 0 1px 2px #fff4;
 }
+/* The outer ring is a pseudo-element, not an outline: an outline ignores
+   border-radius before Chromium 94 and drew a square around the dial on the
+   Honor's WebView (Chromium 83). */
+.salon-dial::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid #79613d; pointer-events: none; }
 .salon-dial::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; border: 1px dashed #cbb47b80; animation: salon-movement 90s linear infinite; }
 .salon-monogram { color: #ead3a2; font: 31px/1 Georgia, 'Times New Roman', serif; text-shadow: 0 1px #000; }
 .salon-wordmark { text-align: center; font-size: 15px; font-weight: 500; letter-spacing: .42em; padding-left: .42em; color: #dec798; }
@@ -2744,10 +2776,33 @@ select.input { width: 100%; text-overflow: ellipsis; }
 .deletion-ok:disabled { opacity: .5; cursor: wait; }
 :root[data-theme="dark"] .deletion-ok { color: #91db9c; }
 @media (max-width: 600px) {
-  .profile-salon .salon-panel { padding: 26px 24px !important; border-radius: 18px; }
+  /* The sign-in screens fit a 360×740 phone without scrolling (owner,
+     2026-11-07; the duress block stays in view, just denser): one header row
+     with the dial and the language select, no field hints (the placeholders
+     say the same), a tighter rhythm. Every control keeps a 44px touch target.
+     Measured in dev/preview.html, scene=auth, phone 360: the card was 990px. */
+  .profile-salon .salon-panel { padding: 14px 18px 16px !important; border-radius: 18px; }
   .salon-wood { width: 18%; opacity: .55; }
   .salon-caption { margin-bottom: 25px; }
   .salon-emblem { margin-top: 12px; }
+  .salon-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .salon-head .salon-emblem { margin: 0; order: 1; }
+  .salon-head .salon-wing { display: none; }
+  .salon-head .salon-dial { width: 40px; height: 40px; outline-offset: 2px; }
+  .salon-head .salon-monogram { font-size: 19px; }
+  .salon-head .auth-language { margin: 0; order: 2; }
+  .salon-head .auth-language-text { display: none; }
+  .profile-salon .auth-title { font-size: 22px; margin-bottom: 4px; }
+  .profile-salon .auth-sub { font-size: 11.5px; line-height: 1.4; margin-bottom: 10px; }
+  .salon-create .field { margin-bottom: 8px; }
+  .salon-create .field label { margin-bottom: 3px; font-size: 11.5px; }
+  .salon-create .field .hint { display: none; }
+  .salon-create .input { padding: 7px 10px; }
+  .salon-create .divider-text { margin: 8px 0; }
+  .salon-create .auth-chk { margin-bottom: 8px; }
+  .salon-create .err { margin-top: 6px; }
+  .salon-create .auth-actions { margin-top: 10px; }
+  .profile-salon .btn { min-height: 44px; }
   .network-ambient-label { font-size: 9px; right: 8px; bottom: calc(var(--composer-height, 0px) + 3px); }
 }
 @media (prefers-reduced-motion: reduce) {

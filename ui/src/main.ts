@@ -1,3 +1,4 @@
+import './compat';
 import { isTauri, usesBrowserCore } from './api';
 import { clearBrowserFiles } from './browser-files';
 import { Store } from './state';

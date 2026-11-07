@@ -2,7 +2,7 @@
 
 ## Русский
 
-Всё, что видит пользователь. Одна кодовая база для десктопа, Android и автономного браузерного режима. Нативный бэкенд вызывается через Tauri (`invoke`), события приходят как `core_event`; браузерный адаптер сохраняет тот же API. Сборка — Vite (`npm run build` = `tsc --noEmit && vite build`).
+Всё, что видит пользователь. Одна кодовая база для десктопа, Android и автономного браузерного режима. Нативный бэкенд вызывается через Tauri (`invoke`), события приходят как `core_event`; браузерный адаптер сохраняет тот же API. Сборка — Vite (`npm run build` = `tsc --noEmit && vite build`) под `WEBVIEW_FLOOR` = Chromium 83 из `vite.config.ts`: это самая старая системная WebView, в которой работает Android-клиент (Huawei WebView 11 на EMUI 11); браузерная сборка (`vite.browser.config.ts`) рассчитана на современные браузеры.
 
 ## Точки входа и браузерное ядро
 
@@ -63,18 +63,21 @@
 | `src/i18n.ts`, `src/locales/en.ts`, `src/locales/ru.ts` | Язык устройства, типизированные ключи и полные словари; [правила поддержки](../docs/localization.md) |
 | `src/language-picker.ts`, `src/error-text.ts` | Выбор языка до входа и отображение известных ошибок backend |
 | `tests/localization.test.mjs` | DOM-проверки языков, черновика, подписок и вывода недоверенного текста |
+| `tests/webview-compat.test.mjs` | После `npm run build`: каждый скрипт `dist/` парсится без синтаксиса новее Chromium 83 (`\|\|=`, static blocks, top-level await…) и не вызывает API без шима |
+| `src/compat.ts` | Первый импорт `main.ts`: шимы `replaceChildren`, `Object.hasOwn`, `crypto.randomUUID` для WebView ниже Chromium 93; в новых движках ничего не делает |
 | `src/main.ts` | Точка входа |
 | `src/api.ts` | Все вызовы бэкенда (`Api.*`) и типы данных (`Contact`, `Message`, `UpdateInfo`, union `CoreEvent`…), карточка `encodeCard`/`decodeCard`/`isValidI2pAddress` |
 | `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
 | `src/view.ts` | Основа: `View` (подписки `sub`), `h()` для создания элементов, `avatar()` (инициалы и цвет от ключа), форматтеры (`fmtTime`, `fmtAgo`, `short`, `humanSize`, `trustLabel`…), `logo` |
 | `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal` |
-| `src/auth.ts` | Экраны `AuthCreate`, `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные |
+| `src/profile-name.ts` | Имя профиля на устройстве из имени, которое человек даёт себе: транслитерация кириллицы, только `[A-Za-z0-9_-]`, ≤ 32, уникальность по локальному списку профилей (суффикс `-2`, `-3`…), `profile`, если от имени ничего не осталось. Регистрация спрашивает имя один раз (владелец, 2026-11-07) |
+| `src/auth.ts` | Экраны `AuthCreate` (одно поле «имя»; имя профиля на устройстве выводится и показывается подсказкой), `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные; вердикт роутера `network: none` (30 с без единого узла — устройство без интернета) показывается строкой `.boot-network` (`bootNetwork`), не сбоем шага; в превью `scene=boot&network=none` |
 | `src/profile.ts` | Выбор профиля `ProfileSelect` |
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
 | `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
 | `src/actions.ts` | Контекстные меню (`ContextMenu`, `attachContextMenu`, `messageMenuItems`), `PinnedBanner`, `EditInline` |
 | `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки и **сканирование QR** камерой через `QrScanner`) |
-| `src/qr-scan.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением |
+| `src/qr-scan.ts`, `src/qr-worker.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением. У камеры просится 2560×1920; каждый раунд — весь кадр в 1280, через раз центральный квадрат (80 % короткой стороны) в полном разрешении, каждый 4-й — весь кадр в 2048 с инверсией: карточка — плотный код (~177 модулей), с 1080p-потока его читает только центральный проход. Декодирование в Worker (ImageBitmap → OffscreenCanvas): на телефоне проход стоит 150–900 мс и в главном потоке дёргал бы превью; без Worker/OffscreenCanvas — те же проходы в главном потоке |
 | `src/group.ts` | `GroupModal`, `CreateGroupModal` |
 | `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
 | `src/settings.ts` | `SettingsModal`: доступные настройки приватности, профиля и платформы; Relay/Relay network/APK/log удалены |
@@ -87,7 +90,8 @@
 | `public/sounds/` | Звуки уведомлений |
 | `dev/mock.ts` | Мок Tauri IPC: ответы на все команды и фикстуры (неудобные намеренно) |
 | Сцена `boot` в превью | `dev/mock.ts`: `vault_unlock` не отвечает, а `boot_status` эмитится по сценарию — так экран загрузки видно без бэкенда |
-| `dev/preview.html`, `dev/frame.html` | Превью приложения на ширинах телефона, планшета и десктопа с проверкой горизонтального переполнения |
+| Сцены `select`, `unlock` в превью | `dev/mock.ts` останавливает автопрогон на списке профилей / на вводе пароля — экраны входа видно целиком |
+| `dev/preview.html`, `dev/frame.html` | Превью приложения на ширинах телефона, планшета и десктопа с проверкой горизонтального переполнения; для экранов входа отчёт ещё говорит, помещается ли карточка в кадр по высоте (владелец 2026-11-07: создание профиля — на одном экране телефона, без прокрутки) |
 
 ## Куда вносить правки
 
@@ -104,7 +108,7 @@
 | Добавление контакта, карточка | `contact.ts`, `identity.ts`, формат — `api.ts` (`encodeCard`/`decodeCard`) |
 | Тосты, уведомления, звуки, счётчик непрочитанных | `state.ts` |
 | Цвета и тема | токены в `styles.css`, `theme.ts` |
-| Раскладка на телефоне | `styles.css` + проверка в `dev/preview.html` |
+| Раскладка на телефоне | `styles.css` + проверка в `dev/preview.html`; экраны входа на ширине ≤ 600px плотнее (`.salon-head` — циферблат и язык в одной строке, подсказки полей скрыты, отступы меньше, касание ≥ 44px): создание профиля — 650 px из 740 на телефоне 360×740 |
 | Модалка обновления | `app.ts` (`openUpdateModal`) + обработка `Update*` в `state.ts` |
 | Экраны входа | `auth.ts`, `profile.ts` |
 | Новый этап при запуске | `BOOT_STEPS` и `BootStep` в `state.ts` + `bootLabels()` в `auth.ts` + `boot_status` в `core/src/lib.rs` |

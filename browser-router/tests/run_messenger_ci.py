@@ -163,11 +163,14 @@ def file_progress(cdp, message_id):
 
 def create_ui(cdp, profile, password):
     # Exercise the shipped auth form and Store/API adapter as well as RPC.
-    values = json.dumps([profile, profile, password, password])
+    # One name field since 2026-11-07: the profile's on-device name is derived
+    # from it (ui/src/profile-name.ts), so `profile` must already be its own
+    # slug for the later lookups by name to hold.
+    values = json.dumps([profile, password, password])
     evaluate(cdp, f'''(() => {{
       const fields = [...document.querySelectorAll('.auth input')];
       const values = {values};
-      if (fields.length !== 4) throw new Error('Browser profile form is missing');
+      if (fields.length !== 3) throw new Error('Browser profile form is missing');
       fields.forEach((field, i) => {{ field.value = values[i]; field.dispatchEvent(new Event('input', {{bubbles:true}})); }});
       const button = document.querySelector('.auth-card .row .btn:not(.btn-ghost)');
       if (!button) throw new Error('Create profile button is missing');

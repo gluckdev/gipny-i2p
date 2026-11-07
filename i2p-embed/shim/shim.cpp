@@ -6,6 +6,7 @@
 // Keep this before router/Boost headers for GCC 13 and older OpenWrt SDKs.
 #include <utility>
 
+#include <algorithm>
 #include <atomic>
 #include <climits>
 #include <cstdlib>
@@ -203,6 +204,27 @@ int gipny_router_netdb_routers(void) {
 	// network that does not work.
 	if (!running.load()) return -1;
 	return i2p::data::netdb.GetNumRouters();
+}
+
+// Routers we hold a transport session with, sampled on the transports' own
+// thread. Transports::GetNumPeers counts every entry of its peer table, and
+// an entry appears the moment a connection is *attempted*: on a phone with
+// no internet that number sat above zero while nothing ever answered (Honor,
+// 2026-11-07). Only a peer with a session is one that answered. The table is
+// the transports thread's to read, so the count is posted there and the
+// previous sample returned; the caller polls, and a sample one poll old is
+// fine. -2 until the first sample has landed.
+static std::atomic<int> connected_peers{-2};
+
+int gipny_router_peers(void) {
+	if (!running.load()) return -1;
+	boost::asio::post(i2p::transport::transports.GetService(), [] {
+		size_t n = 0;
+		for (const auto& it : i2p::transport::transports.GetPeers())
+			if (it.second && it.second->IsConnected()) n++;
+		connected_peers.store((int)std::min<size_t>(n, INT_MAX));
+	});
+	return connected_peers.load();
 }
 
 void gipny_router_stop_hook(void (*hook)(void)) { stop_hook.store(hook); }

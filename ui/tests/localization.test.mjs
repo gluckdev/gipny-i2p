@@ -48,6 +48,24 @@ const deferred = () => {
 };
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
 
+test('the profile name is derived from the display name, unique on this device', () => {
+  const { profileSlug, profileNameFor, PROFILE_NAME_MAX } = ui;
+  assert.equal(profileSlug('Alice'), 'alice');
+  assert.equal(profileSlug('Honor Test'), 'honor-test');
+  assert.equal(profileSlug('  Анна  Щукина '), 'anna-shchukina');
+  assert.equal(profileSlug('Zoë Müller-Weiß'), 'zoe-muller-wei');
+  assert.equal(profileSlug('ខ្មែរ'), '', 'a script without transliteration leaves nothing');
+  assert.equal(profileNameFor('ខ្មែរ', []), 'profile');
+  assert.equal(profileNameFor('Alice', ['alice']), 'alice-2');
+  assert.equal(profileNameFor('ALICE', ['alice', 'alice-2']), 'alice-3');
+  const long = 'x'.repeat(40);
+  assert.equal(profileNameFor(long, []).length, PROFILE_NAME_MAX);
+  assert.equal(profileNameFor(long, ['x'.repeat(32)]).length, PROFILE_NAME_MAX, 'the suffix fits inside the limit');
+  for (const name of [profileNameFor('Анна', []), profileNameFor('a b_c', []), profileNameFor(long, ['x'.repeat(32)])]) {
+    assert.match(name, /^[A-Za-z0-9_-]{1,32}$/, 'what the core accepts as a profile name');
+  }
+});
+
 test('v3 cards match Rust and Python vectors and reject malformed canonical encodings', () => {
   for (const vector of cardFixtures.valid) {
     const source = vector.input;
@@ -321,6 +339,15 @@ test('resumed startup hides step rows and waits for profile data before reportin
       await store.beginBoot('alice', fresh);
       const view = new ui.AuthBooting(store); views.push(view); document.body.append(view.el);
       boot({ stage: 'vault', state: 'done', detail: 'opened' });
+      // The router's offline verdict is a line of its own, not a failed step.
+      const networkLine = view.el.querySelector('.boot-network');
+      assert.equal(networkLine.classList.contains('hidden'), true);
+      boot({ stage: 'network', state: 'none', detail: 'no router has answered in 30s' });
+      assert.equal(networkLine.classList.contains('hidden'), false, 'an offline verdict is shown');
+      assert.equal(networkLine.textContent, t('boot.no_network'));
+      assert.equal(store.bootSteps.get().some((s) => s.state === 'failed'), false, 'and no step is marked failed by it');
+      boot({ stage: 'network', state: 'ok', detail: '3 router(s) connected' });
+      assert.equal(networkLine.classList.contains('hidden'), true, 'and withdrawn once a router answers');
       hidden = true; document.dispatchEvent(new win.Event('visibilitychange'));
       hidden = false; document.dispatchEvent(new win.Event('visibilitychange'));
       assert.equal(store.bootResuming.get(), !fresh);

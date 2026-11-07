@@ -9,5 +9,6 @@ export function languagePicker(): HTMLElement {
   );
   select.value = getLang();
   select.addEventListener('change', () => setLang(select.value as Lang));
-  return h('label', { class: 'auth-language' }, t('settings.language'), select);
+  // The text is its own node: a phone hides it and keeps the select (aria-label).
+  return h('label', { class: 'auth-language' }, h('span', { class: 'auth-language-text' }, t('settings.language')), select);
 }

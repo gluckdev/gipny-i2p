@@ -12,9 +12,11 @@
  *
  * Query parameters of /dev/frame.html:
  *   scene = list | chat | console | settings | identity | add-contact | agent | auth | boot
+ *           | select (stay on the profile list) | unlock (stay on the passphrase)
  *   theme = light | dark
  *   lang = en | ru
  *   demo = 1   presentable fixtures for screenshots (dev/demo.ts)
+ *   network = none   the `boot` scene also shows the router's offline verdict
  */
 import { t, setLang } from '../src/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
@@ -285,9 +287,10 @@ const byText = (root: string, text: string | RegExp): HTMLElement | undefined =>
   });
 
 async function drive(): Promise<void> {
-  if (scene === 'auth') return;
+  if (scene === 'auth' || scene === 'select') return;
   // profile-select → unlock → main
   (await waitFor(() => byText('.auth-card button', /\bops$/)))?.click();
+  if (scene === 'unlock') return;
   const pass = await waitFor(() => document.querySelector<HTMLInputElement>('.auth-card input[type="password"]'));
   if (pass) {
     (pass as HTMLInputElement).value = 'preview';
@@ -306,6 +309,10 @@ async function drive(): Promise<void> {
     ['router', 'active', 'starting in-process libi2pd', 200],
     ['tunnels', 'active', 'building tunnels: 1s of 180s', 1200],
     ['tunnels', 'active', 'building tunnels: 6s of 180s', 1500],
+    ...(params.get('network') === 'none'
+      ? [['network', 'none', 'no router has answered in 30s: is this device online?', 800] as [string, string, string, number],
+         ['network', 'ok', '3 router(s) connected', 4000] as [string, string, string, number]]
+      : []),
     ['tunnels', 'done', 'embedded router ready', 1500],
     ['session', 'active', 'generating ephemeral destination for this session...', 300],
     ['session', 'done', 'embedded destination ready', 1200],

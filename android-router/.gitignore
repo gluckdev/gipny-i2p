@@ -1,0 +1,4 @@
+
+# ndk-build outputs of a local router build (CI uploads its own artifact)
+libs/
+obj/

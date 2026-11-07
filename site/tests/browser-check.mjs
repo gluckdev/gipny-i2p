@@ -132,10 +132,16 @@ async function startChrome() {
     catch { return false; }
   }, 'Chrome debugging port');
   const target = await until(async () => {
-    const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3_000) });
-    assert(response.ok, 'Chrome target discovery failed');
+    // A Chrome still coming up answers slowly or not at all for a while; one
+    // slow or refused request is "not yet", not a verdict — the deadline of
+    // `until` is. Every run of this check on a busy runner used to end here
+    // with "The operation was aborted due to timeout" (2026-11-07).
+    let response;
+    try { response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5_000) }); }
+    catch { return false; }
+    if (!response.ok) return false;
     return (await response.json()).find(item => item.type === 'page' && item.webSocketDebuggerUrl);
-  }, 'Chrome page target');
+  }, 'Chrome page target', 60_000);
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((yes, no) => {
     const timer = setTimeout(() => { socket.close(); no(new Error('Chrome WebSocket timeout')); }, 10_000);

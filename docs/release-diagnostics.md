@@ -13,6 +13,7 @@
 | Runtime env, прежний `log.conf`, UI | Не меняют политику | Не меняют политику |
 | `debug_trace!` / `debug_error!` | Ветви отсутствуют после оптимизации; аргументы не вычисляются | Вывод включён |
 | Native router | `warn` в stderr, без файла | `debug`; файл при переданном пути |
+| Android WebView в `chrome://inspect` (USB-отладка) | Закрыт | Открыт: страница читается с компьютера, даже если она не смогла отрисоваться |
 | Browser diagnostic store | Не создаётся; оставшаяся от пре-релиза база IndexedDB удаляется при старте | Кольцевой журнал в памяти Worker; при блокировке копия в IndexedDB `gipny-browser-log` (номера контактов, без имён и ключей), стирается очисткой и удалением профиля |
 
 `i2p-embed/src/diagnostics.rs` задаёт compile-time policy. Release workflow
@@ -51,6 +52,19 @@ CLI-справка, OS-журналы и внешний захват stderr мо
 Старые файлы от предыдущих версий не исчезают автоматически после установки
 stable; duress/явная очистка имеют собственную границу, внешние копии сохраняются.
 
+На Android предрелизная сборка (и любая debug-сборка) вызывает
+`WebView.setWebContentsDebuggingEnabled(true)` в `MainActivity`: при включённой
+USB-отладке страница приложения видна в `chrome://inspect` на компьютере вместе
+с консолью JS. Это единственный способ увидеть ошибку, из-за которой страница не
+отрисовалась: wry пишет сообщения консоли в logcat только в debug-сборках. Так
+2026-11-07 на Honor KOZ-AL00 (Huawei WebView 11 = Chromium 83) rc3 открывался
+пустым экраном без единой строки в logcat; [ui/README](../ui/README.md)
+описывает нижнюю границу WebView и проверку сборки. Stable-сборка этот вход не
+открывает. `FLAG_SECURE` по-прежнему запрещает снимки экрана средствами
+системы, но через этот вход подключённый компьютер получает снимок страницы
+(`Page.captureScreenshot`) и может выполнять JS в ней — предрелиз на телефоне
+с включённой USB-отладкой считайте открытым для того, кто подключён кабелем.
+
 ### Проверка
 
 Сборки и исполняемые проверки выполняются **в GitHub Actions**. Основные
@@ -87,6 +101,19 @@ contact numbers, not names; keys and addresses are masked. A `stall` entry (at
 most once a minute, five in a row) names work stuck for over two minutes — a
 profile transaction, a send step or an outbox with no deposits — as counts only.
 Stable builds delete that database at startup.
+
+On Android a prerelease build (and any debug build) calls
+`WebView.setWebContentsDebuggingEnabled(true)` in `MainActivity`: with USB
+debugging on, the app's page shows up in `chrome://inspect` on a computer, JS
+console included. That is the only way to read an error that stopped the page
+from drawing, because wry forwards console messages to logcat in debug builds
+only. On 2026-11-07 rc3 opened as a blank screen on an Honor KOZ-AL00 (Huawei
+WebView 11 = Chromium 83) with nothing in logcat; [ui/README](../ui/README.md)
+states the WebView floor and the build check. Stable builds never open this
+door. `FLAG_SECURE` still blocks system screenshots, but through this door a
+connected computer gets a page screenshot (`Page.captureScreenshot`) and can
+run JS in the page: treat a prerelease on a phone with USB debugging on as
+open to whoever holds the cable.
 
 Diagnostics can expose addresses, identifiers, filenames and timing. Passwords,
 keys, tokens, message/command bodies and callbacks must be excluded even in

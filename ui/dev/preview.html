@@ -24,7 +24,7 @@
       <label>scene
         <select id="scene">
           <option>list</option><option>chat</option><option>console</option><option>agent</option>
-          <option>settings</option><option>identity</option><option>add-contact</option><option>auth</option><option>boot</option>
+          <option>settings</option><option>identity</option><option>add-contact</option><option>auth</option><option>select</option><option>unlock</option><option>boot</option>
         </select>
       </label>
       <label>theme
@@ -107,6 +107,19 @@
           const root = doc.documentElement;
           const overflow = Math.max(root.scrollWidth, doc.body.scrollWidth) - root.clientWidth;
           const off = offenders(doc);
+          // A sign-in screen must fit a phone's frame top to bottom: the owner
+          // wants profile creation on one phone screen, no scrolling
+          // (2026-11-07). Wider frames only report the number: a desktop
+          // window of 720 px scrolls the salon card by design.
+          const card = doc.querySelector('.auth-card');
+          if (card) {
+            const auth = card.parentElement, cs = doc.defaultView.getComputedStyle(auth);
+            const need = Math.round(card.getBoundingClientRect().height + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom));
+            const fits = need <= root.clientHeight;
+            const phone = root.clientWidth <= 600;
+            if (phone && !fits) bad = true;
+            lines.push(`${f.dataset.label}: sign-in card needs ${need}px of ${root.clientHeight}px — ${fits ? 'fits' : phone ? 'does not fit' : 'scrolls (fine off a phone)'}`);
+          }
           if (overflow > 1 || off.length) {
             bad = true;
             lines.push(`${f.dataset.label}: page is ${overflow}px wider than the viewport`);
