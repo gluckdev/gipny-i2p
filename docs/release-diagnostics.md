@@ -60,7 +60,10 @@ USB-отладке страница приложения видна в `chrome:/
 2026-11-07 на Honor KOZ-AL00 (Huawei WebView 11 = Chromium 83) rc3 открывался
 пустым экраном без единой строки в logcat; [ui/README](../ui/README.md)
 описывает нижнюю границу WebView и проверку сборки. Stable-сборка этот вход не
-открывает. Снимки экрана при этом по-прежнему запрещены `FLAG_SECURE`.
+открывает. `FLAG_SECURE` по-прежнему запрещает снимки экрана средствами
+системы, но через этот вход подключённый компьютер получает снимок страницы
+(`Page.captureScreenshot`) и может выполнять JS в ней — предрелиз на телефоне
+с включённой USB-отладкой считайте открытым для того, кто подключён кабелем.
 
 ### Проверка
 
@@ -107,7 +110,10 @@ from drawing, because wry forwards console messages to logcat in debug builds
 only. On 2026-11-07 rc3 opened as a blank screen on an Honor KOZ-AL00 (Huawei
 WebView 11 = Chromium 83) with nothing in logcat; [ui/README](../ui/README.md)
 states the WebView floor and the build check. Stable builds never open this
-door, and `FLAG_SECURE` still blocks screenshots.
+door. `FLAG_SECURE` still blocks system screenshots, but through this door a
+connected computer gets a page screenshot (`Page.captureScreenshot`) and can
+run JS in the page: treat a prerelease on a phone with USB debugging on as
+open to whoever holds the cable.
 
 Diagnostics can expose addresses, identifiers, filenames and timing. Passwords,
 keys, tokens, message/command bodies and callbacks must be excluded even in

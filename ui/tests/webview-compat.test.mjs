@@ -19,6 +19,9 @@ if (files.length < 2) throw new Error('webview-compat: run `npm run build` first
 // APIs newer than Chromium 83 that nothing shims. Shimmed ones (src/compat.ts):
 // replaceChildren, Object.hasOwn, crypto.randomUUID. Method names are checked
 // only where they are called or constructed: the UI has data fields named `at`.
+// The names are matched without their receiver, so a UI method of the same name
+// (`.any()`, `.at()`, `.union()`) would be flagged too; rename it or narrow the
+// check to the receiver here rather than dropping the name.
 const deniedCalls = new Set([
   'at', 'findLast', 'findLastIndex', 'toSorted', 'toReversed', 'toSpliced', 'replaceAll',
   'any' /* Promise.any */, 'canParse', 'groupBy', 'fromAsync', 'withResolvers',
