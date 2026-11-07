@@ -2405,6 +2405,48 @@ body::before { background: none; }
    and reports anything that sticks out of the viewport.
    ========================================================================== */
 
+/* ---- The app's own on-screen keyboard (osk.ts) --------------------------
+   On a phone the system keyboard never appears (inputmode="none" on every
+   text field); this panel types instead. Fixed to the bottom; the page above
+   shrinks by --kbd-offset, which osk.ts sets to the panel's height. Margins,
+   not flex gap: Chromium 83 (Huawei WebView 11) has no gap in flexbox. */
+.osk {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200;
+  padding: 6px 3px calc(6px + var(--safe-bottom, 0px));
+  background: var(--surface-2);
+  border-top: 1px solid var(--border-bright);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.12);
+  font-family: var(--mono);
+  -webkit-user-select: none; user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.osk[hidden] { display: none; }
+.osk-row { display: flex; margin-top: 6px; }
+.osk-row:first-child { margin-top: 0; }
+.osk-key {
+  flex: 1 1 0; min-width: 0; margin: 0 2px; height: 42px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--xbox-radius-sm);
+  background: var(--surface); color: var(--text);
+  font: inherit; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.osk-key:active { background: var(--phosphor-faint); border-color: var(--phosphor); }
+.osk-fn { background: var(--surface-3); color: var(--text-dim); font-size: 14px; }
+.osk-wide { flex-grow: 1.5; }
+.osk-space { flex-grow: 4; }
+.osk-layout { flex-grow: 1.2; font-size: 12px; letter-spacing: 0.08em; }
+.osk-shift.osk-on, .osk-shift.osk-caps { color: var(--phosphor); border-color: var(--phosphor); }
+.osk-shift.osk-caps { background: var(--phosphor-faint); }
+.osk-blank { visibility: hidden; }
+.osk-emoji { flex-wrap: wrap; max-height: 150px; overflow-y: auto; }
+.osk-emoji .osk-key { flex: 0 0 calc(12.5% - 4px); height: 44px; margin-bottom: 4px; font-size: 22px; }
+/* With the panel up, the window's bottom belongs to it. A sign-in screen
+   gets room below its card so the focused field can scroll above the keys. */
+:root[data-osk="shown"] #app { height: calc(100% - var(--kbd-offset, 0px)); }
+:root[data-osk="shown"] .auth { padding-bottom: calc(var(--kbd-offset, 0px) + 12px) !important; }
+
 /* --- 1. Nothing may make the page wider than the viewport ---------------- */
 
 /* The text this app shows is full of strings with no break opportunity: host

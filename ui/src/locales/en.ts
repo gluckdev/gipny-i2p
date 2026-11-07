@@ -683,5 +683,16 @@ export const en = {
   "browser.add_passkey": "Add a passkey",
   "browser.passkey": "Passkey",
   "browser.passkey_added": "Passkey added",
-  "browser.passkey_hint": "Your browser and passkey must support PRF. Keep your profile password for recovery."
+  "browser.passkey_hint": "Your browser and passkey must support PRF. Keep your profile password for recovery.",
+
+  "osk.keyboard": "On-screen keyboard",
+  "osk.shift": "Shift",
+  "osk.backspace": "Backspace",
+  "osk.symbols": "Numbers and symbols",
+  "osk.letters": "Letters",
+  "osk.emoji": "Emoji",
+  "osk.space": "Space",
+  "osk.enter": "Enter",
+  "osk.hide": "Hide the keyboard",
+  "osk.layout": "Layout: {name}"
 } as const satisfies Record<keyof typeof ru, string>;

@@ -681,5 +681,16 @@ export const ru = {
   "browser.add_passkey": "Добавить ключ доступа",
   "browser.passkey": "Ключ доступа",
   "browser.passkey_added": "Ключ доступа добавлен",
-  "browser.passkey_hint": "Браузер и ключ должны поддерживать PRF. Сохраните пароль профиля для восстановления доступа."
+  "browser.passkey_hint": "Браузер и ключ должны поддерживать PRF. Сохраните пароль профиля для восстановления доступа.",
+
+  "osk.keyboard": "Экранная клавиатура",
+  "osk.shift": "Shift",
+  "osk.backspace": "Удалить",
+  "osk.symbols": "Цифры и символы",
+  "osk.letters": "Буквы",
+  "osk.emoji": "Эмодзи",
+  "osk.space": "Пробел",
+  "osk.enter": "Ввод",
+  "osk.hide": "Скрыть клавиатуру",
+  "osk.layout": "Раскладка: {name}"
 } as const;

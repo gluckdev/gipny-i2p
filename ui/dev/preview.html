@@ -69,7 +69,9 @@
           cap.textContent = s.label;
           const f = document.createElement('iframe');
           f.width = s.w; f.height = s.h; f.dataset.label = s.label;
-          f.src = `/dev/frame.html?${new URLSearchParams({ scene: sceneSel.value, theme: themeSel.value, lang: langSel.value })}`;
+          const frameParams = { scene: sceneSel.value, theme: themeSel.value, lang: langSel.value };
+          if (q.has('osk')) frameParams.osk = '1';
+          f.src = `/dev/frame.html?${new URLSearchParams(frameParams)}`;
           fig.append(cap, f);
           frames.append(fig);
         }
@@ -119,6 +121,22 @@
             const phone = root.clientWidth <= 600;
             if (phone && !fits) bad = true;
             lines.push(`${f.dataset.label}: sign-in card needs ${need}px of ${root.clientHeight}px — ${fits ? 'fits' : phone ? 'does not fit' : 'scrolls (fine off a phone)'}`);
+          }
+          // ?osk=1: the app's own keyboard is up for the focused field, and
+          // the field (its composer or form row) sits above the keys.
+          if (q.has('osk')) {
+            const osk = doc.querySelector('.osk:not([hidden])');
+            const active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+            const box = active ? (active.closest('.chat-input') ?? active.closest('.field') ?? active) : null;
+            if (!osk || !box) {
+              bad = true;
+              lines.push(`${f.dataset.label}: keyboard ${osk ? 'shown' : 'missing'}, focused field ${box ? 'found' : 'missing'}`);
+            } else {
+              const kb = osk.getBoundingClientRect(), fb = box.getBoundingClientRect();
+              const clear = fb.bottom <= kb.top + 1 && fb.top >= 0;
+              if (!clear) bad = true;
+              lines.push(`${f.dataset.label}: keyboard ${Math.round(kb.height)}px; field bottom ${Math.round(fb.bottom)}px vs keys top ${Math.round(kb.top)}px — ${clear ? 'clear' : 'covered'}`);
+            }
           }
           if (overflow > 1 || off.length) {
             bad = true;

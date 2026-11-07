@@ -5,10 +5,14 @@ import { Store } from './state';
 import { App } from './app';
 import { SearchModal } from './search';
 import { applyTheme } from './theme';
+import { installOsk, setViewportOffset } from './osk';
 import { errorText } from './error-text';
 
 // theme-init.js already set this before paint; re-apply in case it was blocked.
 applyTheme();
+// On a phone the app's own keyboard replaces the system one: mounted before
+// the first screen renders, so every field it draws is already covered.
+installOsk();
 
 const root = document.getElementById('app');
 if (!root) throw new Error('no #app');
@@ -60,16 +64,12 @@ window.addEventListener('keydown', (e) => {
   }
 }, true);
 
+// A system keyboard, where one still appears (a desktop with a touch screen,
+// a browser without the app's keyboard): --kbd-offset follows the viewport.
+// osk.ts merges this with its own panel's height.
 const vv = window.visualViewport;
 if (vv) {
-  const update = (): void => {
-    const offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-    document.body.style.setProperty('--kbd-offset', offset + 'px');
-    if (offset > 0) {
-      const log = document.querySelector<HTMLElement>('.chat-log');
-      if (log) requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
-    }
-  };
+  const update = (): void => setViewportOffset(window.innerHeight - vv.height - vv.offsetTop);
   vv.addEventListener('resize', update);
   vv.addEventListener('scroll', update);
 }

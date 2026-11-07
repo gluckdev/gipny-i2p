@@ -7,7 +7,7 @@
     "build": "tsc --noEmit && vite build",
     "build:browser": "tsc --noEmit && vite build --config vite.browser.config.ts",
     "preview": "vite preview",
-    "test": "node tests/localization.test.mjs && node tests/browser.test.mjs && node tests/webview-compat.test.mjs"
+    "test": "node tests/localization.test.mjs && node tests/keyboard.test.mjs && node tests/browser.test.mjs && node tests/webview-compat.test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",

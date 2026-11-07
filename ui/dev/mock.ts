@@ -28,6 +28,10 @@ const params = new URLSearchParams(location.search);
 const requestedLang = params.get('lang');
 if (requestedLang === 'en' || requestedLang === 'ru') setLang(requestedLang);
 const scene = params.get('scene') ?? 'list';
+// ?osk=1 brings up the app's own keyboard in a frame that has a mouse (a
+// desktop preview), and focuses the scene's field so the panel is in view.
+const withOsk = params.get('osk') !== null;
+try { localStorage.setItem('gipny.osk', withOsk ? 'on' : 'auto'); } catch { /* preview without storage */ }
 const theme = params.get('theme');
 // ?relay=starting shows the app before its built-in relay has an address.
 // The `boot` scene is the loading screen itself: the relay is still coming up,
@@ -354,6 +358,9 @@ async function drive(): Promise<void> {
   if (scene === 'add-contact') {
     document.querySelector<HTMLElement>('.icon-btn-accent')?.click();
     (await waitFor(() => byText('.ctx-menu-item', t('sidebar.new_contact'))))?.click();
+  }
+  if (withOsk) {
+    (await waitFor(() => document.querySelector<HTMLElement>('.chat-input textarea') ?? document.querySelector<HTMLElement>('input.input, textarea')))?.focus();
   }
 }
 
