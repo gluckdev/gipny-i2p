@@ -2449,6 +2449,9 @@ body::before { background: none; }
    gets room below its card so the focused field can scroll above the keys. */
 :root[data-osk="shown"] #app { height: calc(100% - var(--kbd-offset, 0px)); }
 :root[data-osk="shown"] .auth { padding-bottom: calc(var(--kbd-offset, 0px) + 12px) !important; }
+/* A modal's own scroll area ends where the keys begin, so a field or a
+   footer button at its bottom can be reached. */
+:root[data-osk="shown"] .modal-backdrop { bottom: var(--kbd-offset, 0px); }
 
 /* --- 1. Nothing may make the page wider than the viewport ---------------- */
 

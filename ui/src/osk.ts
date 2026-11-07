@@ -75,6 +75,8 @@ export class Osk {
   private shift: Shift = 'off';
   private lastShiftTap = 0;
   private repeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private repeatKey: HTMLElement | null = null;
+  private backspaceByPointer = false;
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private shown = false;
   private readonly rows: HTMLElement;
@@ -90,8 +92,11 @@ export class Osk {
     for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
       this.el.addEventListener(type, () => this.stopRepeat());
     }
+    // A finger that slides off Backspace onto a neighbour stops the repeat.
+    this.el.addEventListener('pointermove', (e) => { if (this.repeatTimer && this.keyOf(e) !== this.repeatKey) this.stopRepeat(); });
     this.el.addEventListener('contextmenu', (e) => e.preventDefault());
     onLangChange(() => {
+      this.el.setAttribute('aria-label', tr('osk.keyboard'));
       this.layouts = enabledLayouts();
       this.layoutIndex = 0;
       if (this.shown) this.render();
@@ -131,7 +136,8 @@ export class Osk {
     if (this.hideTimer) clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => {
       this.hideTimer = null;
-      if (!isTextField(document.activeElement)) this.hide();
+      const active = document.activeElement;
+      if (!isTextField(active) && !this.el.contains(active)) this.hide();
     }, 0);
   }
 
@@ -157,6 +163,8 @@ export class Osk {
     e.preventDefault();
     const key = this.keyOf(e);
     if (key?.dataset.k === 'backspace') {
+      this.backspaceByPointer = true;
+      this.repeatKey = key;
       this.backspace();
       this.stopRepeat();
       this.repeatTimer = setTimeout(() => {
@@ -168,6 +176,7 @@ export class Osk {
 
   private stopRepeat(): void {
     if (this.repeatTimer) { clearTimeout(this.repeatTimer); this.repeatTimer = null; }
+    this.repeatKey = null;
   }
 
   private onClick(e: Event): void {
@@ -177,7 +186,12 @@ export class Osk {
     const c = key.dataset.c;
     if (c !== undefined) { this.type(c); return; }
     switch (key.dataset.k) {
-      case 'backspace': return; // done on pointerdown, with repeat
+      case 'backspace':
+        // A pointer press already deleted (and repeats while held); a click
+        // without one comes from a keyboard or assistive technology.
+        if (!this.backspaceByPointer) this.backspace();
+        this.backspaceByPointer = false;
+        return;
       case 'shift': this.toggleShift(); return;
       case 'space': this.type(' '); return;
       case 'enter': this.enter(); return;
@@ -217,13 +231,16 @@ export class Osk {
 
   private apply(next: TextState, inputType: string, data: string | null): void {
     const f = this.target;
-    if (!f) return;
+    if (!f || f.readOnly || f.disabled) return;
+    // maxlength: what a physical keyboard could not type, this one does not either.
+    if (f.maxLength >= 0 && next.value.length > f.maxLength && next.value.length > f.value.length) return;
     if (document.activeElement !== f) f.focus();
     f.value = next.value;
     try { f.setSelectionRange(next.start, next.end); } catch { /* number fields have no selection API */ }
     let event: Event;
     try {
-      event = new InputEvent('input', { bubbles: true, inputType, data });
+      // A password never travels in a bubbling event's payload.
+      event = new InputEvent('input', { bubbles: true, inputType, data: f.type === 'password' ? null : data });
     } catch {
       event = new Event('input', { bubbles: true });
     }
@@ -321,6 +338,8 @@ export class Osk {
 
     this.rows.replaceChildren(...rows);
     this.el.setAttribute('data-page', this.page);
+    // The emoji page is taller than the letter rows: the layout follows the panel.
+    if (this.shown) applyKbdOffset();
     this.el.setAttribute('data-layout', this.layout);
   }
 }
@@ -348,7 +367,9 @@ export function installOsk(): Osk | null {
   if (osk || typeof document === 'undefined' || !oskActive()) return osk;
   osk = new Osk();
   document.body.appendChild(osk.el);
-  document.addEventListener('focusin', (e) => { if (isTextField(e.target)) osk!.show(e.target); });
+  // Mark on focus too: a field that bypassed h() and arrived in the same
+  // task as its focus() call would otherwise meet the IME before the observer.
+  document.addEventListener('focusin', (e) => { if (isTextField(e.target)) { markField(e.target); osk!.show(e.target); } });
   document.addEventListener('focusout', (e) => { if (isTextField(e.target)) osk!.scheduleHide(); });
   for (const el of document.querySelectorAll('input, textarea')) markField(el);
   if (typeof MutationObserver !== 'undefined') {

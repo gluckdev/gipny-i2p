@@ -507,3 +507,65 @@ test('fields the panel did not create are marked when they enter the document', 
   uninstallOsk();
   setOskMode('auto'); resetOskActive();
 });
+
+test('review follow-ups: field rules, passwords, flags, repeat and focus inside the panel', async () => {
+  assert.deepEqual(deleteBackward({ value: 'a🇩🇪', start: 5, end: 5 }), { value: 'a', start: 1, end: 1 }, 'a flag goes as a pair');
+  assert.deepEqual(deleteBackward({ value: '🇩🇪🇫', start: 6, end: 6 }), { value: '🇩🇪', start: 4, end: 4 }, 'an odd indicator goes alone');
+  setOskMode('on'); resetOskActive();
+  uninstallOsk();
+  const panel = installOsk();
+
+  const raw = document.createElement('input');
+  raw.type = 'text';
+  document.body.append(raw);
+  raw.focus(); fire(raw, 'focusin');
+  assert.equal(raw.getAttribute('inputmode'), 'none', 'a field focused before the observer ran is marked on focus');
+  assert.equal(panel.field, raw);
+
+  raw.maxLength = 2;
+  press(panel, charKey('a')); press(panel, charKey('b')); press(panel, charKey('c'));
+  assert.equal(raw.value, 'ab', 'maxlength holds');
+  raw.readOnly = true;
+  press(panel, charKey('d'));
+  assert.equal(raw.value, 'ab', 'a read-only field is left alone');
+  raw.readOnly = false; raw.maxLength = -1;
+
+  const events = [];
+  const secret = h('input', { type: 'password' });
+  secret.addEventListener('input', (e) => events.push(e.data ?? null));
+  document.body.append(secret);
+  secret.focus(); if (panel.field !== secret) fire(secret, 'focusin');
+  press(panel, charKey('x'));
+  assert.equal(secret.value, 'x');
+  assert.ok(events.length === 1 && !events[0], 'the typed character is not in the event payload (happy-dom turns null into an empty string)');
+
+  secret.value = 'abcdef'; secret.setSelectionRange(6, 6);
+  const backspace = keyButton(panel, fnKey('backspace'));
+  fire(backspace, 'pointerdown');
+  await new Promise((r) => setTimeout(r, 480));
+  const other = keyButton(panel, charKey('q'));
+  fire(other, 'pointermove');
+  const after = secret.value.length;
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(secret.value.length, after, 'sliding off Backspace stops the repeat');
+  assert.ok(after < 6 && after >= 3, `held Backspace repeated (${6 - after} deletions)`);
+  fire(backspace, 'pointerup'); fire(backspace, 'click');
+  assert.equal(secret.value.length, after, 'the click after a press deletes nothing more');
+  fire(backspace, 'click');
+  assert.equal(secret.value.length, after - 1, 'a click on its own (assistive activation) deletes once');
+
+  const shiftKey = keyButton(panel, fnKey('shift'));
+  shiftKey.focus();
+  fire(secret, 'focusout');
+  await tick();
+  assert.equal(panel.visible, true, 'focus moving onto the panel itself does not hide it');
+
+  const label = panel.el.getAttribute('aria-label');
+  setLang('ru');
+  assert.notEqual(panel.el.getAttribute('aria-label'), label, 'the group label follows the language');
+  setLang('en');
+
+  uninstallOsk();
+  raw.remove(); secret.remove();
+  setOskMode('auto'); resetOskActive();
+});

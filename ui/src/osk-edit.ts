@@ -35,6 +35,7 @@ function isTrailingMark(cp: number): boolean {
   return (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x1f3fb && cp <= 0x1f3ff) || cp === 0x20e3;
 }
 const ZWJ = 0x200d;
+const isRegionalIndicator = (cp: number): boolean => cp >= 0x1f1e6 && cp <= 0x1f1ff;
 
 /** Code point ending at `pos` (exclusive) and where it starts. */
 function codePointBefore(value: string, pos: number): { start: number; cp: number } {
@@ -52,6 +53,16 @@ function codePointBefore(value: string, pos: number): { start: number; cp: numbe
 export function graphemeStart(value: string, pos: number): number {
   if (pos <= 0) return 0;
   let { start, cp } = codePointBefore(value, pos);
+  // A flag is a pair of regional indicators; an even run ends on a whole flag.
+  if (isRegionalIndicator(cp)) {
+    let run = 1;
+    for (let p = start; p > 0;) {
+      const prev = codePointBefore(value, p);
+      if (!isRegionalIndicator(prev.cp)) break;
+      run++; p = prev.start;
+    }
+    return run % 2 === 0 ? codePointBefore(value, start).start : start;
+  }
   // Marks hang off what precedes them; keep walking back to the base.
   while (start > 0 && isTrailingMark(cp)) ({ start, cp } = codePointBefore(value, start));
   // A ZWJ joins this base to the one before it, which has its own marks.
