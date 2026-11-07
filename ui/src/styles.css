@@ -2647,6 +2647,10 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .chat-input-meta .chat-e2e { display: none; }
 }
 
+/* The checkbox and the button row of the sign-in forms; a phone tightens both. */
+.auth-chk { margin-bottom: 14px; }
+.auth-actions { margin-top: 18px; gap: 8px; }
+
 /* The language choice is available before the vault is opened. */
 .auth-language { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 12px 0; font-size: 12px; }
 .auth-language select { width: auto; min-width: 110px; }
@@ -2748,10 +2752,33 @@ select.input { width: 100%; text-overflow: ellipsis; }
 .deletion-ok:disabled { opacity: .5; cursor: wait; }
 :root[data-theme="dark"] .deletion-ok { color: #91db9c; }
 @media (max-width: 600px) {
-  .profile-salon .salon-panel { padding: 26px 24px !important; border-radius: 18px; }
+  /* The sign-in screens fit a 360×740 phone without scrolling (owner,
+     2026-11-07; the duress block stays in view, just denser): one header row
+     with the dial and the language select, no field hints (the placeholders
+     say the same), a tighter rhythm. Every control keeps a 44px touch target.
+     Measured in dev/preview.html, scene=auth, phone 360: the card was 990px. */
+  .profile-salon .salon-panel { padding: 14px 18px 16px !important; border-radius: 18px; }
   .salon-wood { width: 18%; opacity: .55; }
   .salon-caption { margin-bottom: 25px; }
   .salon-emblem { margin-top: 12px; }
+  .salon-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .salon-head .salon-emblem { margin: 0; order: 1; }
+  .salon-head .salon-wing { display: none; }
+  .salon-head .salon-dial { width: 40px; height: 40px; outline-offset: 2px; }
+  .salon-head .salon-monogram { font-size: 19px; }
+  .salon-head .auth-language { margin: 0; order: 2; }
+  .salon-head .auth-language-text { display: none; }
+  .profile-salon .auth-title { font-size: 22px; margin-bottom: 4px; }
+  .profile-salon .auth-sub { font-size: 11.5px; line-height: 1.4; margin-bottom: 10px; }
+  .salon-create .field { margin-bottom: 8px; }
+  .salon-create .field label { margin-bottom: 3px; font-size: 11.5px; }
+  .salon-create .field .hint { display: none; }
+  .salon-create .input { padding: 7px 10px; }
+  .salon-create .divider-text { margin: 8px 0; }
+  .salon-create .auth-chk { margin-bottom: 8px; }
+  .salon-create .err { margin-top: 6px; }
+  .salon-create .auth-actions { margin-top: 10px; }
+  .profile-salon .btn { min-height: 44px; }
   .network-ambient-label { font-size: 9px; right: 8px; bottom: calc(var(--composer-height, 0px) + 3px); }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -12,6 +12,7 @@
  *
  * Query parameters of /dev/frame.html:
  *   scene = list | chat | console | settings | identity | add-contact | agent | auth | boot
+ *           | select (stay on the profile list) | unlock (stay on the passphrase)
  *   theme = light | dark
  *   lang = en | ru
  *   demo = 1   presentable fixtures for screenshots (dev/demo.ts)
@@ -285,9 +286,10 @@ const byText = (root: string, text: string | RegExp): HTMLElement | undefined =>
   });
 
 async function drive(): Promise<void> {
-  if (scene === 'auth') return;
+  if (scene === 'auth' || scene === 'select') return;
   // profile-select → unlock → main
   (await waitFor(() => byText('.auth-card button', /\bops$/)))?.click();
+  if (scene === 'unlock') return;
   const pass = await waitFor(() => document.querySelector<HTMLInputElement>('.auth-card input[type="password"]'));
   if (pass) {
     (pass as HTMLInputElement).value = 'preview';

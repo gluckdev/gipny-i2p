@@ -52,9 +52,11 @@ GitHub Pages раздаёт приложение и обновления; соо
 без Google) rc3 открывался пустым экраном — бандл UI был собран под ES2022.
 Исправление: `WEBVIEW_FLOOR` (Chromium 83) в `ui/vite.config.ts`, шимы
 `ui/src/compat.ts`, гейт `ui/tests/webview-compat.test.mjs`, `chrome://inspect`
-в предрелизных Android-сборках; [журналы](release-diagnostics.md). Дальше по
-плану: экраны входа в один экран телефона (360×800) и i2pd с его туннелями в
-WASM для браузерного роутера.
+в предрелизных Android-сборках; [журналы](release-diagnostics.md). Экраны входа на
+телефоне (≤ 600px) стали плотнее, чтобы создание профиля помещалось в один экран
+(650 px из 740 в `dev/preview.html`, блок «под принуждением» на виду); `dev/mock.ts`
+получил сцены `select`/`unlock`, превью проверяет высоту карточки. Дальше по
+плану: i2pd с его туннелями в WASM для браузерного роутера.
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
 данные можно менять без миграций; новые сообщения, ACK и состояние криптографии
@@ -97,8 +99,9 @@ no Google services) rc3 opened as a blank page because the UI bundle targeted
 ES2022. Fixed by `WEBVIEW_FLOOR` (Chromium 83) in `ui/vite.config.ts`, shims in
 `ui/src/compat.ts`, the `ui/tests/webview-compat.test.mjs` gate and
 `chrome://inspect` in prerelease Android builds; see
-[diagnostics](release-diagnostics.md). Next in plan: sign-in screens that fit
-one phone screen (360×800), and i2pd with its tunnels in WASM for the browser
-router.
+[diagnostics](release-diagnostics.md). The sign-in screens are denser on phones (≤ 600px) so profile creation fits one
+screen (650 px of 740 in `dev/preview.html`, duress block still in view);
+`dev/mock.ts` gained `select`/`unlock` scenes and the preview checks the card
+height. Next in plan: i2pd with its tunnels in WASM for the browser router.
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)
