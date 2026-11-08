@@ -3,11 +3,25 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { buildDefinitions } from './build-policy';
 
+// The oldest browsers the WASM messenger can honestly run in. The profile
+// vault lives in OPFS behind synchronous access handles; Safari 15.2–16.3 and
+// Chromium 102–107 shipped getSize/truncate/flush/close returning Promises,
+// which this client would read as a corrupt profile. Safari 16.4 made them
+// synchronous (and first accepted the CSP 'wasm-unsafe-eval' browser.html
+// relies on, in 16.0); Chromium did in 108, Firefox shipped them synchronous
+// in 111. Every iOS browser is WebKit, so ios16.4 is the real phone floor.
+// Vite's own default (baseline-widely-available) is already safari16.4 — the
+// earlier 'es2022' setting was looser than that, not stricter. Top-level
+// await stays: the entry relies on it (Safari 15, Chrome 89, Firefox 89).
+// ui/tests/browser-compat.test.mjs holds the build to this floor and
+// src/browser-core/storage.ts names it when an older Safari opens a profile.
+export const BROWSER_FLOOR = ['safari16.4', 'ios16.4', 'chrome108', 'edge108', 'firefox111'];
+
 export default defineConfig(({ command }) => ({
   define: buildDefinitions(command === 'serve'),
   base: process.env.VITE_BASE || '/',
   worker: { format: 'es' },
-  build: { target: 'es2022', outDir: 'browser-dist', emptyOutDir: true, sourcemap: false, rollupOptions: { input: 'browser.html' } },
+  build: { target: BROWSER_FLOOR, cssTarget: BROWSER_FLOOR, outDir: 'browser-dist', emptyOutDir: true, sourcemap: false, rollupOptions: { input: 'browser.html' } },
   plugins: [{
     name: 'gipny-offline-shell',
     generateBundle: {
