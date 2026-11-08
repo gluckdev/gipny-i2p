@@ -37,7 +37,9 @@
 //!   must still arrive whole — the transfer picks up where it was.
 //! * `E2E_UPDATE_CHECK=1` — a different test: one router, and the updater
 //!   asks GitHub for the latest release through the i2p outproxy and fetches
-//!   its smallest file, as an installed app would.
+//!   its smallest file, as an installed app would. While GitHub has only
+//!   prereleases, it stops at GitHub's answer "no stable release", checks the
+//!   updater reports exactly that, and fails: there is no file to fetch.
 //! * `E2E_N_MESSAGES`   — number of messages A sends to B (default: 5).
 //! * `E2E_TIMEOUT_SECS` — hard deadline for the whole test (default: 300).
 //! * `E2E_WORK_DIR`     — working directory for bot data dirs (default:
@@ -841,7 +843,7 @@ async fn run_dht_offline_mode() -> Result<()> {
 /// The updater over the outproxy, end to end: the release list from the
 /// GitHub API, then a file from it (a redirect to GitHub's storage host).
 async fn run_update_check_mode() -> Result<()> {
-    use gipny_libcore::update::{CheckOutcome, Component, Updater};
+    use gipny_libcore::update::{CheckOutcome, Component, UpdateError, Updater};
     let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/gipny-e2e".into()));
     let timeout = Duration::from_secs(std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(600));
     let data_dir = work_dir.join("updater");
@@ -857,11 +859,21 @@ async fn run_update_check_mode() -> Result<()> {
     no_local_ports("harness", "self")?;
     let updater = Updater::new(node.clone(), Component::App);
 
-    // The outproxy's LeaseSet may not be found at the first try.
+    // The outproxy's LeaseSet may not be found at the first try. GitHub
+    // saying it has no stable release is an answer, not something to ask
+    // again every 15 s from a shared exit with 60 API requests an hour.
     let t1 = Instant::now();
     let release = loop {
         match updater.latest_release().await {
             Ok(r) => break r,
+            Err(UpdateError::NoStableRelease) => {
+                eprintln!("[e2e] latest release: none stable yet, GitHub answered in {} ms", t1.elapsed().as_millis());
+                match updater.check_detailed("0.0.0").await {
+                    Ok(CheckOutcome::NoStableRelease) => eprintln!("[e2e] check from 0.0.0: NoStableRelease"),
+                    other => bail!("check_detailed with no stable release: {other:?}"),
+                }
+                bail!("no stable release yet: GitHub answered through the outproxy, but there is no file to download until one is published");
+            }
             Err(e) if t0.elapsed() < timeout => {
                 eprintln!("[e2e] latest release: {e}; again in 15 s");
                 tokio::time::sleep(Duration::from_secs(15)).await;

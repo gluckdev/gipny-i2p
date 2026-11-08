@@ -272,6 +272,7 @@ export type CheckResult =
   | { status: 'current'; latest: string }
   | { status: 'dismissed'; version: string }
   | { status: 'unavailable' }
+  | { status: 'no_release' }
   | { status: 'unsupported'; latest: string }
   | { status: 'no_asset'; latest: string; wanted: string };
 

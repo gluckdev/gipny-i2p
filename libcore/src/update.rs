@@ -61,6 +61,7 @@ pub enum UpdateError {
     #[error("artifact too large")] TooLarge,
     #[error("unsupported: {0}")] Unsupported(String),
     #[error("update checking is unavailable this run (no local HTTP proxy)")] NotConfigured,
+    #[error("no stable release has been published yet")] NoStableRelease,
 }
 
 /// Which binary is asking — decides which release asset it looks for.
@@ -219,13 +220,16 @@ fn webpki_tls() -> rustls::ClientConfig {
         .with_no_client_auth()
 }
 
-/// What a check found, with the four "nothing to do" cases kept apart so the
+/// What a check found, with the "nothing to do" cases kept apart so the
 /// interface can say which one it is.
 #[derive(Debug, Clone)]
 pub enum CheckOutcome {
     Update(UpdateInfo),
     /// No local HTTP proxy this run: there is no way to ask at all.
     NotConfigured,
+    /// GitHub answered, and has no stable release yet: only prereleases,
+    /// which `/releases/latest` leaves out. A completed check, not a failure.
+    NoStableRelease,
     UpToDate { latest: String },
     /// A newer version was already offered and the person chose «Позже».
     /// Not the same as being current, and must not be reported as it.
@@ -254,23 +258,11 @@ impl Updater {
     /// sideload picker, which is not about *this* platform at all.
     pub async fn latest_release(&self) -> Result<ReleaseInfo> {
         let client = self.client.as_ref().ok_or(UpdateError::NotConfigured)?;
-        let text = client.text(
+        latest_from(client.text(
             &format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"),
             Some("application/vnd.github+json"),
             MAX_RELEASE_BYTES,
-        ).await?;
-        let release: GhRelease = serde_json::from_str(&text).map_err(|e| UpdateError::Json(e.to_string()))?;
-        let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name).to_string();
-        if release_version(&version).is_none() {
-            return Err(UpdateError::Json("latest release must have a stable major.minor.patch version".into()));
-        }
-        Ok(ReleaseInfo {
-            version,
-            notes: release.body.unwrap_or_default(),
-            assets: release.assets.into_iter()
-                .map(|a| ReleaseAsset { name: a.name, download_url: a.browser_download_url, size: a.size })
-                .collect(),
-        })
+        ).await)
     }
 
     /// `Some` when the latest release is newer than `current_version` and has
@@ -294,7 +286,10 @@ impl Updater {
     /// releases telling its owner it was current.
     pub async fn check_detailed(&self, current_version: &str) -> Result<CheckOutcome> {
         if !self.is_configured() { return Ok(CheckOutcome::NotConfigured); }
-        let release = self.latest_release().await?;
+        let release = match self.latest_release().await {
+            Err(UpdateError::NoStableRelease) => return Ok(CheckOutcome::NoStableRelease),
+            other => other?,
+        };
         if !version_newer(&release.version, current_version) {
             return Ok(CheckOutcome::UpToDate { latest: release.version });
         }
@@ -581,6 +576,30 @@ where F: FnMut(u64, u64) + Send,
     partial.as_file().sync_all()?;
     partial.persist(dest).map_err(|e| e.error)?;
     Ok(())
+}
+
+/// GitHub's answer to `/releases/latest`. That endpoint leaves prereleases
+/// out, so while only prereleases are published it is 404: no stable release
+/// yet, not a failed check (which would retry hourly instead of every six
+/// hours). TLS ends at GitHub, so this status is GitHub's own; the outproxy's
+/// refusals are `HttpError::Outproxy`.
+fn latest_from(response: Result<String>) -> Result<ReleaseInfo> {
+    let text = match response {
+        Err(UpdateError::I2pHttp(crate::i2p_http::HttpError::Status(404))) => return Err(UpdateError::NoStableRelease),
+        other => other?,
+    };
+    let release: GhRelease = serde_json::from_str(&text).map_err(|e| UpdateError::Json(e.to_string()))?;
+    let version = release.tag_name.strip_prefix('v').unwrap_or(&release.tag_name).to_string();
+    if release_version(&version).is_none() {
+        return Err(UpdateError::Json("latest release must have a stable major.minor.patch version".into()));
+    }
+    Ok(ReleaseInfo {
+        version,
+        notes: release.body.unwrap_or_default(),
+        assets: release.assets.into_iter()
+            .map(|a| ReleaseAsset { name: a.name, download_url: a.browser_download_url, size: a.size })
+            .collect(),
+    })
 }
 
 /// `candidate` is always a stable release (`/releases/latest` never returns a
@@ -1226,6 +1245,23 @@ mod tests {
             assert!(installed_version(malformed).is_none(), "{malformed}");
             assert!(!version_newer("0.5.0", malformed), "{malformed}");
         }
+    }
+
+    #[test]
+    fn only_prereleases_published_is_no_stable_release_not_a_failed_check() {
+        use crate::i2p_http::HttpError;
+        let status = |code: u16| -> Result<String> { Err(UpdateError::I2pHttp(HttpError::Status(code))) };
+        assert!(matches!(latest_from(status(404)), Err(UpdateError::NoStableRelease)));
+        // A refused or overloaded API is still a failure, retried soon.
+        for code in [403, 429, 500, 502] {
+            assert!(matches!(latest_from(status(code)), Err(UpdateError::I2pHttp(HttpError::Status(c))) if c == code), "{code}");
+        }
+        // Only GitHub's own answer counts: the outproxy refusing CONNECT is not it.
+        let refused = latest_from(Err(UpdateError::I2pHttp(HttpError::Outproxy("CONNECT refused: HTTP/1.1 404 Not Found".into()))));
+        assert!(matches!(refused, Err(UpdateError::I2pHttp(HttpError::Outproxy(_)))));
+        let release = latest_from(Ok(r#"{"tag_name":"v0.5.0","body":null,"assets":[{"name":"SHA256SUMS.txt","browser_download_url":"https://fixture.invalid/SHA256SUMS.txt","size":64}]}"#.into())).unwrap();
+        assert_eq!((release.version.as_str(), release.notes.as_str(), release.assets.len()), ("0.5.0", "", 1));
+        assert!(matches!(latest_from(Ok(r#"{"tag_name":"v0.5.0-rc3","body":null,"assets":[]}"#.into())), Err(UpdateError::Json(_))));
     }
 
     #[test]
