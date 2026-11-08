@@ -139,6 +139,16 @@ STARTUP_FAILURES = []
 # One failed start (its own 300 s deadline), the client's 30 s retry delay and a
 # second start: what a person waits on a bad network before it gives up.
 STARTUP_WAIT = 300 + 30 + 300 + 30
+# After an unblock Alice may only re-encrypt once resendDelay(0) = 120 s has
+# passed (ui/src/browser-core/model.ts). One delivery attempt is bounded by the
+# 90 s connect deadline (browser-router/src/network.rs) plus two 60 s relay
+# answers (ui/src/browser-core/deadline.ts), and retryDelay() adds at most 60 s
+# before the next one. The receipt leg has no resend delay but the same bound,
+# so it gets its own deadline: a late receipt fails as "receipt late", not as a
+# retry that never happened (CI 2026-11-07: the letter arrived 158 s after the
+# unblock, the receipt's fifth attempt was due 9 s after a single 300 s budget).
+RESEND_WAIT = 120 + 2 * (90 + 60 + 60) + 60
+RECEIPT_WAIT = 2 * (90 + 60 + 60) + 60
 
 
 def ready(cdp):
@@ -349,8 +359,10 @@ def main():
                 raise RuntimeError('blocked incoming contact entered history')
             rpc(bob, 'update_contact', id=bob_contact, name='Alice', trust=1)
             # The blocked mailbox answered Deposited and dropped the letter, so
-            # Alice encrypts it again only after resendDelay(0) = 120 s.
-            wait_for(lambda: any(row['id'] == held and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), 300, 'unblocked exact ciphertext retry')
+            # Alice encrypts it again only after resendDelay(0) = 120 s; Bob's
+            # receipt then travels back on its own budget.
+            wait_for(lambda: any(row['body'] == 'held while blocked' for row in rpc(bob, 'list_messages', contactId=bob_contact)), RESEND_WAIT, 'unblocked exact ciphertext retry')
+            wait_for(lambda: any(row['id'] == held and row['delivered'] for row in rpc(alice, 'list_messages', contactId=alice_contact)), RECEIPT_WAIT, 'receipt after unblock')
             receipt['assertions'].append('blocked contacts cannot send or enter history; unblocking resumes exact ciphertext delivery')
             rpc(alice, 'change_passphrase', **{'old': password_a, 'new': password_new})
             # Stop Alice's whole worker: this discards WASM memory and sockets.
