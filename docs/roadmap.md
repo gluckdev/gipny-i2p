@@ -44,6 +44,16 @@ TURN — отдельная услуга. Нераспознаваемость �
   читаемое имя через адресную книгу. Подробный план — [зеркала](site-mirrors.md).
   Действующих адресов пока нет; они публикуются после развёртывания и проверки.
 
+### Групповые чаты — запись 2026-11-08
+
+Группы есть: создание, добавление участника любым участником, рассылка каждому
+с очередью до подтверждения, правки, закрепление, боты, тот же UI в браузере.
+Нет выхода и удаления, видимых остальным, согласия на вступление, ролей,
+переименования, TTL в группах и групповых ключей. Порядок работ: журнал состава
+с подписями, роли, приглашение с согласием, срок жизни и статус доставки, файлы
+в группах, исследование групповых ключей, паритет браузера, документация —
+[план групповых чатов](plans/2026-11-08-group-chats.md).
+
 ## English
 
 Prioritize current-message integrity, authority revocation, storage boundaries,
@@ -81,3 +91,13 @@ client with GitHub unavailable, including configuration/bootstrap, before claimi
 that property. Plan Tor `.onion` and I2P mirrors of the project page, with `gipny`
 vanity prefixes and an additional I2P address-book name. See the [mirror plan](site-mirrors.md);
 no live mirror addresses are claimed yet.
+
+### Group chats — 2026-11-08 entry
+
+Groups exist: creation, any member adds members, per-recipient fan-out with a
+queue until acknowledgement, edits, pins, bots, the same UI in the browser.
+Missing: leaving and removal visible to the others, consent to join, roles,
+renaming, TTL in groups and group keys. Order of work: a signed membership log,
+roles, invitation with consent, lifetime and per-member delivery status, files in
+groups, a group-key study, browser parity, documentation —
+[group chats plan](plans/2026-11-08-group-chats.md) (Russian).
