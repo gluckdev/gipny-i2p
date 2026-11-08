@@ -54,6 +54,16 @@ TURN — отдельная услуга. Нераспознаваемость �
 в группах, исследование групповых ключей, паритет браузера, документация —
 [план групповых чатов](plans/2026-11-08-group-chats.md).
 
+### Загрузка профиля и сбор сообщений — запись 2026-11-08
+
+Туннели релея строятся после туннелей узла, письма из DHT забираются только
+после релея, адрес ящика новый при каждом запуске, и отправителю нужно узнать
+его и дождаться своего retry. Порядок работ: параллельный подъём релея и ранний
+сбор из DHT (ветка `perf/boot-parallel-relay`, без решений владельца), затем
+решения о стабильном адресе ящика и прогрессивной длине туннелей, lookup адреса
+по требованию, измерения по шагам —
+[план](plans/2026-11-08-boot-and-inbox-latency.md).
+
 ## English
 
 Prioritize current-message integrity, authority revocation, storage boundaries,
@@ -101,3 +111,13 @@ renaming, TTL in groups and group keys. Order of work: a signed membership log,
 roles, invitation with consent, lifetime and per-member delivery status, files in
 groups, a group-key study, browser parity, documentation —
 [group chats plan](plans/2026-11-08-group-chats.md) (Russian).
+
+### Profile boot and inbox latency — 2026-11-08 entry
+
+The relay's tunnels are built after the node's, letters left in the DHT are
+collected only after the relay is up, the mailbox address is new on every
+launch, and a sender has to learn it and wait out its own retry. Order of work:
+build the relay in parallel and collect from the DHT early (branch
+`perf/boot-parallel-relay`, no owner decision needed), then the decisions on a
+stable mailbox address and progressive tunnel length, address lookup on demand,
+per-step measurements — [plan](plans/2026-11-08-boot-and-inbox-latency.md) (Russian).
