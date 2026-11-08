@@ -44,6 +44,35 @@ TURN — отдельная услуга. Нераспознаваемость �
   читаемое имя через адресную книгу. Подробный план — [зеркала](site-mirrors.md).
   Действующих адресов пока нет; они публикуются после развёртывания и проверки.
 
+### Групповые чаты — запись 2026-11-08
+
+Группы есть: создание, добавление участника любым участником, рассылка каждому
+с очередью до подтверждения, правки, закрепление, боты, тот же UI в браузере.
+Нет выхода и удаления, видимых остальным, согласия на вступление, ролей,
+переименования, TTL в группах и групповых ключей. Порядок работ: журнал состава
+с подписями, роли, приглашение с согласием, срок жизни и статус доставки, файлы
+в группах, исследование групповых ключей, паритет браузера, документация —
+[план групповых чатов](plans/2026-11-08-group-chats.md).
+
+### Загрузка профиля и сбор сообщений — запись 2026-11-08
+
+Туннели релея строятся после туннелей узла, письма из DHT забираются только
+после релея, адрес ящика новый при каждом запуске, и отправителю нужно узнать
+его и дождаться своего retry. Порядок работ: параллельный подъём релея и ранний
+сбор из DHT (ветка `perf/boot-parallel-relay`, без решений владельца), затем
+решения о стабильном адресе ящика и прогрессивной длине туннелей, lookup адреса
+по требованию, измерения по шагам —
+[план](plans/2026-11-08-boot-and-inbox-latency.md).
+
+### Экспорт и импорт браузерного профиля — запись 2026-11-08
+
+Сейчас браузерный профиль не экспортируется, очистка данных сайта его уничтожает.
+План: схема нативного бэкапа переезжает в `libcore`, браузер делает переносимый
+бэкап того же формата (миграция браузер ↔ натив, сессии заново) и снимок
+профиля «как было» для восстановления; потоковый экспорт через download-SW,
+импорт только в новый профиль, проверки WASM/e2e/WebKit —
+[план](plans/2026-11-08-browser-profile-export-import.md).
+
 ## English
 
 Prioritize current-message integrity, authority revocation, storage boundaries,
@@ -81,3 +110,32 @@ client with GitHub unavailable, including configuration/bootstrap, before claimi
 that property. Plan Tor `.onion` and I2P mirrors of the project page, with `gipny`
 vanity prefixes and an additional I2P address-book name. See the [mirror plan](site-mirrors.md);
 no live mirror addresses are claimed yet.
+
+### Group chats — 2026-11-08 entry
+
+Groups exist: creation, any member adds members, per-recipient fan-out with a
+queue until acknowledgement, edits, pins, bots, the same UI in the browser.
+Missing: leaving and removal visible to the others, consent to join, roles,
+renaming, TTL in groups and group keys. Order of work: a signed membership log,
+roles, invitation with consent, lifetime and per-member delivery status, files in
+groups, a group-key study, browser parity, documentation —
+[group chats plan](plans/2026-11-08-group-chats.md) (Russian).
+
+### Profile boot and inbox latency — 2026-11-08 entry
+
+The relay's tunnels are built after the node's, letters left in the DHT are
+collected only after the relay is up, the mailbox address is new on every
+launch, and a sender has to learn it and wait out its own retry. Order of work:
+build the relay in parallel and collect from the DHT early (branch
+`perf/boot-parallel-relay`, no owner decision needed), then the decisions on a
+stable mailbox address and progressive tunnel length, address lookup on demand,
+per-step measurements — [plan](plans/2026-11-08-boot-and-inbox-latency.md) (Russian).
+
+### Browser profile export and import — 2026-11-08 entry
+
+The browser profile cannot be exported today; clearing site data destroys it.
+Plan: the native backup schema moves into `libcore`, the browser produces a
+portable backup of the same format (browser ↔ native migration, sessions are
+re-established) and a byte-exact profile snapshot for recovery; streamed export
+through the download service worker, import only into a new profile, WASM/e2e/
+WebKit checks — [plan](plans/2026-11-08-browser-profile-export-import.md) (Russian).

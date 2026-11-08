@@ -383,11 +383,15 @@ class MainView extends View {
       const discovery = store.bootSteps.get().find(step => step.id === 'dht')?.state;
       const failed = info?.hosted.state === 'failed' || (info?.dial?.unreachable_checks ?? 0) >= 2 || discovery === 'failed';
       const ready = store.relayConnected.get() && (store.dhtReached.get() === true || discovery === 'skipped' || store.contacts.get().length === 0) && !failed;
-      const offline = store.relayUnconfigured.get();
+      // The browser client on a hosting with no network service. Not the
+      // native "no relay address" case: nothing retries, and there is no
+      // field in Settings to fill in — so it says what is missing.
+      const unconfigured = info?.mode === 'builtin' && info.hosted.state === 'unconfigured';
+      const offline = store.relayUnconfigured.get() || unconfigured;
       network.classList.toggle('hidden', ready);
       network.classList.toggle('is-retrying', failed);
       network.classList.toggle('is-offline', offline);
-      networkText.textContent = tr(offline ? 'app.network_offline' : failed ? 'app.network_retry' : 'app.network_connecting');
+      networkText.textContent = tr(unconfigured ? 'app.network_unconfigured' : offline ? 'app.network_offline' : failed ? 'app.network_retry' : 'app.network_connecting');
     };
     this.sub(store.relayConnected, paintNetwork);
     this.sub(store.relayUnconfigured, paintNetwork);

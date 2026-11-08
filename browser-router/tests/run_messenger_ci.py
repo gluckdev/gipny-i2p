@@ -153,8 +153,10 @@ RECEIPT_WAIT = 2 * (90 + 60 + 60) + 60
 
 def ready(cdp):
     info = rpc(cdp, 'get_relay_info')
-    if info['hosted']['state'] == 'failed':
-        # The client restarts its network 30 s later by itself; record why.
+    if info['hosted']['state'] in ('failed', 'unconfigured'):
+        # `failed`: the client restarts its network 30 s later by itself.
+        # `unconfigured`: the page got no browser-config.json, nothing will
+        # retry, and waiting out STARTUP_WAIT would hide a fixture fault.
         reason = 'I2P client startup failed: ' + info['hosted']['reason'][:300]
         if not STARTUP_FAILURES or STARTUP_FAILURES[-1] != reason:
             STARTUP_FAILURES.append(reason)

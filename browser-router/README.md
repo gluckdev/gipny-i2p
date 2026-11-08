@@ -52,7 +52,9 @@ PDF metadata sanitizer в WASM недоступен: отправка без о�
 [Browser router WASM](../.github/workflows/browser-router.yml):
 
 1. `forwarder`: Rust format, unit/integration tests, release binary.
-2. `wasm`: locked builds, запрет native dependencies в WASM, browser UI и Chrome tests.
+2. `wasm`: locked builds, запрет native dependencies в WASM, browser UI и Chrome tests,
+   затем собранный клиент в Playwright WebKit (`ui/tests/webkit-smoke.mjs`): профиль
+   без сетевой конфигурации, чаты открываются offline, профиль переживает перезагрузку.
 3. `ntcp2`: native peer, реальные NTCP2, cold bootstrap, два браузера с WSS и
    WebRTC, восстановление vault/очереди, публичные receipts без секретов.
 
@@ -102,7 +104,9 @@ Native DHT, agent commands, duress and OS keychain guarantees are unavailable. P
 an explicit choice. Passkey PRF support varies.
 
 Builds and executable tests run only in GitHub Actions: Rust forwarder checks,
-locked WASM/UI builds and Chrome tests, native NTCP2/cold bootstrap, and two
+locked WASM/UI builds and Chrome tests, the built client in Playwright WebKit
+(`ui/tests/webkit-smoke.mjs`: a profile without network configuration, chats open
+offline, the profile survives a reload), native NTCP2/cold bootstrap, and two
 browser messenger scenarios over WSS and RTC. Artifacts include source/hash
 provenance and public receipts, never capabilities or private profiles. New RTC
 code still needs CI. Local ICE fixtures do not validate external TURN/CDN or

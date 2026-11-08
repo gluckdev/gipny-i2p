@@ -395,9 +395,9 @@ export class BrowserBackend {
   private async startNetwork(attempt: number): Promise<void> {
     const engine = this.engine!;
     this.relayAnswered = false;
+    if (!this.networkConfig) { this.networkUnconfigured(); return; }
     this.hosted = { state: 'starting' }; this.relayChanged();
     try {
-      if (!this.networkConfig) { this.log.info('network_offline', 'no network service configured; offline only'); throw new Error('Network service is not configured; saved chats are available offline'); }
       this.log.info('network_start', `bootstrap attempt ${attempt}`);
       const network = await engine.start_network(JSON.stringify(this.networkConfig), (raw: string) => {
         if (attempt !== this.generation) return;
@@ -461,6 +461,16 @@ export class BrowserBackend {
       }
     };
     await Promise.all([worker(), worker()]);
+  }
+  /** This hosting serves the client without a network service. Not a failure
+   * a retry would mend — none is armed — so it is its own relay state rather
+   * than `failed`, and the screens say what is missing instead of promising
+   * to keep trying. The boot event keeps the usual shape. */
+  private networkUnconfigured(): void {
+    const reason = 'Network service is not configured; saved chats are available offline';
+    this.log.info('network_offline', 'no network service configured; offline only');
+    this.hosted = { state: 'unconfigured', reason };
+    this.boot('relay', 'failed', reason); this.relayChanged();
   }
   private networkFailed(error: string): void {
     this.log.info('relay_failed', error);

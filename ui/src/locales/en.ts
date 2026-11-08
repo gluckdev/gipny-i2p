@@ -16,6 +16,7 @@ export const en = {
   "boot.step.outbound_hint": "Creating a protected path for outgoing messages.",
   "boot.stage_failed": "Could not finish. Go back and try signing in again.",
   "boot.retrying_in_background": "Not yet — we will keep trying in the background; you can open your chats now.",
+  "boot.network_unconfigured": "This hosting provides no network service, so messages cannot be sent or received here. Saved chats open offline.",
 
   "chat.deletion_ok": "OK",
   "chat.deletion_ack_hint": "Acknowledge deletion and dismiss the notice for both participants",
@@ -28,6 +29,7 @@ export const en = {
   "app.network_connecting": "Connecting. Your chats are already available.",
   "app.network_retry": "Reconnecting. Messages are waiting to send.",
   "app.network_offline": "Not connected. Chat history is available.",
+  "app.network_unconfigured": "No network service on this hosting. Messages cannot be sent or received; saved chats are available.",
 
   "browser.about.transport": "Keys, encryption and the I2P router run in your browser. A WSS forwarder is required to carry encrypted NTCP2 traffic; it sees your IP address, connection timing and traffic volume.",
   "browser.about.storage": "Your profile is stored in encrypted OPFS files for this site. The password uses Argon2id (64 MiB); passkeys require WebAuthn PRF support. Clearing site data removes the profile. Keep your password as a recovery method.",

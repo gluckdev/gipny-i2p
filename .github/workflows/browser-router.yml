@@ -47,7 +47,7 @@ jobs:
       run:
         working-directory: browser-router
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Prepare pinned emissary and reviewed client-only patch
         run: python3 scripts/prepare_emissary.py
       - uses: dtolnay/rust-toolchain@1.93.1
@@ -80,7 +80,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -96,6 +96,25 @@ jobs:
           name: browser-messenger-pwa
           path: ui/browser-dist/
           if-no-files-found: error
+          retention-days: 5
+      # WebKit is the engine behind Safari and every iOS browser. Chrome tests
+      # cannot see a WebKit-only gap (OPFS, module workers, WASM); this opens the
+      # built client there, served as Pages serves it today (no network
+      # configuration), creates a profile and expects the chats to open with
+      # the hosting notice. Needs a persistent context: WebKit has no OPFS in an
+      # ephemeral one.
+      - name: Install Playwright WebKit
+        run: cd ../ui && npx playwright install --with-deps webkit
+      - name: Open the built client in WebKit, create a profile, reach the chats
+        run: node ../ui/tests/webkit-smoke.mjs --dist ../ui/browser-dist --out "$RUNNER_TEMP/webkit-smoke"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: browser-webkit-smoke
+          path: ${{ runner.temp }}/webkit-smoke/
+          # A browser that never launched wrote no log; the failed step above
+          # is the error, not a missing upload.
+          if-no-files-found: warn
           retention-days: 5
       - name: Install WebSocket fixture
         run: python3 -m pip install websockets==15.0.1
@@ -143,7 +162,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Prepare pinned emissary and reviewed client-only patch
         run: python3 browser-router/scripts/prepare_emissary.py
       - uses: actions/download-artifact@v6
@@ -182,6 +201,21 @@ jobs:
           tool: wasm-pack
       - name: Install forwarder dependency
         run: python3 -m pip install websockets==15.0.1
+      - name: Unit tests of the CI harness helpers
+        run: python3 -m unittest discover -s browser-router/tests -p 'test_*.py' -v
+      # Reseed alone left the native peer with a few dozen RouterInfos, all
+      # older than the 36 h the verifier accepts, and no live neighbour to
+      # freshen them from (every PR and main run since 2026-11-06 failed
+      # there). The release snapshot's router, run here first with default
+      # transports, learns the live network; its fresh records seed the peer
+      # and the cold-bootstrap snapshot below is made from the same data.
+      - name: Fresh network database from the pinned router
+        run: |
+          mkdir -p "$RUNNER_TEMP/netdb-source"
+          browser-router/target/release/collect-netdb "$RUNNER_TEMP/netdb-source" | tee "$RUNNER_TEMP/netdb-source.log"
+          n=$(find "$RUNNER_TEMP/netdb-source/netDb" -name 'routerInfo-*.dat' | wc -l)
+          echo "GIPNY_NETDB_SOURCE=$RUNNER_TEMP/netdb-source" >> "$GITHUB_ENV"
+          { echo "### Fresh network database"; echo "$n routers collected; $(tail -n 1 "$RUNNER_TEMP/netdb-source.log")"; } >> "$GITHUB_STEP_SUMMARY"
       - name: Real NTCP2 handshakes from WASM in Chrome
         run: python3 browser-router/tests/run_ntcp2_ci.py
       - name: Build loadable browser module from source
@@ -190,7 +224,7 @@ jobs:
         run: wasm-pack build --target web --release --locked
       - name: Cold browser bootstrap from a downloaded netDb snapshot
         run: python3 browser-router/tests/run_bootstrap_ci.py
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: ${{ !cancelled() && steps.browser_module.outcome == 'success' }}
         with:
           node-version: '24'
@@ -223,6 +257,7 @@ jobs:
             ${{ runner.temp }}/browser-ntcp2/native-peer-stdout.log
             ${{ runner.temp }}/browser-ntcp2/native-peer/i2pd.log
             ${{ runner.temp }}/browser-ntcp2/candidates.tsv
+            ${{ runner.temp }}/netdb-source.log
           if-no-files-found: warn
           retention-days: 5
       - name: Keep bootstrap and exploratory evidence

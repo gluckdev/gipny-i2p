@@ -7,7 +7,7 @@
     "build": "tsc --noEmit && vite build",
     "build:browser": "tsc --noEmit && vite build --config vite.browser.config.ts",
     "preview": "vite preview",
-    "test": "node tests/localization.test.mjs && node tests/keyboard.test.mjs && node tests/browser.test.mjs && node tests/webview-compat.test.mjs"
+    "test": "node tests/localization.test.mjs && node tests/keyboard.test.mjs && node tests/browser.test.mjs && node tests/webview-compat.test.mjs && node tests/browser-compat.test.mjs && node tests/boot.test.mjs"
   },
   "dependencies": {
     "@noble/hashes": "2.4.0",
@@ -20,6 +20,7 @@
     "acorn": "^8.14.1",
     "acorn-walk": "^8.3.4",
     "happy-dom": "^21.0.4",
+    "playwright": "^1.65.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
   }

@@ -2093,6 +2093,7 @@ async fn check_update(ctx: State<'_, AppCtx>) -> Result<serde_json::Value, Strin
         CheckOutcome::UpToDate { latest } => serde_json::json!({ "status": "current", "latest": latest }),
         CheckOutcome::Dismissed { version } => serde_json::json!({ "status": "dismissed", "version": version }),
         CheckOutcome::NotConfigured => serde_json::json!({ "status": "unavailable" }),
+        CheckOutcome::NoStableRelease => serde_json::json!({ "status": "no_release" }),
         CheckOutcome::UnsupportedInstall { latest } => serde_json::json!({ "status": "unsupported", "latest": latest }),
         CheckOutcome::NoAsset { latest, wanted } => serde_json::json!({ "status": "no_asset", "latest": latest, "wanted": wanted }),
     })

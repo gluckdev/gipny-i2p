@@ -34,10 +34,13 @@ with old experimental profiles is not currently required.
 4. Choose history storage and message timers. Deletion cannot erase copies,
    screenshots, exported files or notifications independently saved by a recipient.
 
-The web client runs WASM in a Worker and stores an encrypted OPFS profile.
-It needs HTTPS, a supported browser and an available transport bridge, without
-a local server installation. Without network configuration, only local storage
-is available. See [PWA use and hosting](docs/browser-messenger.md).
+The web client runs WASM in a Worker and stores an encrypted OPFS profile,
+without a local server installation. The public GitHub Pages page currently
+works offline only: no bridge is deployed and no network configuration is set,
+so a profile and saved chats open while sending and receiving stay unavailable
+until an operator deploys a bridge. It needs HTTPS and current Chrome or Firefox,
+or Safari/iOS 16.4; Lockdown Mode and private browsing do not work.
+See [PWA use and hosting](docs/browser-messenger.md).
 Clearing site data can remove the profile. Browser profile export is not implemented
 yet. GitHub serves code and updates; the local WASM core handles conversations,
 and I2P delivers them through a separate transport bridge.

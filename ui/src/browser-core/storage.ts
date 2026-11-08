@@ -14,8 +14,36 @@ export type SyncFile = {
   close(): void;
 };
 
-type OpfsFile = FileSystemFileHandle & { createSyncAccessHandle(): Promise<SyncFile> };
+type OpfsFile = FileSystemFileHandle & { createSyncAccessHandle?: () => Promise<SyncFile> };
 type Directory = FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> };
+
+/** Safari 15.2–16.3 and Chromium 102–107 shipped getSize/truncate/flush/close
+ * returning Promises; the spec made every method synchronous and Safari 16.4
+ * (Chromium 108, Firefox 111) followed. A Promise taken for a size would fail
+ * every read as 'Profile storage size limit', so the shape is checked once,
+ * on the first handle. BROWSER_FLOOR in vite.browser.config.ts is the same version. */
+export const SYNC_HANDLE_FLOOR = 'Safari/iOS 16.4';
+export function assertSyncHandle(handle: Pick<SyncFile, 'getSize'>): void {
+  if (typeof (handle.getSize() as unknown) !== 'number') {
+    throw new Error(`Private profile storage in this browser is too old; the messenger needs ${SYNC_HANDLE_FLOOR} or newer`);
+  }
+}
+/** Another access handle already holds the file. Chromium and Firefox report
+ * NoModificationAllowedError; WebKit reports InvalidStateError for the same case. */
+export function isHandleConflict(error: unknown): boolean {
+  return error instanceof DOMException && (error.name === 'NoModificationAllowedError' || error.name === 'InvalidStateError');
+}
+let shapeVerified = false;
+async function openSync(file: OpfsFile): Promise<SyncFile> {
+  if (!file.createSyncAccessHandle) throw new Error('This browser does not support private profile storage');
+  const handle = await file.createSyncAccessHandle();
+  if (!shapeVerified) {
+    try { assertSyncHandle(handle); }
+    catch (error) { try { handle.close(); } catch {} throw error; }
+    shapeVerified = true;
+  }
+  return handle;
+}
 
 export function profileName(raw: string): string {
   const name = raw.normalize('NFC').trim();
@@ -38,7 +66,15 @@ async function profiles(): Promise<Directory> {
   if (!navigator.storage?.getDirectory) {
     throw new Error('This browser does not support private profile storage');
   }
-  return await (await navigator.storage.getDirectory()).getDirectoryHandle(ROOT, { create: true }) as Directory;
+  let root: FileSystemDirectoryHandle;
+  try { root = await navigator.storage.getDirectory(); }
+  catch (error) {
+    // Browsers reject here (SecurityError, UnknownError) when the session has
+    // no origin storage to give: private browsing, or a policy that blocks it.
+    if (error instanceof DOMException) throw new Error('Private profile storage is unavailable in this browser window; private browsing or a restrictive setting blocks it');
+    throw error;
+  }
+  return await root.getDirectoryHandle(ROOT, { create: true }) as Directory;
 }
 
 function readAll(file: SyncFile, limit = LIMIT): Uint8Array {
@@ -116,7 +152,7 @@ export async function listProfiles(): Promise<string[]> {
         try { return (await (await directory.getFileHandle(`vault-${slot}.bin`)).getFile()).size > 0; }
         catch (error) {
           if (error instanceof DOMException && error.name === 'NotFoundError') return false;
-          if (error instanceof DOMException && error.name === 'NoModificationAllowedError') return true;
+          if (isHandleConflict(error)) return true;
           throw error;
         }
       }));
@@ -165,13 +201,13 @@ export async function removeProfile(raw: string): Promise<void> {
         try {
           const file = await directory.getFileHandle(`vault-${slot}.bin`, { create: false }) as OpfsFile;
           if (file.createSyncAccessHandle) {
-            handles.push(await file.createSyncAccessHandle());
+            handles.push(await openSync(file));
           }
         } catch (error) {
           if (error instanceof DOMException && error.name === 'NotFoundError') {
             continue;
           }
-          if (error instanceof DOMException && error.name === 'NoModificationAllowedError') {
+          if (isHandleConflict(error)) {
             throw new Error('Profile is already open in another tab');
           }
           throw error;
@@ -243,7 +279,7 @@ export class ProfileStorage {
                   try {
                     const fh = await existingDir.getFileHandle(`vault-${slot}.bin`, { create: false }) as OpfsFile;
                     if (fh.createSyncAccessHandle) {
-                      const h = await fh.createSyncAccessHandle();
+                      const h = await openSync(fh);
                       try {
                         if (h.getSize() > 0) isCreatedProfile = true;
                       } finally {
@@ -260,14 +296,10 @@ export class ProfileStorage {
 
             const directory = existingDir ?? await root.getDirectoryHandle(id, { create: true });
             for (const slot of ['a', 'b'] as const) {
-              const file = await directory.getFileHandle(`vault-${slot}.bin`, { create: true }) as OpfsFile;
-              if (!file.createSyncAccessHandle) throw new Error('This browser does not support private profile storage');
-              handles.push(await file.createSyncAccessHandle());
+              handles.push(await openSync(await directory.getFileHandle(`vault-${slot}.bin`, { create: true })));
             }
 
-            const meta = await directory.getFileHandle('profile.json', { create: true }) as OpfsFile;
-            if (!meta.createSyncAccessHandle) throw new Error('This browser does not support private profile storage');
-            const metaHandle = await meta.createSyncAccessHandle();
+            const metaHandle = await openSync(await directory.getFileHandle('profile.json', { create: true }));
             try {
               writeAll(metaHandle, new TextEncoder().encode(JSON.stringify({ name })));
             } finally {
@@ -301,8 +333,7 @@ export class ProfileStorage {
                   throw error;
                 }
               }
-              if (!file.createSyncAccessHandle) throw new Error('This browser does not support private profile storage');
-              handles.push(await file.createSyncAccessHandle());
+              handles.push(await openSync(file));
             }
 
             const hasData = handles.some(h => h.getSize() > 0);
@@ -323,7 +354,7 @@ export class ProfileStorage {
           handles.forEach(h => {
             try { h.close(); } catch {}
           });
-          if (error instanceof DOMException && error.name === 'NoModificationAllowedError') {
+          if (isHandleConflict(error)) {
             reject(new Error('Profile is already open in another tab'));
           } else if (error instanceof DOMException && error.name === 'QuotaExceededError') {
             reject(new Error('Storage quota exceeded'));
