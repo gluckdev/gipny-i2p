@@ -70,7 +70,7 @@ indistinguishability. A compatible CDN can proxy WSS; WebRTC may need a separate
 TURN service for NAT traversal or relay-only operation.
 
 On phones the system keyboard is never shown: text is typed on the app's own
-on-screen keyboard (RU/EN/DE layouts, digits, symbols, emoji), so keystrokes do
+on-screen keyboard (RU/EN/DE/VI/KM layouts, digits, symbols, emoji), so keystrokes do
 not reach third-party suggestion services. A hardware keyboard keeps working;
 nothing changes on a desktop. [Plan and limits](docs/plans/2026-11-08-own-keyboard.md).
 
