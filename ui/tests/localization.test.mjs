@@ -20,7 +20,7 @@ for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'H
 win.__TAURI_INTERNALS__ = {};
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
 const cardFixtures = JSON.parse(await readFile(new URL('../../tests/fixtures/contact-cards-v3.json', import.meta.url), 'utf8'));
-const { t, setLang, getLang, translations, App, Store, Api } = ui;
+const { t, setLang, getLang, LANGS, translations, App, Store, Api } = ui;
 
 const calls = [];
 let logSettings = { available: true, enabled: false, path: '/tmp/example.log' };
@@ -47,6 +47,24 @@ const deferred = () => {
   return { promise, resolve };
 };
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
+
+test('the profile name is derived from the display name, unique on this device', () => {
+  const { profileSlug, profileNameFor, PROFILE_NAME_MAX } = ui;
+  assert.equal(profileSlug('Alice'), 'alice');
+  assert.equal(profileSlug('Honor Test'), 'honor-test');
+  assert.equal(profileSlug('  Анна  Щукина '), 'anna-shchukina');
+  assert.equal(profileSlug('Zoë Müller-Weiß'), 'zoe-muller-wei');
+  assert.equal(profileSlug('ខ្មែរ'), '', 'a script without transliteration leaves nothing');
+  assert.equal(profileNameFor('ខ្មែរ', []), 'profile');
+  assert.equal(profileNameFor('Alice', ['alice']), 'alice-2');
+  assert.equal(profileNameFor('ALICE', ['alice', 'alice-2']), 'alice-3');
+  const long = 'x'.repeat(40);
+  assert.equal(profileNameFor(long, []).length, PROFILE_NAME_MAX);
+  assert.equal(profileNameFor(long, ['x'.repeat(32)]).length, PROFILE_NAME_MAX, 'the suffix fits inside the limit');
+  for (const name of [profileNameFor('Анна', []), profileNameFor('a b_c', []), profileNameFor(long, ['x'.repeat(32)])]) {
+    assert.match(name, /^[A-Za-z0-9_-]{1,32}$/, 'what the core accepts as a profile name');
+  }
+});
 
 test('v3 cards match Rust and Python vectors and reject malformed canonical encodings', () => {
   for (const vector of cardFixtures.valid) {
@@ -91,7 +109,7 @@ test('card export keeps copying disabled until ready and never copies an encodin
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text) => { copied.push(text); } } });
   try {
     Api.qrSvg = async (card) => { qr.push(card); return '<svg></svg>'; };
-    for (const lang of ['en', 'ru']) {
+    for (const lang of Object.keys(translations)) {
       setLang(lang);
       const relay = deferred();
       Api.getRelayAddress = () => relay.promise;
@@ -130,39 +148,132 @@ test('card export keeps copying disabled until ready and never copies an encodin
 test('locale choice respects saved preferences and handles unavailable storage', () => {
   assert.equal(ui.detectLang('ru', ['en-US']), 'ru');
   assert.equal(ui.detectLang('en', ['ru-RU']), 'en');
+  assert.equal(ui.detectLang('de', ['ru']), 'de');
   assert.equal(ui.detectLang(null, ['ru-RU']), 'ru');
-  assert.equal(ui.detectLang(null, ['de-DE']), 'en');
+  assert.equal(ui.detectLang(null, ['de-DE']), 'de');
+  assert.equal(ui.detectLang(null, ['de-CH', 'ru']), 'ru');
+  assert.equal(ui.detectLang(null, ['en-US', 'DE-at']), 'en');
+  assert.equal(ui.detectLang(null, ['de']), 'de');
+  assert.equal(ui.detectLang(null, ['deutsch', 'russian']), 'en', 'language tags must match a full prefix');
   assert.equal(ui.detectLang('invalid', []), 'en');
   assert.equal(ui.detectLang(null, ['en-US', 'ru-RU']), 'ru', 'any preferred Russian locale');
-  assert.equal(ui.detectLang(null, ['uk-UA', 'be-BY']), 'en', 'other Cyrillic locales are not Russian');
+  assert.equal(ui.detectLang(null, ['uk-UA', 'be-BY']), 'uk', 'other Cyrillic locales are not Russian');
   assert.equal(ui.detectLang(null, ['en-US'], true), 'ru', 'a Russian keyboard layout');
   assert.equal(ui.detectLang('en', ['ru-RU'], true), 'en', 'an explicit choice wins');
+  assert.equal(ui.detectLang(null, ['de-DE'], true), 'ru', 'a Russian keyboard takes priority over German');
+  assert.equal(ui.detectLang('de', ['ru-RU'], true), 'de', 'saved German also wins over a Russian keyboard');
   assert.equal(ui.isRussianLayout('йцукенгшщзхъфывапролджэячсмитьбю'.split('')), true);
   assert.equal(ui.isRussianLayout('йцукенгшщзхїфівапролджєячсмитьбю'.split('')), false);
   const old = win.localStorage.setItem;
   win.localStorage.setItem = () => { throw new Error('storage disabled'); };
-  assert.doesNotThrow(() => setLang('ru'));
-  assert.equal(getLang(), 'ru');
-  assert.equal(document.documentElement.lang, 'ru');
-  win.localStorage.setItem = old;
+  try {
+    for (const lang of Object.keys(translations)) {
+      assert.doesNotThrow(() => setLang(lang));
+      assert.equal(getLang(), lang);
+      assert.equal(document.documentElement.lang, lang);
+    }
+  } finally { win.localStorage.setItem = old; }
+  setLang('de');
+  assert.equal(ui.getLocale(), 'de-DE');
+  setLang('invalid');
+  assert.equal(getLang(), 'de', 'invalid runtime choices are ignored');
+  setLang('de');
+  assert.equal(localStorage.getItem('gipny.lang'), 'de', 'an explicit detected language is saved');
   setLang('en');
   setLang('en');
   assert.equal(localStorage.getItem('gipny.lang'), 'en');
+  assert.equal(ui.getLocale(), 'en-GB');
+  setLang('ru');
+  assert.equal(ui.getLocale(), 'ru-RU');
 });
 
-test('both dictionaries contain the same nonempty messages and placeholders', () => {
-  assert.deepEqual(Object.keys(translations.en).sort(), Object.keys(translations.ru).sort());
+test('a delayed Russian keyboard detection respects both saved and newly chosen German', async () => {
+  await build({ configFile: false, logLevel: 'silent', build: {
+    outDir: dir, emptyOutDir: false, lib: { entry: 'src/i18n.ts', formats: ['es'], fileName: () => 'i18n.mjs' },
+  } });
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const originalDateTimeFormat = Intl.DateTimeFormat;
+  const saved = localStorage.getItem('gipny.lang');
+  const documentLang = document.documentElement.lang;
+  let pending = deferred(), layoutRequests = 0;
+  const russianKeys = new Map([['KeyS', 'ы'], ['BracketRight', 'ъ'], ['Quote', 'э']]);
+  try {
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {
+      languages: ['de-DE'], language: 'de-DE',
+      keyboard: { getLayoutMap: () => { layoutRequests++; return pending.promise; } },
+    } });
+    Intl.DateTimeFormat = () => ({ resolvedOptions: () => ({ locale: 'de-DE' }) });
+    const moduleUrl = pathToFileURL(join(dir, 'i18n.mjs')).href;
+    localStorage.setItem('gipny.lang', 'de');
+    const savedGerman = await import(`${moduleUrl}?saved`);
+    assert.equal(savedGerman.getLang(), 'de');
+    assert.equal(layoutRequests, 0, 'a saved language does not request keyboard detection');
+
+    localStorage.removeItem('gipny.lang');
+    const detectedGerman = await import(`${moduleUrl}?detected`);
+    assert.equal(detectedGerman.getLang(), 'de');
+    assert.equal(layoutRequests, 1);
+    pending.resolve(russianKeys); await tick();
+    assert.equal(detectedGerman.getLang(), 'ru', 'Russian layout overrides automatic German');
+    assert.equal(document.documentElement.lang, 'ru');
+    assert.equal(localStorage.getItem('gipny.lang'), null, 'automatic detection is not persisted');
+
+    pending = deferred();
+    const chosenGerman = await import(`${moduleUrl}?chosen`);
+    assert.equal(chosenGerman.getLang(), 'de');
+    assert.equal(layoutRequests, 2);
+    chosenGerman.setLang('de');
+    pending.resolve(russianKeys); await tick();
+    assert.equal(chosenGerman.getLang(), 'de', 'an explicit choice wins while detection is pending');
+    assert.equal(document.documentElement.lang, 'de');
+    assert.equal(localStorage.getItem('gipny.lang'), 'de');
+    for (const [lang, keys] of Object.entries({ uk: ['і', 'ї', 'є'], de: ['ä', 'ö', 'ü'], km: ['ក'], vi: ['đ'], hi: ['क'], zh: ['中'] })) {
+      localStorage.removeItem('gipny.lang');
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {
+        languages: ['en-US'], language: 'en-US', keyboard: { getLayoutMap: () => pending.promise },
+      } });
+      Intl.DateTimeFormat = () => ({ resolvedOptions: () => ({ locale: 'en-US' }) });
+      pending = deferred();
+      const automatic = await import(`${moduleUrl}?automatic-${lang}`);
+      assert.equal(automatic.getLang(), 'en');
+      pending.resolve(new Map(keys.map((key, i) => [String(i), key]))); await tick();
+      assert.equal(automatic.getLang(), lang);
+      assert.equal(localStorage.getItem('gipny.lang'), null);
+      pending = deferred();
+      const explicit = await import(`${moduleUrl}?explicit-${lang}`);
+      explicit.setLang('hi');
+      pending.resolve(russianKeys); await tick();
+      assert.equal(explicit.getLang(), 'hi');
+    }
+  } finally {
+    pending.resolve(russianKeys); await tick();
+    Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    Intl.DateTimeFormat = originalDateTimeFormat;
+    if (saved === null) localStorage.removeItem('gipny.lang');
+    else localStorage.setItem('gipny.lang', saved);
+    document.documentElement.lang = documentLang;
+  }
+});
+
+test('every dictionary contains the same nonempty messages and placeholders as English', () => {
+  const keys = Object.keys(translations.en);
+  assert.deepEqual(LANGS.map(({ id }) => id).sort(), Object.keys(translations).sort());
   const placeholders = (s) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
+  for (const [lang, messages] of Object.entries(translations)) {
+    assert.deepEqual(Object.keys(messages).sort(), [...keys].sort(), `${lang}: keys`);
+    if (lang === 'de') assert.deepEqual(Object.keys(messages), keys, 'German follows English key order');
+    for (const key of keys) {
+      assert.ok(messages[key].trim(), `${lang}: ${key}`);
+      assert.deepEqual(placeholders(messages[key]), placeholders(translations.en[key]), `${lang}: ${key}`);
+    }
+  }
   for (const [key, en] of Object.entries(translations.en)) {
-    assert.ok(en.trim(), key);
-    assert.ok(translations.ru[key].trim(), key);
-    assert.deepEqual(placeholders(en), placeholders(translations.ru[key]), key);
     if (key !== 'settings.lang_ru') assert.doesNotMatch(en, /[А-Яа-яЁё]/, key);
   }
 });
 
 test('interpolation preserves user data, replacement tokens and braces literally', () => {
-  for (const lang of ['en', 'ru']) {
+  for (const lang of Object.keys(translations)) {
     setLang(lang);
     const name = '$& $` $\' $$ {error} <script>alert(1)</script>';
     const text = t('profile.wiped_toast', { name });
@@ -184,7 +295,7 @@ test('error presentation translates known native errors without changing filenam
   assert.equal(ui.errorText(error), error);
 });
 
-test('device access errors have actionable EN/RU text without changing unknown errors or password markers', () => {
+test('device access errors have actionable localized text without changing unknown errors or password markers', () => {
   const cases = [
     ['OS credential provider unavailable: hardware Android Keystore operation failed; unlock or provision protected OS credentials before opening GIPNY', 'auth.os_credentials_unavailable'],
     ['OS credential provider unavailable: Linux Secret Service is locked or did not respond; unlock or provision protected OS credentials before opening GIPNY', 'auth.os_credentials_unavailable'],
@@ -198,14 +309,16 @@ test('device access errors have actionable EN/RU text without changing unknown e
     ['invalid device-binding metadata', 'auth.profile_binding_invalid'],
     ['device credential does not authenticate this profile; data and password attempt counter were not changed', 'auth.profile_binding_invalid'],
   ];
-  for (const lang of ['en', 'ru']) {
+  for (const lang of Object.keys(translations)) {
     setLang(lang);
     for (const [marker, key] of cases) {
       assert.equal(ui.errorText(marker), t(key), `${lang}: ${marker}`);
       assert.equal(ui.errorText(new Error(marker)), t(key), `${lang}: Error wrapper`);
     }
     const unavailable = ui.errorText(cases[0][0]);
-    assert.match(unavailable, lang === 'en' ? /protected key store/ : /хранилищу ключей/);
+    if (lang === 'en') assert.match(unavailable, /protected key store/);
+    if (lang === 'ru') assert.match(unavailable, /хранилищу ключей/);
+    if (lang === 'de') assert.match(unavailable, /geschützte Schlüsselspeicher/);
     assert.doesNotMatch(unavailable, /hardware|JNI|Secret Service/);
     assert.equal(ui.errorText('invalid passphrase'), 'invalid passphrase');
     assert.equal(ui.errorText('unexpected diagnostic: vault.bin'), 'unexpected diagnostic: vault.bin');
@@ -220,16 +333,50 @@ test('language is available before login and preserves values while changing for
   const app = new App(store); document.body.append(app.el);
   const inputs = [...app.el.querySelectorAll('input')];
   inputs[0].value = 'alice'; inputs[2].value = 'private-passphrase';
-  const picker = app.el.querySelector('.auth-language select');
-  picker.value = 'en'; picker.dispatchEvent(new win.Event('change'));
-  assert.match(app.el.textContent, /Create profile/);
-  const current = [...app.el.querySelectorAll('input')];
-  assert.equal(current[0].value, 'alice'); assert.equal(current[2].value, 'private-passphrase');
+  assert.equal(app.el.querySelector('.auth-language option[value=de]').textContent, 'Deutsch');
+  for (const lang of ['en', 'de']) {
+    const picker = app.el.querySelector('.auth-language select');
+    assert.deepEqual([...picker.options].map((option) => ({ id: option.value, label: option.textContent })), LANGS);
+    picker.value = lang; picker.dispatchEvent(new win.Event('change'));
+    assert.equal(getLang(), lang);
+    assert.equal(document.documentElement.lang, lang);
+    assert.equal(app.el.querySelector('.auth-language select').value, lang);
+    assert.equal(app.el.querySelector('.auth-language select').getAttribute('aria-label'), t('settings.language'));
+    assert.ok(app.el.textContent.includes(t('auth.create_btn')));
+    const current = [...app.el.querySelectorAll('input')];
+    assert.equal(current[0].value, 'alice'); assert.equal(current[2].value, 'private-passphrase');
+  }
   assert.ok(!JSON.stringify(localStorage).includes('private-passphrase'));
   store.view.set('auth-booting');
+  assert.match(app.el.textContent, /SYSTEMSTART/);
+  setLang('en');
   assert.match(app.el.textContent, /SYSTEM INITIALIZATION/);
   setLang('ru'); assert.match(app.el.textContent, /ЗАПУСК СИСТЕМЫ/);
   app.destroy();
+});
+
+test('settings list language endonyms and switch to German without duplicating modals', async () => {
+  setLang('en');
+  const store = new Store();
+  const app = new App(store); document.body.append(app.el);
+  try {
+    app.openModal((close) => new ui.SettingsModal(store, app, close).el);
+    for (const lang of ['de', 'en', 'ru', 'de']) {
+      const modal = document.querySelector('.modal');
+      assert.equal(modal.querySelector('label[for=opt-lang-de] .opt-title').textContent, 'Deutsch');
+      assert.deepEqual([...modal.querySelectorAll('input[name=language]')].map((radio) => ({
+        id: radio.id.slice('opt-lang-'.length), label: radio.closest('label').querySelector('.opt-title').textContent,
+      })), LANGS);
+      const radio = modal.querySelector(`#opt-lang-${lang}`);
+      radio.checked = true; radio.dispatchEvent(new win.Event('change')); await tick();
+      assert.equal(getLang(), lang);
+      assert.equal(document.documentElement.lang, lang);
+      assert.equal(localStorage.getItem('gipny.lang'), lang);
+      assert.equal(document.querySelectorAll('.modal-backdrop').length, 1);
+      assert.equal(document.querySelector(`#opt-lang-${lang}`).checked, true);
+      assert.ok(document.querySelector('.modal-title').textContent.includes(t('settings.title')));
+    }
+  } finally { app.destroy(); }
 });
 
 test('unlock requires the advertised TOTP code for both password and biometric requests', async () => {
@@ -240,7 +387,7 @@ test('unlock requires the advertised TOTP code for both password and biometric r
   Api.vaultUnlockBiometric = async (...args) => { requests.push(['biometric', ...args]); return null; };
   Api.onBootStatus = async () => () => {};
   try {
-    for (const lang of ['en', 'ru']) for (const method of ['password', 'biometric']) {
+    for (const lang of Object.keys(translations)) for (const method of ['password', 'biometric']) {
       setLang(lang);
       const store = new Store(); store.currentProfile.set('alice'); store.view.set('auth-unlock');
       let opened = 0; store.onUnlocked = async () => { opened++; };
@@ -321,6 +468,15 @@ test('resumed startup hides step rows and waits for profile data before reportin
       await store.beginBoot('alice', fresh);
       const view = new ui.AuthBooting(store); views.push(view); document.body.append(view.el);
       boot({ stage: 'vault', state: 'done', detail: 'opened' });
+      // The router's offline verdict is a line of its own, not a failed step.
+      const networkLine = view.el.querySelector('.boot-network');
+      assert.equal(networkLine.classList.contains('hidden'), true);
+      boot({ stage: 'network', state: 'none', detail: 'no router has answered in 30s' });
+      assert.equal(networkLine.classList.contains('hidden'), false, 'an offline verdict is shown');
+      assert.equal(networkLine.textContent, t('boot.no_network'));
+      assert.equal(store.bootSteps.get().some((s) => s.state === 'failed'), false, 'and no step is marked failed by it');
+      boot({ stage: 'network', state: 'ok', detail: '3 router(s) connected' });
+      assert.equal(networkLine.classList.contains('hidden'), true, 'and withdrawn once a router answers');
       hidden = true; document.dispatchEvent(new win.Event('visibilitychange'));
       hidden = false; document.dispatchEvent(new win.Event('visibilitychange'));
       assert.equal(store.bootResuming.get(), !fresh);
@@ -390,7 +546,7 @@ test('a rejected TOTP code never loads the profile and reports a localized retry
   Api.vaultUnlock = Api.vaultUnlockBiometric = async () => { throw new Error('invalid totp code'); };
   Api.onBootStatus = async () => () => {};
   try {
-    for (const lang of ['en', 'ru']) for (const method of ['password', 'biometric']) {
+    for (const lang of Object.keys(translations)) for (const method of ['password', 'biometric']) {
       setLang(lang);
       const store = new Store(); store.currentProfile.set('alice'); store.view.set('auth-unlock');
       let opened = false; store.onUnlocked = async () => { opened = true; };
@@ -417,10 +573,10 @@ function chatStore() {
   return store;
 }
 
-test('history prompts persist explicit choices per direct chat and group in both languages', async () => {
+test('history prompts persist explicit choices per direct chat and group in every language', async () => {
   const original = { get: Api.getChatPrefs, update: Api.updateChatPrefs };
   try {
-    for (const lang of ['en', 'ru']) for (const target of [{ kind: 'contact', id: 1 }, { kind: 'group', id: 'team' }]) for (const save of [false, true]) {
+    for (const lang of Object.keys(translations)) for (const target of [{ kind: 'contact', id: 1 }, { kind: 'group', id: 'team' }]) for (const save of [false, true]) {
       setLang(lang);
       const key = `${target.kind}:${target.id}`;
       let prefs = { ttlSecs: null, ttlChosen: true, clearOnLock: true, saveHistory: { 'contact:2': true } };
@@ -489,7 +645,7 @@ test('history prompts react to saved settings while the chat stays open and rele
 test('peer history banners use explicit live preferences independently of message expiry', async () => {
   const store = chatStore(), app = new App(store); document.body.append(app.el);
   try {
-    for (const lang of ['en', 'ru']) {
+    for (const lang of Object.keys(translations)) {
       setLang(lang); await tick();
       for (const choice of [true, false, null]) {
         store.handleEvent({ PeerHistorySaving: { contact_id: 1, save_history: choice } });
@@ -538,32 +694,35 @@ test('switching languages preserves unsent text, attachments, reply, editor and 
   search.value = 'Alice'; search.dispatchEvent(new win.Event('input'));
   const before = main.captureDraft();
   const beforeCalls = calls.length;
-  setLang('en'); await tick();
-  assert.equal(app.current.captureDraft().body, before.body);
-  assert.equal(app.el.querySelector('.sidebar-search').value, 'Alice');
-  assert.deepEqual(app.current.captureDraft().pending, before.pending);
-  assert.deepEqual(app.current.captureDraft().replyTo, before.replyTo);
-  assert.deepEqual(app.current.captureDraft().history, before.history);
-  assert.equal(app.current.captureDraft().consoleDraft, 'pwd');
-  assert.equal(app.current.captureDraft().editingId, 7);
-  assert.equal(app.current.captureDraft().editBody, 'Edited draft');
-  assert.match(app.el.querySelector('.chat-send').textContent, /Send/);
-  assert.match(app.el.querySelector('.sidebar-footer').textContent, /security/);
+  for (const lang of ['en', 'de']) {
+    setLang(lang); await tick();
+    assert.equal(document.documentElement.lang, lang);
+    assert.equal(app.current.captureDraft().body, before.body);
+    assert.equal(app.el.querySelector('.sidebar-search').value, 'Alice');
+    assert.deepEqual(app.current.captureDraft().pending, before.pending);
+    assert.deepEqual(app.current.captureDraft().replyTo, before.replyTo);
+    assert.deepEqual(app.current.captureDraft().history, before.history);
+    assert.equal(app.current.captureDraft().consoleDraft, 'pwd');
+    assert.equal(app.current.captureDraft().editingId, 7);
+    assert.equal(app.current.captureDraft().editBody, 'Edited draft');
+    assert.ok(app.el.querySelector('.chat-send').textContent.startsWith(t('chat.send')));
+    assert.ok(app.el.querySelector('.sidebar-footer').textContent.includes(t('sidebar.about')));
+  }
   assert.equal(app.el.querySelectorAll('script').length, 0);
   assert.ok(!calls.slice(beforeCalls).some((cmd) => /vault_lock|send_message|send_console_command/.test(cmd)));
   setLang('ru'); await tick();
   assert.match(app.el.querySelector('.chat-send').textContent, /Отправить/);
   assert.equal(app.current.captureDraft().body, before.body);
   const messagesListeners = store.messages.subs.size;
-  for (let i = 0; i < 4; i++) { setLang(i % 2 ? 'ru' : 'en'); await tick(); }
+  for (let i = 0; i < 2; i++) for (const lang of Object.keys(translations)) { setLang(lang); await tick(); }
   assert.equal(store.messages.subs.size, messagesListeners, 'chat subscriptions must not accumulate');
   app.destroy(); assert.equal(store.messages.subs.size, 0);
 });
 
-test('all modal families render English and Russian without translating user content', async () => {
+test('all modal families render every language without translating user content', async () => {
   const store = chatStore(); const app = new App(store); document.body.append(app.el);
   const noop = () => {};
-  for (const lang of ['en', 'ru']) {
+  for (const lang of Object.keys(translations)) {
     setLang(lang);
     const modals = [new ui.AboutModal(noop), new ui.ContactModal(store, app, 1, noop), new ui.AddContactModal(store, noop),
       new ui.GroupModal(store, app, 'team', noop), new ui.CreateGroupModal(store, noop), new ui.IdentityModal(store, noop), new ui.SettingsModal(store, app, noop),
@@ -571,8 +730,9 @@ test('all modal families render English and Russian without translating user con
     for (const modal of modals) {
       document.body.append(modal.el); await tick();
       assert.ok(modal.el.querySelector('.modal-title')?.textContent);
-      if (lang === 'en') {
-        assert.doesNotMatch(modal.el.textContent.replaceAll('Русский', ''), /[А-Яа-яЁё]/, modal.constructor.name);
+      if (lang !== 'ru' && lang !== 'uk') {
+        const content = LANGS.reduce((text, { label }) => text.split(label).join(''), modal.el.textContent);
+        assert.doesNotMatch(content, /[А-Яа-яЁё]/, modal.constructor.name);
         for (const el of modal.el.querySelectorAll('[title], [placeholder], [aria-label]')) {
           assert.doesNotMatch([el.title, el.getAttribute('placeholder'), el.getAttribute('aria-label')].join(' '), /[А-Яа-яЁё]/);
         }
@@ -580,14 +740,14 @@ test('all modal families render English and Russian without translating user con
       modal.el.remove();
     }
     assert.equal(ui.avatarNames().length, 24);
-    assert.equal(ui.fmtMs(123), lang === 'en' ? '123 ms' : '123 мс');
-    assert.equal(ui.fmtAgo(Date.now()), lang === 'en' ? 'just now' : 'только что');
+    assert.equal(ui.fmtMs(123), t('view.ms', { p0: 123 }));
+    assert.equal(ui.fmtAgo(Date.now()), t('view.just_now'));
   }
   app.destroy();
 });
 
 test('system installer handoff preserves retry and never offers an installed-version restart', async () => {
-  for (const lang of ['en', 'ru']) {
+  for (const lang of Object.keys(translations)) {
     setLang(lang);
     const store = new Store();
     const app = new App(store); document.body.append(app.el);
@@ -605,9 +765,10 @@ test('system installer handoff preserves retry and never offers an installed-ver
     assert.ok(!document.querySelector('.update-installer-handoff'));
     assert.ok(!calls.slice(before).some((cmd) => /dismiss_update|restart_app/.test(cmd)));
     store.handleEvent({ UpdateStaged: { version: info.version } });
-    const restart = [...document.querySelectorAll('.modal button')].find((button) => button.textContent === t('app.restart'));
+    const restart = document.querySelector('[data-restart-update]');
     assert.ok(restart, 'completed preparation still offers restart');
-    [...restart.parentElement.querySelectorAll('button')].find((button) => button !== restart).click();
+    assert.equal(restart.textContent, t('app.restart'));
+    assert.equal(store.updateStaged.get(), info.version, 'staged update remains available while the person keeps working');
     app.destroy();
   }
 });
@@ -616,7 +777,7 @@ test('DM notices survive automatic receipts and disappear only after explicit hu
   const previousList = Api.listMessages;
   const previousUnread = Api.unreadCount;
   try {
-    for (const lang of ['en', 'ru']) {
+    for (const lang of Object.keys(translations)) {
       setLang(lang);
       const store = chatStore();
       const message = (id, sequence, outgoing) => ({ id, dm_seq: sequence, contact_id: 1, group_id: null,
@@ -840,7 +1001,7 @@ test('settings omit relay diagnostics, APK catalog and log controls in either bu
   const store = chatStore(); const app = new App(store); document.body.append(app.el);
   const previous = logSettings;
   try {
-    for (const available of [false, true]) for (const lang of ['en', 'ru']) {
+    for (const available of [false, true]) for (const lang of Object.keys(translations)) {
       logSettings = { available, enabled: available, path: available ? '/tmp/example.log' : '' };
       setLang(lang);
       const before = calls.length;
@@ -854,4 +1015,85 @@ test('settings omit relay diagnostics, APK catalog and log controls in either bu
       modal.el.remove();
     }
   } finally { logSettings = previous; app.destroy(); }
+});
+
+test('the on-screen keyboard setting reads and writes gipny.osk', async () => {
+  const store = chatStore(); const app = new App(store); document.body.append(app.el);
+  const previousLang = getLang();
+  try {
+    setLang('en');
+    localStorage.removeItem('gipny.osk');
+    const modal = new ui.SettingsModal(store, app, () => {});
+    document.body.append(modal.el); await tick();
+    const radios = { auto: modal.el.querySelector('#opt-osk-auto'), on: modal.el.querySelector('#opt-osk-on'), off: modal.el.querySelector('#opt-osk-off') };
+    for (const id of ['auto', 'on', 'off']) assert.ok(radios[id], `radio opt-osk-${id} is rendered`);
+    assert.equal(radios[localStorage.getItem('gipny.osk') ?? 'auto'].checked, true, 'the checked radio mirrors gipny.osk');
+    radios.on.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.osk'), 'on');
+    assert.equal(radios.on.checked, true);
+    radios.auto.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.osk'), 'auto');
+  } finally {
+    localStorage.removeItem('gipny.osk');
+    setLang(previousLang); app.destroy();
+  }
+});
+
+test('all eight languages use system preference order and keyboard hints without losing explicit choices', () => {
+  const locales = { ru: 'ru-RU', en: 'en-GB', uk: 'uk-UA', de: 'de-DE', km: 'km-KH', vi: 'vi-VN', hi: 'hi-IN', zh: 'zh-CN' };
+  assert.deepEqual(LANGS.map(({ id }) => id), Object.keys(locales));
+  for (const [lang, locale] of Object.entries(locales)) {
+    assert.equal(ui.detectLang(null, [locale]), lang);
+    assert.equal(ui.detectLang(lang, ['ru-RU'], true), lang);
+    setLang(lang); assert.equal(ui.getLocale(), locale);
+  }
+  const layouts = { ru: ['Ы', 'Ъ', 'Э'], uk: ['І', 'Ї', 'Є'], de: ['Ä', 'Ö', 'Ü'], km: ['ក'], vi: ['đ'], hi: ['क'], zh: ['中'] };
+  for (const [lang, keys] of Object.entries(layouts)) {
+    assert.equal(ui.detectKeyboardLang(keys.values()), lang);
+    assert.equal(ui.detectLang(null, ['en-US', 'de-DE'], keys), lang);
+    assert.equal(ui.detectLang(null, ['fr-FR'], lang), lang);
+    assert.equal(ui.detectLang(null, ['uk-UA', 'en-US'], lang), lang === 'ru' ? 'ru' : 'uk');
+    assert.equal(ui.detectLang(null, ['en-US', 'ru-RU'], lang), 'ru');
+    assert.deepEqual(ui.detectSystemLangs(['xx', 'en-US', 'EN-GB'], keys), ['en', lang]);
+  }
+  assert.equal(ui.detectKeyboardLang(['ß']), 'de');
+  assert.equal(ui.detectKeyboardLang(['ㄅ']), 'zh');
+  assert.equal(ui.detectKeyboardLang(['q', 'w', 'e']), null);
+  assert.equal(ui.detectKeyboardLang(['ы', 'э']), null);
+  assert.equal(ui.detectLang(null, ['be-BY']), 'en');
+  assert.deepEqual(ui.detectSystemLangs(['uk-UA', 'de-DE', 'en', 'uk', 'ru', 'x-de'], ['і', 'ї', 'є']), ['uk', 'de', 'en', 'ru']);
+  for (const display of ['ខ្មែរ', 'हिन्दी', '中文']) assert.equal(ui.profileNameFor(display, []), 'profile');
+  assert.equal(ui.profileSlug('Ірина Євгенія Ґалаґан'), 'irina-yevgeniya-galagan');
+  assert.equal(ui.profileSlug('Їжак Андрій'), 'yizhak-andriy');
+  setLang('en');
+});
+
+test('active chat layouts follow members, contact metadata and message updates and clear on exit', async () => {
+  setLang('en');
+  const store = chatStore();
+  store.contacts.update(contacts => contacts.map(contact => ({ ...contact, language: contact.id === 1 ? 'uk-UA' : 'de-DE', name: contact.id === 1 ? 'Ірина' : 'Jörg' })));
+  const app = new App(store); document.body.append(app.el); await tick();
+  try {
+    assert.ok(ui.enabledLayouts().includes('uk'));
+    store.messages.set(new Map([['contact:1', [{ id: 1, body: '你好', sent_at: Date.now(), outgoing: false }]]]));
+    assert.ok(ui.enabledLayouts().includes('zh'));
+    store.groups.set([{ id: 'language-group', name: 'Languages' }]);
+    store.groupMembers.set(new Map([['language-group', [
+      { sign_pk: 'vi', name: 'Việt' }, { sign_pk: 'hi', name: 'सीमा' }, { sign_pk: 'km', name: 'សុខ' },
+    ]]]));
+    store.messages.set(new Map([['group:language-group', [{ id: 2, body: 'ыъэ', sent_at: Date.now(), outgoing: false }]]]));
+    store.selectedChat.set({ kind: 'group', id: 'language-group' });
+    assert.deepEqual(ui.enabledLayouts(), ['en', 'ru', 'vi', 'km', 'hi']);
+    store.groupMembers.update(groups => new Map(groups).set('language-group', [{ sign_pk: 'zh', name: '李', lang: 'zh-CN' }]));
+    assert.deepEqual(ui.enabledLayouts(), ['en', 'ru', 'zh']);
+    store.selectedChat.set(null);
+    assert.deepEqual(ui.enabledLayouts(), ['en']);
+  } finally { app.destroy(); }
+});
+
+test('new translations preserve protocol, cryptography and system command names', () => {
+  const terms = ['I2P', 'i2pd', 'X3DH', 'Double Ratchet', 'Argon2id', 'SQLCipher', 'OPFS', 'WebAssembly', 'WSS', 'WebRTC', 'Ed25519', 'X25519', 'TOTP', 'NTCP2', 'PRF', 'XChaCha20-Poly1305', 'SHA-256', 'systemd --user', 'enable-linger', 'launchd'];
+  for (const lang of ['uk', 'km', 'vi', 'hi', 'zh']) for (const [key, english] of Object.entries(translations.en)) {
+    for (const term of terms) if (english.includes(term)) assert.ok(translations[lang][key].includes(term), `${lang}: ${key} retains ${term}`);
+  }
 });

@@ -24,7 +24,9 @@ with old experimental profiles is not currently required.
 
 1. Choose a package for your OS and architecture from
    [published releases](https://github.com/gluckdev/gipny-i2p/releases), when available.
-   Verify its [SHA256 checksum](docs/update-verification.md).
+   Verify its [SHA256 checksum](docs/update-verification.md). The Android client
+   needs a system WebView of Chromium 83 or newer (Huawei WebView 11 on EMUI 11
+   is the oldest supported).
 2. Create a local password-protected profile. Native storage requires a supported
    OS credential provider. Allow time for the embedded I2P router to build tunnels.
 3. Exchange [contact cards](docs/contact-cards.md) and compare fingerprints through
@@ -69,6 +71,12 @@ Native NTCP2/SSU2 is not automatically wrapped in WebRTC/CDN traffic.
 Browser WSS and WebRTC change the outer transport without proving traffic
 indistinguishability. A compatible CDN can proxy WSS; WebRTC may need a separate
 TURN service for NAT traversal or relay-only operation.
+
+On phones the system keyboard is never shown: text is typed on the app's own
+on-screen keyboard (RU/EN/DE/VI/KM layouts, digits, symbols, emoji), so keystrokes do
+not reach third-party suggestion services; on Android the app window does not
+interact with the system keyboard at all. A hardware keyboard keeps working;
+nothing changes on a desktop. [Plan and limits](docs/plans/2026-11-08-own-keyboard.md).
 
 A compromised device or hostile browser-origin code can expose unlocked data.
 Read the [security policy](SECURITY.md), [memory boundary](docs/memory-security.md)

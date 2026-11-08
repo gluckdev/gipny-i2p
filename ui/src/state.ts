@@ -120,6 +120,9 @@ export class Store {
 
   /** Set when the core is up and only the relay is still coming. */
   bootCanEnter = new Signal<boolean>(false);
+  /** The router's verdict on the network while tunnels build: `none` means
+   * nothing has answered for long enough that the device looks offline. */
+  bootNetwork = new Signal<'unknown' | 'none' | 'ok'>('unknown');
   /** Why the last attempt to create or open a profile failed, for the form
    * that comes back after the boot screen. That form is built anew on the
    * way, so a message written into the old one lands in a detached node and
@@ -544,6 +547,7 @@ export class Store {
     this.stopPrewarmWatch();
     this.currentProfile.set(profile);
     this.bootSteps.set(freshBootSteps());
+    this.bootNetwork.set('unknown');
     this.bootCanEnter.set(false);
     this.bootStage.set('unlocking');
     this.bootStartedAt = Date.now();
@@ -576,15 +580,21 @@ export class Store {
 
   private onBootStatus(status: BootStatus): void {
     const now = Date.now();
+    if (status.stage === 'network' || status.state === 'none' || status.state === 'ok') {
+      if (status.stage === 'network') this.bootNetwork.set(status.state === 'none' ? 'none' : 'ok');
+      return;
+    }
     const idx = BOOT_STEPS.indexOf(status.stage);
     if (idx < 0) return;
+    // Narrowed here; a closure would see the parameter's full type again.
+    const state: BootStep['state'] = status.state;
     this.bootSteps.update((steps) => steps.map((step, i) => {
       // Pools can complete in either order. A later event never proves that
       // an earlier stage completed; only an explicit backend signal does.
       if (i !== idx) return step;
       const startedAt = step.startedAt || now;
-      const ms = status.state === 'active' ? step.ms : now - startedAt;
-      return { ...step, state: status.state, startedAt, ms, detail: status.detail };
+      const ms = state === 'active' ? step.ms : now - startedAt;
+      return { ...step, state, startedAt, ms, detail: status.detail };
     }));
     if (status.state !== 'active') this.bootStepStartedAt = now;
     // onUnlocked enables the entry button after profile data has loaded.
@@ -1642,6 +1652,7 @@ export class Store {
       this.recomputeOnline();
     } else if ('UpdateAvailable' in e) {
       // Manual start, including platforms requiring system consent.
+      this.updateError.set(null);
       this.updateAvailable.set(e.UpdateAvailable);
     } else if ('UpdateProgress' in e) {
       this.updateProgress.set(e.UpdateProgress);
@@ -1651,6 +1662,7 @@ export class Store {
       // left to show a modal for, so close it if one is open.
       this.updateAvailable.set(null);
       this.updateProgress.set(null);
+      this.updateError.set(null);
       this.updateStaged.set(e.UpdateStaged.version);
     } else if ('UpdateInstallerOpened' in e) {
       this.updateProgress.set(null);

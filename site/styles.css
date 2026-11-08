@@ -38,7 +38,7 @@ section[id], main { scroll-margin-top: 2rem; }
 .main-nav { display: flex; align-items: center; justify-content: center; gap: 28px; flex: 1; }
 .main-nav a { color: var(--muted); font-size: .88rem; text-decoration: none; padding: 8px 0; }
 .main-nav a:hover { color: var(--text); }
-.language-switch { display: flex; gap: 2px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.language-switch { display: flex; flex-wrap: wrap; max-width: 215px; flex-shrink: 0; gap: 2px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
 .language-switch button { min-width: 42px; min-height: 36px; padding: 4px 9px; border: none; border-radius: 5px; color: var(--muted); background: transparent; font-size: .75rem; font-weight: 650; cursor: pointer; }
 .language-switch button[aria-pressed="true"] { color: var(--background); background: var(--mint); }
 .hero { position: relative; display: grid; grid-template-columns: 1.12fr 1fr; align-items: center; gap: 64px; padding: 98px 0 106px; }
@@ -135,13 +135,13 @@ figcaption { margin: 17px 3px 21px; color: var(--muted); font-size: .76rem; line
 }
 @media (max-width: 740px) {
   .page-shell { width: calc(100% - 40px); }
-  .site-header { min-height: 118px; display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 21px 0 15px; }
+  .site-header { min-height: 118px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 21px 0 15px; }
   .brand { font-size: 1.45rem; }
   .brand img { height: 34px; width: 34px; border-radius: 8px; }
   .main-nav { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; gap: 22px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
   .main-nav::-webkit-scrollbar { display: none; }
   .main-nav a { font-size: .78rem; padding: 6px 0; }
-  .language-switch { grid-column: 2; grid-row: 1; }
+  .language-switch { grid-column: 1 / -1; grid-row: 3; max-width: 100%; }
   .language-switch button { min-height: 32px; min-width: 36px; }
   .hero { grid-template-columns: 1fr; gap: 48px; padding: 57px 0 65px; }
   h1 { font-size: clamp(2.8rem, 9vw, 4.2rem); max-width: 560px; }
@@ -322,3 +322,5 @@ html:lang(en) .shot-ru, html:not(:lang(en)) .shot-en { display: none; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .button-primary:hover { transform: none; }
 }
+
+@media (min-width: 741px) and (max-width: 1100px) { .site-header { flex-wrap: wrap; padding: 20px 0; gap: 18px; } .main-nav { flex-wrap: wrap; min-width: 0; gap: 16px; } }

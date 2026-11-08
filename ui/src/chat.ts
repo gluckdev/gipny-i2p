@@ -18,6 +18,7 @@ import { SearchModal } from './search';
 import { MediaModal } from './media';
 import { ForwardModal } from './forward';
 import { renderAnsi } from './ansi';
+import { detectParticipantLayouts, setChatLayouts } from './osk';
 import { deletionRuns } from './deletion-notices';
 
 interface PendingFile { name: string; path: string; size: number }
@@ -125,6 +126,24 @@ export class ChatView extends View {
 
   constructor(private store: Store, private app: App, private target: ChatTarget) {
     super();
+    const updateLayouts = (): void => {
+      if (this.disposed || !sameTarget(store.selectedChat.get(), target)) return;
+      const participants = target.kind === 'group'
+        ? (store.groupMembers.get().get(target.id) ?? []).flatMap(member => {
+          const contact = store.contacts.get().find(contact => contact.sign_pk === member.sign_pk);
+          return contact ? [member, contact] : [member];
+        })
+        : store.contacts.get().filter(contact => contact.id === target.id);
+      const messages = (store.messages.get().get(targetKey(target)) ?? []).filter(message => message.deleted_at == null);
+      setChatLayouts(detectParticipantLayouts(participants, messages));
+    };
+    this.sub(store.selectedChat, selected => {
+      if (sameTarget(selected, target)) updateLayouts();
+      else setChatLayouts([]);
+    });
+    this.sub(store.groupMembers, updateLayouts, false);
+    this.sub(store.contacts, updateLayouts, false);
+    this.sub(store.messages, updateLayouts, false);
     const isGroup = target.kind === 'group';
     const title = isGroup
       ? (store.groups.get().find((g) => g.id === target.id)?.name ?? 'group')
@@ -579,6 +598,7 @@ export class ChatView extends View {
   destroy(): void {
     if (this.disposed) return;
     this.disposed = true;
+    setChatLayouts([]);
     this.draftEpoch++;
     this.composerObserver?.disconnect();
     document.documentElement.style.removeProperty('--composer-height');

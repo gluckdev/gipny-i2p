@@ -1,6 +1,7 @@
 import { errorText } from './error-text';
 import { t as tr } from './i18n';
 import jsQR from 'jsqr';
+import type { QrPass, QrReply } from './qr-worker';
 import { h } from './view';
 
 /** Longest edge of a live frame handed to the decoder.
@@ -8,13 +9,31 @@ import { h } from './view';
  * A gipny card is a dense code: 500+ base64 characters puts it around QR
  * version 18, which is 177 modules across. The old cap of 640 left under four
  * pixels per module — below what jsQR can sample — so the scan never fired no
- * matter how squarely the code was framed. 1280 gives roughly seven. */
+ * matter how squarely the code was framed. 1280 gives roughly seven when the
+ * code fills the long edge; it rarely does, see `CENTRE`. */
 const LIVE_MAX = 1280;
 
 /** A still, and every so often a live frame too, get a second and finer try.
  * A phone held close fills far more of the sensor than the frame we downscale
  * to, and those extra modules are exactly what a dense code needs. */
 const FINE_MAX = 2048;
+
+/** The share of the frame's short edge that the centre pass keeps.
+ *
+ * A phone is held upright, so the code sits inside the short edge of a tall
+ * frame, and the guide square on screen puts it in the middle. On a 1080×1920
+ * stream a code filling 60% of the width is 650 px across: 3.7 px per module
+ * at full resolution and 2.4 after the live downscale, which is why an Honor
+ * showed the picture and never read it. Decoding only the centre square at
+ * its own resolution keeps every pixel the code has while staying cheap. */
+const CENTRE = 0.8;
+
+/** The sensor resolution asked for. `ideal`, so a camera that cannot give it
+ * hands over its nearest size instead of refusing; the frame loop downscales
+ * for the live pass anyway, and the centre and fine passes are where the
+ * extra pixels turn into modules jsQR can sample. */
+const WANT_WIDTH = 2560;
+const WANT_HEIGHT = 1920;
 
 /** Decoding costs a few milliseconds, and doing it on every animation frame
  * only heats the phone up. Roughly eleven attempts a second is far more than
@@ -23,6 +42,11 @@ const EVERY_MS = 90;
 
 /** How often the live path spends a pass on the full sensor resolution. */
 const FINE_EVERY = 4;
+
+/** The worker gets this long per frame; three passes take about two seconds
+ * on a slow phone, so a frame still unanswered here means a worker that is
+ * not going to answer. */
+const FRAME_DEADLINE_MS = 10_000;
 
 /** One canvas for every decode, reused: a fresh element per frame is a
  * per-frame allocation the GC gets to hear about. */
@@ -38,15 +62,19 @@ function decode(
   hgt: number,
   max: number,
   invert: boolean,
+  crop?: { x: number; y: number; w: number; h: number },
 ): string | null {
-  const scale = Math.min(1, max / Math.max(w, hgt));
-  const width = Math.max(1, Math.round(w * scale));
-  const height = Math.max(1, Math.round(hgt * scale));
+  const sw = crop ? crop.w : w;
+  const sh = crop ? crop.h : hgt;
+  const scale = Math.min(1, max / Math.max(sw, sh));
+  const width = Math.max(1, Math.round(sw * scale));
+  const height = Math.max(1, Math.round(sh * scale));
   work.width = width;
   work.height = height;
   const ctx = work.getContext('2d', { willReadFrequently: true });
   if (!ctx) return null;
-  ctx.drawImage(source, 0, 0, width, height);
+  if (crop) ctx.drawImage(source, crop.x, crop.y, crop.w, crop.h, 0, 0, width, height);
+  else ctx.drawImage(source, 0, 0, width, height);
   const img = ctx.getImageData(0, 0, width, height);
   const found = jsQR(img.data, width, height, {
     inversionAttempts: invert ? 'attemptBoth' : 'dontInvert',
@@ -73,6 +101,12 @@ export class QrScanner {
   private lastTry = 0;
   private tries = 0;
   private stopped = false;
+  /** The decoder thread, when the engine can run one (see `start`). */
+  private worker: Worker | null = null;
+  /** A frame is with the worker; the loop skips frames until it answers. */
+  private decoding = false;
+  /** A frame the worker never answers for ends the worker, not the scan. */
+  private frameTimer: number | null = null;
 
   constructor(private onResult: (text: string) => void, private onError: (message: string) => void) {
     this.video = h('video', { class: 'qr-video', playsinline: 'true', muted: 'true' }) as HTMLVideoElement;
@@ -96,8 +130,8 @@ export class QrScanner {
     // small print that carries the modules.
     const video: MediaTrackConstraints & { focusMode?: string } = {
       facingMode: { ideal: 'environment' },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
+      width: { ideal: WANT_WIDTH },
+      height: { ideal: WANT_HEIGHT },
       focusMode: 'continuous',
     };
     try {
@@ -116,35 +150,98 @@ export class QrScanner {
     try {
       await this.video.play();
     } catch { /* autoplay policies; the frame loop still reads it */ }
+    // Decoding takes a few hundred milliseconds a pass on a phone, so it runs
+    // on a worker when the engine can hand it frames (ImageBitmap +
+    // OffscreenCanvas, Chromium 69+); the main thread keeps the preview and
+    // the taps smooth. Without them, or if the worker fails to come up, the
+    // same passes run here, as before.
+    if (typeof OffscreenCanvas !== 'undefined' && typeof Worker !== 'undefined' && typeof createImageBitmap === 'function') {
+      try {
+        this.worker = new Worker(new URL('./qr-worker.ts', import.meta.url), { type: 'module' });
+        this.worker.onmessage = (event: MessageEvent<QrReply>) => {
+          this.clearFrameTimer();
+          this.decoding = false;
+          if (this.stopped) return;
+          if (event.data.text) { this.stop(); this.onResult(event.data.text); }
+        };
+        this.worker.onerror = () => this.dropWorker();
+      } catch { this.worker = null; }
+    }
     this.frame = requestAnimationFrame(this.tick);
+  }
+
+  /** The passes of one live round: the whole frame at the working size, the
+   * centre square at the sensor's own pixels every other round, and every
+   * `FINE_EVERY`-th round the whole frame fine and inverted. */
+  private passes(w: number, hgt: number): QrPass[] {
+    const passes: QrPass[] = [{ max: LIVE_MAX, invert: false }];
+    if (this.tries % 2 === 0) {
+      const side = Math.round(Math.min(w, hgt) * CENTRE);
+      passes.push({ max: FINE_MAX, invert: false, crop: { x: Math.round((w - side) / 2), y: Math.round((hgt - side) / 2), w: side, h: side } });
+    }
+    if (this.tries % FINE_EVERY === 0 && Math.max(w, hgt) > LIVE_MAX) passes.push({ max: FINE_MAX, invert: true });
+    return passes;
   }
 
   private tick = (now: number): void => {
     if (this.stopped) return;
     if (now - this.lastTry >= EVERY_MS) {
       this.lastTry = now;
-      const text = this.readFrame();
-      if (text) {
-        this.stop();
-        this.onResult(text);
-        return;
+      if (this.worker) {
+        this.sendFrame();
+      } else {
+        const text = this.readFrame();
+        if (text) {
+          this.stop();
+          this.onResult(text);
+          return;
+        }
       }
     }
     this.frame = requestAnimationFrame(this.tick);
   };
 
-  /** One round on the current frame: the working size first, and every
-   * `FINE_EVERY`-th round also the sensor's own resolution, since the code may
-   * be far larger in frame than the part we keep. */
+  /** Hand the current frame to the worker, unless it is still on the last one.
+   *
+   * Anything that keeps the worker from answering — a bitmap this engine will
+   * not make from a video, a worker that dies, a reply that never comes —
+   * ends the worker, and the next tick decodes on the main thread instead.
+   * The scan goes on; only the thread changes. */
+  private sendFrame(): void {
+    const w = this.video.videoWidth;
+    const hgt = this.video.videoHeight;
+    if (this.decoding || w <= 0 || hgt <= 0) return;
+    this.decoding = true;
+    this.tries += 1;
+    const passes = this.passes(w, hgt);
+    createImageBitmap(this.video).then((bitmap) => {
+      if (this.stopped || !this.worker) { bitmap.close(); this.decoding = false; return; }
+      this.worker.postMessage({ bitmap, passes }, [bitmap]);
+      this.frameTimer = window.setTimeout(() => this.dropWorker(), FRAME_DEADLINE_MS);
+    }).catch(() => this.dropWorker());
+  }
+
+  /** Give up on the worker; the main-thread passes take over from the next tick. */
+  private dropWorker(): void {
+    this.clearFrameTimer();
+    this.worker?.terminate();
+    this.worker = null;
+    this.decoding = false;
+  }
+
+  private clearFrameTimer(): void {
+    if (this.frameTimer != null) { clearTimeout(this.frameTimer); this.frameTimer = null; }
+  }
+
+  /** The main-thread fallback: the same passes as the worker's, on this frame. */
   private readFrame(): string | null {
     const w = this.video.videoWidth;
     const hgt = this.video.videoHeight;
     if (w <= 0 || hgt <= 0) return null;
     this.tries += 1;
-    const text = decode(this.video, w, hgt, LIVE_MAX, false);
-    if (text) return text;
-    if (this.tries % FINE_EVERY === 0 && Math.max(w, hgt) > LIVE_MAX) {
-      return decode(this.video, w, hgt, FINE_MAX, true);
+    for (const pass of this.passes(w, hgt)) {
+      const text = decode(this.video, w, hgt, pass.max, pass.invert, pass.crop);
+      if (text) return text;
     }
     return null;
   }
@@ -153,6 +250,9 @@ export class QrScanner {
     this.stopped = true;
     if (this.frame != null) cancelAnimationFrame(this.frame);
     this.frame = null;
+    this.clearFrameTimer();
+    this.worker?.terminate();
+    this.worker = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
     this.video.srcObject = null;

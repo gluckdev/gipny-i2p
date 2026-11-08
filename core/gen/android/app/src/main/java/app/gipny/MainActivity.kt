@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -23,9 +24,28 @@ class MainActivity : TauriActivity() {
       android.view.WindowManager.LayoutParams.FLAG_SECURE,
       android.view.WindowManager.LayoutParams.FLAG_SECURE
     )
+    // On a phone the app draws its own keyboard (owner decision 2026-11-07):
+    // the system IME must never see what is typed. inputmode="none" on the
+    // fields is not enough everywhere — Huawei WebView 11 (Chromium 83) still
+    // bound HeliBoard to a touched field — so the window itself declares that
+    // it does not interact with the input method: the IME is not shown for it
+    // at all, while a hardware or Bluetooth keyboard keeps delivering keys.
+    window.setFlags(
+      android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
+      android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+    )
+    window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
     val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
     windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+    // Prerelease builds (version with a `-`, built with the full developer log)
+    // expose the webview to chrome://inspect over USB debugging, so a page that
+    // fails before it can draw is readable from a computer instead of being a
+    // blank screen. wry only logs console messages in debug builds, and a stable
+    // build never opens this door. See docs/release-diagnostics.md.
+    if (BuildConfig.DEBUG || BuildConfig.VERSION_NAME.contains('-')) {
+      WebView.setWebContentsDebuggingEnabled(true)
+    }
     super.onCreate(savedInstanceState)
     val svc = Intent(this, GipnyService::class.java)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

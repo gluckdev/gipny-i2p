@@ -1,15 +1,15 @@
 import { errorText } from './error-text';
-import { languagePicker } from './language-picker';
+import { profileNameFor } from './profile-name';
 import { t as tr } from './i18n';
 import { Api, usesBrowserCore } from './api';
 import { isBackgroundStep, type Store, type BootStep, type BootStepId } from './state';
-import { View, h, busy, logo } from './view';
-import { salonBackdrop, salonEmblem } from './profile-salon';
+import { View, h, busy } from './view';
+import { salonBackdrop, authHeader } from './profile-salon';
 
 export class AuthCreate extends View {
   el: HTMLElement;
-  private nameI: HTMLInputElement;
   private displayI: HTMLInputElement;
+  private nameHint: HTMLElement;
   private passI: HTMLInputElement;
   private confirmI: HTMLInputElement;
   private duressI: HTMLInputElement;
@@ -19,12 +19,20 @@ export class AuthCreate extends View {
 
   constructor(private store: Store) {
     super();
-    this.nameI = h('input', {
-      class: 'input', placeholder: tr('auth.e_g_alice'), autofocus: true, maxlength: '32',
-    });
+    // One name (owner, 2026-11-07): the one contacts see. The profile's name
+    // on this device is derived from it (profile-name.ts) and shown, not asked.
     this.displayI = h('input', {
-      class: 'input', placeholder: tr('auth.visible_to_contacts'), maxlength: '64',
+      class: 'input', placeholder: tr('auth.visible_to_contacts'), autofocus: true, maxlength: '64',
     });
+    this.nameHint = h('div', { class: 'hint' });
+    const paintNameHint = (): void => {
+      const display = this.displayI.value.trim();
+      this.nameHint.textContent = display
+        ? tr('auth.name_hint', { p0: profileNameFor(display, store.profiles.get()) })
+        : tr('auth.display_name_hint');
+    };
+    this.displayI.addEventListener('input', paintNameHint);
+    paintNameHint();
     this.passI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.passphrase') });
     this.confirmI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.confirm_passphrase') });
     this.duressI = h('input', { class: 'input', type: 'password', placeholder: tr('auth.duress_passphrase_optional') });
@@ -39,29 +47,26 @@ export class AuthCreate extends View {
     this.el = h('div', { class: 'auth profile-salon salon-create' },
       salonBackdrop(),
       h('div', { class: 'auth-card salon-panel' },
-        languagePicker(),
-        salonEmblem(),
+        authHeader(),
         h('div', { class: 'auth-title' }, tr('auth.new_profile_title')),
         h('div', { class: 'auth-sub' }, tr('auth.new_profile_sub')),
         h('div', { class: 'field' },
-          h('label', null, tr('auth.profile_name')), this.nameI,
-          h('div', { class: 'hint' }, tr('auth.profile_name_hint')),
-        ),
-        h('div', { class: 'field' },
-          h('label', null, tr('auth.display_name')), this.displayI,
-          h('div', { class: 'hint' }, tr('auth.display_name_hint')),
+          h('label', null, tr('auth.name')), this.displayI, this.nameHint,
         ),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
         h('div', { class: 'field' }, h('label', null, tr('auth.confirm_pass')), this.confirmI),
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('auth.duress_title')),
-        !usesBrowserCore() && h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
-          h('div', { class: 'hint' }, tr('auth.duress_pass_hint'))),
-        !usesBrowserCore() && h('label', { class: 'chk', style: { marginBottom: '14px' } },
-          this.wipeC, h('span', { class: 'box' }),
-          h('span', null, tr('auth.duress_wipe'))),
-        !usesBrowserCore() && h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
+        !usesBrowserCore() && h('details', { class: 'auth-security' },
+          h('summary', null, tr('auth.duress_title')),
+          h('div', { class: 'auth-security-body' },
+            h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
+              h('div', { class: 'hint' }, tr('auth.duress_pass_hint'))),
+            h('label', { class: 'chk auth-chk' }, this.wipeC, h('span', { class: 'box' }),
+              h('span', null, tr('auth.duress_wipe'))),
+            h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
+          ),
+        ),
         this.err,
-        h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
+        h('div', { class: 'row auth-actions' },
           hasProfiles && h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
@@ -85,7 +90,6 @@ export class AuthCreate extends View {
 
   private async create(): Promise<void> {
     this.err.textContent = '';
-    const profile = this.nameI.value.trim();
     const display = this.displayI.value.trim();
     const pass = this.passI.value;
     const conf = this.confirmI.value;
@@ -93,13 +97,10 @@ export class AuthCreate extends View {
     const wipe = this.wipeC.checked;
     const max = parseInt(this.attemptsI.value) || 0;
 
-    if (!profile) { this.err.textContent = tr('auth.profile_name_required'); return; }
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(profile)) {
-      this.err.textContent = tr('auth.profile_name_letters_digits_and_up_to_32');
-      return;
-    }
     if (!display) { this.err.textContent = tr('auth.display_name_required_your_contacts_will_see_this'); return; }
     if (display.length > 64) { this.err.textContent = tr('auth.display_name_too_long_max_64'); return; }
+    // Unique on this device only; the list is what the device has right now.
+    const profile = profileNameFor(display, this.store.profiles.get());
     if (pass.length < 8) { this.err.textContent = tr('auth.passphrase_too_short_min_8'); return; }
     if (pass !== conf) { this.err.textContent = tr('auth.passphrases_do_not_match'); return; }
     if (duress && duress === pass) { this.err.textContent = tr('auth.duress_must_differ_from_primary'); return; }
@@ -163,8 +164,7 @@ export class AuthUnlock extends View {
       onClick: () => void this.unlock('password') }, tr('auth.open_btn'));
     this.el = h('div', { class: 'auth login-cyber' },
       h('div', { class: 'auth-card' },
-        logo(),
-        languagePicker(),
+        authHeader(),
         h('div', { class: 'auth-title' }, profile),
         h('div', { class: 'auth-sub' }, tr('auth.unlock_sub')),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
@@ -173,7 +173,7 @@ export class AuthUnlock extends View {
         this.net,
         this.biometricBtn,
         this.passkeyBtn,
-        h('div', { class: 'row', style: { marginTop: '18px', gap: '8px' } },
+        h('div', { class: 'row auth-actions' },
           h('button', {
             class: 'btn btn-ghost',
             onClick: () => store.cancelToProfileSelect(),
@@ -276,6 +276,7 @@ export class AuthBooting extends View {
   private titleEl: HTMLElement;
   private summaryEl: HTMLElement;
   private detailsEl: HTMLElement;
+  private networkEl: HTMLElement;
   private rows = new Map<BootStepId, HTMLElement>();
   private elapsedEl: HTMLElement;
   private progressEl: HTMLElement;
@@ -305,11 +306,11 @@ export class AuthBooting extends View {
     }, this.progressFill);
     this.progressText = h('span', { class: 'boot-progress-text' }, '0%');
     this.enterBtn = h('button', {
-      class: 'boot-button boot-enter hidden', type: 'button',
+      class: 'btn boot-button boot-enter hidden', type: 'button',
       onClick: () => store.enterMain(),
     }, tr('auth.enter'));
     this.backBtn = h('button', {
-      class: 'boot-button boot-back hidden', type: 'button',
+      class: 'btn btn-ghost boot-button boot-back hidden', type: 'button',
       onClick: () => {
         store.endBoot();
         void store.cancelToProfileSelect();
@@ -318,12 +319,16 @@ export class AuthBooting extends View {
 
     this.titleEl = h('h1', { class: 'boot-title' }, tr('auth.gipny_system_initialization'));
     this.summaryEl = h('p', { class: 'boot-status hidden', role: 'status', 'aria-live': 'polite' });
+    // Shown when the router reports that nothing on the network has answered
+    // for long enough that the device looks offline; withdrawn when it does.
+    // Ten silent minutes on a Wi-Fi without internet is what this replaces.
+    this.networkEl = h('p', { class: 'boot-network hidden', role: 'status', 'aria-live': 'polite' }, tr('boot.no_network'));
     this.detailsEl = h('div', { class: 'boot-details' },
       h('div', { class: 'boot-progress' }, this.progressEl, this.progressText),
-      h('p', { class: 'boot-sub' }, tr('boot.sub')), list);
+      h('p', { class: 'boot-sub' }, tr('boot.sub')), list, this.networkEl);
     this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
-        languagePicker(),
+        authHeader(),
         h('header', { class: 'boot-header' },
           this.titleEl,
           h('div', { class: 'boot-meta' },
@@ -338,6 +343,7 @@ export class AuthBooting extends View {
     );
 
     this.sub(store.bootSteps, (steps) => this.paint(steps));
+    this.sub(store.bootNetwork, (verdict) => this.networkEl.classList.toggle('hidden', verdict !== 'none'));
     this.sub(store.bootCanEnter, (can) => this.enterBtn.classList.toggle('hidden', !can));
     this.sub(store.bootResuming, (resuming) => {
       this.detailsEl.classList.toggle('hidden', resuming);

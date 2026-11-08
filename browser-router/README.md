@@ -58,6 +58,13 @@ PDF metadata sanitizer в WASM недоступен: отправка без о�
 3. `ntcp2`: native peer, реальные NTCP2, cold bootstrap, два браузера с WSS и
    WebRTC, восстановление vault/очереди, публичные receipts без секретов.
 
+Локально, с телефоном по USB (не CI): `tests/run_browser_phone.py` — браузер
+(headless Chrome, локальный форвардер, снимок от `prepare-netdb`) обменивается
+запросом контакта и сообщениями с приложением на телефоне через его DevTools
+(нужна debug- или предрелизная сборка). 2026-11-07 с Honor KOZ-AL00: туннели
+браузера 64 с, запрос и сообщение на телефоне через 32 с, ответ с телефона в
+браузере через 2 с.
+
 Артефакты: `browser-forwarder-linux`, `browser-messenger-pwa`,
 `browser-router-wasm`, `browser-bootstrap-module` и evidence для NTCP2/bootstrap/
 мессенджера. Файл с capability и приватные browser profiles не публикуются.

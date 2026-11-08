@@ -11,7 +11,7 @@ IP-транспорты роутера остаются. Отдельный daem
 
 | Путь | За что отвечает |
 |---|---|
-| `app/src/main/java/app/gipny/MainActivity.kt` | Активити Tauri; «назад» прячет приложение; проверяет исключение из оптимизации батареи, при его отсутствии просит не чаще раза в сутки (`maybeRequestBatteryWhitelist`) |
+| `app/src/main/java/app/gipny/MainActivity.kt` | Активити Tauri; «назад» прячет приложение; проверяет исключение из оптимизации батареи, при его отсутствии просит не чаще раза в сутки (`maybeRequestBatteryWhitelist`); в debug- и предрелизных сборках открывает webview для `chrome://inspect` |
 | `app/src/main/java/app/gipny/GipnyService.kt` | Foreground-сервис: держит процесс живым и сообщает роутеру о смене сети (`watchNetwork` → `nativeNetworkChanged`). Грузит `libi2pd.so` (`System.loadLibrary("i2pd")`); роутером не управляет |
 | `app/src/main/AndroidManifest.xml` | Разрешения, сервис, FileProvider с `exported=false` и временным read grant installer |
 | `app/src/main/res/` | Строки, темы, иконки (mipmap генерирует `tools/gen-icons.sh`), `xml/file_paths.xml` |
@@ -38,6 +38,14 @@ IP-транспорты роутера остаются. Отдельный daem
 ## Инварианты и грабли
 
 - **Сборка без роутера — ошибка.** Чтобы собрать без него, передайте `-PskipRouter`, или в CI `ORG_GRADLE_PROJECT_skipRouter=true`: CLI Tauri не пробрасывает аргументы в Gradle. Такой APK ставится и запускается, но в сеть не выходит; Rust-часть тогда собирается с заглушкой прослойки (`I2P_EMBED_STUB=1`), как в `build.yml`.
+- **Нижняя граница WebView — Chromium 83** (Huawei WebView 11 на EMUI 11, телефоны
+  Honor/Huawei без Google; она не обновляется). UI собирается под этот таргет
+  (`WEBVIEW_FLOOR` в `ui/vite.config.ts`, шимы в `ui/src/compat.ts`), и
+  `ui/tests/webview-compat.test.mjs` не пропускает бандл с более новым синтаксисом
+  или вызовами API без шима. Бандл новее этой границы на таком телефоне не
+  парсится, и приложение открывается пустым экраном — так было с rc3 на Honor
+  KOZ-AL00 (2026-11-07). Консоль webview в logcat попадает только в debug-сборке
+  (wry), поэтому предрелиз открывает `chrome://inspect` — [журналы](../../../docs/release-diagnostics.md).
 - **Имя JNI-функции привязано к пакету и классу** (`Java_app_gipny_GipnyService_nativeNetworkChanged`). Переименование `GipnyService` ломает сообщение о смене сети.
 - **Релизный APK обязан содержать** `lib/<abi>/libi2pd.so` и `libgipny_lib.so`, слинкованную с ней, и ровно один ABI. `release.yml` (шаг `verify signed APKs`) это проверяет. Сертификаты reseed и снимок netDb вшиты в Rust-сторону, в assets от роутера ничего нет.
 - **В релизе ABI `arm64-v8a` и `armeabi-v7a`,** по отдельному APK на каждый. x86_64 только в `build.yml` для эмулятора.

@@ -303,7 +303,7 @@ test('five adjacent deletions collapse; live, dismissed and sequence gaps separa
   assert.deepEqual(ui.deletionRuns([rows[0], rows[1], ours, rows[3]]).map(run => run.members.length), [2, 1, 1]);
 });
 
-test('profile selection uses the salon; the green boot screen has no service history', () => {
+test('profile selection and boot retain accessible hooks in the shared console design', () => {
   const store = new ui.Store(); store.profiles.set(['Alice']);
   const profiles = new ui.ProfileSelect(store, {});
   assert.equal(profiles.el.classList.contains('profile-salon'), true);
@@ -846,4 +846,214 @@ test('log lines carry no keys or addresses; unaccepted contacts get bounded inli
   state.attachments = [{ id: 7, message_id: 5, size: 3.5 * 1024 * 1024 }, { id: 8, message_id: 6, size: 100 * 1024 * 1024 }];
   assert.equal(ui.pendingInlineAllowed(state, 1, [{ data: Array(256 * 1024) }]), true);
   assert.equal(ui.pendingInlineAllowed(state, 1, [{ data: Array(1024 * 1024) }]), false);
+});
+
+const settleUpdates = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+function updateFixture(overrides = {}) {
+  const implementations = {
+    currentVersion: async () => '0.5.0', getAttachmentPrivacy: async () => true,
+    getChatPrefs: async () => ({ clearOnLock: false }), getRouterSettings: async () => ({ transit: 'balanced', upnp: 'on' }),
+    updateConfigured: async () => true, updateAsksForRoot: async () => false, updateInstallsItself: async () => true,
+    getAutoUpdate: async () => true, setAutoUpdate: async () => {}, installUpdate: async () => {},
+    dismissUpdate: async () => {}, restartApp: async () => {}, ...overrides,
+  };
+  const saved = Object.fromEntries(Object.keys(implementations).map(key => [key, ui.Api[key]]));
+  Object.assign(ui.Api, implementations); ui.setLang('en');
+  const store = new ui.Store(), app = new ui.App(store);
+  document.body.appendChild(app.el);
+  return { store, app, settings() {
+    let modal;
+    const close = app.openModal(dismiss => (modal = new ui.SettingsModal(store, app, dismiss)).el);
+    return { el: modal.el, close };
+  }, cleanup() { app.destroy(); Object.assign(ui.Api, saved); } };
+}
+const release = { version: '0.5.1', notes: 'Release notes', size: 2048 };
+
+for (const [result, key, params] of [
+  [{ status: 'current', latest: '0.5.0' }, 'settings.update_current', { version: '0.5.0' }],
+  [{ status: 'no_release' }, 'settings.update_no_release', {}],
+  [{ status: 'dismissed', version: '0.5.1' }, 'settings.update_dismissed', { version: '0.5.1' }],
+  [{ status: 'unavailable' }, 'settings.update_unavailable', {}],
+  [{ status: 'unsupported', latest: '0.5.1' }, 'settings.update_unsupported', { version: '0.5.1' }],
+  [{ status: 'no_asset', latest: '0.5.1', wanted: 'arm64.apk' }, 'settings.update_no_asset', { version: '0.5.1', asset: 'arm64.apk' }],
+]) test(`Settings manual update check explains ${result.status}`, async () => {
+  let resolveCheck, checks = 0;
+  const f = updateFixture({ checkUpdate: () => { checks++; return new Promise(resolve => { resolveCheck = resolve; }); } });
+  try {
+    const { el } = f.settings(), check = el.querySelector('[data-check-update]');
+    check.click(); check.click();
+    assert.equal(checks, 1); assert.equal(check.disabled, true);
+    assert.equal(check.textContent, ui.t('settings.update_checking'));
+    assert.equal(el.querySelector('[data-update-status]').textContent, ui.t('settings.update_checking'));
+    resolveCheck(result); await settleUpdates();
+    assert.equal(check.disabled, false); assert.equal(check.textContent, ui.t('settings.update_check'));
+    assert.equal(el.querySelector('[data-update-status]').textContent, ui.t(key, params));
+    assert.equal(el.querySelector('[data-install-update]').parentElement.classList.contains('hidden'), true);
+  } finally { f.cleanup(); }
+});
+
+test('Settings offers the checked release immediately, installs and releases subscriptions on close', async () => {
+  let installs = 0;
+  const f = updateFixture({ checkUpdate: async () => ({ status: 'update', ...release }), installUpdate: async () => { installs++; } });
+  try {
+    f.store.updateError.set('old failure');
+    const { el, close } = f.settings();
+    el.querySelector('[data-check-update]').click(); await settleUpdates();
+    assert.deepEqual(f.store.updateAvailable.get(), release); assert.equal(f.store.updateError.get(), null);
+    assert.match(el.querySelector('[data-update-status]').textContent, /0\.5\.1.*2\.0KB/);
+    assert.equal(document.querySelector('.update-modal'), null, 'Settings keeps its install control accessible');
+    const install = el.querySelector('[data-install-update]');
+    assert.equal(install.parentElement.classList.contains('hidden'), false);
+    install.click(); install.click(); await settleUpdates(); assert.equal(installs, 1);
+    f.store.handleEvent({ UpdateProgress: { pct: 50, downloaded: 1024, total: 2048 } });
+    assert.match(el.querySelector('[data-update-status]').textContent, /50/); assert.equal(install.disabled, true);
+    f.store.handleEvent({ UpdateStaged: { version: release.version } });
+    assert.equal(install.parentElement.classList.contains('hidden'), true);
+    assert.ok(f.app.el.querySelector('[data-restart-update]'));
+    const status = el.querySelector('[data-update-status]'), previous = status.textContent;
+    close(); f.store.updateAvailable.set({ ...release, version: '0.5.2' });
+    assert.equal(status.textContent, previous, 'closed Settings no longer subscribes');
+  } finally { f.cleanup(); }
+});
+
+test('Settings does not re-offer a release staged before the check resolves', async () => {
+  const f = updateFixture({ checkUpdate: async () => {
+    f.store.handleEvent({ UpdateStaged: { version: release.version } }); return { status: 'update', ...release };
+  } });
+  try {
+    const { el } = f.settings(); el.querySelector('[data-check-update]').click(); await settleUpdates();
+    assert.equal(f.store.updateAvailable.get(), null);
+    assert.equal(el.querySelector('[data-install-update]').parentElement.classList.contains('hidden'), true);
+    assert.match(el.querySelector('[data-update-status]').textContent, /0\.5\.1/);
+  } finally { f.cleanup(); }
+});
+
+test('Settings check and install errors preserve a usable retry action', async () => {
+  const f = updateFixture({ checkUpdate: async () => { throw new Error('check unavailable'); }, installUpdate: async () => { f.store.handleEvent({ UpdateProgress: { downloaded: 1, total: 4, pct: 25 } }); throw new Error('install denied'); } });
+  try {
+    f.store.updateAvailable.set(release);
+    const { el } = f.settings(), check = el.querySelector('[data-check-update]'), install = el.querySelector('[data-install-update]');
+    check.click(); await settleUpdates(); assert.match(el.textContent, /check unavailable/); assert.equal(check.disabled, false);
+    assert.equal(install.parentElement.classList.contains('hidden'), false);
+    install.click(); await settleUpdates(); assert.match(el.textContent, /install denied/);
+    assert.match(f.store.updateError.get(), /install denied/); assert.equal(install.disabled, false);
+    assert.equal(f.store.updateProgress.get(), null, 'a command rejection cannot leave the controls stuck downloading');
+  } finally { f.cleanup(); }
+});
+
+test('Settings reads and persists auto-update, disables concurrent writes and rolls back failures', async () => {
+  let reads = 0, fail = false, saved = true; const writes = [];
+  const f = updateFixture({ getAutoUpdate: async () => { reads++; return saved; }, setAutoUpdate: async enabled => {
+    writes.push(enabled); if (fail) throw new Error('cannot save preference'); saved = enabled;
+  } });
+  try {
+    let modal = f.settings(), auto = modal.el.querySelector('[data-auto-update]');
+    assert.equal(auto.disabled, true); await settleUpdates();
+    assert.equal(auto.checked, true); assert.equal(auto.disabled, false); assert.equal(reads, 1);
+    auto.click(); assert.equal(auto.disabled, true); await settleUpdates();
+    assert.equal(auto.checked, false); assert.deepEqual(writes, [false]);
+    modal.close(); modal = f.settings(); auto = modal.el.querySelector('[data-auto-update]'); await settleUpdates();
+    assert.equal(auto.checked, false, 'reopening reads the saved preference');
+    auto.click(); await settleUpdates(); assert.deepEqual(writes, [false, true]);
+    fail = true; auto.click(); await settleUpdates();
+    assert.equal(auto.checked, true); assert.equal(auto.disabled, false); assert.match(modal.el.textContent, /cannot save preference/);
+  } finally { f.cleanup(); }
+});
+
+test('Settings reports unreadable automatic-update preferences without inventing a default', async () => {
+  const f = updateFixture({ getAutoUpdate: async () => { throw new Error('preference unavailable'); } });
+  try {
+    const { el } = f.settings(); await settleUpdates();
+    assert.equal(el.querySelector('[data-auto-update]').disabled, true); assert.match(el.textContent, /preference unavailable/);
+  } finally { f.cleanup(); }
+});
+
+test('App handles available, progress and staged events with a persistent restart action', async () => {
+  let installs = 0, restarts = 0;
+  const f = updateFixture({ installUpdate: async () => { installs++; }, restartApp: async () => { restarts++; } });
+  try {
+    f.store.handleEvent({ UpdateAvailable: { ...release, notes: '<b>plain notes</b>' } }); await settleUpdates();
+    const modal = document.querySelector('.update-modal'); assert.ok(modal);
+    assert.match(modal.textContent, /0\.5\.1/); assert.equal(modal.querySelector('b'), null);
+    [...modal.querySelectorAll('button')].find(button => button.textContent === ui.t('app.update_now')).click();
+    await settleUpdates(); assert.equal(installs, 1);
+    f.store.handleEvent({ UpdateProgress: { downloaded: 1024, total: 2048, pct: 50 } });
+    assert.equal(modal.querySelector('.update-progress').classList.contains('hidden'), false);
+    assert.equal(modal.querySelector('.update-bar').style.width, '50%');
+    assert.equal(modal.querySelector('[role="progressbar"]').getAttribute('aria-valuenow'), '50');
+    f.store.handleEvent({ UpdateStaged: { version: release.version } });
+    assert.equal(document.querySelector('.update-modal'), null);
+    assert.equal(f.store.updateAvailable.get(), null); assert.equal(f.store.updateProgress.get(), null);
+    const banner = f.app.el.querySelector('.update-banner');
+    assert.equal(banner.classList.contains('hidden'), false); assert.match(banner.textContent, /0\.5\.1/);
+    f.store.view.set('auth-create'); assert.equal(banner.isConnected, true);
+    banner.querySelector('[data-restart-update]').click(); await settleUpdates(); assert.equal(restarts, 1);
+  } finally { f.cleanup(); }
+});
+
+test('App shows automatic progress without a modal and preserves staging if restart fails', async () => {
+  const f = updateFixture({ restartApp: async () => { throw new Error('restart blocked'); } });
+  try {
+    f.store.handleEvent({ UpdateProgress: { downloaded: 1, total: 4, pct: 25 } });
+    const banner = f.app.el.querySelector('.update-banner');
+    assert.equal(banner.classList.contains('hidden'), false); assert.match(banner.textContent, /25/);
+    f.store.handleEvent({ UpdateStaged: { version: release.version } }); banner.querySelector('button').click(); await settleUpdates();
+    assert.equal(f.store.updateStaged.get(), release.version); assert.equal(banner.querySelector('button').disabled, false);
+    assert.match(document.querySelector('.toast').textContent, /restart blocked/);
+  } finally { f.cleanup(); }
+});
+
+test('App dismisses offers and handles Android installer handoff without claiming a restart', async () => {
+  const dismissed = [], f = updateFixture({ dismissUpdate: async version => { dismissed.push(version); } });
+  try {
+    f.store.handleEvent({ UpdateAvailable: release }); await settleUpdates();
+    [...document.querySelectorAll('.update-modal button')].find(button => button.textContent === ui.t('app.later')).click();
+    await settleUpdates(); assert.deepEqual(dismissed, [release.version]); assert.equal(document.querySelector('.update-modal'), null);
+    f.store.handleEvent({ UpdateAvailable: release }); await settleUpdates();
+    f.store.handleEvent({ UpdateInstallerOpened: { version: release.version, path: '/downloads/gipny.apk' } });
+    assert.equal(document.querySelector('.update-modal'), null);
+    const handoff = document.querySelector('.update-installer-handoff'); assert.ok(handoff);
+    assert.match(handoff.textContent, /0\.5\.1/); assert.match(handoff.textContent, /system installer/);
+    assert.equal(f.store.updateStaged.get(), null); handoff.querySelector('button').click();
+    assert.equal(f.store.updateInstallerOpened.get(), null); assert.equal(document.querySelector('.update-installer-handoff'), null);
+    assert.equal(f.store.updateAvailable.get().version, release.version, 'cancelled installation remains retryable');
+  } finally { f.cleanup(); }
+});
+
+test('App surfaces UpdateFailed in the offer and background toast', async () => {
+  const f = updateFixture();
+  try {
+    f.store.handleEvent({ UpdateAvailable: release }); await settleUpdates();
+    f.store.handleEvent({ UpdateProgress: { downloaded: 1, total: 4, pct: 25 } });
+    f.store.handleEvent({ UpdateFailed: { reason: 'checksum mismatch' } });
+    assert.match(document.querySelector('.update-modal').textContent, /checksum mismatch/);
+    assert.match(document.querySelector('.toast.err').textContent, /checksum mismatch/); assert.equal(f.store.updateProgress.get(), null);
+    document.querySelector('.update-modal button').click();
+    f.store.handleEvent({ UpdateFailed: { reason: 'background download failed' } });
+    assert.match(document.body.textContent, /background download failed/);
+  } finally { f.cleanup(); }
+});
+
+test('preview backend covers update commands, statuses, staged application, Android and failures', async () => {
+  for (const [mode, status] of [['available', 'update'], ['current', 'current'], ['no_release', 'no_release'], ['staged', 'current'], ['unavailable', 'unavailable'], ['unsupported', 'unsupported'], ['no_asset', 'no_asset'], ['dismissed', 'dismissed']]) {
+    const backend = ui.previewUpdates(mode, async () => {}, false, async () => {});
+    assert.equal((await backend.invoke('check_update')).status, status);
+  }
+  const events = [], backend = ui.previewUpdates('available', async event => { events.push(event); }, false, async () => {});
+  assert.equal(await backend.invoke('get_auto_update'), true);
+  await backend.invoke('set_auto_update', { enabled: false }); assert.equal(await backend.invoke('get_auto_update'), false);
+  await backend.announce(); assert.equal(events[0].UpdateAvailable.version, release.version);
+  await backend.invoke('install_update');
+  assert.deepEqual(events.filter(event => event.UpdateProgress).map(event => event.UpdateProgress.pct), [0, 35, 75, 100]);
+  assert.equal(events[events.length - 1].UpdateStaged.version, release.version);
+  await backend.invoke('apply_staged_update'); assert.equal(await backend.invoke('current_version'), release.version);
+  assert.equal((await backend.invoke('check_update')).status, 'current');
+  const dismissed = ui.previewUpdates('available', async () => {}, false, async () => {});
+  await dismissed.invoke('dismiss_update', { version: release.version }); assert.equal((await dismissed.invoke('check_update')).status, 'dismissed');
+  const android = ui.previewUpdates('available', async event => { events.push(event); }, true, async () => {});
+  await android.invoke('install_update'); assert.equal(events[events.length - 1].UpdateInstallerOpened.version, release.version);
+  const failed = ui.previewUpdates('error', async event => { events.push(event); }, false, async () => {});
+  await assert.rejects(failed.invoke('check_update'), /could not be reached/);
+  await assert.rejects(failed.invoke('install_update'), /download failed/);
+  assert.match(events[events.length - 1].UpdateFailed.reason, /download failed/);
 });

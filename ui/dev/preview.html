@@ -24,13 +24,13 @@
       <label>scene
         <select id="scene">
           <option>list</option><option>chat</option><option>console</option><option>agent</option>
-          <option>settings</option><option>identity</option><option>add-contact</option><option>auth</option><option>boot</option>
+          <option>settings</option><option>identity</option><option>add-contact</option><option>auth</option><option>select</option><option>unlock</option><option>boot</option>
         </select>
       </label>
       <label>theme
-        <select id="theme"><option>light</option><option>dark</option></select>
+        <select id="theme"><option>light</option><option>dark</option><option>system</option></select>
       </label>
-      <label>language <select id="language"><option>en</option><option>ru</option></select></label>
+      <label>language <select id="language"><option>en</option><option>ru</option><option>uk</option><option>de</option><option>km</option><option>vi</option><option>hi</option><option>zh</option></select></label>
       <button id="check">check horizontal overflow</button>
     </header>
     <pre id="report">frames are loading…</pre>
@@ -69,7 +69,10 @@
           cap.textContent = s.label;
           const f = document.createElement('iframe');
           f.width = s.w; f.height = s.h; f.dataset.label = s.label;
-          f.src = `/dev/frame.html?${new URLSearchParams({ scene: sceneSel.value, theme: themeSel.value, lang: langSel.value })}`;
+          const frameParams = { scene: sceneSel.value, theme: themeSel.value, lang: langSel.value };
+          if (q.has('osk')) frameParams.osk = '1';
+          for (const key of ['update', 'platform', 'network', 'demo']) if (q.has(key)) frameParams[key] = q.get(key);
+          f.src = `/dev/frame.html?${new URLSearchParams(frameParams)}`;
           fig.append(cap, f);
           frames.append(fig);
         }
@@ -99,14 +102,51 @@
         return out;
       }
 
-      function check() {
+      async function check() {
         const lines = []; let bad = false;
         for (const f of frames.querySelectorAll('iframe')) {
           const doc = f.contentDocument;
           if (!doc || !doc.body) { lines.push(`${f.dataset.label}: not loaded`); bad = true; continue; }
+          // Only one frame holds the page's focus at a time, and the keyboard
+          // follows focus: give this frame its field back before measuring.
+          if (q.has('osk')) {
+            const field = doc.querySelector('.chat-input textarea') ?? doc.querySelector('input.input, textarea');
+            if (field) { f.contentWindow.focus(); field.focus(); await new Promise((r) => f.contentWindow.requestAnimationFrame(() => setTimeout(r, 50))); }
+          }
           const root = doc.documentElement;
           const overflow = Math.max(root.scrollWidth, doc.body.scrollWidth) - root.clientWidth;
           const off = offenders(doc);
+          // A sign-in screen must fit a phone's frame top to bottom: the owner
+          // wants profile creation on one phone screen, no scrolling
+          // (2026-11-07). The optional security section scrolls internally.
+          const card = doc.querySelector('.auth-card');
+          if (card) {
+            const auth = card.parentElement, cs = doc.defaultView.getComputedStyle(auth);
+            // With the app's keyboard up, .auth adds room below the card for
+            // scrolling past the keys; that room is not the card's size.
+            const kbd = q.has('osk') ? (parseFloat(doc.body.style.getPropertyValue('--kbd-offset')) || 0) : 0;
+            const need = Math.round(card.getBoundingClientRect().height + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) - kbd);
+            const fits = need <= root.clientHeight;
+            const phone = root.clientWidth <= 600;
+            if (phone && !fits) bad = true;
+            lines.push(`${f.dataset.label}: sign-in card needs ${need}px of ${root.clientHeight}px — ${fits ? 'fits' : phone ? 'does not fit' : 'scrolls (fine off a phone)'}`);
+          }
+          // ?osk=1: the app's own keyboard is up for the focused field, and
+          // the field (its composer or form row) sits above the keys.
+          if (q.has('osk') && doc.querySelector('input.input, textarea')) {
+            const osk = doc.querySelector('.osk:not([hidden])');
+            const active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+            const box = active ? (active.closest('.chat-input') ?? active.closest('.field') ?? active) : null;
+            if (!osk || !box) {
+              bad = true;
+              lines.push(`${f.dataset.label}: keyboard ${osk ? 'shown' : 'missing'}, focused field ${box ? 'found' : 'missing'}`);
+            } else {
+              const kb = osk.getBoundingClientRect(), fb = box.getBoundingClientRect();
+              const clear = fb.bottom <= kb.top + 1 && fb.top >= 0;
+              if (!clear) bad = true;
+              lines.push(`${f.dataset.label}: keyboard ${Math.round(kb.height)}px; field bottom ${Math.round(fb.bottom)}px vs keys top ${Math.round(kb.top)}px — ${clear ? 'clear' : 'covered'}`);
+            }
+          }
           if (overflow > 1 || off.length) {
             bad = true;
             lines.push(`${f.dataset.label}: page is ${overflow}px wider than the viewport`);
@@ -120,6 +160,7 @@
         report.textContent = lines.join('\n');
         return { bad, lines };
       }
+      // Async because of the focus hand-off above; callers await the promise.
       window.checkOverflow = check;
 
       sceneSel.onchange = themeSel.onchange = langSel.onchange = () => {

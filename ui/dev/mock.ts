@@ -12,20 +12,31 @@
  *
  * Query parameters of /dev/frame.html:
  *   scene = list | chat | console | settings | identity | add-contact | agent | auth | boot
+ *           | select (stay on the profile list) | unlock (stay on the passphrase)
  *   theme = light | dark
- *   lang = en | ru
+ *   lang = en | ru | uk | de | km | vi | hi | zh
+ *   update = available | current | no_release | staged | error (also CheckResult statuses)
+ *   platform = android   simulate the system installer handoff
  *   demo = 1   presentable fixtures for screenshots (dev/demo.ts)
+ *   network = none   the `boot` scene also shows the router's offline verdict
  */
-import { t, setLang } from '../src/i18n';
+import { t, setLang, LANGS } from '../src/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AgentMaster, Attachment, Contact, Group, GroupMember, Message } from '../src/api';
 import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT, encodeCard } from '../src/api';
 import { demoFixtures } from './demo';
+import { previewUpdates } from './update-mock';
+import { emit } from '@tauri-apps/api/event';
 
 const params = new URLSearchParams(location.search);
 const requestedLang = params.get('lang');
-if (requestedLang === 'en' || requestedLang === 'ru') setLang(requestedLang);
+const language = LANGS.find(({ id }) => id === requestedLang);
+if (language) setLang(language.id);
 const scene = params.get('scene') ?? 'list';
+// ?osk=1 brings up the app's own keyboard in a frame that has a mouse (a
+// desktop preview), and focuses the scene's field so the panel is in view.
+const withOsk = params.get('osk') !== null;
+try { localStorage.setItem('gipny.osk', withOsk ? 'on' : 'auto'); } catch { /* preview without storage */ }
 const theme = params.get('theme');
 // ?relay=starting shows the app before its built-in relay has an address.
 // The `boot` scene is the loading screen itself: the relay is still coming up,
@@ -184,6 +195,8 @@ let lane: 'normal' | 'fast' = 'normal';
 let hops = 3;
 const laneRtt = (): number => (lane === 'normal' ? 1840 : 1120);
 
+const updates = previewUpdates(params.get('update') ?? 'current', event => emit('core_event', event), params.get('platform') === 'android');
+
 mockWindows('main');
 mockIPC(async (cmd, payload) => {
   const a = payload as Args;
@@ -205,12 +218,18 @@ mockIPC(async (cmd, payload) => {
     case 'list_unreachable_contacts': return scene === 'chat' && params.get('demo') !== '1' ? [2] : [];
     case 'get_agent_mode': return agentMaster;
     case 'get_router_settings': return { transit: 'balanced', upnp: 'on' };
-    case 'update_configured': return false;
-    case 'current_version': return '0.4.1';
+    case 'update_configured': case 'current_version': case 'check_update':
+    case 'update_installs_itself': case 'update_asks_for_root': case 'install_update':
+    case 'dismiss_update': case 'get_auto_update': case 'set_auto_update':
+    case 'apply_staged_update': return updates.invoke(cmd, a);
+    case 'restart_app': {
+      await updates.invoke(cmd, a);
+      const next = new URL(location.href);
+      next.searchParams.set('update', 'current');
+      location.replace(next.href);
+      return null;
+    }
     case 'list_apk_artifacts': return { version: '0.4.1', artifacts: [{ arch: 'arm64', size: 12_933_976 }, { arch: 'armv7', size: 10_919_808 }] };
-    case 'check_update': return null;
-    case 'update_installs_itself': return false;
-    case 'update_asks_for_root': return false;
     case 'read_previous_log': return '12:01:02 [i2p] embedded router ready\n12:01:40 [relay-hosted] built-in relay ready\n12:09:55 [relay-client] peer relay 5AyDtq unreachable: Io';
     case 'log_settings': return { available: true, enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
     case 'set_log_enabled': return null;
@@ -218,7 +237,6 @@ mockIPC(async (cmd, payload) => {
     case 'verify_passphrase': return String((payload as Record<string, unknown>)?.pass ?? '') === 'preview' ? 'ok' : Promise.reject('invalid passphrase');
     case 'qr_svg': return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" shape-rendering="crispEdges">'
       + '<rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0zM4 4h1v1H4zM6 5h1v1H6zM5 7h2v1H5z" fill="#000"/></svg>';
-    case 'restart_app': return null;
     case 'list_contacts': return contacts;
     case 'get_ui_data': return (a ?? {}).key === 'contact_folders' ? folders : (a ?? {}).key === 'avatars' ? avatars : null;
     case 'set_ui_data':
@@ -285,9 +303,10 @@ const byText = (root: string, text: string | RegExp): HTMLElement | undefined =>
   });
 
 async function drive(): Promise<void> {
-  if (scene === 'auth') return;
+  if (scene === 'auth' || scene === 'select') return;
   // profile-select → unlock → main
   (await waitFor(() => byText('.auth-card button', /\bops$/)))?.click();
+  if (scene === 'unlock') return;
   const pass = await waitFor(() => document.querySelector<HTMLInputElement>('.auth-card input[type="password"]'));
   if (pass) {
     (pass as HTMLInputElement).value = 'preview';
@@ -306,6 +325,10 @@ async function drive(): Promise<void> {
     ['router', 'active', 'starting in-process libi2pd', 200],
     ['tunnels', 'active', 'building tunnels: 1s of 180s', 1200],
     ['tunnels', 'active', 'building tunnels: 6s of 180s', 1500],
+    ...(params.get('network') === 'none'
+      ? [['network', 'none', 'no router has answered in 30s: is this device online?', 800] as [string, string, string, number],
+         ['network', 'ok', '3 router(s) connected', 4000] as [string, string, string, number]]
+      : []),
     ['tunnels', 'done', 'embedded router ready', 1500],
     ['session', 'active', 'generating ephemeral destination for this session...', 300],
     ['session', 'done', 'embedded destination ready', 1200],
@@ -314,11 +337,11 @@ async function drive(): Promise<void> {
     ['relay', 'active', 'building the relay\'s tunnels', 200],
   ];
   for (const [stage, state, detail, wait] of script) {
-    await sleep(wait);
+    await sleep(scene === 'boot' ? wait : 0);
     await emitBoot('boot_status', { stage, state, detail });
   }
   if (scene === 'boot') return;
-  await sleep(900);
+  await sleep(0);
   await emitBoot('boot_status', { stage: 'relay', state: 'done', detail: 'built-in relay ready at 5AyDtqoCoahb' });
   await emitBoot('boot_status', { stage: 'dht', state: 'done', detail: 'relay network: 3 node(s) known' });
   // The app waits for the relay before leaving the boot screen; the real core
@@ -348,8 +371,18 @@ async function drive(): Promise<void> {
     document.querySelector<HTMLElement>('.icon-btn-accent')?.click();
     (await waitFor(() => byText('.ctx-menu-item', t('sidebar.new_contact'))))?.click();
   }
+  await updates.announce();
+  if (withOsk) {
+    // The scene's view may rebuild its form once data arrives; focus the
+    // field that is there once the dust settles, and again if it was replaced.
+    const field = (): HTMLElement | null => document.querySelector<HTMLElement>('.chat-input textarea') ?? document.querySelector<HTMLElement>('input.input, textarea');
+    await waitFor(field);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    field()?.focus();
+    setTimeout(() => { if (!(document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement)) field()?.focus(); }, 800);
+  }
 }
 
 await import('../src/main');
-if (theme === 'light' || theme === 'dark') document.documentElement.setAttribute('data-theme', theme);
-void drive();
+if (theme === 'light' || theme === 'dark' || theme === 'system') document.documentElement.setAttribute('data-theme', theme);
+void drive().then(() => document.documentElement.setAttribute('data-preview-ready', scene));

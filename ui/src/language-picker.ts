@@ -1,13 +1,13 @@
-import { getLang, setLang, t, type Lang } from './i18n';
+import { LANGS, getLang, setLang, t, type Lang } from './i18n';
 import { h } from './view';
 
 /** Available before unlocking, including on a device with no profiles yet. */
 export function languagePicker(): HTMLElement {
   const select = h('select', { class: 'input', 'aria-label': t('settings.language') },
-    h('option', { value: 'en' }, t('settings.lang_en')),
-    h('option', { value: 'ru' }, t('settings.lang_ru')),
+    ...LANGS.map(({ id, label }) => h('option', { value: id, lang: id }, label)),
   );
   select.value = getLang();
   select.addEventListener('change', () => setLang(select.value as Lang));
-  return h('label', { class: 'auth-language' }, t('settings.language'), select);
+  // The text is its own node: a phone hides it and keeps the select (aria-label).
+  return h('label', { class: 'auth-language' }, h('span', { class: 'auth-language-text' }, t('settings.language')), select);
 }

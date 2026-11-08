@@ -1,6 +1,7 @@
 import { t as tr } from './i18n';
 import type { Signal } from './state';
 import { avatarIndex, paintAvatar } from './avatars';
+import { isTextLikeType, oskActive } from './osk-mode';
 
 export type Child = Node | string | number | null | undefined | false | Child[];
 
@@ -27,6 +28,13 @@ export function h<K extends keyof HTMLElementTagNameMap>(
         el.setAttribute(k, String(v));
       }
     }
+  }
+  // On a phone the app's own keyboard types into every text field; the
+  // system keyboard must not come up for any of them (osk.ts). A numeric
+  // hint (TOTP) becomes the digit page of that keyboard.
+  if ((tag === 'input' || tag === 'textarea') && oskActive() && isTextLikeType(tag, el.getAttribute('type'))) {
+    if (el.getAttribute('inputmode') === 'numeric') el.setAttribute('data-osk-page', 'digits');
+    el.setAttribute('inputmode', 'none');
   }
   appendAll(el, children);
   return el;

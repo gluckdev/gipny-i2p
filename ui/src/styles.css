@@ -1,129 +1,122 @@
+/* Shared IDE-console palette. Theme is applied before the vault opens. */
 :root {
-  --bg: #eef3f8;
-  --surface: #ffffff;
-  --surface-2: #f5f9fd;
-  --surface-3: #e8eff7;
-  --border: #d9e3ed;
-  --border-bright: #a9c8e6;
-  --phosphor: #2b7fd4;
-  --phosphor-dim: #4a95de;
-  --phosphor-faint: #bcd6ef;
-  --phosphor-glow: rgba(43, 127, 212, 0.18);
-  --amber: #5a6b7d;
-  --amber-dim: #8a99a8;
-  --amber-soft: rgba(43, 127, 212, 0.10);
-  --danger: #d94a45;
-  --danger-soft: rgba(217, 74, 69, 0.10);
-  --success: #2e9e5b;
-  --text: #1b2733;
-  --text-dim: #5a6b7d;
-  --text-faint: #93a3b3;
-  --mono: "Segoe UI", "Segoe UI Variable", Inter, system-ui, -apple-system,
-    "Helvetica Neue", Arial, sans-serif;
-  --xbox-radius: 12px;
-  --xbox-radius-sm: 8px;
-
-  /* Semantic tokens: what a colour is for, so light and dark can differ. */
-  --nexus: rgba(43, 127, 212, 0.09);
+  color-scheme: light;
+  --bg: #f3f5f8;
+  --bg-elevated: #ffffff;
+  --bg-panel: #edf1f5;
+  --bg-hover: #e5ebf2;
+  --bg-active: #dceaff;
+  --bg-input: #ffffff;
+  --border: #c3ccd8;
+  --border-subtle: #dde3eb;
+  --fg: #182538;
+  --fg-dim: #47576c;
+  --fg-muted: #5f7085;
+  --accent: #175fbd;
+  --accent-dim: #dceaff;
+  --accent-fg: #ffffff;
+  --accent-hover: #124d99;
+  --ok: #14734b;
+  --warn: #875900;
+  --danger: #b72b3b;
+  --danger-soft: #fce9ec;
+  --syntax: #7551a8;
+  --shadow-card: 0 12px 40px rgba(24, 37, 56, .12);
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --radius: 6px;
+  --radius-sm: 4px;
+  /* Legacy component names all resolve to the same semantic palette. */
+  --surface: var(--bg-elevated);
+  --surface-2: var(--bg-panel);
+  --surface-3: var(--bg-hover);
+  --border-bright: var(--border);
+  --text: var(--fg);
+  --text-dim: var(--fg-dim);
+  --text-faint: var(--fg-muted);
+  --phosphor: var(--accent);
+  --phosphor-dim: var(--accent);
+  --phosphor-faint: var(--accent-dim);
+  --phosphor-glow: transparent;
+  --amber: var(--fg-dim);
+  --amber-dim: var(--fg-muted);
+  --amber-soft: var(--bg-active);
+  --success: var(--ok);
+  --accent-soft: var(--accent-dim);
+  --row-active: var(--bg-active);
+  --row-hover: var(--bg-hover);
+  --xbox-radius: var(--radius);
+  --xbox-radius-sm: var(--radius-sm);
+  --nexus: transparent;
   --vignette: transparent;
-  --shadow-card: 0 18px 50px rgba(27, 39, 51, 0.09), 0 0 0 1px rgba(169, 200, 230, 0.45);
-  --shadow-hover: 0 6px 18px rgba(27, 39, 51, 0.08);
-  --shadow-lift: 0 10px 24px rgba(27, 39, 51, 0.10);
-  --btn-bg: linear-gradient(180deg, #3d8fe0, #2b7fd4);
-  --btn-bg-hover: linear-gradient(180deg, #4d9be6, #3587dc);
-  --btn-border: #2b7fd4;
-  --btn-shadow: 0 4px 14px rgba(43, 127, 212, 0.26);
-  --btn-shadow-hover: 0 6px 20px rgba(43, 127, 212, 0.34);
-  --btn-danger-bg: linear-gradient(180deg, #e25a55, #d94a45);
-  --msg-out-bg: linear-gradient(180deg, #e3effb, #d8e8f8);
-  --msg-out-border: #bcd6ef;
-  --on-accent: #ffffff;
+  --shadow-hover: none;
+  --shadow-lift: none;
+  --btn-bg: var(--accent);
+  --btn-bg-hover: var(--accent-hover);
+  --btn-border: var(--accent);
+  --btn-shadow: none;
+  --btn-shadow-hover: none;
+  --btn-danger-bg: var(--danger);
+  --msg-out-bg: var(--bg-active);
+  --msg-out-border: var(--border);
+  --on-accent: var(--accent-fg);
 }
-
-/* Theme. Light is the default because it is what was asked for; the person can
-   pick dark, or hand the choice to the operating system. The attribute lives on
-   <html> and is set before first paint by ui/src/theme.ts, from a preference
-   kept in localStorage — theme has to apply on the profile screen, before any
-   vault is unlocked, so it cannot live in the encrypted settings. */
 :root[data-theme="dark"] {
-    --bg: #0a0d0b;
-    --surface: #121712;
-    --surface-2: #1a211a;
-    --surface-3: #232d23;
-    --border: #263026;
-    --border-bright: #3a8f3a;
-    --phosphor: #6ce86c;
-    --phosphor-dim: #46b846;
-    --phosphor-faint: #2c5f2c;
-    --phosphor-glow: rgba(16, 124, 16, 0.55);
-    --amber: #d7e8d7;
-    --amber-dim: #9fb79f;
-    --amber-soft: rgba(108, 232, 108, 0.12);
-    --danger: #ff5a52;
-    --danger-soft: rgba(255, 90, 82, 0.12);
-    --success: #6ce86c;
-    --text: #eaf3ea;
-    --text-dim: #a9bda9;
-    --text-faint: #6f826f;
-    --nexus: rgba(16, 124, 16, 0.14);
-    --vignette: rgba(0, 0, 0, 0.55);
-    --shadow-card: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
-    --shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.4);
-    --shadow-lift: 0 10px 24px rgba(0, 0, 0, 0.45);
-    --btn-bg: linear-gradient(180deg, #14a014, #0e7a0e);
-    --btn-bg-hover: linear-gradient(180deg, #19c319, #12a012);
-    --btn-border: #1c8f1c;
-    --btn-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
-    --btn-shadow-hover: 0 6px 20px rgba(16, 124, 16, 0.5);
-    --btn-danger-bg: linear-gradient(180deg, #ff6a62, #e0433b);
-    --msg-out-bg: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
-    --msg-out-border: rgba(58, 143, 58, 0.4);
-    --on-accent: #06120a;
+  color-scheme: dark;
+  --bg: #10151d;
+  --bg-elevated: #171e28;
+  --bg-panel: #1d2633;
+  --bg-hover: #283445;
+  --bg-active: #213c5b;
+  --bg-input: #111923;
+  --border: #3a4b61;
+  --border-subtle: #2a3748;
+  --fg: #e4ebf4;
+  --fg-dim: #b1bfd1;
+  --fg-muted: #8c9fb6;
+  --accent: #83b9ff;
+  --accent-dim: #213c5b;
+  --accent-fg: #102038;
+  --accent-hover: #a7ceff;
+  --ok: #70d6a6;
+  --warn: #e7c477;
+  --danger: #ff98a5;
+  --danger-soft: #3d2632;
+  --syntax: #c5a5f4;
+  --shadow-card: 0 12px 40px rgba(0, 0, 0, .3);
 }
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
-      --bg: #0a0d0b;
-      --surface: #121712;
-      --surface-2: #1a211a;
-      --surface-3: #232d23;
-      --border: #263026;
-      --border-bright: #3a8f3a;
-      --phosphor: #6ce86c;
-      --phosphor-dim: #46b846;
-      --phosphor-faint: #2c5f2c;
-      --phosphor-glow: rgba(16, 124, 16, 0.55);
-      --amber: #d7e8d7;
-      --amber-dim: #9fb79f;
-      --amber-soft: rgba(108, 232, 108, 0.12);
-      --danger: #ff5a52;
-      --danger-soft: rgba(255, 90, 82, 0.12);
-      --success: #6ce86c;
-      --text: #eaf3ea;
-      --text-dim: #a9bda9;
-      --text-faint: #6f826f;
-      --nexus: rgba(16, 124, 16, 0.14);
-      --vignette: rgba(0, 0, 0, 0.55);
-      --shadow-card: 0 18px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 143, 58, 0.15);
-      --shadow-hover: 0 6px 18px rgba(0, 0, 0, 0.4);
-      --shadow-lift: 0 10px 24px rgba(0, 0, 0, 0.45);
-      --btn-bg: linear-gradient(180deg, #14a014, #0e7a0e);
-      --btn-bg-hover: linear-gradient(180deg, #19c319, #12a012);
-      --btn-border: #1c8f1c;
-      --btn-shadow: 0 4px 14px rgba(16, 124, 16, 0.35);
-      --btn-shadow-hover: 0 6px 20px rgba(16, 124, 16, 0.5);
-      --btn-danger-bg: linear-gradient(180deg, #ff6a62, #e0433b);
-      --msg-out-bg: linear-gradient(180deg, rgba(16,124,16,0.22), rgba(16,124,16,0.12));
-      --msg-out-border: rgba(58, 143, 58, 0.4);
-      --on-accent: #06120a;
+    color-scheme: dark;
+    --bg: #10151d;
+    --bg-elevated: #171e28;
+    --bg-panel: #1d2633;
+    --bg-hover: #283445;
+    --bg-active: #213c5b;
+    --bg-input: #111923;
+    --border: #3a4b61;
+    --border-subtle: #2a3748;
+    --fg: #e4ebf4;
+    --fg-dim: #b1bfd1;
+    --fg-muted: #8c9fb6;
+    --accent: #83b9ff;
+    --accent-dim: #213c5b;
+    --accent-fg: #102038;
+    --accent-hover: #a7ceff;
+    --ok: #70d6a6;
+    --warn: #e7c477;
+    --danger: #ff98a5;
+    --danger-soft: #3d2632;
+    --syntax: #c5a5f4;
+    --shadow-card: 0 12px 40px rgba(0, 0, 0, .3);
   }
 }
-
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app { height: 100%; }
 
 body {
-  font-family: var(--mono);
+  font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.5;
   color: var(--text);
@@ -140,6 +133,8 @@ body {
   --safe-left: env(safe-area-inset-left, 0px);
   --kbd-offset: 0px;
 }
+
+[lang="km"], .lang-km { overflow-wrap: anywhere; word-break: normal; }
 
 
 
@@ -165,12 +160,23 @@ a:hover { text-decoration: underline; }
 ::-webkit-scrollbar-thumb:hover { background: var(--phosphor-dim); }
 
 #app { display: flex; flex-direction: column; }
+/* The app's root fills #app as a flex item, not only through `height: 100%`:
+   Chromium 83 (Huawei WebView 11) resolved that percentage to the content
+   height on the phone, and every screen shorter than the viewport — the
+   loading screen while a profile connects, for one — ended in a band of the
+   light body background. The main screen's single grid row is explicit for
+   the same engine: its implicit `auto` row kept the content height (365 px of
+   800 on the Honor) instead of stretching, so the contact list stopped
+   mid-screen; the phone layout below makes .main a flex column, which that
+   engine sizes correctly (an explicit 1fr row did not help). Measured live
+   through DevTools on the phone. */
+.app-root { flex: 1 1 auto; min-height: 0; }
 
 .auth {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  display: flex; align-items: safe center; justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   background: var(--bg);
 }
 .auth-card {
@@ -630,13 +636,13 @@ a:hover { text-decoration: underline; }
 .msg.in.bot {
   border: 1px solid var(--amber);
   border-left: 3px solid var(--amber);
-  background: #14100a;
+  background: var(--bg-panel);
   padding: 8px 12px;
   margin: 2px 0;
   box-shadow: 0 0 10px rgba(255,176,0,0.12), inset 0 0 18px rgba(255,176,0,0.04);
 }
 .msg.in.bot .msg-body {
-  color: #fff3d6;
+  color: var(--fg);
 }
 .msg.in.bot .msg-sender {
   color: var(--amber);
@@ -1364,8 +1370,8 @@ a:hover { text-decoration: underline; }
 .chat.console .prompt {
   font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
-.chat.console { background: #000; color: #d8d8d8; }
-.chat.console .chat-log { background: #000; }
+.chat.console { background: var(--bg); color: var(--fg); }
+.chat.console .chat-log { background: var(--bg); }
 .chat.console .msg,
 .chat.console .msg-body { max-width: none; }
 
@@ -1377,16 +1383,16 @@ a:hover { text-decoration: underline; }
   line-height: 1.45;
 }
 .console-msg .console-prompt {
-  color: #33ff66;
+  color: var(--ok);
   flex-shrink: 0;
 }
 .console-msg.cmd .console-body {
-  color: #7dff9e;
+  color: var(--accent);
   white-space: pre-wrap;
   word-break: break-word;
 }
 .console-msg.out .console-body {
-  color: #d8d8d8;
+  color: var(--fg);
   white-space: pre;
   overflow-x: auto;
   min-width: 0;
@@ -1395,20 +1401,20 @@ a:hover { text-decoration: underline; }
   margin: 0;
 }
 .console-msg.out .console-meta {
-  color: #6a6a6a;
+  color: var(--fg-muted);
   font-size: 10px;
   align-self: flex-end;
   white-space: nowrap;
   padding-top: 2px;
 }
 .console-divider {
-  color: #4a4a4a;
+  color: var(--fg-muted);
   text-transform: none;
 }
 .chat.console .msg-attachments .attachment {
-  background: #0a0a0a;
-  border-color: #333;
-  color: #d8d8d8;
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--fg);
 }
 
 /* Generic escape hatch for sections the app hides when the feature behind them
@@ -1417,15 +1423,13 @@ a:hover { text-decoration: underline; }
 
 
 /* ===========================================================================
-   Xbox appearance — the app's look.
+   Shared component surfaces.
    ---------------------------------------------------------------------------
-   Was a separate build variant layered over a classic terminal-green theme;
-   that variant is gone and this is simply how gipny looks now. Folded in rather
-   than kept as an override file so the bundle carries one set of declarations
-   instead of two. Palette lives in :root above.
+   Palette and geometry are shared with the opening screens and console.
+   Semantic tokens live in :root above.
    =========================================================================== */
 
-/* Kill the CRT scanlines; replace the vignette with a quiet Xbox-green nexus glow. */
+/* Application chrome. */
 body {
   letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
@@ -1451,14 +1455,14 @@ body::before {
 }
 .modal, .modal-wide, .auth-card {
   box-shadow: var(--shadow-card);
-  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  background: var(--bg-elevated);
 }
 .card-block {
   background: var(--surface-2);
   border: 1px solid var(--border);
 }
 
-/* Contact/list tiles: hover lift + green edge, like dashboard tiles. */
+/* Contact/list tiles. */
 .contact {
   border: 1px solid transparent;
   transition: transform .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
@@ -1486,7 +1490,7 @@ body::before {
 
 /* --- Buttons --------------------------------------------------------------- */
 .btn, .btn-sm, .btn-block, .icon-btn {
-  border-radius: 999px;                 /* pill buttons, Xbox-style */
+  border-radius: 999px;                 /* compact controls */
   transition: transform .1s ease, background .12s ease, box-shadow .12s ease, color .12s ease;
 }
 .btn:not(.btn-ghost):not(.btn-danger) {
@@ -1696,121 +1700,6 @@ a { color: var(--phosphor); }
   user-select: none;
 }
 
-/* ===========================================================================
-   Messenger look (2026-09): a neutral, product-grade skin over the base rules
-   above — system font at a readable size, avatars, a two-line chat list,
-   foldable sections and contact folders, calm modals. Tokens first, so light
-   and dark stay in step; the responsive section below still wins.
-   ========================================================================== */
-
-:root {
-  --bg: #f4f6f9;
-  --surface: #ffffff;
-  --surface-2: #f5f7fa;
-  --surface-3: #eceff4;
-  --border: #e3e7ee;
-  --border-bright: #d5dbe4;
-  --phosphor: #2f6fed;
-  --phosphor-dim: #4b82ef;
-  --phosphor-faint: #d6e3fd;
-  --phosphor-glow: rgba(47, 111, 237, 0.16);
-  --amber: #5b6573;
-  --amber-dim: #8a93a0;
-  --amber-soft: rgba(47, 111, 237, 0.08);
-  --text: #141a22;
-  --text-dim: #5b6573;
-  --text-faint: #98a1ad;
-  --success: #1f9d55;
-  --accent: #2f6fed;
-  --accent-hover: #255fd6;
-  --accent-soft: rgba(47, 111, 237, 0.10);
-  --row-active: #e8effd;
-  --row-hover: #f2f4f8;
-  --mono: Inter, "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
-  --xbox-radius: 14px;
-  --xbox-radius-sm: 10px;
-  --nexus: transparent;
-  --shadow-card: 0 24px 64px rgba(20, 26, 34, 0.16), 0 0 0 1px rgba(20, 26, 34, 0.05);
-  --btn-bg: var(--accent);
-  --btn-bg-hover: var(--accent-hover);
-  --btn-border: var(--accent);
-  --btn-shadow: none;
-  --btn-shadow-hover: 0 4px 12px rgba(47, 111, 237, 0.25);
-  --msg-out-bg: #dfe9fd;
-  --msg-out-border: transparent;
-}
-:root[data-theme="dark"] {
-  --bg: #0f1216;
-  --surface: #171b21;
-  --surface-2: #1d222a;
-  --surface-3: #252b34;
-  --border: #262c35;
-  --border-bright: #313844;
-  --phosphor: #5b8def;
-  --phosphor-dim: #7aa2f2;
-  --phosphor-faint: #26375a;
-  --phosphor-glow: rgba(91, 141, 239, 0.22);
-  --amber: #aeb6c2;
-  --amber-dim: #7d8794;
-  --amber-soft: rgba(91, 141, 239, 0.12);
-  --text: #e8ebf0;
-  --text-dim: #aeb6c2;
-  --text-faint: #6f7884;
-  --success: #3ccf7f;
-  --accent: #5b8def;
-  --accent-hover: #6f9cf2;
-  --accent-soft: rgba(91, 141, 239, 0.14);
-  --row-active: #22304a;
-  --row-hover: #1e232b;
-  --vignette: transparent;
-  --shadow-card: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  --btn-bg: var(--accent);
-  --btn-bg-hover: var(--accent-hover);
-  --btn-border: var(--accent);
-  --btn-shadow: none;
-  --btn-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --msg-out-bg: #26406f;
-  --msg-out-border: transparent;
-}
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] {
-    --bg: #0f1216;
-    --surface: #171b21;
-    --surface-2: #1d222a;
-    --surface-3: #252b34;
-    --border: #262c35;
-    --border-bright: #313844;
-    --phosphor: #5b8def;
-    --phosphor-dim: #7aa2f2;
-    --phosphor-faint: #26375a;
-    --phosphor-glow: rgba(91, 141, 239, 0.22);
-    --amber: #aeb6c2;
-    --amber-dim: #7d8794;
-    --amber-soft: rgba(91, 141, 239, 0.12);
-    --text: #e8ebf0;
-    --text-dim: #aeb6c2;
-    --text-faint: #6f7884;
-    --success: #3ccf7f;
-    --accent: #5b8def;
-    --accent-hover: #6f9cf2;
-    --accent-soft: rgba(91, 141, 239, 0.14);
-    --row-active: #22304a;
-    --row-hover: #1e232b;
-    --vignette: transparent;
-    --shadow-card: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04);
-    --btn-bg: var(--accent);
-    --btn-bg-hover: var(--accent-hover);
-    --btn-border: var(--accent);
-    --btn-shadow: none;
-    --btn-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
-    --msg-out-bg: #26406f;
-    --msg-out-border: transparent;
-  }
-}
-
-body { font-size: 14px; line-height: 1.45; }
-body::before { background: none; }
-
 /* --- Avatars --------------------------------------------------------------- */
 .avatar {
   --avatar-hue: 210;
@@ -1973,7 +1862,7 @@ body::before { background: none; }
 
 /* --- Modals ---------------------------------------------------------------- */
 .modal-backdrop { background: rgba(10, 14, 20, 0.45); backdrop-filter: blur(6px); }
-.modal, .modal-wide, .auth-card { background: var(--surface); border: none; border-radius: 18px; }
+.modal, .modal-wide, .auth-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .modal-sm { width: 400px; }
 .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); }
 .modal-title {
@@ -2078,17 +1967,17 @@ body::before { background: none; }
 .chat-input-meta { color: var(--text-faint); font-size: 12px; letter-spacing: 0; text-transform: none; }
 .chat.console .chat-input .prompt { display: block; }
 .console-send-label { display: none; }
-.chat.console .chat-input { background: #000; border-color: #333; }
+.chat.console .chat-input { background: var(--bg-input); border-color: var(--border); }
 .chat.console .chat-input-row { align-items: flex-start; }
-.chat.console .chat-input .prompt { color: #33ff66; padding-top: 9px; }
+.chat.console .chat-input .prompt { color: var(--ok); padding-top: 9px; }
 .chat.console .chat-input textarea,
 .chat.console .chat-input textarea:focus {
   border-radius: 0;
   border: none;
   box-shadow: none;
-  background: #000;
-  color: #d8d8d8;
-  caret-color: #33ff66;
+  background: var(--bg-input);
+  color: var(--fg);
+  caret-color: var(--ok);
   padding: 9px 6px;
 }
 .chat.console .chat-input-meta,
@@ -2098,46 +1987,46 @@ body::before { background: none; }
 .chat.console .console-send-label { display: inline; }
 .chat.console .chat-send {
   border-radius: 0;
-  background: #0d1117;
-  color: #33ff66;
+  background: var(--bg-panel);
+  color: var(--ok);
   padding: 8px 12px;
 }
-.console-running { display: flex; gap: 8px; color: #8b949e; font-size: 12px; padding: 4px 0; }
-.console-cursor { color: #33ff66; animation: console-blink 1s steps(2, start) infinite; }
+.console-running { display: flex; gap: 8px; color: var(--fg-muted); font-size: 12px; padding: 4px 0; }
+.console-cursor { color: var(--ok); animation: console-blink 1s steps(2, start) infinite; }
 @keyframes console-blink { to { visibility: hidden; } }
 @media (prefers-reduced-motion: reduce) { .console-cursor { animation: none; } }
-.ansi-black { color: #484f58; }
-.ansi-bg-black { background-color: #484f58; }
-.ansi-red { color: #f85149; }
-.ansi-bg-red { background-color: #f85149; }
-.ansi-green { color: #3fb950; }
-.ansi-bg-green { background-color: #3fb950; }
-.ansi-yellow { color: #d29922; }
-.ansi-bg-yellow { background-color: #d29922; }
-.ansi-blue { color: #58a6ff; }
-.ansi-bg-blue { background-color: #58a6ff; }
-.ansi-magenta { color: #bc8cff; }
-.ansi-bg-magenta { background-color: #bc8cff; }
-.ansi-cyan { color: #39c5cf; }
-.ansi-bg-cyan { background-color: #39c5cf; }
-.ansi-white { color: #c9d1d9; }
-.ansi-bg-white { background-color: #c9d1d9; }
-.ansi-bright-black { color: #6e7681; }
-.ansi-bg-bright-black { background-color: #6e7681; }
-.ansi-bright-red { color: #ff7b72; }
-.ansi-bg-bright-red { background-color: #ff7b72; }
-.ansi-bright-green { color: #56d364; }
-.ansi-bg-bright-green { background-color: #56d364; }
-.ansi-bright-yellow { color: #e3b341; }
-.ansi-bg-bright-yellow { background-color: #e3b341; }
-.ansi-bright-blue { color: #79c0ff; }
-.ansi-bg-bright-blue { background-color: #79c0ff; }
-.ansi-bright-magenta { color: #d2a8ff; }
-.ansi-bg-bright-magenta { background-color: #d2a8ff; }
-.ansi-bright-cyan { color: #56d4dd; }
-.ansi-bg-bright-cyan { background-color: #56d4dd; }
-.ansi-bright-white { color: #ffffff; }
-.ansi-bg-bright-white { background-color: #ffffff; }
+.ansi-black { color: var(--fg-muted); }
+.ansi-bg-black { background-color: var(--fg-muted); }
+.ansi-red { color: var(--danger); }
+.ansi-bg-red { background-color: var(--danger); }
+.ansi-green { color: var(--ok); }
+.ansi-bg-green { background-color: var(--ok); }
+.ansi-yellow { color: var(--warn); }
+.ansi-bg-yellow { background-color: var(--warn); }
+.ansi-blue { color: var(--accent); }
+.ansi-bg-blue { background-color: var(--accent); }
+.ansi-magenta { color: var(--syntax); }
+.ansi-bg-magenta { background-color: var(--syntax); }
+.ansi-cyan { color: var(--ok); }
+.ansi-bg-cyan { background-color: var(--ok); }
+.ansi-white { color: var(--fg); }
+.ansi-bg-white { background-color: var(--fg); }
+.ansi-bright-black { color: var(--fg-muted); }
+.ansi-bg-bright-black { background-color: var(--fg-muted); }
+.ansi-bright-red { color: var(--danger); }
+.ansi-bg-bright-red { background-color: var(--danger); }
+.ansi-bright-green { color: var(--ok); }
+.ansi-bg-bright-green { background-color: var(--ok); }
+.ansi-bright-yellow { color: var(--warn); }
+.ansi-bg-bright-yellow { background-color: var(--warn); }
+.ansi-bright-blue { color: var(--accent); }
+.ansi-bg-bright-blue { background-color: var(--accent); }
+.ansi-bright-magenta { color: var(--syntax); }
+.ansi-bg-bright-magenta { background-color: var(--syntax); }
+.ansi-bright-cyan { color: var(--ok); }
+.ansi-bg-bright-cyan { background-color: var(--ok); }
+.ansi-bright-white { color: var(--fg); }
+.ansi-bg-bright-white { background-color: var(--fg); }
 .ansi-bold { font-weight: 700; }
 .ansi-dim { opacity: 0.65; }
 .ansi-italic { font-style: italic; }
@@ -2198,7 +2087,11 @@ body::before { background: none; }
 
 /* --- QR: sharing a card and reading one ------------------------------------- */
 .card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
-.card-qr svg { width: 200px; height: 200px; border-radius: 12px; background: #fff; padding: 8px; }
+/* As large as the card allows: the other phone's camera reads this code, and a
+   gipny card is a dense one (owner, 2026-11-07: «размер QR должен больше»). The
+   white padding is the quiet zone a reader needs. `height: auto` keeps the
+   SVG's own square ratio on engines without `aspect-ratio`. */
+.card-qr svg { width: min(100%, 340px); height: auto; border-radius: 12px; background: #fff; padding: 10px; box-sizing: border-box; }
 .card-qr .hint { text-align: center; max-width: 280px; }
 .qr-slot { margin-bottom: 10px; }
 /* The picker is driven by its own button; the input itself is never shown. */
@@ -2219,95 +2112,60 @@ body::before { background: none; }
 }
 
 /* --- Opening a profile ------------------------------------------------------ */
-.login-cyber {
-  color-scheme: dark;
-  --bg: #05080a; --surface: #09110d; --surface-2: #102117; --surface-3: #163421;
-  --border: #274f35; --border-bright: #52ba72;
-  --text: #e0f5e6; --text-dim: #b0cfb9; --text-faint: #91b69c;
-  --phosphor: #64ee8c; --phosphor-dim: #52ce79; --phosphor-faint: #285d39;
-  --phosphor-glow: #4bdf7b22; --amber: #b0cfb9; --amber-dim: #91b69c;
-  --danger: #ff9696; --success: #64ee8c; --on-accent: #07180e;
-  --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  --btn-bg: linear-gradient(180deg, #8af0a6, #55ce7a);
-  --btn-bg-hover: linear-gradient(180deg, #a0f6b8, #72e193);
-  --btn-border: #66d98a; --btn-shadow: 0 4px 18px #42d37318;
-  --btn-shadow-hover: 0 4px 24px #42d37330;
-  background: radial-gradient(ellipse at 50% 35%, #0c2315, #05080a 70%);
-  overflow: auto; align-items: safe center; padding: 24px 16px;
-}
-.login-cyber .auth-card { background: var(--surface); border-color: var(--border); box-shadow: 0 18px 60px #0008, 0 0 30px #52ce7910; }
-.login-cyber .auth-title { color: var(--phosphor); overflow-wrap: anywhere; }
-.boot-cyber {
-  min-height: 0; overflow: auto; align-items: safe center;
-  padding: 28px 16px;
-  background: radial-gradient(ellipse at 50% 35%, #0a1910, #05080a 65%);
-}
+.login-cyber .auth-title { overflow-wrap: anywhere; }
 .boot-card {
   max-width: 640px; width: 100%; min-width: 0; flex-shrink: 0; padding: 28px;
-  font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
-  font-size: 12px; line-height: 1.6; color: #a5b8ac;
-  background: #05080a; border: 1px solid #163820; border-radius: 6px;
-  box-shadow: 0 0 28px rgba(51, 255, 102, 0.07), inset 0 1px rgba(51, 255, 102, 0.08);
+  font-family: var(--mono);
+  font-size: 12px; line-height: 1.6; color: var(--fg-dim);
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 6px;
+  box-shadow: var(--shadow-card);
 }
-.boot-header { padding-bottom: 16px; border-bottom: 1px solid #163820; }
+.boot-header { padding-bottom: 16px; border-bottom: 1px solid var(--border-subtle); }
 .boot-title {
-  margin: 0 0 12px; color: #33ff66; font-size: 14px; font-weight: 600;
+  margin: 0 0 12px; color: var(--accent); font-size: 14px; font-weight: 600;
   letter-spacing: .08em; line-height: 1.5;
-  text-shadow: 0 0 16px rgba(51, 255, 102, 0.25);
+
 }
 .boot-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 20px; }
-.boot-node { color: #b6cdbd; overflow-wrap: anywhere; min-width: 0; }
-.boot-elapsed { color: #6b8975; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.boot-node { color: var(--fg-dim); overflow-wrap: anywhere; min-width: 0; }
+.boot-elapsed { color: var(--fg-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .boot-progress { display: flex; align-items: center; gap: 14px; margin: 20px 0 10px; }
 .boot-progress-bar {
-  flex: 1; height: 10px; overflow: hidden; background: #0d1a12;
-  border: 1px solid #21402a;
+  flex: 1; height: 10px; overflow: hidden; background: var(--bg-panel);
+  border: 1px solid var(--border);
 }
 .boot-progress-fill {
-  width: 0; height: 100%; background: linear-gradient(90deg, #1c993c, #33ff66);
-  box-shadow: 0 0 10px rgba(51, 255, 102, 0.4);
+  width: 0; height: 100%; background: var(--accent);
   transition: width .25s ease;
-  /* Dark cuts keep the neon strip looking like terminal segments. */
-  mask-image: repeating-linear-gradient(90deg, #000 0 8px, transparent 8px 11px);
 }
-.boot-progress-text { width: 4ch; text-align: right; color: #33ff66; font-variant-numeric: tabular-nums; }
-.boot-sub { margin: 0; color: #789382; font-size: 11px; line-height: 1.6; }
-.boot-status { margin: 24px 0; color: #b6cdbd; }
+.boot-progress-text { width: 4ch; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+.boot-sub { margin: 0; color: var(--fg-muted); font-size: 11px; line-height: 1.6; }
+.boot-network { margin: 6px 0 0; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 6px; color: var(--warn); font-size: 11px; line-height: 1.5; }
+.boot-status { margin: 24px 0; color: var(--fg-dim); }
 .boot-steps { display: grid; gap: 3px; margin: 20px 0; }
 .boot-step {
   display: flex; align-items: baseline; gap: 12px;
-  padding: 7px 10px; border-left: 2px solid transparent; color: #555;
+  padding: 7px 10px; border-left: 2px solid transparent; color: var(--fg-muted);
   transition: background .15s, color .15s;
 }
-.boot-step.boot-active { background: rgba(51, 255, 102, .055); border-left-color: #33ff66; color: #7dff9e; }
-.boot-step.boot-done { color: #33ff66; }
-.boot-step.boot-skipped { color: #777; }
-.boot-step.boot-failed { background: rgba(255, 51, 102, .07); border-left-color: #ff3366; color: #ff3366; }
+.boot-step.boot-active { background: var(--bg-active); border-left-color: var(--accent); color: var(--accent); }
+.boot-step.boot-done { color: var(--accent); }
+.boot-step.boot-skipped { color: var(--fg-muted); }
+.boot-step.boot-failed { background: var(--danger-soft); border-left-color: var(--danger); color: var(--danger); }
 .boot-mark { white-space: pre; flex-shrink: 0; }
-.boot-skipped .boot-mark { color: #8b949e; }
+.boot-skipped .boot-mark { color: var(--fg-muted); }
 .boot-step-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .boot-step-label { font-size: 12px; }
-.boot-step-hint { display: none; margin-top: 3px; font-size: 11px; color: #789382; }
+.boot-step-hint { display: none; margin-top: 3px; font-size: 11px; color: var(--fg-muted); }
 .boot-active .boot-step-hint, .boot-failed .boot-step-hint { display: block; }
-.boot-failed .boot-step-hint { color: #ff809f; white-space: pre-wrap; user-select: text; }
+.boot-failed .boot-step-hint { color: var(--danger); white-space: pre-wrap; user-select: text; }
 .boot-step-ms { font-size: 11px; opacity: .75; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .boot-cursor { display: none; margin-left: 6px; }
 .boot-active .boot-cursor { display: inline; animation: boot-blink 1s steps(1, end) infinite; }
 @keyframes boot-blink { 50% { opacity: 0; } }
 .boot-foot { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
-.boot-foot:has(.boot-button:not(.hidden)) { margin-top: 20px; }
-.boot-button {
-  padding: 10px 14px; border: 1px solid #33ff66; border-radius: 3px;
-  background: rgba(51, 255, 102, .06); color: #33ff66;
-  font: inherit; font-weight: 600; cursor: pointer;
-  transition: background .15s, box-shadow .15s;
-}
-.boot-button:hover { background: rgba(51, 255, 102, .14); box-shadow: 0 0 16px rgba(51, 255, 102, .15); }
-.boot-back { color: #ff809f; border-color: #773047; background: rgba(255, 51, 102, .04); }
-.boot-back:hover { background: rgba(255, 51, 102, .1); box-shadow: 0 0 16px rgba(255, 51, 102, .12); }
-.boot-button:focus-visible {
-  outline: 2px solid #7dff9e; outline-offset: 3px;
-}
+.boot-button { margin-top: 8px; }
+.boot-button { font-family: var(--font-ui); }
 @media (max-width: 600px) {
   .boot-cyber {
     padding: calc(var(--safe-top) + 10px) calc(var(--safe-right) + 8px) calc(var(--safe-bottom) + 10px) calc(var(--safe-left) + 8px) !important;
@@ -2317,13 +2175,13 @@ body::before { background: none; }
   .boot-title { margin-bottom: 6px; font-size: 12px; letter-spacing: .04em; }
   .boot-progress { margin: 12px 0 6px; gap: 10px; }
   .boot-sub { font-size: 10.5px; line-height: 1.4; }
+  .boot-network { font-size: 10.5px; }
   .boot-steps { margin: 10px 0; gap: 2px; }
   .boot-step { flex-wrap: wrap; gap: 2px 8px; padding: 5px 6px; }
   .boot-step-label { font-size: 11.5px; }
   .boot-step-hint { font-size: 10.5px; margin-top: 2px; }
   .boot-step-main { flex-basis: calc(100% - 10ch); }
   .boot-step-ms { margin-left: calc(8ch + 8px); font-size: 10.5px; }
-  .boot-foot:has(.boot-button:not(.hidden)) { margin-top: 12px; }
   .boot-button { width: 100%; padding: 8px 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2336,13 +2194,14 @@ body::before { background: none; }
 .about-hero {
   padding: 20px;
   border-radius: 16px;
-  color: #fff;
-  background: linear-gradient(135deg, #2f6fed, #7b5cf0);
+  color: var(--fg);
+  background: var(--bg-active);
+  border: 1px solid var(--border);
 }
 .about-hero-title { font-size: 20px; font-weight: 700; line-height: 1.25; }
 .about-hero-sub { margin-top: 8px; font-size: 14px; line-height: 1.55; opacity: 0.92; user-select: text; }
 .about-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
-.about-chip { padding: 3px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.18); font-size: 12px; font-weight: 600; }
+.about-chip { padding: 3px 10px; border-radius: 999px; background: var(--bg-elevated); font-size: 12px; font-weight: 600; }
 .about-card {
   display: flex; gap: 14px;
   padding: 16px;
@@ -2387,6 +2246,52 @@ body::before { background: none; }
    app at phone, tablet and desktop widths against deliberately hostile data
    and reports anything that sticks out of the viewport.
    ========================================================================== */
+
+/* ---- The app's own on-screen keyboard (osk.ts) --------------------------
+   On a phone the system keyboard never appears (inputmode="none" on every
+   text field); this panel types instead. Fixed to the bottom; the page above
+   shrinks by --kbd-offset, which osk.ts sets to the panel's height. Margins,
+   not flex gap: Chromium 83 (Huawei WebView 11) has no gap in flexbox. */
+.osk {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200;
+  padding: 6px 3px calc(6px + var(--safe-bottom, 0px));
+  background: var(--surface-2);
+  border-top: 1px solid var(--border-bright);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.12);
+  font-family: var(--mono);
+  -webkit-user-select: none; user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.osk[hidden] { display: none; }
+.osk-row { display: flex; margin-top: 6px; }
+.osk-row:first-child { margin-top: 0; }
+.osk-key {
+  flex: 1 1 0; min-width: 0; margin: 0 2px; height: 42px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--xbox-radius-sm);
+  background: var(--surface); color: var(--text);
+  font: inherit; font-size: 18px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.osk[data-layout="km"] .osk-key { font-size: 20px; }
+.osk-key:active { background: var(--phosphor-faint); border-color: var(--phosphor); }
+.osk-fn { background: var(--surface-3); color: var(--text-dim); font-size: 14px; }
+.osk-wide { flex-grow: 1.5; }
+.osk-space { flex-grow: 4; }
+.osk-layout { flex-grow: 1.2; font-size: 12px; letter-spacing: 0.08em; }
+.osk-shift.osk-on, .osk-shift.osk-caps { color: var(--phosphor); border-color: var(--phosphor); }
+.osk-shift.osk-caps { background: var(--phosphor-faint); }
+.osk-blank { visibility: hidden; }
+.osk-emoji { flex-wrap: wrap; max-height: 150px; overflow-y: auto; }
+.osk-emoji .osk-key { flex: 0 0 calc(12.5% - 4px); height: 44px; margin-bottom: 4px; font-size: 22px; }
+/* With the panel up, the window's bottom belongs to it. A sign-in screen
+   gets room below its card so the focused field can scroll above the keys. */
+:root[data-osk="shown"] #app { height: calc(100% - var(--kbd-offset, 0px)); }
+:root[data-osk="shown"] .auth { padding-bottom: calc(var(--kbd-offset, 0px) + 12px) !important; }
+/* A modal's own scroll area ends where the keys begin, so a field or a
+   footer button at its bottom can be reached. */
+:root[data-osk="shown"] .modal-backdrop { bottom: var(--kbd-offset, 0px); }
 
 /* --- 1. Nothing may make the page wider than the viewport ---------------- */
 
@@ -2560,10 +2465,16 @@ select.input { width: 100%; text-overflow: ellipsis; }
   }
   .auth-card { width: 100% !important; max-width: 100% !important; padding: 16px !important; }
 
+  /* vh first: a WebView without dvh (Chromium < 108) keeps this line and
+     skips the next; a newer one lets the dvh line win. */
+  html, body, #app, .main { height: calc(100vh - var(--kbd-offset, 0px)) !important; }
   html, body, #app, .main { height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
-  .main { grid-template-columns: minmax(0, 1fr) !important; }
-  .main > .sidebar { grid-column: 1; grid-row: 1; border-right: none; }
-  .main > .stack.grow { grid-column: 1; grid-row: 1; }
+  /* One pane at a time, as a flex column rather than a one-column grid: on
+     Chromium 83 the grid's row kept the content height inside a `calc()`-sized
+     .main (365 px of 800 on the Honor), a flex item fills it. */
+  .main { display: flex; flex-direction: column; }
+  .main > .sidebar { flex: 1 1 auto; min-height: 0; border-right: none; }
+  .main > .stack.grow { flex: 1 1 auto; min-height: 0; }
   .main:not(.has-chat) > .stack.grow { display: none !important; }
   .main.has-chat > .sidebar { display: none !important; }
 
@@ -2618,6 +2529,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .modal-backdrop { align-items: stretch; }
   .modal, .modal-wide {
     width: 100% !important; max-width: 100vw !important;
+    height: 100vh; max-height: 100vh !important;
     height: 100dvh; max-height: 100dvh !important;
     border: none !important; border-radius: 0 !important;
     padding-bottom: var(--safe-bottom);
@@ -2643,87 +2555,13 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .chat-input-meta .chat-e2e { display: none; }
 }
 
+/* The checkbox and the button row of the sign-in forms; a phone tightens both. */
+.auth-chk { margin-bottom: 14px; }
+.auth-actions { margin-top: 18px; gap: 8px; }
+
 /* The language choice is available before the vault is opened. */
 .auth-language { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 12px 0; font-size: 12px; }
 .auth-language select { width: auto; min-width: 110px; }
-
-/* The profile foyer: walnut, stitched leather and satin brass. The terminal
-   login deliberately keeps its separate green palette. All materials are
-   local CSS, so opening a profile never requests a font or image from a CDN. */
-.profile-salon {
-  --text: #f4ecdc; --text-dim: #c9bdab; --text-faint: #aaa08f;
-  --surface: #181c1b; --surface-2: #1d2321; --surface-3: #292c27;
-  --border: #665339; --border-bright: #c7aa72;
-  --phosphor: #d8bd87; --phosphor-dim: #b89a62; --amber: #d8bd87;
-  --phosphor-glow: rgba(199, 170, 114, .16); --on-accent: #171910;
-  --danger: #ec9e95; --success: #a3c6a4;
-  isolation: isolate; overflow: auto; padding: clamp(24px, 5vh, 64px) 20px;
-  color: var(--text); background: #111715;
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-}
-.salon-backdrop { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; background: radial-gradient(ellipse at 50% 10%, #344039 0, #17201c 45%, #0d1310 100%); }
-.salon-wood {
-  position: absolute; top: -10%; bottom: -10%; width: 25%; min-width: 100px;
-  background:
-    repeating-linear-gradient(91deg, transparent 0 7px, #08050126 8px 9px, transparent 10px 19px),
-    repeating-linear-gradient(88deg, #c18a4110 0 2px, transparent 3px 21px),
-    linear-gradient(92deg, #18120e, #372417 30%, #4a301c 50%, #291b12 85%, #130f0c);
-  box-shadow: inset -1px 0 #b998604d, 0 0 70px #0009;
-  transform: rotate(-5deg); opacity: .8;
-}
-.salon-wood-left { left: -7%; }
-.salon-wood-right { right: -7%; transform: rotate(5deg) scaleX(-1); }
-.salon-light { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 0%, #ffe2ab0f, transparent 60%); }
-.profile-salon .salon-panel {
-  position: relative; width: min(100%, 470px); max-width: 470px;
-  padding: 34px 38px 32px; border: 1px solid #b59b655c; border-radius: 24px;
-  background:
-    radial-gradient(#d1c7ae0b .6px, transparent .9px) 0 0 / 3px 4px,
-    radial-gradient(#0005 .6px, transparent 1px) 1px 2px / 4px 3px,
-    linear-gradient(145deg, #282c27, #171d19 65%, #21261f);
-  box-shadow: 0 30px 100px #0009, 0 2px 4px #0008, inset 0 1px #e8ce9338, inset 0 -1px #000b;
-}
-.salon-panel::before { content: ''; position: absolute; inset: 9px; border: 1px dashed #b9a17a45; border-radius: 17px; pointer-events: none; }
-.salon-panel .language-picker { position: relative; z-index: 1; }
-.salon-emblem { display: flex; justify-content: center; align-items: center; gap: 14px; margin: 18px auto 20px; pointer-events: none; }
-.salon-wing { width: 55px; height: 7px; border-top: 1px solid #b99c5c; border-bottom: 1px solid #b99c5c55; transform: skewX(30deg); }
-.salon-wing:last-child { transform: skewX(-30deg); }
-.salon-dial {
-  display: grid; place-items: center; position: relative; width: 68px; height: 68px; border-radius: 50%;
-  border: 1px solid #ddc690; outline: 1px solid #79613d; outline-offset: 3px;
-  background: radial-gradient(circle, #27332b 52%, #17221b 53% 65%, #9c8250 66% 67%, #272a1e 68%);
-  box-shadow: 0 4px 16px #0008, inset 0 1px 2px #fff4;
-}
-.salon-dial::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; border: 1px dashed #cbb47b80; animation: salon-movement 90s linear infinite; }
-.salon-monogram { color: #ead3a2; font: 31px/1 Georgia, 'Times New Roman', serif; text-shadow: 0 1px #000; }
-.salon-wordmark { text-align: center; font-size: 15px; font-weight: 500; letter-spacing: .42em; padding-left: .42em; color: #dec798; }
-.salon-caption { margin: 9px 0 30px; text-align: center; font-size: 12px; line-height: 1.6; color: #bdb3a1; }
-.profile-salon .auth-title { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(25px, 5vw, 31px); font-weight: 400; letter-spacing: -.02em; margin-bottom: 8px; }
-.profile-salon .auth-sub { font-size: 12px; letter-spacing: .015em; line-height: 1.6; margin-bottom: 22px; }
-.profile-salon .btn {
-  min-height: 46px; border: 1px solid #a78c58; border-radius: 8px;
-  background: linear-gradient(110deg, #b99b60, #e3c88f 45%, #bda068);
-  color: #1e2119; text-shadow: 0 1px #ffffff30; box-shadow: 0 2px 8px #0004, inset 0 1px #fff4;
-  font-weight: 600; letter-spacing: .01em;
-}
-.profile-salon .btn:hover { background: linear-gradient(110deg, #cfb27b, #ecd5a8 45%, #d1b582); box-shadow: 0 3px 14px #0006; transform: translateY(-1px); }
-.profile-salon .btn-ghost, .profile-salon .salon-profile {
-  color: #eee4ce; background: linear-gradient(160deg, #34382e, #22291f); border-color: #81714d88; text-shadow: none; box-shadow: inset 0 1px #e9d49e12;
-}
-.profile-salon .btn-ghost:hover, .profile-salon .salon-profile:hover { color: #fff4dc; background: #38402f; border-color: #c8ad78; }
-.profile-salon .salon-profile { gap: 12px; padding: 14px 16px; }
-.salon-profile-light { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: #c9b17d; box-shadow: 0 0 8px #d1b37240; }
-.salon-profile-name { min-width: 0; overflow-wrap: anywhere; text-align: left; font-weight: 400; }
-.profile-salon .btn-danger { color: #d9b3a4; border-color: #665040; background: #29251e; text-shadow: none; box-shadow: none; }
-.profile-salon .btn-danger:hover { color: #ffe6db; background: #49342b; border-color: #b98a71; }
-.profile-salon .input { color: #f5ebd5; background: #101912; border: 1px solid #786545; border-radius: 7px; }
-.profile-salon .input::placeholder { color: #a69e8f; opacity: 1; }
-.profile-salon .input:focus { border-color: #dfc68e; box-shadow: 0 0 0 3px #c3a56a26; }
-.profile-salon .divider-text { color: #b9aa90; }
-.profile-salon .divider-text::before, .profile-salon .divider-text::after { background: #9b825438; }
-.profile-salon :focus-visible { outline: 2px solid #f3dba3; outline-offset: 4px; }
-.salon-create .salon-emblem { margin-top: 8px; margin-bottom: 24px; }
-@keyframes salon-movement { to { transform: rotate(360deg); } }
 
 /* A connection pulse under the chat surface, never a blocking overlay. */
 .main { position: relative; isolation: isolate; }
@@ -2738,22 +2576,21 @@ select.input { width: 100%; text-overflow: ellipsis; }
 @keyframes network-pass { 0% { transform: translateX(0); } 100% { transform: translateX(420%); } }
 
 .msg-deleted { display: flex; align-items: center; gap: 9px; margin: 8px 0; padding: 2px 4px; color: var(--text-dim); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-.deletion-ok { flex: 0 0 auto; min-width: 44px; min-height: 44px; padding: 8px 5px; color: #207b40; font: inherit; font-weight: 700; border: 0; background: transparent; border-radius: 6px; cursor: pointer; }
-.deletion-ok:hover { background: #27934912; }
+.deletion-ok { flex: 0 0 auto; min-width: 44px; min-height: 44px; padding: 8px 5px; color: var(--ok); font: inherit; font-weight: 700; border: 0; background: transparent; border-radius: 6px; cursor: pointer; }
+.deletion-ok:hover { background: var(--bg-hover); }
 .deletion-ok:focus-visible { outline: 2px solid var(--success); outline-offset: 1px; }
 .deletion-ok:disabled { opacity: .5; cursor: wait; }
-:root[data-theme="dark"] .deletion-ok { color: #91db9c; }
 @media (max-width: 600px) {
-  .profile-salon .salon-panel { padding: 26px 24px !important; border-radius: 18px; }
-  .salon-wood { width: 18%; opacity: .55; }
-  .salon-caption { margin-bottom: 25px; }
-  .salon-emblem { margin-top: 12px; }
-  .network-ambient-label { font-size: 9px; right: 8px; bottom: calc(var(--composer-height, 0px) + 3px); }
+  /* The sign-in screens fit a 360×740 phone without scrolling (owner,
+     2026-11-07; the duress block stays in view, just denser): one header row
+     with the dial and the language select, no field hints (the placeholders
+     say the same), a tighter rhythm. Every control keeps a 44px touch target.
+     Measured in dev/preview.html, scene=auth, phone 360: the card was 990px. */
+
 }
 @media (prefers-reduced-motion: reduce) {
-  .salon-dial::before, .network-ambient-lines i, .boot-active .boot-cursor { animation: none; }
+  .network-ambient-lines i, .boot-active .boot-cursor { animation: none; }
   .network-ambient-lines i { left: 0; width: 100%; opacity: .3; }
-  .profile-salon .btn:hover { transform: none; }
   .boot-progress-fill { transition: none; }
 }
 
@@ -2773,13 +2610,155 @@ select.input { width: 100%; text-overflow: ellipsis; }
 .file-size { color: var(--text-dim); font-size: 11px; font-weight: 400; }
 .file-progress-name { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; overflow-wrap: anywhere; }
 .file-progress-label { font-size: 11px; line-height: 1.5; }
-.file-progress.complete .file-progress-label { color: #207b40; }
+.file-progress.complete .file-progress-label { color: var(--ok); }
 .file-progress.failed .file-progress-label, .file-progress.cancelled .file-progress-label { color: var(--danger); }
 .file-progress-track { overflow: hidden; border-radius: 3px; }
-.file-progress-bar { background: #339e59; transition: width .25s ease; }
-:root[data-theme="dark"] .file-progress.complete .file-progress-label { color: #91db9c; }
+.file-progress-bar { background: var(--ok); transition: width .25s ease; }
 @keyframes file-shimmer { 0% { background-position: 160% 0; } 100% { background-position: -60% 0; } }
 @media (prefers-reduced-motion: reduce) {
   .msg.file-sending::before { animation: none; background: #39b76012; }
   .file-progress-bar { transition: none; }
 }
+
+/* One console workspace: compact chrome, flat surfaces and clear focus. */
+body { font-family: var(--font-ui); font-size: 14px; line-height: 1.45; }
+button, input, textarea, select { min-width: 0; }
+button { overflow-wrap: anywhere; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn, .btn-sm, .icon-btn, .sidebar-me, .sidebar-link, .sidebar-search,
+.input, .textarea, .chat-input textarea, .chat-send, .chat-details,
+.contact, .ctx-menu, .ctx-menu-item, .attachment, .msg-button,
+.about-hero, .about-card, .about-tech, .about-note { border-radius: var(--radius-sm); }
+.btn { font-family: var(--font-ui); box-shadow: none; }
+.btn:hover, .btn:not(.btn-ghost):not(.btn-danger):hover, .contact:hover { transform: none; box-shadow: none; }
+.btn-ghost { background: var(--bg-panel); border: 1px solid var(--border); color: var(--fg); }
+.btn-ghost:hover { background: var(--bg-hover); }
+.btn-danger { color: var(--danger); background: var(--danger-soft); }
+.btn-danger:hover { color: var(--danger); background: var(--danger-soft); }
+.input, .textarea, .sidebar-search, .chat-input textarea { background-color: var(--bg-input); border-color: var(--border); font-family: var(--font-ui); }
+.input:focus, .textarea:focus { box-shadow: 0 0 0 1px var(--accent); }
+.input::placeholder, .textarea::placeholder { color: var(--fg-muted); opacity: 1; }
+.sidebar-header, .chat-header, .modal-header { background: var(--bg-panel); border-bottom: 1px solid var(--border); }
+.sidebar-header { margin-bottom: 8px; }
+.sidebar-footer, .modal-footer { background: var(--bg-panel); }
+.contact { border: 1px solid transparent; }
+.contact.active, .contact.active.pinned { border-color: var(--border); box-shadow: inset 2px 0 var(--accent); }
+.section-label, .card-label, .contact-when, .chat-sub, .chat-status,
+.msg-foot, .fp, .card-block, .auth-sub, .boot-meta, .auth-badge { font-family: var(--mono); }
+.section-label { font-size: 12px; }
+.card-block { background: var(--bg-input); }
+.modal-title { font-size: 15px; letter-spacing: 0; }
+.modal-header, .modal-footer { flex-shrink: 0; }
+.modal-body { min-height: 0; }
+.modal-backdrop { backdrop-filter: none; }
+.msg-body, .msg.in .msg-body, .msg.out .msg-body { border-radius: var(--radius); border: 1px solid var(--border-subtle); }
+.msg.in .msg-body { box-shadow: none; }
+.msg.out .msg-body { border-color: var(--border); }
+.chat.console .chat-input textarea { font-family: var(--mono); }
+.chat.console .chat-send { color: var(--accent-fg); background: var(--accent); }
+.trust-badge, .ttl-chip, .about-chip { border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+.trust-1 { color: var(--ok); background: var(--bg-panel); }
+.icon-btn-accent, .icon-btn-accent:hover, .contact-badge, .btn-fast,
+.ttl-chip.active { color: var(--accent-fg); }
+.about-hero { padding: 18px; }
+.about-chip { font-family: var(--mono); color: var(--fg-dim); }
+.about-card-title { font-size: 15px; }
+.about-card-icon { border-radius: var(--radius-sm); }
+.osk { background: var(--bg-panel); box-shadow: none; }
+.osk-key { background: var(--bg-input); border-color: var(--border); border-radius: var(--radius-sm); }
+.osk-fn { background: var(--bg-hover); }
+
+/* Existing salon/cyber class hooks now share the same card and window bar. */
+.auth { isolation: isolate; padding: 20px; align-items: flex-start; }
+.auth-card {
+  width: 440px; max-width: 100%; flex: 0 0 auto; margin: auto 0;
+  padding: 20px; border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--fg); background: var(--bg-elevated); box-shadow: var(--shadow-card);
+}
+.salon-backdrop { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: -1; pointer-events: none; background: var(--bg); }
+.auth-window-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: -20px -20px 18px; padding: 10px 14px;
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+.auth-brand { display: flex; align-items: center; font: 600 14px/1 var(--mono); }
+.auth-brand .logo-mark { width: 24px; height: 24px; margin-right: 7px; }
+.auth-badge { margin-left: 8px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 3px; color: var(--accent); font-size: 10px; }
+.auth-window-bar .auth-language { margin: 0 0 0 8px; }
+.auth-window-bar .auth-language-text { display: none; }
+.auth-window-bar .input { min-height: 32px; font-size: 12px; padding: 4px 6px; }
+.auth-title { font: 600 20px/1.3 var(--font-ui); letter-spacing: -.02em; overflow-wrap: anywhere; }
+.auth-sub { margin-bottom: 16px; font-size: 12px; line-height: 1.45; letter-spacing: 0; }
+.auth .field { margin-bottom: 10px; }
+.auth .field label { font-size: 12px; margin-bottom: 4px; }
+.auth .field .hint { color: var(--fg-muted); font-size: 11px; line-height: 1.4; }
+.auth .input { min-height: 38px; }
+.auth .err { margin-top: 6px; min-height: 0; overflow-wrap: anywhere; }
+.auth .err:empty { display: none; }
+.auth-actions { margin-top: 12px; }
+.auth .btn { min-height: 40px; }
+.auth-security { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); }
+.auth-security summary { cursor: pointer; padding: 10px; color: var(--fg-dim); font-size: 12px; }
+.auth-security-body { padding: 0 10px 8px; max-height: 176px; overflow-y: auto; }
+.auth-security .field:last-child { margin-bottom: 0; }
+.auth-security .auth-chk { margin-bottom: 8px; font-size: 12px; }
+.profile-list { margin: 12px 0; max-height: 260px; overflow-y: auto; gap: 8px; }
+.profile-list .row { flex-shrink: 0; }
+.profile-salon .salon-profile { background: var(--bg-input); border: 1px solid var(--border); color: var(--fg); gap: 10px; padding: 10px 12px; }
+.profile-salon .salon-profile:hover { background: var(--bg-hover); }
+.salon-profile-light { width: 6px; height: 6px; flex: 0 0 6px; background: var(--accent); }
+.salon-profile-name { min-width: 0; overflow-wrap: anywhere; text-align: left; font-family: var(--mono); }
+.boot-card { width: 600px; font-family: var(--mono); }
+.boot-title { color: var(--fg); letter-spacing: 0; }
+.boot-step { padding: 5px 6px; }
+.boot-step.boot-done { color: var(--ok); }
+.boot-mark { font-size: 11px; }
+.boot-steps { margin: 12px 0; }
+.boot-progress { margin-top: 14px; }
+.boot-step-hint { max-height: 4.2em; overflow-y: auto; }
+
+.update-section { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); }
+.update-section .opt { margin-top: 10px; }
+.update-actions { flex-wrap: wrap; margin-top: 10px; }
+.update-status { font-family: var(--mono); color: var(--fg-dim); }
+.update-progress { height: 6px; margin-top: 14px; overflow: hidden; border: 1px solid var(--border); background: var(--bg-panel); }
+.update-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s ease; }
+.update-banner { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-active); color: var(--fg); }
+.update-banner > span { min-width: 0; flex: 1 1 220px; margin: 4px 12px 4px 0; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); }
+
+@media (max-width: 600px) {
+  .auth-card { margin: 0; padding: 14px !important; }
+  .auth-window-bar { margin: -14px -14px 14px; padding: 8px 10px; }
+  .auth-title { font-size: 19px; }
+  .auth-sub { font-size: 11px; margin-bottom: 12px; }
+  .auth .btn { min-height: 44px; }
+  .auth-security-body { max-height: 160px; }
+  .boot-card { font-size: 11px; }
+  .boot-card .auth-window-bar { margin: -14px -14px 14px; }
+  .boot-step-main { flex-basis: 0; }
+  .boot-step-ms { margin-left: 0; }
+  .boot-step { flex-wrap: nowrap; }
+  .boot-step-hint { max-height: 4.2em; }
+  .boot-step-ms:empty { display: none; }
+  .boot-steps { margin: 8px 0; }
+  .modal-title { letter-spacing: 0; }
+  /* The modal must also shrink above the OSK; its footer stays reachable. */
+  :root[data-osk="shown"] .modal { height: calc(100vh - var(--kbd-offset, 0px)); max-height: calc(100vh - var(--kbd-offset, 0px)) !important; }
+  :root[data-osk="shown"] .modal { height: calc(100dvh - var(--kbd-offset, 0px)); max-height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
+}
+
+/* Controls keep whole words when a narrow console header wraps. */
+.chat-actions { flex-wrap: wrap; }
+.agent-controls { flex: 0 0 auto; }
+.agent-controls .btn { white-space: nowrap; overflow-wrap: normal; }
+/* Chromium 83 keeps :focus; newer engines restrict the ring to keyboard use. */
+:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+
+/* Eight native language names fit in the phone settings panel. */
+.language-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.language-options .opt { min-width: 0; padding: 9px; }
+.language-options .opt-text { min-width: 0; overflow-wrap: anywhere; }
+.auth-language { min-width: 0; }
+.auth-language select { max-width: 145px; }

@@ -22,3 +22,6 @@ export * from '../src/browser-core/files';
 export { loadState as loadBrowserState } from '../src/browser-core/model';
 export { FileStorage, StorageBusy, availableFileBytes, storedSize } from '../src/browser-core/file-storage';
 export { validateNetworkConfiguration, loadNetworkConfiguration } from '../src/browser-core/network-config';
+
+export { SettingsModal } from '../src/settings';
+export { previewUpdates } from '../dev/update-mock';

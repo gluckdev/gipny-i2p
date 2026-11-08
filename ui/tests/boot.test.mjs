@@ -139,7 +139,7 @@ test('a failed profile creation stays readable in the rebuilt form, not only in 
   const app = new ui.App(store); document.body.append(app.el);
   try {
     const form = app.current;
-    form.nameI.value = 'alice'; form.displayI.value = 'Alice';
+    form.displayI.value = 'Alice';
     form.passI.value = form.confirmI.value = 'correct horse battery';
     await form.create();
     assert.equal(store.view.get(), 'auth-create');

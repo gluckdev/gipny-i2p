@@ -200,7 +200,7 @@ export async function removeProfile(raw: string): Promise<void> {
       for (const slot of ['a', 'b'] as const) {
         try {
           const file = await directory.getFileHandle(`vault-${slot}.bin`, { create: false }) as OpfsFile;
-          if (file.createSyncAccessHandle) {
+          if ('createSyncAccessHandle' in file) {
             handles.push(await openSync(file));
           }
         } catch (error) {
@@ -278,7 +278,7 @@ export class ProfileStorage {
                 for (const slot of ['a', 'b'] as const) {
                   try {
                     const fh = await existingDir.getFileHandle(`vault-${slot}.bin`, { create: false }) as OpfsFile;
-                    if (fh.createSyncAccessHandle) {
+                    if ('createSyncAccessHandle' in fh) {
                       const h = await openSync(fh);
                       try {
                         if (h.getSize() > 0) isCreatedProfile = true;

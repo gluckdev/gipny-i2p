@@ -67,6 +67,8 @@ export interface ChatPrefs {
 }
 
 export interface Contact {
+  lang?: string | string[];
+  language?: string | string[];
   id: number;
   sign_pk: string;
   dh_pk: string;
@@ -204,6 +206,8 @@ export interface Group {
 }
 
 export interface GroupMember {
+  lang?: string | string[];
+  language?: string | string[];
   sign_pk: string;
   dh_pk: string;
   onion: string;
@@ -247,8 +251,11 @@ export interface Bundle {
  * `stage` is a stable id the interface turns into its own wording; `detail` is
  * diagnostic context; the ordinary interface uses localized stage labels. */
 export interface BootStatus {
-  stage: 'vault' | 'router' | 'inbound' | 'outbound' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht';
-  state: 'active' | 'done' | 'failed' | 'skipped';
+  /** `network` is not a step but a verdict on the network while the tunnel
+   * steps run: `none` — nothing has answered for long enough that the device
+   * looks offline; `ok` — something did, after such a verdict. */
+  stage: 'vault' | 'router' | 'inbound' | 'outbound' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht' | 'network';
+  state: 'active' | 'done' | 'failed' | 'skipped' | 'none' | 'ok';
   detail: string;
 }
 

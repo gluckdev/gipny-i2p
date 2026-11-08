@@ -187,6 +187,13 @@ impl I2pNode {
         Self::start_with_progress(data_dir, settings, None).await
     }
 
+    /// How long the destination may wait with no transport peer at all before
+    /// the screen is told the device looks offline, and how often that is
+    /// checked. Thirty seconds is longer than a reseed or a first NTCP2
+    /// session takes on a working connection.
+    const NO_PEERS_AFTER: Duration = Duration::from_secs(30);
+    const NO_PEERS_POLL: Duration = Duration::from_secs(5);
+
     /// As [`Self::start`], reporting each step through `progress`. The app uses
     /// it to keep the unlock screen moving: everything here takes from a second
     /// to three minutes and used to happen in complete silence.
@@ -224,7 +231,26 @@ impl I2pNode {
         note(&progress, "session-done", format!("address {}", short_addr(&address)));
         let deadline=tokio::time::Instant::now()+Duration::from_secs(600);
         let mut last=None;
+        // Whether anything on the network has answered at all. Tunnels that
+        // never build on a device that is offline looked exactly like tunnels
+        // that are slow, for the whole ten minutes; the transports' session
+        // count tells the two apart, and the screen gets to say so.
+        let started=tokio::time::Instant::now();
+        let mut peers_checked_at=started;
+        let mut no_network_reported=false;
         loop {
+            if peers_checked_at.elapsed()>=Self::NO_PEERS_POLL {
+                peers_checked_at=tokio::time::Instant::now();
+                if let Some(peers)=router.peers() {
+                    if peers==0 && !no_network_reported && started.elapsed()>=Self::NO_PEERS_AFTER {
+                        no_network_reported=true;
+                        note(&progress,"network-none",format!("no router has answered in {}s: is this device online?",started.elapsed().as_secs()));
+                    } else if peers>0 && no_network_reported {
+                        no_network_reported=false;
+                        note(&progress,"network-ok",format!("{peers} router(s) connected"));
+                    }
+                }
+            }
             let directions=dest.tunnel_directions_ready();
             if last!=Some(directions) {
                 note(&progress,if directions.0 {"inbound-done"} else {"inbound"},"inbound tunnel pool state");

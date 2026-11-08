@@ -4,14 +4,19 @@
 
 `site/` — короткая публичная страница: что такое Gipny, что доступно,
 ограничения безопасности, скачивание и переход к WASM-клиенту.
-Это не сервер переписки. Языки RU и EN с одинаковым набором ключей: русский
-выбирается для русской локали или русской раскладки клавиатуры, иначе английский;
-`?lang=` и переключатель на странице важнее. Без JavaScript показывается русский.
+Это не сервер переписки. Поддерживаются 8 языков (`ru`, `en`, `uk`, `de`, `km`,
+`vi`, `hi`, `zh`) с одинаковым набором ключей: язык по умолчанию выбирается по той
+же логике, что и в приложении — явный `?lang=` или переключатель на странице →
+русский для русской локали или русской раскладки клавиатуры → предпочтительный
+системный язык из списка (`navigator.languages` и локаль `Intl`), причём если
+первый совпавший язык — `en`, а в системе обнаружена неанглийская раскладка
+клавиатуры (`navigator.keyboard.getLayoutMap()`), выбирается язык раскладки →
+язык системной раскладки → `en`. Без JavaScript показывается русский.
 Секция «Как это выглядит» берёт снимки из `assets/screens/` (демонстрационный
 профиль `ui/dev/demo.ts`, `?demo=1`); снимок подбирается под язык через `:lang()`.
 
 - `index.html`: семантическая разметка, fallback-текст и ссылка `./app/browser.html`.
-- `main.js`: RU/EN тексты, выбор языка и определение ОС/архитектуры локально,
+- `main.js`: тексты на 8 языках (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`), выбор языка по локалям/клавиатуре и определение ОС/архитектуры локально,
   без аналитики и передачи сведений об устройстве.
 - `build.mjs`: `_site/`, каталог GitHub Releases и проверка имён/размеров assets.
   Пустой каталог означает отсутствие доступного релиза, без вымышленных ссылок.
@@ -49,9 +54,12 @@ WSS через CDN и WebRTC через ICE/TURN объясняются отде
 
 `site/` is the short public landing page: purpose, available features, security
 limits, downloads and entry to the WASM messenger. It is not a messaging server.
-RU and EN share the same keys: Russian for a Russian locale or keyboard layout,
-otherwise English; `?lang=` and the page switch win. Without JavaScript the page
-is Russian. App screenshots in `assets/screens/` come from the demo profile
+All 8 languages (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`) share the exact
+same keys and default selection priority as the app: explicit `?lang=` or page
+switch → Russian for a Russian locale or keyboard layout → first matching
+preferred system language (yielding to a detected non-English keyboard layout
+when the first matched locale is `en`) → detected keyboard layout → `en`. Without
+JavaScript the page is Russian. App screenshots in `assets/screens/` come from the demo profile
 (`ui/dev/demo.ts`, `?demo=1`) and follow the page language through `:lang()`.
 
 `index.html` contains markup and `./app/browser.html`; `main.js` handles language
