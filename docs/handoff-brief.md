@@ -116,7 +116,8 @@ Honor: запрос и сообщение за 32 с, ответ за 2 с). Д�
 (2026-11-08, ветка `feat/own-keyboard` поверх PR #152):
 - На телефонах системная клавиатура не показывается — у всех текстовых полей
   `inputmode="none"` (ставит `h()`), набирает панель приложения (`ui/src/osk.ts`:
-  8 раскладок `ru`, `uk`, `en`, `de`, `vi` Telex, `km` NiDA, `hi` InScript, `zh`,
+  8 раскладок `ru`, `uk`, `en`, `de`, `vi` Telex, `km` NiDA, `hi` InScript, `zh`
+  латинская QWERTY без Pinyin→Hanzi IME-словаря,
   цифры и символы, эмодзи, shift/caps, повтор backspace, клавиша раскладки;
   высота панели идёт в `--kbd-offset`). В личных и групповых чатах в круг
   переключения автоматически добавляются языки участников (`detectParticipantLayouts`,
@@ -125,8 +126,8 @@ Honor: запрос и сообщение за 32 с, ответ за 2 с). Д�
 - Приложение (`ui/src/i18n.ts`, `ui/src/locales/*.ts`) и публичный сайт
   (`site/main.js`, `site/index.html`) поддерживают 8 языков (`ru`, `en`, `uk`,
   `de`, `km`, `vi`, `hi`, `zh`) и выбирают язык по умолчанию по единой логике из
-  системных локалей (`navigator.languages`, `Intl`) и установленных в системе
-  клавиатур (`navigator.keyboard.getLayoutMap()`).
+  системных локалей (`navigator.languages`, `Intl`) и активной раскладки
+  клавиатуры (`navigator.keyboard.getLayoutMap()`, где она доступна).
 - Весь интерфейс приведён к единому сквозному адаптивному дизайну IDE-консоли
   (светлая и тёмная темы в `ui/src/styles.css`, единая шапка `authHeader()` на
   экранах выбора, создания, разблокировки и загрузки профиля, 316 проверок
@@ -242,7 +243,8 @@ The app's own on-screen keyboard, 8 localizations, unified IDE-console design
 and update flows (2026-11-08, branch `feat/own-keyboard` on top of PR #152):
 - On phones the system keyboard never appears — every text field gets
   `inputmode="none"` from `h()` and the app's panel types instead (`ui/src/osk.ts`:
-  8 layouts `ru`, `uk`, `en`, `de`, `vi` Telex, `km` NiDA, `hi` InScript, `zh`,
+  8 layouts `ru`, `uk`, `en`, `de`, `vi` Telex, `km` NiDA, `hi` InScript, `zh`
+  Latin QWERTY without a Pinyin→Hanzi dictionary,
   digits and symbols, emoji, shift/caps, repeating backspace, a layout key; its
   height feeds `--kbd-offset`). Direct and group chats automatically include
   participant languages (`detectParticipantLayouts`, `setChatLayouts`), with `en`
@@ -251,7 +253,7 @@ and update flows (2026-11-08, branch `feat/own-keyboard` on top of PR #152):
 - Both the app (`ui/src/i18n.ts`, `ui/src/locales/*.ts`) and the website
   (`site/main.js`, `site/index.html`) support 8 languages (`ru`, `en`, `uk`, `de`,
   `km`, `vi`, `hi`, `zh`) and select the default language from system locales and
-  installed system keyboard layouts (`navigator.keyboard.getLayoutMap()`).
+  the reported keyboard layout (`navigator.keyboard.getLayoutMap()`, where available).
 - All screens share one unified responsive light/dark IDE-console design
   (`ui/src/styles.css`, `authHeader()` in `ui/src/profile-salon.ts`, verified across
   316 combinations in `ui/tests/layout.test.mjs`).

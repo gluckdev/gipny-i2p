@@ -855,7 +855,9 @@ function updateFixture(overrides = {}) {
     getChatPrefs: async () => ({ clearOnLock: false }), getRouterSettings: async () => ({ transit: 'balanced', upnp: 'on' }),
     updateConfigured: async () => true, updateAsksForRoot: async () => false, updateInstallsItself: async () => true,
     getAutoUpdate: async () => true, setAutoUpdate: async () => {}, installUpdate: async () => {},
-    dismissUpdate: async () => {}, restartApp: async () => {}, ...overrides,
+    dismissUpdate: async () => {}, restartApp: async () => {},
+    vaultLock: async () => {}, clearMessageHistory: async () => {}, listProfiles: async () => ['ops'],
+    ...overrides,
   };
   const saved = Object.fromEntries(Object.keys(implementations).map(key => [key, ui.Api[key]]));
   Object.assign(ui.Api, implementations); ui.setLang('en');
@@ -987,6 +989,9 @@ test('App handles available, progress and staged events with a persistent restar
     const banner = f.app.el.querySelector('.update-banner');
     assert.equal(banner.classList.contains('hidden'), false); assert.match(banner.textContent, /0\.5\.1/);
     f.store.view.set('auth-create'); assert.equal(banner.isConnected, true);
+    await f.store.lock();
+    assert.equal(f.store.updateStaged.get(), release.version, 'staged process update survives profile lock');
+    assert.equal(banner.classList.contains('hidden'), false);
     banner.querySelector('[data-restart-update]').click(); await settleUpdates(); assert.equal(restarts, 1);
   } finally { f.cleanup(); }
 });
@@ -1010,13 +1015,19 @@ test('App dismisses offers and handles Android installer handoff without claimin
     [...document.querySelectorAll('.update-modal button')].find(button => button.textContent === ui.t('app.later')).click();
     await settleUpdates(); assert.deepEqual(dismissed, [release.version]); assert.equal(document.querySelector('.update-modal'), null);
     f.store.handleEvent({ UpdateAvailable: release }); await settleUpdates();
+    const modal = f.settings(); await settleUpdates();
+    f.store.handleEvent({ UpdateProgress: { downloaded: 1024, total: 1024, pct: 100 } });
+    assert.match(modal.el.querySelector('[data-update-status]').textContent, /100%/);
     f.store.handleEvent({ UpdateInstallerOpened: { version: release.version, path: '/downloads/gipny.apk' } });
+    assert.match(modal.el.querySelector('[data-update-status]').textContent, /Installer opened/, 'Settings clears downloading status on installer handoff');
     assert.equal(document.querySelector('.update-modal'), null);
     const handoff = document.querySelector('.update-installer-handoff'); assert.ok(handoff);
     assert.match(handoff.textContent, /0\.5\.1/); assert.match(handoff.textContent, /system installer/);
     assert.equal(f.store.updateStaged.get(), null); handoff.querySelector('button').click();
     assert.equal(f.store.updateInstallerOpened.get(), null); assert.equal(document.querySelector('.update-installer-handoff'), null);
     assert.equal(f.store.updateAvailable.get().version, release.version, 'cancelled installation remains retryable');
+    assert.match(modal.el.querySelector('[data-update-status]').textContent, /Ready to install/, 'closing handoff restores ready-to-install status in Settings');
+    modal.close();
   } finally { f.cleanup(); }
 });
 

@@ -943,7 +943,6 @@ export class Store {
     this.updateProgress.set(null);
     this.updateReadyPath.set(null);
     this.updateInstallerOpened.set(null);
-    this.updateStaged.set(null);
     this.updateError.set(null);
     await this.cancelToProfileSelect();
     // Locking killed the router with the session that held it. Start the next

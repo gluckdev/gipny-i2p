@@ -74,10 +74,21 @@ export class SettingsModal {
             updErr.textContent = error ? tr('settings.the_last_installation_attempt_failed', { p0: errorText(error) }) : '';
           }, true));
           updateSubs.push(store.updateProgress.subscribe(progress => {
-            if (progress) pending.textContent = tr('app.downloading', {
-              p0: humanSize(progress.downloaded), p1: humanSize(progress.total), p2: progress.pct,
-            });
+            if (progress) {
+              pending.textContent = tr('app.downloading', {
+                p0: humanSize(progress.downloaded), p1: humanSize(progress.total), p2: progress.pct,
+              });
+            } else if (!store.updateStaged.get() && !store.updateInstallerOpened.get()) {
+              showPending(store.updateAvailable.get());
+            }
             paintBusy();
+          }, true));
+          updateSubs.push(store.updateInstallerOpened.subscribe(opened => {
+            if (opened) {
+              pending.textContent = tr('app.installer_opened', { p0: opened.version });
+            } else if (!store.updateStaged.get() && !store.updateProgress.get()) {
+              showPending(store.updateAvailable.get());
+            }
           }, true));
           updateSubs.push(store.updateStaged.subscribe(version => {
             restartBtn.classList.toggle('hidden', !version);
