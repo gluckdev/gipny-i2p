@@ -38,6 +38,14 @@ unchanged). Версия / Version: `0.5.0-rc3` (ревью и исправле�
   тот же экран «[FAIL] Starting local relay»; тот же прогон теперь в CI
   (`ui/tests/webkit-smoke.mjs`, job `wasm`). Системный WebKitGTK 2.52 не создаёт
   OPFS sync access handles и для этого не годится.
+- **Живой NTCP2 в CI:** job был красным на `main` и во всех PR с 2026-11-06:
+  нативный пир после reseed держал 61 RouterInfo старше 36 ч, сессии к ним рвались,
+  свежих не приходило, `run_ntcp2_ci.py` падал по дедлайну. Теперь перед шагом
+  рукопожатий `collect-netdb` собирает свежий netDb, пир подсаживается на записи
+  моложе 36 ч (`browser-router/tests/netdb_seed.py`, unit-тесты), снапшот
+  холодного старта берётся оттуда же; reseed остался запасным путём. Принцип
+  владельца «автообновляемые перед сборкой апстримы» записан в
+  [workflows/README.md](../.github/workflows/README.md).
 
 Gipny — мессенджер поверх I2P. Desktop и Android используют общий UI и Rust Core
 с in-process i2pd; агент и боты — `SessionManager` общей библиотеки. Браузер
@@ -123,6 +131,14 @@ and the exact screen the owner saw (boot at 11 %, a blank page or a compatibilit
 message). The Safari engine is covered: the deployed Pages bundle in Playwright
 WebKit 27.2 creates the profile in 297 ms and hits the same "[FAIL] Starting local
 relay" screen; the same run is now in CI (`ui/tests/webkit-smoke.mjs`, `wasm` job).
+Live NTCP2 in CI had been red on `main` and every PR since 2026-11-06: after reseed
+the native peer held 61 RouterInfos older than 36 h, sessions to them reset, nothing
+fresher arrived and `run_ntcp2_ci.py` hit its deadline. The job now collects a fresh
+netDb with `collect-netdb` before the handshake step, seeds the peer only with
+records younger than 36 h (`browser-router/tests/netdb_seed.py`, unit-tested) and
+makes the cold-start snapshot from the same data; reseed remains the fallback. The
+owner's "upstreams refreshed before every build" principle is recorded in
+[workflows/README.md](../.github/workflows/README.md).
 The system WebKitGTK 2.52 cannot create OPFS sync access handles and is no substitute.
 
 Gipny runs on I2P. Desktop/Android share UI and Rust Core with in-process i2pd;

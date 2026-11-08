@@ -201,6 +201,21 @@ jobs:
           tool: wasm-pack
       - name: Install forwarder dependency
         run: python3 -m pip install websockets==15.0.1
+      - name: Unit tests of the CI harness helpers
+        run: python3 -m unittest discover -s browser-router/tests -p 'test_*.py' -v
+      # Reseed alone left the native peer with a few dozen RouterInfos, all
+      # older than the 36 h the verifier accepts, and no live neighbour to
+      # freshen them from (every PR and main run since 2026-11-06 failed
+      # there). The release snapshot's router, run here first with default
+      # transports, learns the live network; its fresh records seed the peer
+      # and the cold-bootstrap snapshot below is made from the same data.
+      - name: Fresh network database from the pinned router
+        run: |
+          mkdir -p "$RUNNER_TEMP/netdb-source"
+          browser-router/target/release/collect-netdb "$RUNNER_TEMP/netdb-source" | tee "$RUNNER_TEMP/netdb-source.log"
+          n=$(find "$RUNNER_TEMP/netdb-source/netDb" -name 'routerInfo-*.dat' | wc -l)
+          echo "GIPNY_NETDB_SOURCE=$RUNNER_TEMP/netdb-source" >> "$GITHUB_ENV"
+          { echo "### Fresh network database"; echo "$n routers collected; $(tail -n 1 "$RUNNER_TEMP/netdb-source.log")"; } >> "$GITHUB_STEP_SUMMARY"
       - name: Real NTCP2 handshakes from WASM in Chrome
         run: python3 browser-router/tests/run_ntcp2_ci.py
       - name: Build loadable browser module from source
@@ -242,6 +257,7 @@ jobs:
             ${{ runner.temp }}/browser-ntcp2/native-peer-stdout.log
             ${{ runner.temp }}/browser-ntcp2/native-peer/i2pd.log
             ${{ runner.temp }}/browser-ntcp2/candidates.tsv
+            ${{ runner.temp }}/netdb-source.log
           if-no-files-found: warn
           retention-days: 5
       - name: Keep bootstrap and exploratory evidence

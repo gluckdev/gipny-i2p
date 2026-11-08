@@ -8,6 +8,9 @@ import sys
 import time
 import argparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from netdb_seed import seed_router_infos  # noqa: E402
+
 
 def wait_port(port, seconds=15, process=None):
     deadline = time.monotonic() + seconds
@@ -35,6 +38,14 @@ def main(router_mode=False):
     capability_file.chmod(0o600)
     peer_log = (output / "native-peer-stdout.log").open("w")
     forwarder_log = (output / "forwarder.log").open("w")
+    # Fresh public RouterInfos from the collector that ran just before (the
+    # workflow exports GIPNY_NETDB_SOURCE). Reseed alone gave the peer only
+    # stale records and no live neighbour; see netdb_seed.py.
+    source = os.environ.get("GIPNY_NETDB_SOURCE")
+    if source:
+        data.mkdir(parents=True, exist_ok=True)
+        report = seed_router_infos(Path(source) / "netDb", data)
+        print(report.line(), flush=True)
     peer = subprocess.Popen([str(root / "target/release/native-peer"), str(data)], stdout=peer_log, stderr=subprocess.STDOUT)
     forwarder = None
     try:
