@@ -183,6 +183,10 @@ export class Osk {
     const key = this.keyOf(e);
     if (!key) return;
     e.preventDefault();
+    // A touch tap can still hand focus to the key itself (Chromium 83 did,
+    // despite the cancelled pointerdown): give it back to the field first, or
+    // the focus bounce re-shows the panel with its state reset.
+    if (this.target && document.activeElement !== this.target) this.target.focus();
     const c = key.dataset.c;
     if (c !== undefined) { this.type(c); return; }
     switch (key.dataset.k) {
