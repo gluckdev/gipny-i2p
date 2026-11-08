@@ -97,6 +97,25 @@ jobs:
           path: ui/browser-dist/
           if-no-files-found: error
           retention-days: 5
+      # WebKit is the engine behind Safari and every iOS browser. Chrome tests
+      # cannot see a WebKit-only gap (OPFS, module workers, WASM); this opens the
+      # built client there, served as Pages serves it today (no network
+      # configuration), creates a profile and expects the chats to open with
+      # the hosting notice. Needs a persistent context: WebKit has no OPFS in an
+      # ephemeral one.
+      - name: Install Playwright WebKit
+        run: cd ../ui && npx playwright install --with-deps webkit
+      - name: Open the built client in WebKit, create a profile, reach the chats
+        run: node ../ui/tests/webkit-smoke.mjs --dist ../ui/browser-dist --out "$RUNNER_TEMP/webkit-smoke"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: browser-webkit-smoke
+          path: ${{ runner.temp }}/webkit-smoke/
+          # A browser that never launched wrote no log; the failed step above
+          # is the error, not a missing upload.
+          if-no-files-found: warn
+          retention-days: 5
       - name: Install WebSocket fixture
         run: python3 -m pip install websockets==15.0.1
       - name: Execute WASM tests in headless Chrome
