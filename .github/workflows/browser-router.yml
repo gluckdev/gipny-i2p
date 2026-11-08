@@ -80,7 +80,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -224,7 +224,7 @@ jobs:
         run: wasm-pack build --target web --release --locked
       - name: Cold browser bootstrap from a downloaded netDb snapshot
         run: python3 browser-router/tests/run_bootstrap_ci.py
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: ${{ !cancelled() && steps.browser_module.outcome == 'success' }}
         with:
           node-version: '24'
