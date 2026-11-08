@@ -64,6 +64,15 @@ TURN — отдельная услуга. Нераспознаваемость �
 по требованию, измерения по шагам —
 [план](plans/2026-11-08-boot-and-inbox-latency.md).
 
+### Экспорт и импорт браузерного профиля — запись 2026-11-08
+
+Сейчас браузерный профиль не экспортируется, очистка данных сайта его уничтожает.
+План: схема нативного бэкапа переезжает в `libcore`, браузер делает переносимый
+бэкап того же формата (миграция браузер ↔ натив, сессии заново) и снимок
+профиля «как было» для восстановления; потоковый экспорт через download-SW,
+импорт только в новый профиль, проверки WASM/e2e/WebKit —
+[план](plans/2026-11-08-browser-profile-export-import.md).
+
 ## English
 
 Prioritize current-message integrity, authority revocation, storage boundaries,
@@ -121,3 +130,12 @@ build the relay in parallel and collect from the DHT early (branch
 `perf/boot-parallel-relay`, no owner decision needed), then the decisions on a
 stable mailbox address and progressive tunnel length, address lookup on demand,
 per-step measurements — [plan](plans/2026-11-08-boot-and-inbox-latency.md) (Russian).
+
+### Browser profile export and import — 2026-11-08 entry
+
+The browser profile cannot be exported today; clearing site data destroys it.
+Plan: the native backup schema moves into `libcore`, the browser produces a
+portable backup of the same format (browser ↔ native migration, sessions are
+re-established) and a byte-exact profile snapshot for recovery; streamed export
+through the download service worker, import only into a new profile, WASM/e2e/
+WebKit checks — [plan](plans/2026-11-08-browser-profile-export-import.md) (Russian).
