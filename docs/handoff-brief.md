@@ -76,7 +76,9 @@ Honor: запрос и сообщение за 32 с, ответ за 2 с). Д�
 `inputmode="none"` (ставит `h()`), набирает панель приложения (`ui/src/osk.ts`:
 раскладки ru/en/de, цифры и символы, эмодзи, shift/caps, повтор backspace,
 клавиша раскладки; высота панели идёт в `--kbd-offset`, как у системной).
-Тесты `ui/tests/keyboard.test.mjs`, превью `dev/preview.html?scene=chat&osk=1`
+На Android окно дополнительно не взаимодействует с IME (`FLAG_ALT_FOCUSABLE_IM`
+в `MainActivity.kt`): Huawei WebView 11 привязывал системную клавиатуру вопреки
+`inputmode="none"`. Тесты `ui/tests/keyboard.test.mjs`, превью `dev/preview.html?scene=chat&osk=1`
 (проверяет, что поле ввода над клавишами). План, срезы (vi Telex, km NiDA,
 настройка auto/on/off, язык собеседника) и открытые вопросы —
 [plans/2026-11-08-own-keyboard.md](plans/2026-11-08-own-keyboard.md).
@@ -145,7 +147,10 @@ The app's own on-screen keyboard (2026-11-08, branch `feat/own-keyboard` on top
 of PR #152): on phones the system keyboard never appears — every text field gets
 `inputmode="none"` from `h()` and the app's panel types instead (`ui/src/osk.ts`:
 ru/en/de layouts, digits and symbols, emoji, shift/caps, repeating backspace, a
-layout key; its height feeds `--kbd-offset` as a system keyboard did). Tests in
+layout key; its height feeds `--kbd-offset` as a system keyboard did). On Android
+the window also declares itself IME-free (`FLAG_ALT_FOCUSABLE_IM` in
+`MainActivity.kt`): Huawei WebView 11 bound the system keyboard despite
+`inputmode="none"`. Tests in
 `ui/tests/keyboard.test.mjs`; preview `dev/preview.html?scene=chat&osk=1` checks
 that the field stays above the keys. Plan, slices (vi Telex, km NiDA, an
 auto/on/off setting, the contact's language) and open questions:

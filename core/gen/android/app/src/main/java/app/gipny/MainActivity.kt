@@ -24,6 +24,17 @@ class MainActivity : TauriActivity() {
       android.view.WindowManager.LayoutParams.FLAG_SECURE,
       android.view.WindowManager.LayoutParams.FLAG_SECURE
     )
+    // On a phone the app draws its own keyboard (owner decision 2026-11-07):
+    // the system IME must never see what is typed. inputmode="none" on the
+    // fields is not enough everywhere — Huawei WebView 11 (Chromium 83) still
+    // bound HeliBoard to a touched field — so the window itself declares that
+    // it does not interact with the input method: the IME is not shown for it
+    // at all, while a hardware or Bluetooth keyboard keeps delivering keys.
+    window.setFlags(
+      android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
+      android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+    )
+    window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
     val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
     windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
