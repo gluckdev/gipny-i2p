@@ -259,3 +259,30 @@ The only approach with a working precedent is "Rust async core + pluggable socke
 ### Gaps
 - No source attempted a cost estimate for porting an I2P router specifically; the inference above transfers Tor numbers by analogy only.
 - The feasibility of a "WebTransport/WebRTC RouterAddress" in I2P's NTCP2/SSU2 specs (so native routers could be dialed directly from browsers) was out of scope and not researched.
+
+---
+
+## Recheck 2026-11-08 — what changed since 2026-11-01
+
+Method: GitHub repository, code and issue search (REST, 2026-11-08), web search, READMEs fetched the same day. The gaps above (zzz.i2p, Reddit) were not searched again. Verdict: Key question 1 still holds — no I2P implementation other than this project has a browser build or a wasm target; the only in-browser I2P router a web search returns is this project's PR #143 (2026-11-01). Assessment in Russian: `docs/plans/2026-11-08-browser-router-prior-art-recheck.md`.
+
+### Cited Findings
+- Issue search for `wasm`, `webassembly`, `browser`, `emscripten` returned 0 results in PurpleI2P/i2pd, go-i2p/go-i2p and eepnet/emissary on 2026-11-08. emissary's latest release is v0.4.0 (2026-04-12); this project pins a later trunk commit — [eepnet/emissary releases](https://github.com/eepnet/emissary/releases).
+- NeuroMarshal/axon-i2p (created 2026-10-17, 0 stars, MIT/Apache-2.0): "An I2P router built on Axon. It joins the real I2P network … It is a proof of concept"; works: reseed with signature checks, NTCP2, netDb lookups, inbound/outbound tunnels, ECIES-X25519 garlic, streaming; leaves out: SSU2, peer profiling, encrypted LeaseSets, persistent identity ("new on every start"); README: "Much of the code and nearly all of the documentation were written with AI … Nobody has reviewed it for security" — [NeuroMarshal/axon-i2p](https://github.com/NeuroMarshal/axon-i2p). Its base library: "`axon-core` and `axon-addons` are state machines without I/O. They need only `alloc`, never read a clock … CI builds them for `wasm32v1-none`" — [NeuroMarshal/axon](https://github.com/NeuroMarshal/axon).
+- webtor-rs moved to the `ethereum` organisation; "Current Version: v0.5.7 | Arti: 1.8.0 (tor-proto 0.37.0)"; transports Snowflake over WebSocket and WebRTC ("Turbo - framing, KCP - reliability, SMUX - multiplexing") and WebTunnel (HTTPS upgrade); "WASM binary (~1.2MB gzipped)"; limitations "Onion Services … not yet implemented", "Mobile - Not optimized for mobile browsers", "not yet undergone a formal third-party security audit"; releases v0.5.3 (2025-12-21) to v0.5.7 (2026-01-06); 27 stars — [ethereum/webtor-rs](https://github.com/ethereum/webtor-rs).
+- andrewtheguy/webtor-rs (created 2026-08-25): "A browser Tor onion client and server, compiled to WASM, that reaches v3 onion services over http:// and ws:// or serve .onion hidden service on web" — [andrewtheguy/webtor-rs](https://github.com/andrewtheguy/webtor-rs).
+- MaukTenieb/faunator: "Two Tor clients compiled to WebAssembly run in the page" (webtor-rs v0.5.7 and andrewtheguy/webtor-rs v0.0.1-alpha.25) reaching Tor "through Snowflake"; a workflow "fetches the Tor consensus and microdescriptors twice a day and publishes them under `tor/`, so the web client reads them over GitHub Pages"; "count tens of seconds for the first circuit"; optional relay "as a free Cloudflare Worker (100,000 requests a day)" — [MaukTenieb/faunator](https://github.com/MaukTenieb/faunator).
+- nostra-chat (created 2026-04-10, "early alpha", GPL-3.0): "100% client-side Progressive Web App … forked from Telegram Web K … peer-to-peer encrypted chat over Nostr relays and integrates Tor via WASM"; "Privacy | Tor via webtor-rs (Arti WASM)"; browser table: Firefox 115+ tested ("Tor WASM slower than Chromium"), "Safari 16+ | Partial | SharedWorker disabled by default", "Mobile Safari (iOS 16+) | Partial | Service Worker quirks, background delivery limited"; roadmap includes "In-browser mini-relay" and "P2P mesh — WebRTC DataChannel between contacts, tunneled through Tor" — [nostra-chat/nostra-chat](https://github.com/nostra-chat/nostra-chat).
+- RingsNetwork/rings (220 stars): "browser-native, structured peer-to-peer network: browser tabs and native daemons find each other by DID and talk over WebRTC, routed by a Chord DHT" (Rust/wasm) — [RingsNetwork/rings](https://github.com/RingsNetwork/rings).
+- cmyocyte/tor-wasm: 1 star, last update 2026-03-27, still "Not audited" — [cmyocyte/tor-wasm](https://github.com/cmyocyte/tor-wasm).
+- This project: the spike (#143) built exploratory tunnels in Chrome CI; the messenger shipped in 0.5.0-rc3; on 2026-11-08 the same client created a profile and opened its chats in Playwright WebKit 27.2 (profile 0.3–0.5 s, chats 0.7 s) while the hosted Pages copy ran without a bridge configuration — [gluckdev/gipny-i2p#154](https://github.com/gluckdev/gipny-i2p/pull/154).
+
+### Inferences
+- The conclusion of Key question 7 is now confirmed by execution, not only by analogy: a Rust protocol core behind a runtime abstraction plus a native-side bridge is the route that works for Tor (webtor-rs) and for I2P (this project); nothing surfaced on the C++/Emscripten or Java/CheerpJ paths.
+- axon-i2p is a design reference for a sans-I/O I2P client core (time injected, `no_std`, wasm32 in CI), not a dependency: unreviewed, AI-written, no persistent identity.
+- Every browser anonymity client found still terminates on a native bridge (Snowflake bridge, WebTunnel server, Cloudflare Worker relay); the bridge host remains the deployment question for this project too.
+- The "partial" Safari 16+ / iOS 16+ status reported by nostra-chat is consistent with this project's Safari/iOS 16.4 floor and its WebKit smoke test; "tens of seconds for the first circuit" (FaunaTor) matches this project's 34–50 s cold starts in CI.
+
+### Gaps
+- zzz.i2p, i2pforum.net and Reddit were not re-searched. GitHub issue search is semantic and English-only; a Russian-language or forum-only announcement would be missed.
+- Cloudflare Workers as a bridge host (outbound TCP from a Worker to allowlisted NTCP2 peers; what the operator and Cloudflare would see) was not evaluated.
