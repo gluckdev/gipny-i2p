@@ -230,10 +230,14 @@ export class SettingsModal {
         (() => {
           // The choice is read once per page load (oskActive() caches it), so
           // unlike theme or language it cannot apply while the app runs.
+          // On Android the window does not interact with the system keyboard
+          // at all (MainActivity.kt), so "never" would be a dead choice there
+          // until a JS → Activity bridge exists.
+          const android = isTauri && /Android/.test(navigator.userAgent);
           const choices: { id: OskMode; title: string }[] = [
             { id: 'auto', title: tr('settings.osk_auto') },
             { id: 'on', title: tr('settings.osk_on') },
-            { id: 'off', title: tr('settings.osk_off') },
+            ...(android ? [] : [{ id: 'off' as OskMode, title: tr('settings.osk_off') }]),
           ];
           const note = h('div', { class: 'hint hidden', style: { marginTop: '6px' } });
           const current = getOskMode();
