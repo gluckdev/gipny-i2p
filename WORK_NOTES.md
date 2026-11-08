@@ -477,3 +477,24 @@ Java в Safari не запустить; отдельный роутер = сер
 
 SECURITY: repo VARIABLE `DHT_SEED_AGE_KEY` содержит приватный age-ключ
 (relay-testnet.yml ждёт SECRET) — перенести в secret и ротировать.
+
+### Итог 2026-11-08 (ветка fix/browser-boot-without-bridge, 4 коммита от fa0819e)
+- 6c77c5d ui(browser): hosted.state 'unconfigured' в browser-core; экран загрузки
+  говорит «на этом хостинге нет сетевого сервиса», вход в чаты сразу; баннер в
+  main; ошибка создания/разблокировки остаётся в форме (Store.authError);
+  isBackgroundStep/bootBlocked; boot.test.mjs (7). RU-строки перевёл Codex (Orca).
+- 104aade ui(browser): BROWSER_FLOOR safari16.4/ios16.4/chrome108/edge108/firefox111,
+  гейт ui/tests/browser-compat.test.mjs; storage.ts проверка формы sync-хэндла
+  (Promise = старый Safari), InvalidStateError (WebKit) = конфликт хэндла;
+  client.ts: нет WebAssembly → понятная ошибка (Lockdown Mode); estimate?.().
+- 023a17b ci(browser): ui/tests/webkit-smoke.mjs в job wasm (Playwright WebKit,
+  persistent context!), артефакт browser-webkit-smoke; run_messenger_ci.py
+  fast-fail на 'unconfigured'; ui/browser-dist/ в .gitignore; playwright devDep.
+- b22f2c3 docs: hosting status + чеклист моста, Safari 16.4, handoff, README, current-state.
+Проверено локально: build:browser, npm test (29/38/3/7), webkit-smoke (main view
+через 0.7 с, профиль после reload), Chrome CDP: main view через 1 с с баннером.
+Playwright WebKit локально: ~/.cache/ms-playwright/webkit-2388 собран вручную
+(curl + libmanette/libhidapi .so в sys/lib), запуск с
+PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1; в CI достаточно install --with-deps.
+После merge #153 (de.ts) добавить DE для двух новых ключей (Codex).
+Worktree ../gipny-i2pd-wt-browser-boot удалить после merge (one-branch policy).
