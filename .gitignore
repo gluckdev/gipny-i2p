@@ -5,6 +5,7 @@ target/
 node_modules/
 **/node_modules/
 ui/dist/
+ui/browser-dist/
 ui/.vite/
 
 release-artifacts/

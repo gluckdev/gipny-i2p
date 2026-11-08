@@ -1,4 +1,4 @@
-import type { SyncFile } from './storage';
+import { isHandleConflict, type SyncFile } from './storage';
 import { hex, unhex, type StoredBlob } from './model';
 
 export const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -59,7 +59,7 @@ export class FileStorage {
       const opening = (async () => {
         const file = await this.directory.getFileHandle(id, { create }) as FileSystemFileHandle & { createSyncAccessHandle(): Promise<SyncFile> };
         const handle = await file.createSyncAccessHandle().catch((error: unknown) => {
-          throw error instanceof DOMException && error.name === 'NoModificationAllowedError' ? new StorageBusy() : error;
+          throw isHandleConflict(error) ? new StorageBusy() : error;
         });
         if (this.closed || late) { handle.close(); throw new Error(late ? 'Abandoned attachment handle' : 'Profile is locked'); }
         return handle;
@@ -88,7 +88,10 @@ export class FileStorage {
   async create(size: number, chunk = STORED_CHUNK, pending = 0): Promise<StoredBlob> {
     this.check();
     if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_BYTES || !Number.isSafeInteger(chunk) || chunk < 1 || chunk > STORED_CHUNK || Math.ceil(size / chunk) > 10923) throw new Error('File size limit is 2 GiB');
-    if (storedSize(size, chunk) > availableFileBytes(await navigator.storage.estimate(), pending)) throw new Error('Not enough browser storage for this file');
+    // Safari before 17 has no estimate(); the reservation below still fails
+    // with QuotaExceededError when the quota is short.
+    const estimate = await navigator.storage.estimate?.();
+    if (estimate && storedSize(size, chunk) > availableFileBytes(estimate, pending)) throw new Error('Not enough browser storage for this file');
     this.check();
     const id = hex(crypto.getRandomValues(new Uint8Array(32)));
     const key = hex(this.engine.new_attachment_key(id));

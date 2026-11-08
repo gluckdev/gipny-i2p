@@ -1,7 +1,10 @@
 # Браузерный мессенджер / Browser messenger
 
-Состояние / Status: 2026-11-06, исходники и локальные изменения; новые транспортные
-проверки CI ожидаются / source and local changes; new transport CI pending.
+Состояние / Status: 2026-11-08. Публичный клиент на Pages работает только offline:
+переменная `GIPNY_BROWSER_CONFIG_JSON` не задана, мост не развёрнут; новые
+транспортные проверки CI ожидаются / The public Pages client is offline-only: the
+`GIPNY_BROWSER_CONFIG_JSON` variable is unset and no bridge is deployed; new
+transport CI pending.
 
 ## Русский
 
@@ -19,6 +22,34 @@ WebAuthn PRF можно добавить passkey; пароль сохраняй�
 оболочки сохранённая история доступна без сети. Очистка данных сайта и квоты
 браузера могут удалить профиль. Экспорт/импорт браузерного профиля пока не
 реализованы; нативная функция экспорта не означает её наличие в WASM-клиенте.
+
+### Требования к браузеру
+
+Нужны актуальные Chrome или Firefox либо Safari/iOS 16.4. Клиент проверяет
+совместимость при загрузке и называет причину отказа. В Lockdown Mode WebAssembly
+отключён: клиент не запускается. В приватном режиме нет постоянного приватного
+хранилища (OPFS): профиль создать нельзя, откройте обычное окно.
+
+<a id="hosting-status"></a>
+### Состояние размещения
+
+Публичный клиент https://gluckdev.github.io/gipny-i2p/app/browser.html работает
+только offline: рядом с ним нет `browser-config.json` (HTTP 404), потому что
+repository variable `GIPNY_BROWSER_CONFIG_JSON` не задана, а публичный мост, TURN,
+снапшот netDb и домен не развёрнуты. WASM-роутер не стартует ни в одном браузере.
+Человек создаёт профиль и читает сохранённые чаты; экран загрузки сообщает, что
+этот хостинг не предоставляет сетевой сервис, и открывает чаты offline. Отправка
+и приём появятся после развёртывания оператором.
+
+Чтобы выйти в сеть, оператор делает по порядку:
+
+1. Хост с публичным IP и доменом.
+2. TLS-сертификат для домена.
+3. Rust-форвардер `browser-router/forwarder`: путь `/stream` для WSS или `/rtc` и TURN для WebRTC; [его README](../browser-router/forwarder/README.md).
+4. Снапшот netDb, его SHA-256 и allowlist из `collect-netdb` / `prepare-netdb` в Actions.
+5. Capability-токен моста.
+6. Repository variable `GIPNY_BROWSER_CONFIG_JSON` по [схеме](#hosting-preparation) и повторный деплой Pages.
+7. Проверка: `curl -I https://gluckdev.github.io/gipny-i2p/app/browser-config.json` возвращает 200, экран загрузки проходит шаг релея.
 
 ### Самостоятельное приложение и роль хостинга
 
@@ -157,7 +188,8 @@ link-local диапазонов IPv4/IPv6), `no-multicast-peers`, `no-tcp-relay`
 (мост шлёт его каждые 20 с); для `"webrtc"` мосту нужен `--rtc-public-ip` или
 публичный `--rtc-bind` и открытый диапазон эфемерных UDP-портов.
 Pages берёт эту публичную конфигурацию из repository variable
-`GIPNY_BROWSER_CONFIG_JSON`; отсутствие переменной оставляет клиент offline.
+`GIPNY_BROWSER_CONFIG_JSON`; отсутствие переменной оставляет клиент offline
+(так на 2026-11-08, см. [состояние размещения](#hosting-status)).
 `scripts/prepare-browser-config.py` проверяет данные без вывода их значений.
 
 Снимок и allowlist формируют `collect-netdb` / `prepare-netdb` в GitHub Actions.
@@ -174,6 +206,13 @@ Pages берёт эту публичную конфигурацию из reposit
 Прямой ICE на CI не доказывает работу TURN, CDN или телефона.
 Нужны отдельные проверки Chrome/Firefox/Safari, NAT, запрета UDP, TURN/TLS,
 сна, смены Wi-Fi/mobile, переполнения очередей и ухода со страницы.
+Движок Safari проверяется в CI: job `wasm` открывает собранный клиент в
+Playwright WebKit на Linux (`ui/tests/webkit-smoke.mjs`, артефакт
+`browser-webkit-smoke`): страница отдаётся без `browser-config.json`, как на
+Pages сегодня, создаётся профиль, чаты должны открыться с уведомлением о
+хостинге, профиль должен остаться после перезагрузки. Нужен persistent-контекст:
+в эфемерном WebKit не даёт OPFS. Системный WebKitGTK 2.52 этот путь не выполняет
+(нет OPFS sync access handles). Настоящий Safari и телефон CI не заменяет.
 [Прежние результаты](archive/browser-validation-2026-11-01.md) относятся к старым SHA.
 
 ## English
@@ -192,6 +231,33 @@ PWA installation depends on the browser. After shell caching, saved history is
 available offline. Clearing site data or storage eviction can remove the profile;
 browser profile export/import is not implemented yet. Native export support
 does not imply that this capability exists in the WASM client.
+
+### Browser requirements
+
+Current Chrome or Firefox, or Safari/iOS 16.4. The client checks
+compatibility at load time and states the reason when it refuses. Lockdown Mode
+disables WebAssembly: the client does not start. Private browsing has no persistent
+private storage (OPFS): no profile can be created; use a normal window.
+
+### Hosting status
+
+The public client at https://gluckdev.github.io/gipny-i2p/app/browser.html is
+offline-only: it has no `browser-config.json` beside it (HTTP 404), because the
+repository variable `GIPNY_BROWSER_CONFIG_JSON` is unset and no public bridge, TURN,
+netDb snapshot or domain is deployed. The WASM router does not start in any browser.
+A person creates a profile and reads saved chats; the boot screen states that this
+hosting provides no network service and opens the chats offline. Sending and
+receiving begin once an operator deploys the service.
+
+To go live, an operator does, in order:
+
+1. A host with a public IP and a domain.
+2. A TLS certificate for the domain.
+3. The Rust forwarder `browser-router/forwarder`: path `/stream` for WSS, or `/rtc` plus TURN for WebRTC; [its README](../browser-router/forwarder/README.md).
+4. A netDb snapshot, its SHA-256 and the allowlist from `collect-netdb` / `prepare-netdb` in Actions.
+5. The bridge capability token.
+6. The repository variable `GIPNY_BROWSER_CONFIG_JSON` per the [schema](#hosting-preparation), then a Pages redeploy.
+7. Verification: `curl -I https://gluckdev.github.io/gipny-i2p/app/browser-config.json` returns 200 and the boot screen passes the relay step.
 
 ### A standalone application and the hosting boundary
 
@@ -308,5 +374,13 @@ The workflow covers bridge boundaries, WASM/UI, NTCP2, cold starts, two-browser
 WSS/WebRTC messaging, attachments, PRF, locking and profile/outbox recovery.
 CI direct ICE is not TURN/CDN/physical-mobile validation. Chrome/Firefox/Safari,
 NAT, blocked UDP, TURN/TLS, sleep, network changes, bounded queues and lifecycle
-need explicit results. [Historical evidence](archive/browser-validation-2026-11-01.md)
+need explicit results. The Safari engine is checked in CI: the `wasm` job opens
+the built client in Playwright WebKit on Linux (`ui/tests/webkit-smoke.mjs`,
+artifact `browser-webkit-smoke`): the page is served without `browser-config.json`
+as Pages serves it today, a profile is created, the chats must open with the
+hosting notice and the profile must survive a reload. It needs a persistent
+context; WebKit has no OPFS in an ephemeral one. The system WebKitGTK 2.52 does
+not run this path (no OPFS sync access handles). CI does not replace real Safari
+or a phone.
+[Historical evidence](archive/browser-validation-2026-11-01.md)
 does not validate these new changes.

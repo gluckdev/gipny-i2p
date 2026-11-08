@@ -21,6 +21,9 @@ export class BrowserCoreClient implements BrowserBackend {
   }
   private ensureWorker(): Promise<unknown> {
     if (this.init) return this.init;
+    // iOS Lockdown Mode and some hardened browsers remove the WebAssembly
+    // global; the Rust core cannot start and a worker would only die quietly.
+    if (typeof WebAssembly === 'undefined') throw new Error('WebAssembly is disabled in this browser (Lockdown Mode or a restrictive policy), so the messenger cannot run here');
     const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'gipny-core' });
     this.worker = worker;
     this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;

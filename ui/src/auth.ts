@@ -2,7 +2,7 @@ import { errorText } from './error-text';
 import { languagePicker } from './language-picker';
 import { t as tr } from './i18n';
 import { Api, usesBrowserCore } from './api';
-import type { Store, BootStep, BootStepId } from './state';
+import { isBackgroundStep, type Store, type BootStep, type BootStepId } from './state';
 import { View, h, busy, logo } from './view';
 import { salonBackdrop, salonEmblem } from './profile-salon';
 
@@ -31,6 +31,8 @@ export class AuthCreate extends View {
     this.wipeC = h('input', { type: 'checkbox', checked: true });
     this.attemptsI = h('input', { class: 'input', type: 'number', value: usesBrowserCore() ? '0' : '10', min: '0', max: '100' });
     this.err = h('div', { class: 'err' });
+    // The form is rebuilt after a failed attempt; the message outlives it in the Store.
+    this.sub(store.authError, (text) => { this.err.textContent = text ?? ''; });
 
     const hasProfiles = store.profiles.get().length > 0;
 
@@ -112,8 +114,12 @@ export class AuthCreate extends View {
     } catch (e) {
       if (!this.store.isBooting(profile)) return;
       this.store.endBoot();
+      // Into the form as well as the toast: the toast is gone in seconds, and
+      // on a phone that is before it has been read.
+      const text = tr('auth.could_not_create_profile', { p0: (errorText(e)) });
+      this.store.authError.set(text);
       this.store.view.set('auth-create');
-      this.store.showToast(tr('auth.could_not_create_profile', { p0: (errorText(e)) }), true);
+      this.store.showToast(text, true);
     }
   }
 }
@@ -147,6 +153,7 @@ export class AuthUnlock extends View {
       h('label', { for: 'unlock-totp' }, tr('auth.totp_code')), this.totpI,
       h('div', { class: 'hint' }, tr('auth.totp_hint')));
     this.err = h('div', { class: 'err' });
+    this.sub(store.authError, (text) => { this.err.textContent = text ?? ''; });
     this.net = h('div', { class: 'auth-net' });
     this.biometricBtn = h('button', { class: 'btn btn-ghost btn-block hidden', type: 'button', disabled: true,
       title: tr('auth.biometric_prompt'), onClick: () => void this.unlock('biometric') }, tr('auth.biometric_unlock'));
@@ -243,12 +250,15 @@ export class AuthUnlock extends View {
       if (!profile || !this.store.isBooting(profile)) return;
       const msg = String(e);
       this.store.endBoot();
+      const text = /totp|2fa|authenticator code/i.test(msg) ? tr('auth.totp_invalid')
+        : msg.includes('wiped') ? tr('auth.profile_wiped')
+        : msg.includes('invalid passphrase') ? tr('auth.wrong_pass')
+        : method === 'biometric' ? tr('auth.biometric_failed')
+        : errorText(msg);
+      // The same message stays in the rebuilt form once the toast has gone.
+      this.store.authError.set(text);
       this.store.view.set('auth-unlock');
-      if (/totp|2fa|authenticator code/i.test(msg)) this.store.showToast(tr('auth.totp_invalid'), true);
-      else if (msg.includes('wiped')) this.store.showToast(tr('auth.profile_wiped'), true);
-      else if (msg.includes('invalid passphrase')) this.store.showToast(tr('auth.wrong_pass'), true);
-      else if (method === 'biometric') this.store.showToast(tr('auth.biometric_failed'), true);
-      else this.store.showToast(errorText(msg), true);
+      this.store.showToast(text, true);
     } finally {
       this.unlocking = false;
       if (!this.disposed) this.setBusy(false);
@@ -337,6 +347,9 @@ export class AuthBooting extends View {
       this.paint(store.bootSteps.get());
     });
     this.sub(store.bootStage, () => this.paint(store.bootSteps.get()));
+    // Whether a failed relay row says "retrying" or "no network service here"
+    // is known only once the core has been asked about the relay.
+    this.sub(store.relayInfo, () => this.paint(store.bootSteps.get()), false);
     this.timer = window.setInterval(() => this.tick(), 500);
   }
 
@@ -353,10 +366,11 @@ export class AuthBooting extends View {
   }
 
   private paint(steps: BootStep[]): void {
-    // The relay and the relay network keep retrying after the chats open: a
-    // failure there is not a reason to go back and sign in again.
-    const background = (step: BootStep): boolean => step.id === 'relay' || step.id === 'dht';
+    const background = (step: BootStep): boolean => isBackgroundStep(step.id);
     const failed = steps.find((step) => step.state === 'failed' && !background(step));
+    // "We will keep trying" is only true while there is a network service to
+    // try. The browser client on a hosting without one gets the truth instead.
+    const unconfigured = this.store.relayInfo.get()?.hosted.state === 'unconfigured';
     this.backBtn.classList.toggle('hidden', !failed);
     if (this.store.bootResuming.get()) {
       this.summaryEl.textContent = failed?.detail || (this.store.bootStage.get() === 'done'
@@ -380,7 +394,7 @@ export class AuthBooting extends View {
         : step.state === 'done' ? `· ${fmtBootMs(step.ms)}` : '';
       hint.textContent = step.state !== 'failed'
         ? bootLabels().find(([id]) => id === step.id)?.[2] ?? ''
-        : background(step) ? tr('boot.retrying_in_background')
+        : background(step) ? tr(unconfigured ? 'boot.network_unconfigured' : 'boot.retrying_in_background')
         // With no log in stable builds, the reason shown here is all there is.
         : step.detail ? `${tr('boot.stage_failed')} ${errorText(step.detail)}` : tr('boot.stage_failed');
     }

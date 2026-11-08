@@ -117,7 +117,11 @@ export type HostedRelayState =
   | { state: 'off' }
   | { state: 'starting' }
   | { state: 'ready'; address: string }
-  | { state: 'failed'; reason: string };
+  | { state: 'failed'; reason: string }
+  /** Browser core only: the hosting serves the client without a network
+   * service, so unlike `failed` nothing retries. The native core never
+   * reports it. */
+  | { state: 'unconfigured'; reason: string };
 
 export interface RelayInfo {
   mode: RelayMode;

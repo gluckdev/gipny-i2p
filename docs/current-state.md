@@ -18,8 +18,8 @@ tests pass, while CI and device validation are separate evidence.
 | Проверка X3DH, групп, длины ключей | Init проверяется до изменения состояния; состав группы меняет только участник; неверная длина ключа — ошибка, не panic |
 | Локальный gipny-web | Удалён по решению владельца; веб-клиент — WASM |
 | WSS / WebRTC Rust-мост | Только NTCP2-цели на допустимых портах, keepalive для прокси, TCP после DataChannel; unit/e2e-тесты моста пройдены локально, живые TURN/NAT — нет |
-| Pages /app/browser.html | Workflow готовит WASM-клиент; публикация требует успешного запуска main |
-| Онлайн веб-сервис | Дополнительно нужны HTTPS-хостинг, свежий netDb, доступный мост и конфигурация |
+| Pages /app/browser.html | Опубликован, работает только offline (2026-11-08): `browser-config.json` отвечает 404, переменная `GIPNY_BROWSER_CONFIG_JSON` не задана, мост не развёрнут; профиль и сохранённые чаты открываются, сеть недоступна |
+| Онлайн веб-сервис | Не развёрнут: нужны хост с публичным IP и доменом, TLS, мост, свежий netDb, TURN для WebRTC и переменная конфигурации; [чек-лист](browser-messenger.md#hosting-status) |
 | Повторный запуск без GitHub/хостинга | Код, публичные настройки и проверенный снапшот netDb кэшируются; браузер также сохраняет свой живой netDb (каждые 15 мин работы) и стартует с него, если снапшот недоступен. Записи старше 36 часов отвергаются, поэтому тёплый старт держится, пока клиент регулярно работает; первый запуск требует bootstrap. Сценарий CI с остановленным хостингом подготовлен |
 | WebRTC через TURN | Настройка предусмотрена; отдельные NAT/TURN, CDN и мобильные проверки обязательны |
 | Маскировка native NTCP2/SSU2 | В нативный транспорт ещё не интегрирована |
@@ -52,8 +52,8 @@ C++ upstream. Python и другие языки разрешены в CI и сл
 | X3DH, group and key-length checks | Inits are authenticated before state changes; only members change a group; bad key lengths are errors, not panics |
 | Local gipny-web | Removed by owner decision; WASM is the web client |
 | Rust WSS / WebRTC bridge | NTCP2 targets on allowed ports only, proxy keepalive, TCP after the DataChannel opens; bridge tests pass locally, live TURN/NAT pending |
-| Pages /app/browser.html | Workflow prepares WASM; publication needs a successful main deployment |
-| Online browser service | Also needs HTTPS hosting, fresh netDb, an available bridge and configuration |
+| Pages /app/browser.html | Published, offline-only (2026-11-08): `browser-config.json` returns 404, the `GIPNY_BROWSER_CONFIG_JSON` variable is unset, no bridge is deployed; a profile and saved chats open, the network does not |
+| Online browser service | Not deployed: needs a host with a public IP and domain, TLS, the bridge, fresh netDb, TURN for WebRTC and the configuration variable; [checklist](browser-messenger.md#hosting-status) |
 | Restart without GitHub/hosting | Code, public settings and the validated netDb snapshot are cached; the browser also keeps its live netDb (every 15 minutes of uptime) and starts from it when the snapshot is unavailable. Records older than 36 hours are rejected, so warm restarts last while the client runs regularly; a first start needs bootstrap. Host-stopped CI scenario prepared |
 | TURN WebRTC | Configurable; NAT/TURN, CDN and physical mobile checks remain separate |
 | Native NTCP2/SSU2 camouflage | Not integrated into the native transport |
