@@ -204,6 +204,11 @@ Pages берёт эту публичную конфигурацию из reposit
 холодный старт, обмен двух независимых браузеров через WSS и через WebRTC,
 вложения, PRF, блокировку, смену пароля и восстановление очереди/истории.
 Прямой ICE на CI не доказывает работу TURN, CDN или телефона.
+Перед живым NTCP2 job собирает свежий netDb роутером pinned i2pd (`collect-netdb`)
+и подсаживает нативному пиру только записи моложе 36 ч (`tests/netdb_seed.py`);
+reseed остаётся запасным путём, снапшот холодного старта делается из того же набора.
+До этого (2026-11-06…08) пир стартовал от одного reseed с устаревшими записями,
+и шаг рукопожатий падал на данных, а не на коде.
 Нужны отдельные проверки Chrome/Firefox/Safari, NAT, запрета UDP, TURN/TLS,
 сна, смены Wi-Fi/mobile, переполнения очередей и ухода со страницы.
 Движок Safari проверяется в CI: job `wasm` открывает собранный клиент в
@@ -372,7 +377,12 @@ bridge, TURN service, domain or certificate.
 
 The workflow covers bridge boundaries, WASM/UI, NTCP2, cold starts, two-browser
 WSS/WebRTC messaging, attachments, PRF, locking and profile/outbox recovery.
-CI direct ICE is not TURN/CDN/physical-mobile validation. Chrome/Firefox/Safari,
+CI direct ICE is not TURN/CDN/physical-mobile validation. Before the live NTCP2
+step the job collects a fresh netDb with the pinned router (`collect-netdb`) and
+seeds the native peer only with records younger than 36 h (`tests/netdb_seed.py`);
+reseed stays the fallback and the cold-start snapshot is made from the same set.
+Until then (2026-11-06…08) the peer started from one stale reseed and the handshake
+step failed on data, not code. Chrome/Firefox/Safari,
 NAT, blocked UDP, TURN/TLS, sleep, network changes, bounded queues and lifecycle
 need explicit results. The Safari engine is checked in CI: the `wasm` job opens
 the built client in Playwright WebKit on Linux (`ui/tests/webkit-smoke.mjs`,

@@ -194,10 +194,18 @@ def main():
     root = Path(__file__).resolve().parents[1]
     output = Path(os.environ['RUNNER_TEMP']) / 'browser-bootstrap'
     output.mkdir(exist_ok=True)
-    data = output / 'snapshot-source'
+    # The workflow collects one fresh netDb before the handshake step and
+    # exports it as GIPNY_NETDB_SOURCE; the snapshot is made from that instead
+    # of running the collector a second time. Without the variable (a local
+    # run) the collector runs here as before.
+    source = os.environ.get('GIPNY_NETDB_SOURCE')
+    data = Path(source) if source else output / 'snapshot-source'
     with (output / 'snapshot-source.log').open('w') as log:
-        subprocess.run([str(root / 'target/release/collect-netdb'), str(data)],
-                       check=True, stdout=log, stderr=subprocess.STDOUT, timeout=600)
+        if source:
+            log.write(f'reusing the collected netDb from {data}\n')
+        else:
+            subprocess.run([str(root / 'target/release/collect-netdb'), str(data)],
+                           check=True, stdout=log, stderr=subprocess.STDOUT, timeout=600)
     candidates, snapshot = output / 'candidates.tsv', output / 'snapshot.tar.gz'
     subprocess.run([str(root / 'target/release/prepare-netdb'), str(data), str(candidates), '2048', str(snapshot)], check=True)
     for name, rate in [('desktop-cold', 1), ('constrained-cold', 4)]:

@@ -11,7 +11,7 @@
 | Файл | Когда запускается | Джобы | Что доказывает / производит |
 |---|---|---|---|
 | `ci-watchdog.yml` | Завершение CI-workflow (кроме release) с ошибкой/отменой; работает с файла в `main` | `rerun-infrastructure-failures` | Если job не получил hosted-раннер («not acquired by Runner», потеря связи, остановка раннера), прогон перезапускается автоматически, не более двух раз. Настоящие ошибки и отмены из-за нового пуша не трогаются. |
-| `browser-router.yml` | push в `main` / PR с изменением browser-router, libcore, UI, shared sanitizer, Cargo manifests, i2pd pin или workflow; вручную | `wasm`, `Browser NTCP2 and exploratory tunnels` | Проверка pinned emissary patch/provenance и portable WASM-графа, release PWA + UI tests, собранный клиент в Playwright WebKit (профиль без сетевой конфигурации, чаты offline, артефакт `browser-webkit-smoke`), WASM crypto/vault/runtime/frame tests, native-регрессии LeaseSet/ключей и полные модули SessionManager/routing-path, Python forwarder boundaries, live NTCP2, холодный bootstrap desktop/constrained и два независимых браузерных мессенджера. Холодный сбой не скрывает отдельную messenger-проверку и оставляет job красным. Артефакты: `browser-messenger-pwa`, raw WASM, loadable module, публичные snapshots/receipts/provenance. Private keys/capability/CDP/Chrome profiles исключены. Актуальные результаты и пределы подтверждения: [browser-messenger.md](../../docs/browser-messenger.md#validation-and-artifacts); физический телефон не заменяется эмуляцией. |
+| `browser-router.yml` | push в `main` / PR с изменением browser-router, libcore, UI, shared sanitizer, Cargo manifests, i2pd pin или workflow; вручную | `wasm`, `Browser NTCP2 and exploratory tunnels` | Проверка pinned emissary patch/provenance и portable WASM-графа, release PWA + UI tests, собранный клиент в Playwright WebKit (профиль без сетевой конфигурации, чаты offline, артефакт `browser-webkit-smoke`), WASM crypto/vault/runtime/frame tests, native-регрессии LeaseSet/ключей и полные модули SessionManager/routing-path, Python forwarder boundaries, свежий netDb от pinned-роутера (`collect-netdb` перед живым NTCP2; нативный пир подсаживается только на записи моложе 36 ч, иначе reseed как раньше), live NTCP2, холодный bootstrap desktop/constrained из того же netDb и два независимых браузерных мессенджера. Холодный сбой не скрывает отдельную messenger-проверку и оставляет job красным. Артефакты: `browser-messenger-pwa`, raw WASM, loadable module, публичные snapshots/receipts/provenance. Private keys/capability/CDP/Chrome profiles исключены. Актуальные результаты и пределы подтверждения: [browser-messenger.md](../../docs/browser-messenger.md#validation-and-artifacts); физический телефон не заменяется эмуляцией. |
 | `pages.yml` | PR/push main с изменением `site/**`, `ui/**` или workflow; вручную; успешный release main | `Validate and build static site` → main-only deploy | На 2026-10-31 landing сохраняет CSP `connect-src 'none'`; job собирает UI с `VITE_BASE=/gipny-i2p/app/`, запускает `npm test` и копирует результат в `_site/app/`. Проверка Chrome относится к landing, не к HTTPS → loopback, локальной сети или I2P. |
 | `security-fast.yml` | PR/push `main` с изменением Rust/UI и вручную | `unit + callers` на Linux, Windows, macOS arm64/Intel; `Android Rust + JNI types` | На 2026-10-31 Linux также запускает `cargo test --locked -p gipny --features web-gateway --test web_local`: HTTP Host/headers, capability/Origin WebSocket, фиксированный порт и RPC до unlock на stub; затем отдельную `--lib web_server::tests::inline_attachments_follow_the_desktop_privacy_setting` регрессию sanitizer без Core. Быстрая компиляция callers и unit tests memory/device-binding/vault/card/deletion без C++ роутера (`I2P_EMBED_STUB=1`). Android job проверяет реальные JNI types для arm64. Shipping artifacts не создаёт; не заменяет full native/I2P, hardware Keystore и установку на устройстве. Kotlin instrumentation sources отдельно собирает `build.yml`, без заявления о прохождении TEE на эмуляторе. |
 | `build.yml` | push в `main`, любой PR, вручную | `rust workspace`, `macos (app + libcore tests)`, `rust tests (crypto/vault/kdf)`, `ui typecheck` (включая UI unit tests), `android APK`, `android emulator smoke` | Наш код компилируется и тесты проходят. Роутер вкомпилирован в каждый бинарь (`i2p-embed`), поэтому десктопные и тестовые джобы собирают и libi2pd — против boost из дистрибутива (macOS — Homebrew). APK собираются с заглушкой прослойки (`I2P_EMBED_STUB=1`) и `ORG_GRADLE_PROJECT_skipRouter`: они проверяют сборку, упаковку и запуск, а не связь. Тайминги KDF попадают в summary джобы. |
@@ -182,3 +182,26 @@ PATH entries, сохраняет native Strawberry Perl. Полный process en
 не экспортируется. Это заменяет `ilammy/msvc-dev-cmd@v1`, чей опубликованный
 action ещё использует deprecated Node 20; совместимость нового helper
 подтверждается следующими Windows CI builds, не чтением PowerShell source.
+
+## Автообновляемые перед сборкой апстримы / Upstream data refreshed before every build
+
+Принцип владельца (2026-11-08): всё, что устаревает, берётся из апстрима в момент
+сборки или проверки, с проверкой подписей, и с запасным путём. Сейчас так работают:
+
+| Что | Где | Откуда и как |
+|---|---|---|
+| Сертификаты reseed и family | `scripts/fresh-i2p-certs.sh` (все сборки роутера) | default-ветка upstream i2pd, не pinned submodule; `I2P_EMBED_CERTS_DIR` для build.rs |
+| Снапшот netDb релиза | `release.yml` → `netdb-seed` | роутер pinned i2pd учит сеть до 360 с (`netdb_snapshot`), `i2pd-netdb-seed.tar.gz` кладётся в пакеты |
+| netDb живого CI | `browser-router.yml` → job NTCP2 | `collect-netdb` перед рукопожатиями; записи моложе 36 ч подсаживаются нативному пиру (`browser-router/tests/netdb_seed.py`), снапшот холодного старта делается из того же набора |
+
+Кандидаты (предложения, не работа): дневной кэш netDb для PR-прогонов
+(`actions/cache` с ключом по дате), ночной обновляемый снапшот для
+`snapshot_url` публичного клиента, свежие bootstrap-списки для DHT.
+
+Owner principle (2026-11-08): anything that goes stale is fetched from its upstream
+at build or test time, verified, with a fallback. Today: reseed/family certificates
+(`scripts/fresh-i2p-certs.sh`), the release netDb snapshot (`netdb-seed`), and the
+live CI netDb (`collect-netdb` before the NTCP2 step; only records younger than 36 h
+seed the native peer, see `browser-router/tests/netdb_seed.py`). Candidates, as
+proposals: a daily cached netDb for PR jobs, a nightly rolling snapshot for the
+public client's `snapshot_url`, fresh DHT bootstrap lists.
