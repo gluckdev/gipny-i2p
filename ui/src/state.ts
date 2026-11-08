@@ -1652,6 +1652,7 @@ export class Store {
       this.recomputeOnline();
     } else if ('UpdateAvailable' in e) {
       // Manual start, including platforms requiring system consent.
+      this.updateError.set(null);
       this.updateAvailable.set(e.UpdateAvailable);
     } else if ('UpdateProgress' in e) {
       this.updateProgress.set(e.UpdateProgress);
@@ -1661,6 +1662,7 @@ export class Store {
       // left to show a modal for, so close it if one is open.
       this.updateAvailable.set(null);
       this.updateProgress.set(null);
+      this.updateError.set(null);
       this.updateStaged.set(e.UpdateStaged.version);
     } else if ('UpdateInstallerOpened' in e) {
       this.updateProgress.set(null);

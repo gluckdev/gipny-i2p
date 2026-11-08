@@ -24,7 +24,7 @@
 | `vite.browser.config.ts` | Отдельная PWA сборка, manifest и Service Worker |
 
 `src/about.ts` показывает отдельное описание хранения, доставки и безопасности
-для браузерного режима; его тексты поддерживаются на русском, английском и немецком.
+для браузерного режима; его тексты поддерживаются на всех 8 языках интерфейса (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`).
 
 ## Особенности и границы браузерного режима
 
@@ -60,37 +60,38 @@
 
 | Файл | За что отвечает |
 |---|---|
-| `src/i18n.ts`, `src/locales/en.ts`, `src/locales/ru.ts`, `src/locales/de.ts` | Язык устройства, общий список языков, типизированные ключи и полные словари; [правила поддержки](../docs/localization.md) |
+| `src/i18n.ts`, `src/locales/{en,ru,uk,de,km,vi,hi,zh}.ts` | Язык устройства и системных раскладок (`detectLang`, `detectKeyboardLang`, `detectSystemLangs`), общий список 8 языков (`LANGS`), типизированные ключи и полные словари; [правила поддержки](../docs/localization.md) |
 | `src/language-picker.ts`, `src/error-text.ts` | Выбор языка до входа и отображение известных ошибок backend |
-| `tests/localization.test.mjs` | DOM-проверки языков, черновика, подписок и вывода недоверенного текста |
+| `tests/localization.test.mjs` | DOM-проверки 8 языков, определения языка по системе/раскладке, черновика, подписок и вывода недоверенного текста |
+| `tests/layout.test.mjs` | Playwright-проверка единого адаптивного дизайна (316 комбинаций экранов, светлой/тёмной тем, ширин 360×740 / 768×900 / 1100×720, экранной клавиатуры и 8 языков) без горизонтального переполнения и перекрытий |
 | `tests/webview-compat.test.mjs` | После `npm run build`: каждый скрипт `dist/` парсится без синтаксиса новее Chromium 83 (`\|\|=`, static blocks, top-level await…) и не вызывает API без шима |
 | `src/compat.ts` | Первый импорт `main.ts`: шимы `replaceChildren`, `Object.hasOwn`, `crypto.randomUUID` для WebView ниже Chromium 93; в новых движках ничего не делает |
 | `src/main.ts` | Точка входа |
 | `src/api.ts` | Все вызовы бэкенда (`Api.*`) и типы данных (`Contact`, `Message`, `UpdateInfo`, union `CoreEvent`…), карточка `encodeCard`/`decodeCard`/`isValidI2pAddress` |
-| `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
+| `src/state.ts` | `Store` — всё состояние в `Signal<T>` (`contacts`, `groups`, `messages`, `unread`, `selectedChat`, `relayInfo`, `updateAvailable`, `updateStaged`…), загрузка (`refreshAll`/`refreshContacts`), **обработка всех `CoreEvent`**, уведомления и звуки, тосты `showToast`; `targetKey`, `sameTarget` |
 | `src/view.ts` | Основа: `View` (подписки `sub`), `h()` для создания элементов, `avatar()` (инициалы и цвет от ключа), форматтеры (`fmtTime`, `fmtAgo`, `short`, `humanSize`, `trustLabel`…), `logo` |
-| `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal` |
-| `src/profile-name.ts` | Имя профиля на устройстве из имени, которое человек даёт себе: транслитерация кириллицы, только `[A-Za-z0-9_-]`, ≤ 32, уникальность по локальному списку профилей (суффикс `-2`, `-3`…), `profile`, если от имени ничего не осталось. Регистрация спрашивает имя один раз (владелец, 2026-11-07) |
-| `src/osk.ts`, `src/osk-mode.ts`, `src/osk-edit.ts`, `src/osk-layouts.ts`, `src/osk-telex.ts` | Своя экранная клавиатура телефонов: `osk-mode` решает, что устройство — телефон (или `gipny.osk` = on/off в localStorage) и какие поля текстовые; `h()` ставит им `inputmode="none"`, чтобы системная клавиатура не появлялась; `osk.ts` рисует панель по `focusin`, вставляет текст через чистые функции `osk-edit` (удаление по графеме) и шлёт `input`; таблицы раскладок (ru/en/de, vi с набором Telex из `osk-telex`, km по NiDA), символов и эмодзи — `osk-layouts`; переключатель auto/on/off — в настройках. [План](../docs/plans/2026-11-08-own-keyboard.md) |
-| `tests/keyboard.test.mjs` | Раскладки (полнота, shift), редактор по графемам, панель на реальном поле в happy-dom: появление, ввод, Enter, скрытие, `--kbd-offset`; на десктопе поля не трогаются |
-| `src/auth.ts` | Экраны `AuthCreate` (одно поле «имя»; имя профиля на устройстве выводится и показывается подсказкой), `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные; вердикт роутера `network: none` (30 с без единого узла — устройство без интернета) показывается строкой `.boot-network` (`bootNetwork`), не сбоем шага; в превью `scene=boot&network=none` |
-| `src/profile.ts` | Выбор профиля `ProfileSelect` |
+| `src/app.ts` | `App`: раскладка, `openModal`, модалка обновления `openUpdateModal`, постоянный баннер перезапуска подготовленного обновления (`.update-banner`) и передача установщику Android (`UpdateInstallerOpened`) |
+| `src/profile-name.ts` | Имя профиля на устройстве из имени, которое человек даёт себе: транслитерация кириллицы (русской и украинской), только `[A-Za-z0-9_-]`, ≤ 32, уникальность по локальному списку профилей (суффикс `-2`, `-3`…), `profile`, если от имени ничего не осталось. Регистрация спрашивает имя один раз (владелец, 2026-11-07) |
+| `src/osk.ts`, `src/osk-mode.ts`, `src/osk-edit.ts`, `src/osk-layouts.ts`, `src/osk-telex.ts` | Своя экранная клавиатура телефонов: `osk-mode` решает, что устройство — телефон (или `gipny.osk` = on/off в localStorage) и какие поля текстовые; `h()` ставит им `inputmode="none"`, чтобы системная клавиатура не появлялась; `osk.ts` рисует панель по `focusin`, вставляет текст через чистые функции `osk-edit` (удаление по графеме) и шлёт `input`; таблицы 8 раскладок (`ru`, `uk`, `en`, `de`, `vi` с набором Telex из `osk-telex`, `km` по NiDA, `hi` InScript, `zh`), символов и эмодзи — `osk-layouts`; в личных и групповых чатах автоматически включаются раскладки языков собеседников/участников (`detectParticipantLayouts`, `setChatLayouts`), причём `en` присутствует всегда; переключатель auto/on/off — в настройках. [План](../docs/plans/2026-11-08-own-keyboard.md) |
+| `tests/keyboard.test.mjs` | Все 8 раскладок (полнота, shift), выбор раскладок участников группового чата и системных клавиатур, редактор по графемам, панель на реальном поле в happy-dom: появление, ввод, Enter, скрытие, `--kbd-offset`; на десктопе поля не трогаются |
+| `src/auth.ts`, `src/profile-salon.ts` | Единая шапка окна входа `authHeader()` и экраны `AuthCreate` (одно поле «имя»; имя профиля на устройстве выводится и показывается подсказкой), `AuthUnlock`, `AuthBooting`. Экран загрузки показывается **до** вызова `vault_unlock` (там все минуты) и рисует настоящие этапы из события `boot_status`: `bootLabels()` — подписи, `bootSteps`/`bootCanEnter` в `state.ts` — данные; вердикт роутера `network: none` (30 с без единого узла — устройство без интернета) показывается строкой `.boot-network` (`bootNetwork`), не сбоем шага; в превью `scene=boot&network=none` |
+| `src/profile.ts` | Выбор профиля `ProfileSelect` в общей палитре IDE-консоли |
 | `src/sidebar.ts` | Список: шапка (моя карточка, меню «+», поиск), сворачиваемые секции «Группы», «Запросы» (`requestRow`), **папки контактов** (`folderBlock`, `folderMenu`; хранятся в хранилище через `get/set_contact_folders`), «Без папки» |
-| `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента |
+| `src/chat.ts` | `ChatView`: лента, ввод, вложения, ответ, TTL, шапка, пометка «контакт недоступен», переключатель чат/консоль агента, синхронизация раскладок клавиатуры по участникам чата/группы |
 | `src/actions.ts` | Контекстные меню (`ContextMenu`, `attachContextMenu`, `messageMenuItems`), `PinnedBanner`, `EditInline` |
 | `src/contact.ts` | `ContactModal` (имя, доверие, сброс сессии, удаление), `AddContactModal` (вставка карточки и **сканирование QR** камерой через `QrScanner`) |
 | `src/qr-scan.ts`, `src/qr-worker.ts` | Камера и распознавание QR (`jsqr`); разрешение у Android спрашивает сам webview (wry), отказ и отсутствие камеры — сообщением. У камеры просится 2560×1920; каждый раунд — весь кадр в 1280, через раз центральный квадрат (80 % короткой стороны) в полном разрешении, каждый 4-й — весь кадр в 2048 с инверсией: карточка — плотный код (~177 модулей), с 1080p-потока его читает только центральный проход. Декодирование в Worker (ImageBitmap → OffscreenCanvas): на телефоне проход стоит 150–900 мс и в главном потоке дёргал бы превью; без Worker/OffscreenCanvas — те же проходы в главном потоке |
 | `src/group.ts` | `GroupModal`, `CreateGroupModal` |
 | `src/identity.ts` | `IdentityModal` — «моя карточка»: QR карточки (`Api.qrSvg` → команда `qr_svg`, рисует Rust), само значение карточки, имя, аватарка |
-| `src/settings.ts` | `SettingsModal`: доступные настройки приватности, профиля и платформы; Relay/Relay network/APK/log удалены |
+| `src/settings.ts` | `SettingsModal`: ручная проверка (`checkUpdate`), установка (`installUpdate`), перезапуск для подготовленного обновления (`restartApp`) и переключатель автообновления (`getAutoUpdate`/`setAutoUpdate`), а также настройки приватности, профиля, темы, 8 языков и экранной клавиатуры |
 | `src/about.ts` | `AboutModal` — «О gipny и безопасности». Каждое утверждение должно совпадать с кодом (ссылки в комментарии к классу) |
 | `src/avatars.ts`, `src/avatar-picker.ts`, `public/avatars.webp` | Аватарки: спрайт 6×4 по 96 px (≈47 КБ) из гравюр в общественном достоянии, случайная по ключу (`avatarIndex`), выбор человека хранится в хранилище (`get/set_ui_data` ключ `avatars`); источники — в комментарии в `avatars.ts`. Новый набор: пересобрать спрайт тем же размером сетки и обновить `avatarNames()` |
 | `src/icons.ts` | SVG-иконки `icon(name)` и иллюстрации (`emptyChatArt`, `networkArt`) |
 | `src/search.ts`, `src/media.ts`, `src/forward.ts` | Поиск, галерея вложений, пересылка |
 | `src/theme.ts` | Тема: `getTheme`, `setTheme`, `applyTheme` |
-| `src/styles.css` | Все стили; цвета — токены в `:root` и `:root[data-theme="dark"]`. Текущий облик — блок «Messenger look» перед адаптивной частью; адаптивные правила — последними |
+| `src/styles.css` | Все стили: единая светлая и тёмная палитра IDE-консоли (`:root`, `:root[data-theme="dark"]`, `:root[data-theme="system"]`) для всех экранов входа, загрузки, чата, консоли и модалок; адаптивные правила и экранная клавиатура — в конце файла |
 | `public/sounds/` | Звуки уведомлений |
-| `dev/mock.ts` | Мок Tauri IPC: ответы на все команды и фикстуры (неудобные намеренно) |
+| `dev/mock.ts`, `dev/update-mock.ts` | Мок Tauri IPC: ответы на все команды, фикстуры и управляемый бэкенд обновлений (`previewUpdates`, `?update=available\|current\|no_release\|staged\|unavailable\|unsupported\|no_asset\|dismissed\|error`) |
 | Сцена `boot` в превью | `dev/mock.ts`: `vault_unlock` не отвечает, а `boot_status` эмитится по сценарию — так экран загрузки видно без бэкенда |
 | Сцены `select`, `unlock` в превью | `dev/mock.ts` останавливает автопрогон на списке профилей / на вводе пароля — экраны входа видно целиком |
 | `dev/preview.html`, `dev/frame.html` | Превью приложения на ширинах телефона, планшета и десктопа с проверкой горизонтального переполнения; `?osk=1` поднимает свою клавиатуру в кадре и проверяет, что поле ввода не под клавишами; для экранов входа отчёт ещё говорит, помещается ли карточка в кадр по высоте (владелец 2026-11-07: создание профиля — на одном экране телефона, без прокрутки) |
@@ -125,7 +126,7 @@
 ## Инварианты и грабли
 
 - **Фреймворка нет.** Компонент — наследник абстрактного `View` (`view.ts`) с полем `el`; подписки делаются через `this.sub(signal, fn)` и снимаются в `destroy()`.
-- **Интерфейс имеет английскую, русскую и немецкую локали.** Новая подпись, ошибка, placeholder, tooltip и aria-label добавляются во все словари. Не переводите данные пользователя и протокольные ключи. См. [локализацию](../docs/localization.md).
+- **Интерфейс поддерживает 8 локалей (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`).** Новая подпись, ошибка, placeholder, tooltip и aria-label добавляются во все 8 словарей. Не переводите данные пользователя и протокольные ключи. См. [локализацию](../docs/localization.md).
 - **`localStorage` — только для удобств отдельного устройства;** всё важное хранится в бэкенде.
 - **Длинные адреса i2p (516+ символов без пробелов) ломают раскладку.** Фикстуры в `dev/mock.ts` это ловят, проверяйте в превью.
 
@@ -186,10 +187,15 @@ the peer's relay is never resent; lost parts are encrypted again, with an
 both profile slots. Passkeys require actual WebAuthn PRF, not credential IDs or
 signatures used as encryption keys.
 
-Profile selection/create uses local leather/walnut/brass styling. Unlock/loading
-keep the green terminal style; chats open on local relay readiness while further
-network connections animate in the background. Settings omit Relay, Relay network,
-APK info and log controls. Stable diagnostics are absent (a stable build deletes
+All screens (`ProfileSelect`, `AuthCreate`, `AuthUnlock`, `AuthBooting`, chats,
+remote console and modals) share one unified light/dark IDE-console palette in
+`styles.css` and `authHeader()` (`profile-salon.ts`); chats open on local relay
+readiness while further network connections animate in the background. `SettingsModal`
+provides manual update checks (`checkUpdate`), release installation (`installUpdate`),
+staged restart (`restartApp`), and the automatic-update toggle (`getAutoUpdate` /
+`setAutoUpdate`), while `App` surfaces a persistent `.update-banner` when an update
+is staged and handles Android package-installer handoff (`UpdateInstallerOpened`).
+Settings omit Relay, Relay network, APK info and log controls. Stable diagnostics are absent (a stable build deletes
 an earlier prerelease's stored log copy); prerelease diagnostics are always
 enabled and keep an unencrypted IndexedDB copy of the last session that names
 contact numbers only. File cards show separate waiting/sending/receiving/failure
@@ -203,7 +209,7 @@ pagehide and freeze terminate the Worker; browser memory does not offer native
 mlock/mprotect or guaranteed physical erasure. Browser profile export, native
 agent commands, DHT and duress are not implemented.
 
-Keep RU/EN dictionaries, DTOs, events, Store handlers and mocks consistent across
+Keep all 8 dictionaries (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`), DTOs, events, Store handlers and mocks consistent across
 clients. App builds, UI execution and real-browser scenarios run in GitHub Actions;
 new source changes still need their own results. See the [browser guide](../docs/browser-messenger.md)
 and [file-transfer contract](../docs/file-transfer.md) for operating limits.

@@ -569,3 +569,54 @@ test('review follow-ups: field rules, passwords, flags, repeat and focus inside 
   raw.remove(); secret.remove();
   setOskMode('auto'); resetOskActive();
 });
+
+test('participant scripts and metadata produce canonical layouts, including all eight languages', () => {
+  assert.deepEqual(ui.detectParticipantLayouts([
+    { name: 'Ірина', lang: 'uk-UA' }, { name: 'Jörg' }, { name: 'សុខ' }, { language: ['en-GB', 'zh-CN'] },
+  ], ['Tiếng Việt', 'नमस्ते', 'Русский']), LAYOUT_IDS);
+  assert.deepEqual(ui.detectParticipantLayouts([{ name: 'Олена', language: 'uk' }]), ['uk']);
+  assert.deepEqual(ui.detectParticipantLayouts(['Hà', 'Tú', 'Lý']), ['vi']);
+  assert.deepEqual(ui.detectParticipantLayouts(['їєґ', 'Привет', '你好', 'VIỆT']), ['ru', 'uk', 'vi', 'zh']);
+  ui.setChatLayouts(['hi', 'xx', 'de', 'hi']);
+  setLang('en');
+  assert.deepEqual(enabledLayouts(), ['en', 'de', 'hi']);
+  ui.setChatLayouts([]);
+});
+
+test('mounted keyboard keeps its chosen layout while participant layouts change', () => {
+  localStorage.setItem('gipny.osk', 'on'); resetOskActive(); setLang('en');
+  ui.setChatLayouts(['uk', 'hi']);
+  const panel = installOsk();
+  const input = h('textarea'); document.body.append(input); panel.show(input);
+  try {
+    press(panel, fnKey('layout')); assert.equal(panel.layout, 'uk');
+    ui.setChatLayouts(['uk', 'de', 'km', 'hi', 'zh']);
+    assert.equal(panel.layout, 'uk');
+    assert.equal(panel.el.dataset.layout, 'uk');
+    ui.setChatLayouts(['zh']);
+    assert.equal(panel.layout, 'en');
+    press(panel, fnKey('layout')); assert.equal(panel.layout, 'zh');
+    ui.setChatLayouts([]); assert.equal(panel.layout, 'en');
+  } finally { ui.setChatLayouts([]); uninstallOsk(); input.remove(); localStorage.removeItem('gipny.osk'); resetOskActive(); }
+});
+
+test('system languages and an asynchronously reported keyboard are included even with a saved UI language', async () => {
+  const languageDescriptor = Object.getOwnPropertyDescriptor(navigator, 'languages');
+  const keyboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'keyboard');
+  let resolveMap;
+  Object.defineProperty(navigator, 'languages', { configurable: true, value: ['uk-UA', 'de-DE', 'en-US'] });
+  Object.defineProperty(navigator, 'keyboard', { configurable: true, value: { getLayoutMap: () => new Promise(resolve => { resolveMap = resolve; }) } });
+  setLang('vi'); localStorage.setItem('gipny.osk', 'on'); resetOskActive();
+  const panel = installOsk();
+  try {
+    assert.deepEqual(enabledLayouts(), ['vi', 'en', 'uk', 'de']);
+    resolveMap(new Map([['KeyA', 'ក']])); await tick();
+    assert.deepEqual(enabledLayouts(), ['vi', 'en', 'uk', 'de', 'km']);
+    assert.equal(panel.layout, 'vi');
+  } finally {
+    uninstallOsk();
+    if (languageDescriptor) Object.defineProperty(navigator, 'languages', languageDescriptor); else delete navigator.languages;
+    if (keyboardDescriptor) Object.defineProperty(navigator, 'keyboard', keyboardDescriptor); else delete navigator.keyboard;
+    localStorage.removeItem('gipny.osk'); resetOskActive(); setLang('en');
+  }
+});

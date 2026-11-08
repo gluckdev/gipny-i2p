@@ -33,7 +33,8 @@ export class SettingsModal {
     const verSlot = h('div', { class: 'card-block' }, tr('media.loading'));
     Api.currentVersion().then((v) => { verSlot.textContent = `gipny v${v}`; }).catch(() => { verSlot.textContent = '?'; });
     const updErr = h('div', { class: 'err' });
-    const updateSection = h('div', { class: 'stack' });
+    const updateSection = h('div', { class: 'stack update-section', 'data-update-section': '' });
+    const updateSubs: Array<() => void> = [];
 
     const closeWrapped = close;
 
@@ -46,35 +47,117 @@ export class SettingsModal {
         h('div', { class: 'card-label' }, tr('settings.version')),
         verSlot,
         !usesBrowserCore() && (() => {
-          // A found-but-not-installed version: either auto-update is off, or
-          // its install failed and the log was the only place that said so.
-          const pending = h('div', { class: 'hint' });
-          const installBtn = h('button', { class: 'btn' }, tr('settings.install_now')) as HTMLButtonElement;
-          const installRow = h('div', { class: 'row hidden', style: { marginTop: '8px' } }, installBtn);
+          const pending = h('div', { class: 'hint update-status', 'data-update-status': '', role: 'status', 'aria-live': 'polite' });
+          const installBtn = h('button', { class: 'btn', 'data-install-update': '' }, tr('settings.install_now'));
+          const checkBtn = h('button', { class: 'btn btn-ghost', 'data-check-update': '' }, tr('settings.update_check'));
+          const restartBtn = h('button', {
+            class: 'btn hidden', 'data-settings-restart': '',
+            onClick: () => busy(restartBtn, async () => {
+              try { await Api.restartApp(); }
+              catch (error) { updErr.textContent = errorText(error); }
+            }),
+          }, tr('app.restart'));
+          const installRow = h('div', { class: 'row hidden' }, installBtn);
           const showPending = (v: { version: string; size: number } | null): void => {
             installRow.classList.toggle('hidden', !v);
-            pending.textContent = v ? tr('settings.ready_to_install', { p0: (v.version), p1: (humanSize(v.size)) }) : '';
+            pending.textContent = v ? tr('settings.ready_to_install', { p0: v.version, p1: humanSize(v.size) }) : '';
           };
-          // A version this session already found (auto-update off, or its
-          // install failed) — the button must be there without checking again.
-          const known = store.updateAvailable.get();
-          if (known) showPending({ version: known.version, size: known.size });
-          const lastErr = store.updateError.get();
-          if (lastErr) {
-            updErr.textContent = tr('settings.the_last_installation_attempt_failed', { p0: errorText(lastErr) });
-            installRow.classList.remove('hidden');
-          }
-          installBtn.addEventListener('click', () => void busy(installBtn, async () => {
+          let checking = false;
+          let installing = false;
+          const paintBusy = (): void => {
+            const active = checking || installing || store.updateProgress.get() !== null;
+            checkBtn.disabled = active;
+            installBtn.disabled = active;
+          };
+          updateSubs.push(store.updateAvailable.subscribe(showPending, true));
+          updateSubs.push(store.updateError.subscribe(error => {
+            updErr.textContent = error ? tr('settings.the_last_installation_attempt_failed', { p0: errorText(error) }) : '';
+          }, true));
+          updateSubs.push(store.updateProgress.subscribe(progress => {
+            if (progress) pending.textContent = tr('app.downloading', {
+              p0: humanSize(progress.downloaded), p1: humanSize(progress.total), p2: progress.pct,
+            });
+            paintBusy();
+          }, true));
+          updateSubs.push(store.updateStaged.subscribe(version => {
+            restartBtn.classList.toggle('hidden', !version);
+            if (version) {
+              showPending(null);
+              pending.textContent = tr('app.version_is_installed_and_will_take_effect_after', { p0: version });
+            }
+          }, true));
+          installBtn.addEventListener('click', async () => {
+            if (installBtn.disabled) return;
+            installing = true; paintBusy();
             updErr.textContent = '';
+            pending.textContent = tr('app.downloading_2', { p0: humanSize(0) });
+            store.updateError.set(null);
             try {
               await Api.installUpdate();
+            } catch (e) {
+              store.updateError.set(errorText(e));
+              store.updateProgress.set(null);
+              showPending(store.updateAvailable.get());
+            }
+            finally { installing = false; paintBusy(); }
+          });
+          checkBtn.addEventListener('click', async () => {
+            if (checkBtn.disabled) return;
+            checking = true; paintBusy();
+            checkBtn.textContent = tr('settings.update_checking');
+            pending.textContent = tr('settings.update_checking');
+            updErr.textContent = '';
+            try {
+              const res = await Api.checkUpdate();
               showPending(null);
-            } catch (e) { updErr.textContent = errorText(e); }
-          }));
+              switch (res.status) {
+                case 'update':
+                  // Some native checks stage the automatic update before resolving.
+                  if (store.updateStaged.get() === res.version) {
+                    pending.textContent = tr('app.version_is_installed_and_will_take_effect_after', { p0: res.version });
+                    break;
+                  }
+                  store.updateError.set(null);
+                  store.updateAvailable.set({ version: res.version, notes: res.notes, size: res.size });
+                  showPending(res);
+                  break;
+                case 'current': pending.textContent = tr('settings.update_current', { version: res.latest }); break;
+                case 'dismissed': pending.textContent = tr('settings.update_dismissed', { version: res.version }); break;
+                case 'no_release': pending.textContent = tr('settings.update_no_release'); break;
+                case 'unavailable': pending.textContent = tr('settings.update_unavailable'); break;
+                case 'unsupported': pending.textContent = tr('settings.update_unsupported', { version: res.latest }); break;
+                case 'no_asset': pending.textContent = tr('settings.update_no_asset', { version: res.latest, asset: res.wanted }); break;
+              }
+            } catch (e) {
+              store.updateProgress.set(null);
+              showPending(store.updateAvailable.get());
+              updErr.textContent = errorText(e);
+            } finally {
+              checking = false; paintBusy();
+              checkBtn.textContent = tr('settings.update_check');
+            }
+          });
+          const auto = h('input', { type: 'checkbox', disabled: true, 'data-auto-update': '' });
+          const autoErr = h('div', { class: 'err', role: 'status' });
+          Api.getAutoUpdate().then(enabled => { auto.checked = enabled; auto.disabled = false; })
+            .catch(error => { autoErr.textContent = errorText(error); });
+          auto.addEventListener('change', async () => {
+            const enabled = auto.checked;
+            auto.disabled = true;
+            autoErr.textContent = '';
+            try { await Api.setAutoUpdate(enabled); }
+            catch (error) { auto.checked = !enabled; autoErr.textContent = errorText(error); }
+            finally { auto.disabled = false; }
+          });
           updateSection.append(
             pending,
-            installRow,
+            h('div', { class: 'row update-actions' }, checkBtn, installRow, restartBtn),
             updErr,
+            h('label', { class: 'opt' }, auto,
+              h('span', { class: 'opt-text' },
+                h('span', { class: 'opt-title' }, tr('settings.auto_update')),
+                h('span', { class: 'opt-blurb' }, tr('settings.auto_update_hint')))),
+            autoErr,
             (() => {
               const line = h('div', { class: 'hint', style: { marginTop: '8px' } },
                 tr('settings.updates_are_checked_at_startup_and_every_few'));
@@ -216,13 +299,13 @@ export class SettingsModal {
                 app.openModal((c) => new SettingsModal(store, app, c).el);
               }
             });
-            return h('label', { class: 'opt', for: `opt-lang-${id}` },
+            return h('label', { class: 'opt', lang: id, for: `opt-lang-${id}` },
               r,
               h('span', { class: 'opt-text' },
                 h('span', { class: 'opt-title' }, label)),
             );
           });
-          return h('div', { class: 'opt-group' }, ...rows);
+          return h('div', { class: 'opt-group language-options' }, ...rows);
         })(),
 
         h('div', { class: 'divider-text' }, tr('settings.osk')),
@@ -479,6 +562,9 @@ export class SettingsModal {
         h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, tr('common.close')),
       ),
     );
+    this.el.addEventListener('gipny-modal-close', () => {
+      for (const unsubscribe of updateSubs) unsubscribe();
+    }, { once: true });
   }
 }
 

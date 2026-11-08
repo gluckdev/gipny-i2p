@@ -1,11 +1,10 @@
 import { errorText } from './error-text';
-import { languagePicker } from './language-picker';
 import { profileNameFor } from './profile-name';
 import { t as tr } from './i18n';
 import { Api, usesBrowserCore } from './api';
 import { isBackgroundStep, type Store, type BootStep, type BootStepId } from './state';
-import { View, h, busy, logo } from './view';
-import { salonBackdrop, salonEmblem } from './profile-salon';
+import { View, h, busy } from './view';
+import { salonBackdrop, authHeader } from './profile-salon';
 
 export class AuthCreate extends View {
   el: HTMLElement;
@@ -48,8 +47,7 @@ export class AuthCreate extends View {
     this.el = h('div', { class: 'auth profile-salon salon-create' },
       salonBackdrop(),
       h('div', { class: 'auth-card salon-panel' },
-        // One row on a phone (dial left, language right); stacked on desktop.
-        h('div', { class: 'salon-head' }, languagePicker(), salonEmblem()),
+        authHeader(),
         h('div', { class: 'auth-title' }, tr('auth.new_profile_title')),
         h('div', { class: 'auth-sub' }, tr('auth.new_profile_sub')),
         h('div', { class: 'field' },
@@ -57,13 +55,16 @@ export class AuthCreate extends View {
         ),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
         h('div', { class: 'field' }, h('label', null, tr('auth.confirm_pass')), this.confirmI),
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('auth.duress_title')),
-        !usesBrowserCore() && h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
-          h('div', { class: 'hint' }, tr('auth.duress_pass_hint'))),
-        !usesBrowserCore() && h('label', { class: 'chk auth-chk' },
-          this.wipeC, h('span', { class: 'box' }),
-          h('span', null, tr('auth.duress_wipe'))),
-        !usesBrowserCore() && h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
+        !usesBrowserCore() && h('details', { class: 'auth-security' },
+          h('summary', null, tr('auth.duress_title')),
+          h('div', { class: 'auth-security-body' },
+            h('div', { class: 'field' }, h('label', null, tr('auth.duress_pass')), this.duressI,
+              h('div', { class: 'hint' }, tr('auth.duress_pass_hint'))),
+            h('label', { class: 'chk auth-chk' }, this.wipeC, h('span', { class: 'box' }),
+              h('span', null, tr('auth.duress_wipe'))),
+            h('div', { class: 'field' }, h('label', null, tr('auth.max_attempts')), this.attemptsI),
+          ),
+        ),
         this.err,
         h('div', { class: 'row auth-actions' },
           hasProfiles && h('button', {
@@ -163,8 +164,7 @@ export class AuthUnlock extends View {
       onClick: () => void this.unlock('password') }, tr('auth.open_btn'));
     this.el = h('div', { class: 'auth login-cyber' },
       h('div', { class: 'auth-card' },
-        logo(),
-        languagePicker(),
+        authHeader(),
         h('div', { class: 'auth-title' }, profile),
         h('div', { class: 'auth-sub' }, tr('auth.unlock_sub')),
         h('div', { class: 'field' }, h('label', null, tr('auth.passphrase')), this.passI),
@@ -306,11 +306,11 @@ export class AuthBooting extends View {
     }, this.progressFill);
     this.progressText = h('span', { class: 'boot-progress-text' }, '0%');
     this.enterBtn = h('button', {
-      class: 'boot-button boot-enter hidden', type: 'button',
+      class: 'btn boot-button boot-enter hidden', type: 'button',
       onClick: () => store.enterMain(),
     }, tr('auth.enter'));
     this.backBtn = h('button', {
-      class: 'boot-button boot-back hidden', type: 'button',
+      class: 'btn btn-ghost boot-button boot-back hidden', type: 'button',
       onClick: () => {
         store.endBoot();
         void store.cancelToProfileSelect();
@@ -328,7 +328,7 @@ export class AuthBooting extends View {
       h('p', { class: 'boot-sub' }, tr('boot.sub')), list, this.networkEl);
     this.el = h('div', { class: 'auth boot-cyber' },
       h('div', { class: 'auth-card boot-card' },
-        languagePicker(),
+        authHeader(),
         h('header', { class: 'boot-header' },
           this.titleEl,
           h('div', { class: 'boot-meta' },

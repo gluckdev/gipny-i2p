@@ -12,6 +12,7 @@ import { ChatView } from './chat';
 export class App extends View {
   el: HTMLElement;
   private current: View | null = null;
+  private updateBanner = h('div', { class: 'update-banner hidden', role: 'status', 'aria-live': 'polite' });
   private updateModalEl: HTMLElement | null = null;
   private updateProgressEl: HTMLElement | null = null;
   private updateStatusEl: HTMLElement | null = null;
@@ -21,7 +22,7 @@ export class App extends View {
 
   constructor(private store: Store) {
     super();
-    this.el = h('div', { class: 'stack app-root', style: { height: '100%' } });
+    this.el = h('div', { class: 'stack app-root', style: { height: '100%' } }, this.updateBanner);
     this.sub(store.view, (v) => this.render(v));
     this.sub(store.selectedChat, () => this.closeModals(), false);
     this.sub(store.toast, (t) => this.renderToast(t));
@@ -48,6 +49,8 @@ export class App extends View {
       (el as HTMLInputElement).checked = saved.checked;
       if (el.classList.contains('sidebar-search')) el.dispatchEvent(new Event('input'));
     });
+    if (this.store.updateStaged.get()) this.onUpdateStaged(this.store.updateStaged.get());
+    else this.onUpdateProgress(this.store.updateProgress.get());
   }
 
   override destroy(): void {
@@ -171,12 +174,26 @@ export class App extends View {
 
   private onUpdateAvailable(info: UpdateInfo | null): void {
     if (!info) { this.closeUpdateModal(); return; }
-    if (this.updateModalEl) return;
+    // Settings owns its live status and install action while it is open.
+    if (document.querySelector('[data-update-section]')) return;
+    if (this.updateModalEl) this.closeUpdateModal();
     this.openUpdateModal(info);
   }
 
   private onUpdateProgress(p: UpdateProgress | null): void {
-    if (!p || !this.updateProgressEl || !this.updateStatusEl || !this.updateActionsEl) return;
+    if (!p) {
+      if (!this.store.updateStaged.get()) this.updateBanner.classList.add('hidden');
+      return;
+    }
+    if (!this.updateProgressEl || !this.updateStatusEl || !this.updateActionsEl) {
+      this.updateBanner.classList.remove('hidden');
+      this.updateBanner.replaceChildren(h('span', null, tr('app.downloading', {
+        p0: humanSize(p.downloaded), p1: humanSize(p.total), p2: p.pct,
+      })));
+      return;
+    }
+    this.updateProgressEl.classList.remove('hidden');
+    this.updateProgressEl.setAttribute('aria-valuenow', String(p.pct));
     const bar = this.updateProgressEl.querySelector('.update-bar') as HTMLElement | null;
     if (bar) bar.style.width = `${p.pct}%`;
     this.updateStatusEl.textContent = p.total > 0
@@ -221,29 +238,19 @@ export class App extends View {
   /// An update is prepared and takes effect on the next start. The person is
   /// asked once, and can keep working — the running version still functions.
   private onUpdateStaged(version: string | null): void {
-    if (!version) return;
+    this.updateBanner.classList.toggle('hidden', !version);
+    if (!version) { this.updateBanner.replaceChildren(); return; }
     this.closeUpdateModal();
-    this.store.updateProgress.set(null);
-    this.store.updateAvailable.set(null);
-    this.openModal((close) => h('div', { class: 'modal modal-sm' },
-      h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, tr('app.update_ready')),
-      ),
-      h('div', { class: 'modal-body' },
-        h('div', { class: 'about-p' },
-          tr('app.version_is_installed_and_will_take_effect_after', { p0: (version) })),
-      ),
-      h('div', { class: 'modal-footer' },
-        h('button', {
-          class: 'btn btn-ghost',
-          onClick: () => { this.store.updateStaged.set(null); close(); },
-        }, tr('app.later')),
-        h('button', {
-          class: 'btn',
-          onClick: () => { this.store.updateStaged.set(null); Api.restartApp().catch(() => close()); },
-        }, tr('app.restart')),
-      ),
-    ));
+    const restart = h('button', {
+      class: 'btn btn-sm', 'data-restart-update': '',
+      onClick: () => busy(restart, async () => {
+        try { await Api.restartApp(); }
+        catch (error) { this.store.showToast(errorText(error), true); }
+      }),
+    }, tr('app.restart'));
+    this.updateBanner.replaceChildren(
+      h('span', null, tr('app.version_is_installed_and_will_take_effect_after', { p0: version })), restart,
+    );
   }
 
   private onUpdateError(errMsg: string | null): void {
@@ -258,42 +265,30 @@ export class App extends View {
   }
 
   private openUpdateModal(info: UpdateInfo): void {
-    const backdrop = h('div', { class: 'modal-backdrop' });
+    const backdrop = h('div', { class: 'modal-backdrop update-modal' });
     this.updateStatusEl = h('div', {
       class: 'fp',
       style: { marginTop: '8px', wordBreak: 'break-all' },
     }, tr('app.version', { p0: (info.version), p1: (humanSize(info.size)) }));
 
     this.updateProgressEl = h('div', {
-      class: 'update-progress',
-      style: {
-        height: '6px', background: 'rgba(51,255,102,0.15)',
-        marginTop: '14px', overflow: 'hidden', display: 'none',
-        border: '1px solid #33ff66',
-      },
-    },
-      h('div', {
-        class: 'update-bar',
-        style: {
-          height: '100%', width: '0%', background: '#33ff66',
-          transition: 'width .2s ease', boxShadow: '0 0 8px #33ff66',
-        },
-      }),
-    );
+      class: 'update-progress hidden', role: 'progressbar', 'aria-label': tr('settings.install_now'),
+      'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0',
+    }, h('div', { class: 'update-bar' }));
 
     this.updateActionsEl = h('div', { class: 'row', style: { gap: '8px', justifyContent: 'flex-end' } },
       h('button', {
         class: 'btn btn-ghost',
         onClick: async () => {
-          await this.store.dismissUpdate();
-          this.closeUpdateModal();
+          try { await this.store.dismissUpdate(); this.closeUpdateModal(); }
+          catch (error) { this.store.showToast(errorText(error), true); }
         },
       }, tr('app.later')),
       (() => {
         const b = h('button', {
           class: 'btn',
           onClick: () => busy(b, async () => {
-            (this.updateProgressEl as HTMLElement).style.display = 'block';
+            this.updateProgressEl?.classList.remove('hidden');
             await this.store.installUpdate();
           }),
         }, tr('app.update_now')) as HTMLButtonElement;

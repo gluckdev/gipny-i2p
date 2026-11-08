@@ -152,12 +152,12 @@ test('locale choice respects saved preferences and handles unavailable storage',
   assert.equal(ui.detectLang(null, ['ru-RU']), 'ru');
   assert.equal(ui.detectLang(null, ['de-DE']), 'de');
   assert.equal(ui.detectLang(null, ['de-CH', 'ru']), 'ru');
-  assert.equal(ui.detectLang(null, ['en-US', 'DE-at']), 'de');
+  assert.equal(ui.detectLang(null, ['en-US', 'DE-at']), 'en');
   assert.equal(ui.detectLang(null, ['de']), 'de');
   assert.equal(ui.detectLang(null, ['deutsch', 'russian']), 'en', 'language tags must match a full prefix');
   assert.equal(ui.detectLang('invalid', []), 'en');
   assert.equal(ui.detectLang(null, ['en-US', 'ru-RU']), 'ru', 'any preferred Russian locale');
-  assert.equal(ui.detectLang(null, ['uk-UA', 'be-BY']), 'en', 'other Cyrillic locales are not Russian');
+  assert.equal(ui.detectLang(null, ['uk-UA', 'be-BY']), 'uk', 'other Cyrillic locales are not Russian');
   assert.equal(ui.detectLang(null, ['en-US'], true), 'ru', 'a Russian keyboard layout');
   assert.equal(ui.detectLang('en', ['ru-RU'], true), 'en', 'an explicit choice wins');
   assert.equal(ui.detectLang(null, ['de-DE'], true), 'ru', 'a Russian keyboard takes priority over German');
@@ -227,6 +227,24 @@ test('a delayed Russian keyboard detection respects both saved and newly chosen 
     assert.equal(chosenGerman.getLang(), 'de', 'an explicit choice wins while detection is pending');
     assert.equal(document.documentElement.lang, 'de');
     assert.equal(localStorage.getItem('gipny.lang'), 'de');
+    for (const [lang, keys] of Object.entries({ uk: ['і', 'ї', 'є'], de: ['ä', 'ö', 'ü'], km: ['ក'], vi: ['đ'], hi: ['क'], zh: ['中'] })) {
+      localStorage.removeItem('gipny.lang');
+      Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {
+        languages: ['en-US'], language: 'en-US', keyboard: { getLayoutMap: () => pending.promise },
+      } });
+      Intl.DateTimeFormat = () => ({ resolvedOptions: () => ({ locale: 'en-US' }) });
+      pending = deferred();
+      const automatic = await import(`${moduleUrl}?automatic-${lang}`);
+      assert.equal(automatic.getLang(), 'en');
+      pending.resolve(new Map(keys.map((key, i) => [String(i), key]))); await tick();
+      assert.equal(automatic.getLang(), lang);
+      assert.equal(localStorage.getItem('gipny.lang'), null);
+      pending = deferred();
+      const explicit = await import(`${moduleUrl}?explicit-${lang}`);
+      explicit.setLang('hi');
+      pending.resolve(russianKeys); await tick();
+      assert.equal(explicit.getLang(), 'hi');
+    }
   } finally {
     pending.resolve(russianKeys); await tick();
     Object.defineProperty(globalThis, 'navigator', originalNavigator);
@@ -712,8 +730,9 @@ test('all modal families render every language without translating user content'
     for (const modal of modals) {
       document.body.append(modal.el); await tick();
       assert.ok(modal.el.querySelector('.modal-title')?.textContent);
-      if (lang !== 'ru') {
-        assert.doesNotMatch(modal.el.textContent.split('Русский').join(''), /[А-Яа-яЁё]/, modal.constructor.name);
+      if (lang !== 'ru' && lang !== 'uk') {
+        const content = LANGS.reduce((text, { label }) => text.split(label).join(''), modal.el.textContent);
+        assert.doesNotMatch(content, /[А-Яа-яЁё]/, modal.constructor.name);
         for (const el of modal.el.querySelectorAll('[title], [placeholder], [aria-label]')) {
           assert.doesNotMatch([el.title, el.getAttribute('placeholder'), el.getAttribute('aria-label')].join(' '), /[А-Яа-яЁё]/);
         }
@@ -746,9 +765,10 @@ test('system installer handoff preserves retry and never offers an installed-ver
     assert.ok(!document.querySelector('.update-installer-handoff'));
     assert.ok(!calls.slice(before).some((cmd) => /dismiss_update|restart_app/.test(cmd)));
     store.handleEvent({ UpdateStaged: { version: info.version } });
-    const restart = [...document.querySelectorAll('.modal button')].find((button) => button.textContent === t('app.restart'));
+    const restart = document.querySelector('[data-restart-update]');
     assert.ok(restart, 'completed preparation still offers restart');
-    [...restart.parentElement.querySelectorAll('button')].find((button) => button !== restart).click();
+    assert.equal(restart.textContent, t('app.restart'));
+    assert.equal(store.updateStaged.get(), info.version, 'staged update remains available while the person keeps working');
     app.destroy();
   }
 });
@@ -1016,5 +1036,64 @@ test('the on-screen keyboard setting reads and writes gipny.osk', async () => {
   } finally {
     localStorage.removeItem('gipny.osk');
     setLang(previousLang); app.destroy();
+  }
+});
+
+test('all eight languages use system preference order and keyboard hints without losing explicit choices', () => {
+  const locales = { ru: 'ru-RU', en: 'en-GB', uk: 'uk-UA', de: 'de-DE', km: 'km-KH', vi: 'vi-VN', hi: 'hi-IN', zh: 'zh-CN' };
+  assert.deepEqual(LANGS.map(({ id }) => id), Object.keys(locales));
+  for (const [lang, locale] of Object.entries(locales)) {
+    assert.equal(ui.detectLang(null, [locale]), lang);
+    assert.equal(ui.detectLang(lang, ['ru-RU'], true), lang);
+    setLang(lang); assert.equal(ui.getLocale(), locale);
+  }
+  const layouts = { ru: ['Ы', 'Ъ', 'Э'], uk: ['І', 'Ї', 'Є'], de: ['Ä', 'Ö', 'Ü'], km: ['ក'], vi: ['đ'], hi: ['क'], zh: ['中'] };
+  for (const [lang, keys] of Object.entries(layouts)) {
+    assert.equal(ui.detectKeyboardLang(keys.values()), lang);
+    assert.equal(ui.detectLang(null, ['en-US', 'de-DE'], keys), lang);
+    assert.equal(ui.detectLang(null, ['fr-FR'], lang), lang);
+    assert.equal(ui.detectLang(null, ['uk-UA', 'en-US'], lang), lang === 'ru' ? 'ru' : 'uk');
+    assert.equal(ui.detectLang(null, ['en-US', 'ru-RU'], lang), 'ru');
+    assert.deepEqual(ui.detectSystemLangs(['xx', 'en-US', 'EN-GB'], keys), ['en', lang]);
+  }
+  assert.equal(ui.detectKeyboardLang(['ß']), 'de');
+  assert.equal(ui.detectKeyboardLang(['ㄅ']), 'zh');
+  assert.equal(ui.detectKeyboardLang(['q', 'w', 'e']), null);
+  assert.equal(ui.detectKeyboardLang(['ы', 'э']), null);
+  assert.equal(ui.detectLang(null, ['be-BY']), 'en');
+  assert.deepEqual(ui.detectSystemLangs(['uk-UA', 'de-DE', 'en', 'uk', 'ru', 'x-de'], ['і', 'ї', 'є']), ['uk', 'de', 'en', 'ru']);
+  for (const display of ['ខ្មែរ', 'हिन्दी', '中文']) assert.equal(ui.profileNameFor(display, []), 'profile');
+  assert.equal(ui.profileSlug('Ірина Євгенія Ґалаґан'), 'irina-yevgeniya-galagan');
+  assert.equal(ui.profileSlug('Їжак Андрій'), 'yizhak-andriy');
+  setLang('en');
+});
+
+test('active chat layouts follow members, contact metadata and message updates and clear on exit', async () => {
+  setLang('en');
+  const store = chatStore();
+  store.contacts.update(contacts => contacts.map(contact => ({ ...contact, language: contact.id === 1 ? 'uk-UA' : 'de-DE', name: contact.id === 1 ? 'Ірина' : 'Jörg' })));
+  const app = new App(store); document.body.append(app.el); await tick();
+  try {
+    assert.ok(ui.enabledLayouts().includes('uk'));
+    store.messages.set(new Map([['contact:1', [{ id: 1, body: '你好', sent_at: Date.now(), outgoing: false }]]]));
+    assert.ok(ui.enabledLayouts().includes('zh'));
+    store.groups.set([{ id: 'language-group', name: 'Languages' }]);
+    store.groupMembers.set(new Map([['language-group', [
+      { sign_pk: 'vi', name: 'Việt' }, { sign_pk: 'hi', name: 'सीमा' }, { sign_pk: 'km', name: 'សុខ' },
+    ]]]));
+    store.messages.set(new Map([['group:language-group', [{ id: 2, body: 'ыъэ', sent_at: Date.now(), outgoing: false }]]]));
+    store.selectedChat.set({ kind: 'group', id: 'language-group' });
+    assert.deepEqual(ui.enabledLayouts(), ['en', 'ru', 'vi', 'km', 'hi']);
+    store.groupMembers.update(groups => new Map(groups).set('language-group', [{ sign_pk: 'zh', name: '李', lang: 'zh-CN' }]));
+    assert.deepEqual(ui.enabledLayouts(), ['en', 'ru', 'zh']);
+    store.selectedChat.set(null);
+    assert.deepEqual(ui.enabledLayouts(), ['en']);
+  } finally { app.destroy(); }
+});
+
+test('new translations preserve protocol, cryptography and system command names', () => {
+  const terms = ['I2P', 'i2pd', 'X3DH', 'Double Ratchet', 'Argon2id', 'SQLCipher', 'OPFS', 'WebAssembly', 'WSS', 'WebRTC', 'Ed25519', 'X25519', 'TOTP', 'NTCP2', 'PRF', 'XChaCha20-Poly1305', 'SHA-256', 'systemd --user', 'enable-linger', 'launchd'];
+  for (const lang of ['uk', 'km', 'vi', 'hi', 'zh']) for (const [key, english] of Object.entries(translations.en)) {
+    for (const term of terms) if (english.includes(term)) assert.ok(translations[lang][key].includes(term), `${lang}: ${key} retains ${term}`);
   }
 });

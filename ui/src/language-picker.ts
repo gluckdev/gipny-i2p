@@ -4,7 +4,7 @@ import { h } from './view';
 /** Available before unlocking, including on a device with no profiles yet. */
 export function languagePicker(): HTMLElement {
   const select = h('select', { class: 'input', 'aria-label': t('settings.language') },
-    ...LANGS.map(({ id, label }) => h('option', { value: id }, label)),
+    ...LANGS.map(({ id, label }) => h('option', { value: id, lang: id }, label)),
   );
   select.value = getLang();
   select.addEventListener('change', () => setLang(select.value as Lang));

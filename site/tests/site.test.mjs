@@ -4,7 +4,7 @@ import { readFile, readdir, mkdtemp, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { messages, resolveLanguage, isRussianLayout, applyLanguage, initialize, detectDevice, chooseDownload } from '../main.js';
+import { messages, locales, resolveLanguage, isRussianLayout, detectKeyboardLanguage, applyLanguage, initialize, detectDevice, chooseDownload } from '../main.js';
 import { build, publicFiles, catalogKeys, releaseCatalog, renderCatalog, nativeChoices } from '../build.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,13 +22,14 @@ class Element {
 function documentFixture(source = html) {
   const text = [...source.matchAll(/data-i18n="([^"]+)"/g)].map(match => new Element({ i18n: match[1] }));
   const aria = [...source.matchAll(/data-i18n-aria="([^"]+)"/g)].map(match => new Element({ i18nAria: match[1] }));
-  const buttons = ['en', 'ru'].map(language => new Element({ language }));
+  const buttons = ['en', 'ru', 'uk', 'de', 'km', 'vi', 'hi', 'zh'].map(language => new Element({ language }));
   const description = new Element();
   const openGraph = Object.fromEntries(['title', 'description', 'locale', 'locale:alternate'].map(key => [key, new Element()]));
+  const alternates = [openGraph['locale:alternate'], ...Array.from({ length: 6 }, () => new Element())];
   const languageSwitch = new Element();
   return {
-    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch,
-    querySelectorAll(selector) { return { '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons }[selector]; },
+    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch, alternates,
+    querySelectorAll(selector) { return { '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons, 'meta[property="og:locale:alternate"]': alternates }[selector]; },
     querySelector(selector) {
       return { 'meta[name="description"]': description, '.language-switch': languageSwitch,
         ...Object.fromEntries(Object.entries(openGraph).map(([key, node]) => [`meta[property="og:${key}"]`, node])),
@@ -37,10 +38,15 @@ function documentFixture(source = html) {
   };
 }
 
-test('both languages cover every rendered string and accessible label', () => {
+test('all eight languages cover every rendered string and accessible label', () => {
   const expected = [...new Set([...translationKeys, ...catalogKeys, 'title', 'description'])].sort();
   assert.deepEqual(Object.keys(messages.en).sort(), expected);
   assert.deepEqual(Object.keys(messages.ru).sort(), expected);
+  assert.equal(Object.keys(messages).length, 8);
+  for (const [lang, copy] of Object.entries(messages)) {
+    assert.deepEqual(Object.keys(copy).sort(), expected, lang);
+    for (const [key, value] of Object.entries(copy)) assert.ok(value.trim(), `${lang}: ${key}`);
+  }
   for (const key of expected) {
     assert.ok(messages.en[key].trim(), `empty English ${key}`);
     assert.ok(messages.ru[key].trim(), `empty Russian ${key}`);
@@ -82,9 +88,10 @@ test('Russian only for a Russian locale or keyboard layout; explicit language li
   assert.equal(resolveLanguage('', ['en-GB', 'ru-RU']), 'ru', 'any preferred Russian locale counts');
   assert.equal(resolveLanguage('', ['ru']), 'ru');
   assert.equal(resolveLanguage('', ['fr-FR']), 'en');
-  assert.equal(resolveLanguage('', ['uk-UA', 'be-BY']), 'en', 'other Cyrillic locales are not Russian');
+  assert.equal(resolveLanguage('', ['uk-UA', 'be-BY']), 'uk', 'other Cyrillic locales are not Russian');
   assert.equal(resolveLanguage('', ['rue-UA']), 'en', 'a language code merely starting with ru is not Russian');
   assert.equal(resolveLanguage(), 'en');
+  assert.equal(resolveLanguage('', ['be-BY']), 'en');
   assert.equal(resolveLanguage('', ['en-US'], true), 'ru', 'a Russian keyboard layout counts');
   assert.equal(resolveLanguage('?lang=en', ['ru-RU'], true), 'en');
   assert.equal(resolveLanguage('?lang=ru', ['en-US']), 'ru');
@@ -446,4 +453,76 @@ test('WASM browser app is packaged separately without changing the landing CSP',
   assert.match(workflow, /VITE_BASE: \/gipny-i2p\/app\//);
   assert.match(workflow, /cp -R ui\/browser-dist\/\. _site\/app\//);
   assert.match(workflow, /npm test --prefix ui/);
+});
+
+const keyboardFixtures = { ru: ['ы', 'ъ', 'э'], uk: ['і', 'ї', 'є'], de: ['ä', 'ö', 'ü'], km: ['ក'], vi: ['đ'], hi: ['क'], zh: ['中'] };
+test('all supported language tags, keyboard hints and explicit links follow the same priorities', () => {
+  for (const lang of Object.keys(messages)) {
+    assert.equal(resolveLanguage('', [lang.toUpperCase() + '-ZZ']), lang);
+    assert.equal(resolveLanguage('?lang=' + lang, ['ru-RU'], true), lang);
+    assert.equal(resolveLanguage('', ['fr', lang, 'en']), lang);
+  }
+  for (const [lang, keys] of Object.entries(keyboardFixtures)) {
+    assert.equal(detectKeyboardLanguage(keys), lang);
+    assert.equal(detectKeyboardLanguage(keys.map(key => key.toUpperCase()).values()), lang);
+    for (const hint of [lang, keys, keys.values(), new Set(keys)]) {
+      assert.equal(resolveLanguage('', ['en-US', 'de-DE'], hint), lang);
+    }
+    assert.equal(resolveLanguage('', ['fr-FR'], keys), lang);
+    assert.equal(resolveLanguage('', ['ru-RU'], keys), 'ru');
+    assert.equal(resolveLanguage('', ['de-DE', 'en'], keys), lang === 'ru' ? 'ru' : 'de');
+  }
+  assert.equal(detectKeyboardLanguage(['ß']), 'de');
+  assert.equal(detectKeyboardLanguage(['ㄅ']), 'zh');
+  assert.equal(detectKeyboardLanguage(['ы', 'э']), null);
+  assert.equal(detectKeyboardLanguage(['q', 'w', 'e']), null);
+  assert.equal(resolveLanguage('', ['en', 'de']), 'en');
+  assert.equal(resolveLanguage('', ['de', 'uk']), 'de');
+});
+
+test('every language switch updates all text, accessible names, buttons and Open Graph locales', () => {
+  const doc = documentFixture();
+  for (const [lang, copy] of Object.entries(messages)) {
+    assert.equal(applyLanguage(lang, doc), lang);
+    assert.equal(doc.title, copy.title);
+    assert.equal(doc.documentElement.lang, lang);
+    assert.equal(doc.description.attributes.content, copy.description);
+    assert.equal(doc.openGraph.locale.attributes.content, locales[lang]);
+    assert.deepEqual(doc.alternates.map(node => node.attributes.content), Object.entries(locales).filter(([id]) => id !== lang).map(([, locale]) => locale));
+    for (const node of doc.text) assert.equal(node.textContent, copy[node.dataset.i18n]);
+    for (const node of doc.aria) assert.equal(node.attributes['aria-label'], copy[node.dataset.i18nAria]);
+    for (const button of doc.buttons) assert.equal(button.attributes['aria-pressed'], String(button.dataset.language === lang));
+    assert.ok(html.includes(`data-language="${lang}"`));
+  }
+});
+
+test('delayed non-English layouts select their language, preserve non-English locales and respect a choice', async () => {
+  for (const [lang, keys] of Object.entries(keyboardFixtures)) for (const languages of [['en-US'], ['fr-FR'], ['de-DE']]) {
+    const make = search => ({
+      location: new URL('https://example.test/project/' + search),
+      navigator: { languages, keyboard: { getLayoutMap: async () => new Map(keys.map((key, i) => [String(i), key])) } },
+      history: { replaceState() {} }, addEventListener() {},
+    });
+    const automatic = documentFixture();
+    initialize(automatic, make(''));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(automatic.documentElement.lang, languages[0] === 'de-DE' && lang !== 'ru' ? 'de' : lang);
+    for (const search of ['?lang=uk', '?lang=not-supported']) {
+      const linked = documentFixture(); initialize(linked, make(search));
+      const before = linked.documentElement.lang;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(linked.documentElement.lang, before, 'any lang query blocks a late automatic switch');
+    }
+    const clicked = documentFixture(); initialize(clicked, make(''));
+    clicked.buttons.find(button => button.dataset.language === 'vi').listeners.click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(clicked.documentElement.lang, 'vi');
+  }
+});
+
+test('new website translations retain protocol names and browser technology names', () => {
+  const terms = ['I2P', 'i2pd', 'X3DH', 'Double Ratchet', 'Argon2id', 'SQLCipher', 'OPFS', 'WebAssembly', 'WSS', 'WebRTC', 'Ed25519', 'X25519', 'TOTP', 'NTCP2', 'PRF', 'XChaCha20-Poly1305', 'SHA-256', 'systemd --user', 'enable-linger', 'launchd', 'GitHub Pages', 'Web Worker', 'Worker', 'Workers', 'Android Keystore', 'SSU2', 'CDN', 'TURN'];
+  for (const lang of ['uk', 'de', 'km', 'vi', 'hi', 'zh']) for (const [key, english] of Object.entries(messages.en)) {
+    for (const term of terms) if (english.includes(term)) assert.ok(messages[lang][key].includes(term), `${lang}: ${key} retains ${term}`);
+  }
 });

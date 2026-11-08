@@ -112,17 +112,31 @@ QR в карточке показывается до 340 px вместо 200. Э
 Honor: запрос и сообщение за 32 с, ответ за 2 с). Дальше по
 плану: i2pd с его туннелями в WASM для браузерного роутера.
 
-Своя экранная клавиатура (2026-11-08, ветка `feat/own-keyboard` поверх PR #152):
-на телефонах системная клавиатура не показывается — у всех текстовых полей
-`inputmode="none"` (ставит `h()`), набирает панель приложения (`ui/src/osk.ts`:
-раскладки ru/en/de, цифры и символы, эмодзи, shift/caps, повтор backspace,
-клавиша раскладки; высота панели идёт в `--kbd-offset`, как у системной).
-На Android окно дополнительно не взаимодействует с IME (`FLAG_ALT_FOCUSABLE_IM`
-в `MainActivity.kt`): Huawei WebView 11 привязывал системную клавиатуру вопреки
-`inputmode="none"`. Тесты `ui/tests/keyboard.test.mjs`, превью `dev/preview.html?scene=chat&osk=1`
-(проверяет, что поле ввода над клавишами). План, срезы (vi Telex, km NiDA,
-настройка auto/on/off, язык собеседника) и открытые вопросы —
-[plans/2026-11-08-own-keyboard.md](plans/2026-11-08-own-keyboard.md).
+Своя экранная клавиатура, 8 локализаций, единый дизайн и автообновление
+(2026-11-08, ветка `feat/own-keyboard` поверх PR #152):
+- На телефонах системная клавиатура не показывается — у всех текстовых полей
+  `inputmode="none"` (ставит `h()`), набирает панель приложения (`ui/src/osk.ts`:
+  8 раскладок `ru`, `uk`, `en`, `de`, `vi` Telex, `km` NiDA, `hi` InScript, `zh`,
+  цифры и символы, эмодзи, shift/caps, повтор backspace, клавиша раскладки;
+  высота панели идёт в `--kbd-offset`). В личных и групповых чатах в круг
+  переключения автоматически добавляются языки участников (`detectParticipantLayouts`,
+  `setChatLayouts`), а `en` присутствует всегда. На Android окно дополнительно не
+  взаимодействует с IME (`FLAG_ALT_FOCUSABLE_IM` в `MainActivity.kt`).
+- Приложение (`ui/src/i18n.ts`, `ui/src/locales/*.ts`) и публичный сайт
+  (`site/main.js`, `site/index.html`) поддерживают 8 языков (`ru`, `en`, `uk`,
+  `de`, `km`, `vi`, `hi`, `zh`) и выбирают язык по умолчанию по единой логике из
+  системных локалей (`navigator.languages`, `Intl`) и установленных в системе
+  клавиатур (`navigator.keyboard.getLayoutMap()`).
+- Весь интерфейс приведён к единому сквозному адаптивному дизайну IDE-консоли
+  (светлая и тёмная темы в `ui/src/styles.css`, единая шапка `authHeader()` на
+  экранах выбора, создания, разблокировки и загрузки профиля, 316 проверок
+  Playwright в `ui/tests/layout.test.mjs`).
+- Проверены и доведены ручное и автоматическое обновление в `SettingsModal`
+  (`checkUpdate`, `installUpdate`, `restartApp`, `getAutoUpdate`/`setAutoUpdate`),
+  постоянный баннер перезапуска подготовленного обновления (`.update-banner`),
+  передача установщику Android (`UpdateInstallerOpened`) и превью-бэкенд
+  `ui/dev/update-mock.ts`.
+План и детали — [plans/2026-11-08-own-keyboard.md](plans/2026-11-08-own-keyboard.md).
 
 Сборки приложения и исполняемые тесты платформ — только GitHub Actions. Старые
 данные можно менять без миграций; новые сообщения, ACK и состояние криптографии
@@ -224,17 +238,27 @@ messaging was verified locally (`browser-router/tests/run_browser_phone.py`,
 Honor: request and message in 32 s, reply in 2 s). Next in plan: i2pd with its
 tunnels in WASM for the browser router.
 
-The app's own on-screen keyboard (2026-11-08, branch `feat/own-keyboard` on top
-of PR #152): on phones the system keyboard never appears — every text field gets
-`inputmode="none"` from `h()` and the app's panel types instead (`ui/src/osk.ts`:
-ru/en/de layouts, digits and symbols, emoji, shift/caps, repeating backspace, a
-layout key; its height feeds `--kbd-offset` as a system keyboard did). On Android
-the window also declares itself IME-free (`FLAG_ALT_FOCUSABLE_IM` in
-`MainActivity.kt`): Huawei WebView 11 bound the system keyboard despite
-`inputmode="none"`. Tests in
-`ui/tests/keyboard.test.mjs`; preview `dev/preview.html?scene=chat&osk=1` checks
-that the field stays above the keys. Plan, slices (vi Telex, km NiDA, an
-auto/on/off setting, the contact's language) and open questions:
-[plans/2026-11-08-own-keyboard.md](plans/2026-11-08-own-keyboard.md).
+The app's own on-screen keyboard, 8 localizations, unified IDE-console design
+and update flows (2026-11-08, branch `feat/own-keyboard` on top of PR #152):
+- On phones the system keyboard never appears — every text field gets
+  `inputmode="none"` from `h()` and the app's panel types instead (`ui/src/osk.ts`:
+  8 layouts `ru`, `uk`, `en`, `de`, `vi` Telex, `km` NiDA, `hi` InScript, `zh`,
+  digits and symbols, emoji, shift/caps, repeating backspace, a layout key; its
+  height feeds `--kbd-offset`). Direct and group chats automatically include
+  participant languages (`detectParticipantLayouts`, `setChatLayouts`), with `en`
+  always present. On Android the window also declares itself IME-free
+  (`FLAG_ALT_FOCUSABLE_IM` in `MainActivity.kt`).
+- Both the app (`ui/src/i18n.ts`, `ui/src/locales/*.ts`) and the website
+  (`site/main.js`, `site/index.html`) support 8 languages (`ru`, `en`, `uk`, `de`,
+  `km`, `vi`, `hi`, `zh`) and select the default language from system locales and
+  installed system keyboard layouts (`navigator.keyboard.getLayoutMap()`).
+- All screens share one unified responsive light/dark IDE-console design
+  (`ui/src/styles.css`, `authHeader()` in `ui/src/profile-salon.ts`, verified across
+  316 combinations in `ui/tests/layout.test.mjs`).
+- Manual and automatic update flows in `SettingsModal` and `App` (`checkUpdate`,
+  `installUpdate`, `restartApp`, `getAutoUpdate`/`setAutoUpdate`, persistent
+  `.update-banner`, Android `UpdateInstallerOpened`, and `ui/dev/update-mock.ts`)
+  are complete and covered by tests.
+See [plans/2026-11-08-own-keyboard.md](plans/2026-11-08-own-keyboard.md).
 
 [Исторический журнал / Historical log](archive/handoff-brief-through-2026-11-03.md)

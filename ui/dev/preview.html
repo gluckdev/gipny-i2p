@@ -28,9 +28,9 @@
         </select>
       </label>
       <label>theme
-        <select id="theme"><option>light</option><option>dark</option></select>
+        <select id="theme"><option>light</option><option>dark</option><option>system</option></select>
       </label>
-      <label>language <select id="language"><option>en</option><option>ru</option></select></label>
+      <label>language <select id="language"><option>en</option><option>ru</option><option>uk</option><option>de</option><option>km</option><option>vi</option><option>hi</option><option>zh</option></select></label>
       <button id="check">check horizontal overflow</button>
     </header>
     <pre id="report">frames are loading…</pre>
@@ -71,6 +71,7 @@
           f.width = s.w; f.height = s.h; f.dataset.label = s.label;
           const frameParams = { scene: sceneSel.value, theme: themeSel.value, lang: langSel.value };
           if (q.has('osk')) frameParams.osk = '1';
+          for (const key of ['update', 'platform', 'network', 'demo']) if (q.has(key)) frameParams[key] = q.get(key);
           f.src = `/dev/frame.html?${new URLSearchParams(frameParams)}`;
           fig.append(cap, f);
           frames.append(fig);
@@ -117,8 +118,7 @@
           const off = offenders(doc);
           // A sign-in screen must fit a phone's frame top to bottom: the owner
           // wants profile creation on one phone screen, no scrolling
-          // (2026-11-07). Wider frames only report the number: a desktop
-          // window of 720 px scrolls the salon card by design.
+          // (2026-11-07). The optional security section scrolls internally.
           const card = doc.querySelector('.auth-card');
           if (card) {
             const auth = card.parentElement, cs = doc.defaultView.getComputedStyle(auth);
@@ -133,7 +133,7 @@
           }
           // ?osk=1: the app's own keyboard is up for the focused field, and
           // the field (its composer or form row) sits above the keys.
-          if (q.has('osk')) {
+          if (q.has('osk') && doc.querySelector('input.input, textarea')) {
             const osk = doc.querySelector('.osk:not([hidden])');
             const active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
             const box = active ? (active.closest('.chat-input') ?? active.closest('.field') ?? active) : null;

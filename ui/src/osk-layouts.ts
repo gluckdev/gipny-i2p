@@ -5,7 +5,7 @@
  * not a key). Vietnamese uses Telex composition on its Latin keys; Khmer's
  * shift level uses explicit NiDA assignments.
  */
-export type LayoutId = 'ru' | 'en' | 'de' | 'vi' | 'km';
+export type LayoutId = 'ru' | 'uk' | 'en' | 'de' | 'vi' | 'km' | 'hi' | 'zh';
 
 export interface Layout {
   id: LayoutId;
@@ -23,6 +23,10 @@ export const LAYOUTS: Readonly<Record<LayoutId, Layout>> = {
     id: 'ru', label: 'RU',
     rows: [split('йцукенгшщзхъ'), split('фывапролджэ'), split('ячсмитьбюё')],
   },
+  uk: {
+    id: 'uk', label: 'UK',
+    rows: [split('йцукенгшщзхї'), split('фівапролджє'), split('ячсмитьбюґ')],
+  },
   en: {
     id: 'en', label: 'EN',
     rows: [split('qwertyuiop'), split('asdfghjkl'), split('zxcvbnm')],
@@ -34,6 +38,23 @@ export const LAYOUTS: Readonly<Record<LayoutId, Layout>> = {
   },
   vi: {
     id: 'vi', label: 'VI', compose: 'telex',
+    rows: [split('qwertyuiop'), split('asdfghjkl'), split('zxcvbnm')],
+  },
+  hi: {
+    id: 'hi', label: 'HI',
+    // InScript letter area: vowel signs on the left, consonants on the right.
+    rows: [split('ौैाीूबहगदजड'), split('ोे्िुपरकतचट'), split('ंमनवलसय़')],
+    shift: {
+      'ौ': 'औ', 'ै': 'ऐ', 'ा': 'आ', 'ी': 'ई', 'ू': 'ऊ', 'ब': 'भ', 'ह': 'ङ',
+      'ग': 'घ', 'द': 'ध', 'ज': 'झ', 'ड': 'ढ', 'ो': 'ओ', 'े': 'ए', '्': 'अ',
+      'ि': 'इ', 'ु': 'उ', 'प': 'फ', 'र': 'ृ', 'क': 'ख', 'त': 'थ', 'च': 'छ',
+      'ट': 'ठ', 'ं': 'ँ', 'म': 'ण', 'न': 'ञ', 'व': 'ऋ', 'ल': 'ळ', 'स': 'श',
+      'य': 'ष', '़': '।',
+    },
+  },
+  zh: {
+    id: 'zh', label: 'ZH',
+    // Latin QWERTY for pinyin text; this layout does not run a Hanzi IME.
     rows: [split('qwertyuiop'), split('asdfghjkl'), split('zxcvbnm')],
   },
   km: {
@@ -59,7 +80,7 @@ export const LAYOUTS: Readonly<Record<LayoutId, Layout>> = {
   },
 };
 
-export const LAYOUT_IDS: readonly LayoutId[] = ['ru', 'en', 'de', 'vi', 'km'];
+export const LAYOUT_IDS: readonly LayoutId[] = ['ru', 'uk', 'en', 'de', 'vi', 'km', 'hi', 'zh'];
 
 export function isLayoutId(id: string): id is LayoutId {
   return (LAYOUT_IDS as readonly string[]).indexOf(id) !== -1;

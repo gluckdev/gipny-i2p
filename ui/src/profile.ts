@@ -1,11 +1,10 @@
 import { errorText } from './error-text';
-import { languagePicker } from './language-picker';
 import { t as tr } from './i18n';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Api, isTauri } from './api';
 import type { Store } from './state';
 import { View, h } from './view';
-import { salonBackdrop, salonEmblem } from './profile-salon';
+import { salonBackdrop, authHeader } from './profile-salon';
 import type { App } from './app';
 
 export class ProfileSelect extends View {
@@ -15,21 +14,18 @@ export class ProfileSelect extends View {
 
   constructor(private store: Store, private app: App) {
     super();
-    this.list = h('div', { class: 'stack', style: { gap: '8px', marginBottom: '16px' } });
+    this.list = h('div', { class: 'stack profile-list' });
     this.subTitle = h('div', { class: 'auth-sub' }, '');
     this.el = h('div', { class: 'auth profile-salon' },
       salonBackdrop(),
       h('div', { class: 'auth-card salon-panel' },
-        languagePicker(),
-        salonEmblem(),
-        h('div', { class: 'salon-wordmark' }, 'GIPNY'),
-        h('p', { class: 'salon-caption' }, tr('profile.salon_caption')),
+        authHeader(),
         h('div', { class: 'auth-title' }, tr('profile.select_title')),
         this.subTitle,
         this.list,
         h('div', { class: 'divider-text' }, tr('common.or')),
         h('button', {
-          class: 'btn btn-block btn-amber',
+          class: 'btn btn-block',
           onClick: () => store.goToCreate(),
         }, tr('profile.new_profile')),
         h('button', {

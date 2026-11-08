@@ -67,6 +67,8 @@ export interface ChatPrefs {
 }
 
 export interface Contact {
+  lang?: string | string[];
+  language?: string | string[];
   id: number;
   sign_pk: string;
   dh_pk: string;
@@ -204,6 +206,8 @@ export interface Group {
 }
 
 export interface GroupMember {
+  lang?: string | string[];
+  language?: string | string[];
   sign_pk: string;
   dh_pk: string;
   onion: string;

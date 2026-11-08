@@ -16,9 +16,9 @@
  * Plan and the slices still to come: docs/plans/2026-11-08-own-keyboard.md.
  */
 import { h } from './view';
-import { t as tr, getLang, onLangChange } from './i18n';
+import { t as tr, getLang, onLangChange, detectSystemLangs } from './i18n';
 import { isTextField, oskActive, isTextLikeType } from './osk-mode';
-import { LAYOUTS, SYMBOL_PAGES, DIGIT_ROWS, EMOJI, shifted, isLayoutId } from './osk-layouts';
+import { LAYOUTS, SYMBOL_PAGES, DIGIT_ROWS, EMOJI, shifted, isLayoutId, LAYOUT_IDS } from './osk-layouts';
 import type { LayoutId } from './osk-layouts';
 import { insertText, replaceBeforeCaret, deleteBackward } from './osk-edit';
 import type { TextState } from './osk-edit';
@@ -33,19 +33,61 @@ const REPEAT_DELAY_MS = 400;
 const REPEAT_EVERY_MS = 60;
 const DOUBLE_TAP_MS = 350;
 
-/** The layouts the layout key cycles through: the UI language, English,
- *  then whatever was added by hand (`gipny.osk.layouts`, comma-separated;
- *  the contact's language joins here in the next slice). */
+/** Only inferred IDs are retained; names and message text stay in the chat. */
+interface ParticipantLanguage {
+  lang?: string | readonly string[] | null;
+  language?: string | readonly string[] | null;
+  name?: string | null;
+  body?: string | null;
+}
+
+export function detectParticipantLayouts(participants: readonly (ParticipantLanguage | string)[], messages: readonly (ParticipantLanguage | string)[] = []): LayoutId[] {
+  const found = new Set<LayoutId>();
+  const inspect = (text: string, ukrainian = false): void => {
+    text = text.normalize('NFC');
+    // Distinctive letters identify Ukrainian; shared Cyrillic alone is only
+    // a Russian hint. A mixed-script conversation can enable both layouts.
+    if (/[ієїґ]/i.test(text)) found.add('uk');
+    if (/[ыъэё]/i.test(text) || (/[а-я]/i.test(text) && !/[ієїґ]/i.test(text) && !ukrainian)) found.add('ru');
+    if (/[äöüß]/i.test(text)) found.add('de');
+    if (/[ăâđêôơưàáãèéìíòóõùúý\u1EA0-\u1EF9]/i.test(text)) found.add('vi');
+    if (/[\u1780-\u17FF]/.test(text)) found.add('km');
+    if (/[\u0900-\u097F]/.test(text)) found.add('hi');
+    if (/[\u3100-\u312F\u4E00-\u9FFF]/.test(text)) found.add('zh');
+  };
+  for (const participant of [...participants, ...messages]) {
+    if (typeof participant === 'string') { inspect(participant); continue; }
+    const explicit: LayoutId[] = [];
+    for (const metadata of [participant.lang, participant.language]) {
+      const tags = typeof metadata === 'string' ? [metadata] : metadata ?? [];
+      for (const lang of detectSystemLangs(tags)) { found.add(lang); explicit.push(lang); }
+    }
+    inspect(participant.name ?? '', explicit.includes('uk'));
+    inspect(participant.body ?? '', explicit.includes('uk'));
+  }
+  return LAYOUT_IDS.filter(id => found.has(id));
+}
+
+let chatLayouts: LayoutId[] = [];
+let systemLayoutKeys: string[] = [];
+export function setChatLayouts(ids: readonly string[]): void {
+  const next = LAYOUT_IDS.filter(id => ids.includes(id));
+  if (next.join(',') === chatLayouts.join(',')) return;
+  chatLayouts = next;
+  osk?.refreshLayouts();
+}
+
+/** UI language, English, participants, system languages/keyboard, manual extras. */
 export function enabledLayouts(): LayoutId[] {
   const list: LayoutId[] = [];
-  const add = (id: string): void => { if (isLayoutId(id) && list.indexOf(id) === -1) list.push(id); };
+  const add = (id: string): void => { if (isLayoutId(id) && !list.includes(id)) list.push(id); };
   add(getLang());
   add('en');
+  for (const id of chatLayouts) add(id);
+  for (const id of detectSystemLangs(undefined, systemLayoutKeys)) add(id);
   try {
     for (const id of (localStorage.getItem(EXTRA_LAYOUTS_KEY) ?? '').split(',')) add(id.trim());
-  } catch {
-    // Storage can be unavailable; the two defaults stay.
-  }
+  } catch { /* Storage can be unavailable. */ }
   return list;
 }
 
@@ -80,6 +122,7 @@ export class Osk {
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private shown = false;
   private readonly rows: HTMLElement;
+  private readonly unsubscribeLang: () => void;
 
   constructor() {
     this.rows = h('div', { class: 'osk-rows' });
@@ -95,7 +138,7 @@ export class Osk {
     // A finger that slides off Backspace onto a neighbour stops the repeat.
     this.el.addEventListener('pointermove', (e) => { if (this.repeatTimer && this.keyOf(e) !== this.repeatKey) this.stopRepeat(); });
     this.el.addEventListener('contextmenu', (e) => e.preventDefault());
-    onLangChange(() => {
+    this.unsubscribeLang = onLangChange(() => {
       this.el.setAttribute('aria-label', tr('osk.keyboard'));
       this.layouts = enabledLayouts();
       this.layoutIndex = 0;
@@ -108,6 +151,14 @@ export class Osk {
   /** What the layout key shows right now. */
   get layout(): LayoutId { return this.layouts[this.layoutIndex] ?? 'en'; }
   get currentPage(): Page { return this.page; }
+
+  /** Keep the layout the person is using if it still belongs to this chat. */
+  refreshLayouts(): void {
+    const current = this.layout;
+    this.layouts = enabledLayouts();
+    this.layoutIndex = Math.max(0, this.layouts.indexOf(current));
+    if (this.shown) this.render();
+  }
 
   height(): number { return this.shown ? this.el.offsetHeight : 0; }
 
@@ -129,6 +180,12 @@ export class Osk {
     if (typeof field.scrollIntoView === 'function') {
       requestAnimationFrame(() => { try { field.scrollIntoView({ block: 'center' }); } catch { field.scrollIntoView(); } });
     }
+  }
+
+  destroy(): void {
+    this.hide();
+    this.unsubscribeLang();
+    this.el.remove();
   }
 
   /** After focus leaves a field: hide unless another field took it. */
@@ -350,6 +407,7 @@ export class Osk {
 
 /** The one panel, once installOsk() decided the device needs it. */
 export let osk: Osk | null = null;
+let removeSystemListener: (() => void) | null = null;
 
 function markField(el: Element): void {
   const tag = el.tagName.toLowerCase();
@@ -371,6 +429,22 @@ export function installOsk(): Osk | null {
   if (osk || typeof document === 'undefined' || !oskActive()) return osk;
   osk = new Osk();
   document.body.appendChild(osk.el);
+  const mounted = osk;
+  const updateSystem = (): void => {
+    osk?.refreshLayouts();
+    try {
+      const keyboard = (navigator as Navigator & { keyboard?: { getLayoutMap?: () => Promise<Map<string, string>> } }).keyboard;
+      keyboard?.getLayoutMap?.().then(map => {
+        if (osk !== mounted) return;
+        systemLayoutKeys = [...map.values()];
+        osk?.refreshLayouts();
+      }).catch(() => { /* Layout access is optional. */ });
+    } catch { /* Restricted webview. */ }
+  };
+  updateSystem();
+  window.addEventListener('languagechange', updateSystem);
+  removeSystemListener = () => window.removeEventListener('languagechange', updateSystem);
+
   // Mark on focus too: a field that bypassed h() and arrived in the same
   // task as its focus() call would otherwise meet the IME before the observer.
   document.addEventListener('focusin', (e) => { if (isTextField(e.target)) { markField(e.target); osk!.show(e.target); } });
@@ -393,7 +467,9 @@ export function installOsk(): Osk | null {
 
 /** Test seam: forget the mounted panel so a test can install again. */
 export function uninstallOsk(): void {
-  osk?.hide();
-  osk?.el.remove();
+  osk?.destroy();
+  removeSystemListener?.();
+  removeSystemListener = null;
+  systemLayoutKeys = [];
   osk = null;
 }

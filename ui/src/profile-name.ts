@@ -6,7 +6,7 @@
 // not collide with another profile here. Uniqueness is per device only; the
 // network never sees this name, so nothing global is consulted.
 
-/** Russian letters to Latin, the way a passport would (GOST-ish, no apostrophes). */
+/** Russian and Ukrainian Cyrillic to Latin, without apostrophes. */
 const CYRILLIC: Record<string, string> = {
   а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y',
   к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
@@ -21,11 +21,14 @@ const FALLBACK = 'profile';
  * none survive (a name in a script with no transliteration here). */
 export function profileSlug(display: string): string {
   let out = '';
-  for (const ch of display.trim().toLowerCase().normalize('NFKD')) {
-    if (/[a-z0-9_-]/.test(ch)) out += ch;
-    else if (ch in CYRILLIC) out += CYRILLIC[ch];
+  // Transliterate before decomposing accents: NFKD would turn ї into і
+  // and й into и and lose the distinctions in their Latin spelling.
+  for (const ch of display.trim().toLowerCase().normalize('NFC')) {
+    if (ch in CYRILLIC) out += CYRILLIC[ch];
     else if (/\s/.test(ch)) out += '-';
-    // Combining marks (the NFKD remains of é, ü, ă…) and everything else fall away.
+    else for (const latin of ch.normalize('NFKD')) {
+      if (/[a-z0-9_-]/.test(latin)) out += latin;
+    }
   }
   return out.replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, PROFILE_NAME_MAX).replace(/-$/, '');
 }
