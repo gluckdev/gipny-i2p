@@ -60,6 +60,20 @@ export interface BootStep {
   detail: string;
 }
 
+/** The relay and the relay network keep working after the chats open: a
+ * failure there is not a reason to go back and sign in again. */
+export function isBackgroundStep(id: BootStepId): boolean {
+  return id === 'relay' || id === 'dht';
+}
+
+/** A failed foreground step means the profile did not open, so there is
+ * nothing to let the person into. The boot screen and the entry timeout
+ * must agree on this, and they did not: the screen called a failed relay a
+ * background matter while the timeout treated it as a reason to never fire. */
+export function bootBlocked(steps: readonly BootStep[]): boolean {
+  return steps.some((step) => step.state === 'failed' && !isBackgroundStep(step.id));
+}
+
 export type BootStage = 'unlocking' | 'i2p' | 'relay' | 'done';
 
 export type ChatTarget =
@@ -106,6 +120,12 @@ export class Store {
 
   /** Set when the core is up and only the relay is still coming. */
   bootCanEnter = new Signal<boolean>(false);
+  /** Why the last attempt to create or open a profile failed, for the form
+   * that comes back after the boot screen. That form is built anew on the
+   * way, so a message written into the old one lands in a detached node and
+   * the toast was all that remained — gone from a phone before it is read.
+   * Cleared by the next attempt and on leaving the sign-in screens. */
+  authError = new Signal<string | null>(null);
   private bootStartedAt = 0;
   private bootStepStartedAt = 0;
   private unsubBoot: (() => void) | null = null;
@@ -265,6 +285,9 @@ export class Store {
       this.scrollToMessage.set(null);
     });
     this.view.subscribe((view) => {
+      // A new attempt starts at the boot screen; the list and the chats are
+      // past the forms. Only the two forms keep the message.
+      if (view !== 'auth-create' && view !== 'auth-unlock') this.authError.set(null);
       if (view === 'main') { this.contentLocked = false; return; }
       this.contentEpoch++;
       this.messages.set(new Map());
@@ -712,6 +735,13 @@ export class Store {
     if (profile) this.openedProfiles.add(profile);
     this.bootCanEnter.set(true);
     if (this.bootNetworkReady) { this.enterMain(); return; }
+    // The browser client on a hosting with no network service: nothing is on
+    // its way, so there is nothing to wait for. The chats open at once and
+    // the main view says what is missing where the person will read it.
+    if (info?.mode === 'builtin' && info.hosted.state === 'unconfigured') {
+      this.enterMain();
+      return;
+    }
     // In built-in mode there is always a relay on the way: nothing for the
     // user to configure, only a minute or two to wait.
     if (info?.mode === 'builtin' && info.hosted.state !== 'ready') {
@@ -744,7 +774,10 @@ export class Store {
       // on the password — dropped them into an empty chat list with no sign of
       // why, minutes after the screen told them a passphrase was being
       // checked. Reading needs an open profile; until then, wait and say so.
-      if (this.bootSteps.get().some((s) => s.state === 'failed')) return;
+      // A failed relay or relay network is not that: the screen already calls
+      // those background work, and holding the door for them kept the person
+      // at "[ FAIL ] Starting local relay" for good.
+      if (bootBlocked(this.bootSteps.get())) return;
       if (!this.bootCanEnter.get()) return;
       this.enterMain();
     }, Store.BOOT_RELAY_TIMEOUT_MS);
@@ -1567,7 +1600,8 @@ export class Store {
     } else if ('RelayInfoChanged' in e) {
       const info = e.RelayInfoChanged.info;
       this.relayInfo.set(info);
-      if (info.mode === 'builtin' && info.hosted.state === 'ready') { this.bootNetworkReady = true; this.enterMain(); }
+      // Ready, or never coming: either way there is no relay work left to wait for.
+      if (info.mode === 'builtin' && (info.hosted.state === 'ready' || info.hosted.state === 'unconfigured')) { this.bootNetworkReady = true; this.enterMain(); }
       this.relayUnconfigured.set(info.mode !== 'builtin' && info.external.trim() === '');
     } else if ('DhtJoined' in e) {
       // Zero peers is a fact worth keeping, not a failure to raise: a device on

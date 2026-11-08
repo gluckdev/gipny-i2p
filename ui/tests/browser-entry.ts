@@ -1,8 +1,9 @@
 // Browser state and attachment regressions, without a native process.
 export * from '../src/browser-files';
-export { Api } from '../src/api';
-export { t } from '../src/i18n';
-export { Store } from '../src/state';
+export { Api, configureBrowserBackend } from '../src/api';
+export { t, setLang } from '../src/i18n';
+export { Store, isBackgroundStep, bootBlocked } from '../src/state';
+export { App } from '../src/app';
 export { clearHistory, expireHistory, pruneMessageOutbox, newState as newBrowserState } from '../src/browser-core/model';
 export { WorkerRtcSocket, rtcSettings, filteredSdp } from '../src/browser-core/rtc-transport';
 export { redactMessage, refreshDeletionNotice, inHistory, payload, hex } from '../src/browser-core/model';
@@ -16,7 +17,7 @@ export { scrubLog } from '../src/browser-core/log';
 export { answerWithin, RELAY_ANSWER_MS } from '../src/browser-core/deadline';
 export { deletionRuns } from '../src/deletion-notices';
 export { ProfileSelect } from '../src/profile';
-export { AuthBooting } from '../src/auth';
+export { AuthBooting, AuthCreate, AuthUnlock } from '../src/auth';
 export * from '../src/browser-core/files';
 export { loadState as loadBrowserState } from '../src/browser-core/model';
 export { FileStorage, StorageBusy, availableFileBytes, storedSize } from '../src/browser-core/file-storage';
