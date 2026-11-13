@@ -14,15 +14,15 @@
     "@noble/hashes": "2.4.0",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
-    "@tauri-apps/plugin-notification": "^2.8.0",
+    "@tauri-apps/plugin-notification": "^2.8.1",
     "jsqr": "^1.4.0"
   },
   "devDependencies": {
-    "acorn": "^8.14.1",
-    "acorn-walk": "^8.3.4",
+    "acorn": "^8.19.0",
+    "acorn-walk": "^8.3.5",
     "happy-dom": "^21.0.4",
     "playwright": "^1.65.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5"
+    "vite": "^8.3.7"
   }
 }
