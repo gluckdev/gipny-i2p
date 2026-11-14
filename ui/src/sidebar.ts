@@ -86,6 +86,13 @@ export class Sidebar extends View {
       ),
       h('div', { class: 'sidebar-search-wrap' }, search),
       this.listEl,
+      h('div', { class: 'bugtracker-contact', onClick: () => this.openBugtracker() },
+        h('div', { class: 'bugtracker-icon' }, '🐛'),
+        h('div', { class: 'bugtracker-info' },
+          h('div', { class: 'bugtracker-title' }, tr('sidebar.bugtracker')),
+          h('div', { class: 'bugtracker-sub' }, tr('sidebar.report_bug')),
+        ),
+      ),
       h('div', { class: 'sidebar-footer' },
         h('button', { class: 'sidebar-link', onClick: () => this.about() }, icon('shield', 16), tr('sidebar.about')),
         h('button', { class: 'icon-btn', title: tr('sidebar.lock'), onClick: () => this.store.lock() }, icon('lock', 18)),
@@ -347,6 +354,30 @@ export class Sidebar extends View {
 
   private about(): void {
     this.app.openModal((close) => new AboutModal(close).el);
+  }
+
+  private openBugtracker(): void {
+    // Адрес багтрекера из gipny:v3 b32
+    const bugtrackerAddress = 'gipny:v3:AwZjN5KVFwO5s40WLLm0s2oP_EIukjZzOOlIz8lAScK21YYs7ixctfKjqWFxAsdOIaq_9Q_Zc5GpVE8MSIOZ_EeaH5UOGjm1rmMpfJD1hbL23gpP4T4TA4f0ApRPcwyKwHxuqW8jiMRP5wHiHVdZ4ilL5JrP8-DbmINqZgICOKrPBUdMdWNrBLbJJQ';
+    // Проверяем, есть ли уже контакт багтрекера
+    const contacts = this.store.contacts.get();
+    const bugtracker = contacts.find((c) => c.onion === bugtrackerAddress);
+    
+    if (bugtracker) {
+      // Открываем чат с существующим контактом
+      this.store.selectChat({ kind: 'contact', id: bugtracker.id });
+    } else {
+      // Открываем модальное окно добавления контакта с предзаполненным адресом
+      this.app.openModal((close) => {
+        const modal = new AddContactModal(this.store, close);
+        // Заполняем адрес багтрекера
+        setTimeout(() => {
+          const input = modal.el.querySelector('input[type="text"]') as HTMLInputElement;
+          if (input) input.value = bugtrackerAddress;
+        }, 0);
+        return modal.el;
+      });
+    }
   }
 
   private search(): void {

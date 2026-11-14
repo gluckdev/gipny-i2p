@@ -493,6 +493,39 @@ a:hover { text-decoration: underline; }
 .contact.pinned { background: rgba(255, 176, 0, 0.04); }
 .contact.pinned:hover { background: rgba(255, 176, 0, 0.08); }
 
+.bugtracker-contact {
+  border-top: 1px solid var(--border-subtle);
+  padding: 12px 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.bugtracker-contact:hover {
+  background: var(--bg-hover);
+}
+.bugtracker-icon {
+  font-size: 32px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.bugtracker-info {
+  flex: 1;
+  min-width: 0;
+}
+.bugtracker-title {
+  font-weight: 500;
+  color: var(--fg);
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.bugtracker-sub {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
 .sidebar-footer {
   border-top: 1px solid var(--border);
   padding: 10px 16px;

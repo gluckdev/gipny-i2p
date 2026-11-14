@@ -57,6 +57,8 @@ export const zh = {
   "sidebar.new_group": "新组",
   "sidebar.new_folder": "新建文件夹",
   "sidebar.about": "关于 gipny 和安全",
+  "sidebar.bugtracker": "错误追踪器",
+  "sidebar.report_bug": "报告错误",
   "sidebar.lock": "锁",
   "sidebar.collapse": "折叠聊天列表",
   "sidebar.expand": "展开聊天列表",

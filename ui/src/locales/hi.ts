@@ -57,6 +57,8 @@ export const hi = {
   "sidebar.new_group": "नया समूह",
   "sidebar.new_folder": "नया फ़ोल्डर",
   "sidebar.about": "gipny और सुरक्षा के बारे में",
+  "sidebar.bugtracker": "बग ट्रैकर",
+  "sidebar.report_bug": "बग रिपोर्ट करें",
   "sidebar.lock": "ताला",
   "sidebar.collapse": "चैट सूची संक्षिप्त करें",
   "sidebar.expand": "चैट सूची का विस्तार करें",

@@ -57,6 +57,8 @@ export const km = {
   "sidebar.new_group": "ក្រុមថ្មី។",
   "sidebar.new_folder": "ថតឯកសារថ្មី។",
   "sidebar.about": "អំពី gipny & សុវត្ថិភាព",
+  "sidebar.bugtracker": "កម្មវិធីតាមដានកំហុស",
+  "sidebar.report_bug": "រាយការណ៍កំហុស",
   "sidebar.lock": "ចាក់សោ",
   "sidebar.collapse": "បង្រួមបញ្ជីជជែក",
   "sidebar.expand": "ពង្រីកបញ្ជីជជែក",

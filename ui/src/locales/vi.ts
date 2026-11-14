@@ -57,6 +57,8 @@ export const vi = {
   "sidebar.new_group": "Nhóm mới",
   "sidebar.new_folder": "Thư mục mới",
   "sidebar.about": "Giới thiệu về gipny và bảo mật",
+  "sidebar.bugtracker": "Trình theo dõi lỗi",
+  "sidebar.report_bug": "Báo cáo lỗi",
   "sidebar.lock": "Khóa",
   "sidebar.collapse": "Thu gọn danh sách trò chuyện",
   "sidebar.expand": "Mở rộng danh sách trò chuyện",

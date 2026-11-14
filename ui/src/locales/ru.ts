@@ -58,6 +58,8 @@ export const ru = {
   "sidebar.new_group": "Новая группа",
   "sidebar.new_folder": "Новая папка",
   "sidebar.about": "О gipny и безопасности",
+  "sidebar.bugtracker": "Багтрекер",
+  "sidebar.report_bug": "Сообщить об ошибке",
   "sidebar.lock": "Заблокировать",
   "sidebar.collapse": "Свернуть список чатов",
   "sidebar.expand": "Развернуть список чатов",

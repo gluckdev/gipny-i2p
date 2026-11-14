@@ -57,6 +57,8 @@ export const uk = {
   "sidebar.new_group": "Нова група",
   "sidebar.new_folder": "Нова папка",
   "sidebar.about": "Про gipny і безпеку",
+  "sidebar.bugtracker": "Багтрекер",
+  "sidebar.report_bug": "Повідомити про помилку",
   "sidebar.lock": "Замок",
   "sidebar.collapse": "Згорнути список чату",
   "sidebar.expand": "Розгорнути список чату",

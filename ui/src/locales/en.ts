@@ -60,6 +60,8 @@ export const en = {
   "sidebar.new_group": "New group",
   "sidebar.new_folder": "New folder",
   "sidebar.about": "About gipny & security",
+  "sidebar.bugtracker": "Bug tracker",
+  "sidebar.report_bug": "Report a bug",
   "sidebar.lock": "Lock",
   "sidebar.collapse": "Collapse chat list",
   "sidebar.expand": "Expand chat list",

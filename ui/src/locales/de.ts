@@ -60,6 +60,8 @@ export const de = {
   "sidebar.new_group": "Neue Gruppe",
   "sidebar.new_folder": "Neuer Ordner",
   "sidebar.about": "Über gipny und Sicherheit",
+  "sidebar.bugtracker": "Bug-Tracker",
+  "sidebar.report_bug": "Fehler melden",
   "sidebar.lock": "Sperren",
   "sidebar.collapse": "Chatliste einklappen",
   "sidebar.expand": "Chatliste ausklappen",
