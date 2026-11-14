@@ -938,3 +938,43 @@ jobs:
           # Publish exactly the verified draft ID. Notes remain JSON data;
           # a replacement draft under the same tag is never looked up here.
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" --input "$payload" >/dev/null
+
+  # ---------------------------------------------------------------------------
+  # 5. Release notification. Send a service message to the messenger after
+  #    a successful release publication.
+  # ---------------------------------------------------------------------------
+  notify:
+    name: release notification
+    needs: [version, publish]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: send release notification to messenger
+        env:
+          TAG: v${{ needs.version.outputs.version }}
+          RELEASE_URL: https://github.com/${{ github.repository }}/releases/tag/v${{ needs.version.outputs.version }}
+          # Секреты для отправки уведомлений в мессенджер
+          # GIPNY_PROFILE_DIR - путь к профилю для отправки
+          # GIPNY_RECIPIENT_ADDRESS - адрес получателя (багтрекер или другой контакт)
+          # GIPNY_PASSWORD - пароль для разблокировки профиля
+          GIPNY_PROFILE_DIR: ${{ secrets.GIPNY_NOTIFIER_PROFILE_DIR }}
+          GIPNY_RECIPIENT_ADDRESS: ${{ secrets.GIPNY_NOTIFIER_RECIPIENT }}
+          GIPNY_PASSWORD: ${{ secrets.GIPNY_NOTIFIER_PASSWORD }}
+        run: |
+          if [ -z "$GIPNY_PROFILE_DIR" ] || [ -z "$GIPNY_RECIPIENT_ADDRESS" ] || [ -z "$GIPNY_PASSWORD" ]; then
+            echo "Release notification skipped: secrets not configured"
+            echo "To enable notifications, set GIPNY_NOTIFIER_PROFILE_DIR, GIPNY_NOTIFIER_RECIPIENT, and GIPNY_NOTIFIER_PASSWORD"
+            exit 0
+          fi
+          
+          # Создаём краткий changelog для уведомления
+          .github/scripts/release-notes.sh "$TAG" dist "$GITHUB_REPOSITORY" HEAD | head -50 > /tmp/changelog.txt
+          
+          # Отправляем уведомление
+          python3 .github/scripts/notify-release.py "$TAG" "$RELEASE_URL" /tmp/changelog.txt || {
+            echo "Warning: Failed to send release notification, but release was published successfully"
+            exit 0
+          }
+          
+          echo "Release notification sent successfully"
