@@ -24,6 +24,44 @@ Assert-Throws { Get-GipnyReleaseChecksum "$hash  other.tar.gz" 'agent.tar.gz' }
 Assert-Throws { Get-GipnyReleaseChecksum "$hash  agent.tar.gz`n$hash  agent.tar.gz" 'agent.tar.gz' }
 Assert-Throws { Get-GipnyReleaseChecksum "bad  agent.tar.gz" 'agent.tar.gz' }
 
+Assert-True ((ConvertTo-GipnyAgentArchitecture 0x8664) -ceq 'amd64') 'Native x64 mapping failed.'
+Assert-True ((ConvertTo-GipnyAgentArchitecture 0xAA64) -ceq 'arm64') 'Native ARM64 mapping failed.'
+Assert-Throws { ConvertTo-GipnyAgentArchitecture 0x014c }
+Assert-Throws { ConvertTo-GipnyAgentArchitecture 0 }
+# Exercise the actual Windows host query, including resistance to process-only
+# environment hints. This fixture does not install anything or need admin.
+$nativeArchitecture = Get-GipnyWindowsArchitecture
+Assert-True ($nativeArchitecture -in @('amd64', 'arm64')) 'Unexpected Windows CI host architecture.'
+$oldArchitecture = $env:PROCESSOR_ARCHITECTURE
+$oldWowArchitecture = $env:PROCESSOR_ARCHITEW6432
+try {
+    $env:PROCESSOR_ARCHITECTURE = 'FAKE'
+    $env:PROCESSOR_ARCHITEW6432 = 'FAKE'
+    Assert-True ((Get-GipnyWindowsArchitecture) -ceq $nativeArchitecture) 'Process environment overrode native host architecture.'
+} finally {
+    $env:PROCESSOR_ARCHITECTURE = $oldArchitecture
+    $env:PROCESSOR_ARCHITEW6432 = $oldWowArchitecture
+}
+$releaseBase = 'https://github.com/gluckdev/gipny-i2p/releases/download/v1.2.3/'
+$amdAsset = @{ name = 'gipny-agent_1.2.3_windows-amd64.tar.gz'; browser_download_url = $releaseBase + 'gipny-agent_1.2.3_windows-amd64.tar.gz' }
+$armAsset = @{ name = 'gipny-agent_1.2.3_windows-arm64.tar.gz'; browser_download_url = $releaseBase + 'gipny-agent_1.2.3_windows-arm64.tar.gz' }
+$sumAsset = @{ name = 'SHA256SUMS.txt'; browser_download_url = $releaseBase + 'SHA256SUMS.txt' }
+$allAssets = @{ tag_name = 'v1.2.3'; assets = @($amdAsset, $armAsset, $sumAsset) }
+Assert-True ((Select-GipnyWindowsReleaseAssets $allAssets arm64).Archive.name -ceq $armAsset.name) 'ARM64 selected another architecture.'
+Assert-True ((Select-GipnyWindowsReleaseAssets $allAssets amd64).Archive.name -ceq $amdAsset.name) 'AMD64 selection failed.'
+try {
+    $null = Select-GipnyWindowsReleaseAssets @{tag_name = 'v1.2.3'; assets = @($amdAsset, $sumAsset)} arm64
+    throw 'Missing native ARM64 asset was accepted.'
+} catch {
+    Assert-True ($_.Exception.Message -match 'no native Windows arm64 agent') 'Missing ARM64 asset was not explained.'
+}
+Assert-Throws { Select-GipnyWindowsReleaseAssets @{tag_name = 'v1.2.3'; assets = @($armAsset, $armAsset, $sumAsset)} arm64 }
+Assert-Throws { Select-GipnyWindowsReleaseAssets @{tag_name = 'v1.2.3'; assets = @($armAsset)} arm64 }
+Assert-Throws { Select-GipnyWindowsReleaseAssets @{tag_name = 'v1.2.3'; assets = @($armAsset, $sumAsset, $sumAsset)} arm64 }
+Assert-Throws { Select-GipnyWindowsReleaseAssets @{tag_name = 'invalid'; assets = @($armAsset, $sumAsset)} arm64 }
+Assert-Throws { Select-GipnyWindowsReleaseAssets @{tag_name = 'v1.2.3'; assets = @(@{name = $armAsset.name; browser_download_url = 'https://example.invalid/package'}, $sumAsset)} arm64 }
+Write-Output 'Native Windows architecture and exact release asset selection regressions: PASS'
+
 $root = Join-Path ([IO.Path]::GetTempPath()) ('gipny-bootstrap-test-' + [guid]::NewGuid().ToString('N'))
 $install = Join-Path $root 'installed'
 $data = Join-Path $root 'data'

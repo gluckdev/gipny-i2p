@@ -24,6 +24,82 @@ function Get-GipnyReleaseChecksum {
     return $found[0]
 }
 
+function ConvertTo-GipnyAgentArchitecture([UInt16]$NativeMachine) {
+    if ($NativeMachine -eq 0x8664) { return 'amd64' }
+    if ($NativeMachine -eq 0xAA64) { return 'arm64' }
+    throw ('Unsupported native Windows architecture (machine 0x{0:X4}); no installation was attempted.' -f $NativeMachine)
+}
+
+function Get-GipnyWindowsArchitecture {
+    # Process environment variables may describe emulated x64 PowerShell on
+    # ARM64. Read the host machine from Windows rather than guessing from them.
+    if (-not ('GipnyInstallerNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class GipnyInstallerNative {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SystemInfo {
+        public ushort Architecture, Reserved;
+        public uint PageSize;
+        public IntPtr MinimumAddress, MaximumAddress;
+        public UIntPtr ActiveProcessorMask;
+        public uint ProcessorCount, ProcessorType, AllocationGranularity;
+        public ushort ProcessorLevel, ProcessorRevision;
+    }
+    [DllImport("kernel32.dll")]
+    private static extern void GetNativeSystemInfo(out SystemInfo info);
+    public static ushort NativeMachine() {
+        try {
+            ushort process, native;
+            if (!IsWow64Process2(new IntPtr(-1), out process, out native))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return native;
+        } catch (EntryPointNotFoundException) {
+            // Older Windows lacks IsWow64Process2. Never use this fallback
+            // after an API failure on a system where the new API exists.
+            SystemInfo info;
+            GetNativeSystemInfo(out info);
+            switch (info.Architecture) {
+                case 9: return 0x8664;
+                case 12: return 0xAA64;
+                case 0: return 0x014c;
+                default: return 0;
+            }
+        }
+    }
+}
+'@ -ErrorAction Stop
+    }
+    ConvertTo-GipnyAgentArchitecture ([GipnyInstallerNative]::NativeMachine())
+}
+
+function Select-GipnyWindowsReleaseAssets {
+    param($Release, [ValidateSet('amd64', 'arm64')][string]$Architecture)
+    $version = ([string]$Release.tag_name) -replace '^v', ''
+    if ($version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$') { throw 'Invalid release version.' }
+    $assetName = "gipny-agent_${version}_windows-$Architecture.tar.gz"
+    $assets = @($Release.assets | Where-Object { $_.name -ceq $assetName })
+    if ($assets.Count -eq 0) {
+        throw "Release $version has no native Windows $Architecture agent ($assetName). No installation was attempted."
+    }
+    if ($assets.Count -ne 1) { throw "Ambiguous release: multiple $assetName assets." }
+    $manifests = @($Release.assets | Where-Object { $_.name -ceq 'SHA256SUMS.txt' })
+    if ($manifests.Count -ne 1) { throw 'Release must contain exactly one SHA256SUMS.txt.' }
+    foreach ($asset in @($assets[0], $manifests[0])) {
+        $url = [string]$asset.browser_download_url
+        if (-not $url.StartsWith('https://github.com/gluckdev/gipny-i2p/releases/download/', [StringComparison]::Ordinal) -or
+            -not $url.EndsWith('/' + $asset.name, [StringComparison]::Ordinal)) {
+            throw 'Release asset has an unexpected download URL.'
+        }
+    }
+    return [pscustomobject]@{ Version = $version; AssetName = $assetName; Archive = $assets[0]; Manifest = $manifests[0] }
+}
+
 # Invoke with: irm https://raw.githubusercontent.com/gluckdev/gipny-i2p/main/scripts/install-agent.ps1 | iex
 # Then: Install-GipnyAgent -Master '<card>' (in an elevated PowerShell).
 function Install-GipnyAgent {
@@ -76,29 +152,20 @@ function Install-GipnyAgent {
     function Quote-AgentArgument([string]$Value) {
         '"' + ([regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1')) + '"'
     }
-    $archValue = $env:PROCESSOR_ARCHITEW6432
-    if (-not $archValue) { $archValue = $env:PROCESSOR_ARCHITECTURE }
-    switch ($archValue.ToUpperInvariant()) {
-        'AMD64' { $arch = 'amd64' }
-        'ARM64' { $arch = 'arm64' }
-        default { throw "Unsupported Windows architecture: $archValue" }
-    }
+    $arch = Get-GipnyWindowsArchitecture
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $release = Invoke-RestMethod 'https://api.github.com/repos/gluckdev/gipny-i2p/releases/latest'
-    $version = ([string]$release.tag_name) -replace '^v', ''
-    if ($version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$') { throw 'Invalid release version.' }
-    $assetName = "gipny-agent_${version}_windows-$arch.tar.gz"
-    $assets = @($release.assets | Where-Object { $_.name -ceq $assetName })
-    $manifests = @($release.assets | Where-Object { $_.name -ceq 'SHA256SUMS.txt' })
-    if ($assets.Count -ne 1 -or $manifests.Count -ne 1) { throw 'Release must contain exactly one matching agent archive and SHA256SUMS.txt.' }
+    $selection = Select-GipnyWindowsReleaseAssets -Release $release -Architecture $arch
+    $version = $selection.Version
+    $assetName = $selection.AssetName
     $temp = Join-Path ([IO.Path]::GetTempPath()) ('gipny-agent-' + [guid]::NewGuid())
     New-Item $temp -ItemType Directory | Out-Null
     try {
         $archive = Join-Path $temp 'agent.tar.gz'
-        Invoke-WebRequest $assets[0].browser_download_url -OutFile $archive -UseBasicParsing
-        if ((Get-Item -LiteralPath $archive).Length -ne $assets[0].size) { throw 'Agent archive size mismatch.' }
+        Invoke-WebRequest $selection.Archive.browser_download_url -OutFile $archive -UseBasicParsing
+        if ((Get-Item -LiteralPath $archive).Length -ne $selection.Archive.size) { throw 'Agent archive size mismatch.' }
         $checksumFile = Join-Path $temp 'SHA256SUMS.txt'
-        Invoke-WebRequest $manifests[0].browser_download_url -OutFile $checksumFile -UseBasicParsing
+        Invoke-WebRequest $selection.Manifest.browser_download_url -OutFile $checksumFile -UseBasicParsing
         if ((Get-Item -LiteralPath $checksumFile).Length -gt 1MB) { throw 'Oversized checksum manifest.' }
         $expected = Get-GipnyReleaseChecksum -Manifest (Get-Content -LiteralPath $checksumFile -Raw) -AssetName $assetName
         if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'Agent archive checksum mismatch.' }

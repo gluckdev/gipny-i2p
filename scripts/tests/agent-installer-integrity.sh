@@ -2,6 +2,45 @@
 set -euo pipefail
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 source "$repo_dir/scripts/install-agent.sh"
+
+# Simulate macOS host queries, without pretending Linux is an ARM runner.
+sysctl() {
+  [[ $1 == -in ]] || return 2
+  case $2 in
+    sysctl.proc_translated) [[ ${GIPNY_TEST_TRANSLATED:-missing} != missing ]] || return 1; printf '%s\n' "$GIPNY_TEST_TRANSLATED" ;;
+    hw.optional.arm64) [[ ${GIPNY_TEST_ARM64:-missing} != missing ]] || return 1; printf '%s\n' "$GIPNY_TEST_ARM64" ;;
+    *) return 2 ;;
+  esac
+}
+[[ $(detect_agent_arch darwin x86_64) == amd64 ]]
+GIPNY_TEST_TRANSLATED=0 GIPNY_TEST_ARM64=0
+[[ $(detect_agent_arch darwin x86_64) == amd64 ]]
+GIPNY_TEST_TRANSLATED=1 GIPNY_TEST_ARM64=missing
+[[ $(detect_agent_arch darwin x86_64) == arm64 ]]
+GIPNY_TEST_TRANSLATED=missing GIPNY_TEST_ARM64=1
+[[ $(detect_agent_arch darwin x86_64) == arm64 ]]
+[[ $(detect_agent_arch darwin arm64) == arm64 ]]
+[[ $(detect_agent_arch linux x86_64) == amd64 ]]
+[[ $(detect_agent_arch linux aarch64) == arm64 ]]
+if detect_agent_arch linux mipsel 2>/dev/null; then echo 'Unsupported CPU accepted' >&2; exit 1; fi
+unset -f sysctl
+
+release_base=https://github.com/gluckdev/gipny-i2p/releases/download/v1.2.3
+amd_url=$release_base/gipny-agent_1.2.3_darwin-amd64.tar.gz
+arm_url=$release_base/gipny-agent_1.2.3_darwin-arm64.tar.gz
+sums_url=$release_base/SHA256SUMS.txt
+selected=$(select_agent_release_urls gluckdev/gipny-i2p 1.2.3 darwin arm64 <<< "$amd_url"$'\n'"$arm_url"$'\n'"$sums_url")
+[[ $selected == "$arm_url"$'\n'"$sums_url" ]]
+# No emulated-Intel fallback when native ARM64 is absent; duplicates and
+# foreign repositories also fail before downloads or install writes.
+for urls in "$amd_url"$'\n'"$sums_url" "$arm_url"$'\n'"$arm_url"$'\n'"$sums_url" \
+  "$arm_url" "${arm_url/gluckdev\/gipny-i2p/foreign\/repo}"$'\n'"$sums_url"; do
+  if select_agent_release_urls gluckdev/gipny-i2p 1.2.3 darwin arm64 <<< "$urls" >/dev/null 2>&1; then
+    echo 'Missing/ambiguous/foreign native package accepted' >&2; exit 1
+  fi
+done
+printf '%s\n' 'Agent host-architecture/Rosetta/exact release selection regressions: PASS'
+
 probe_dir=$(mktemp -d)
 trap 'rm -rf -- "$probe_dir"' EXIT
 printf '%s' 'synthetic verified release archive' > "$probe_dir/archive"

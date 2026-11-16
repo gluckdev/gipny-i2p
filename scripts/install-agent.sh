@@ -35,6 +35,42 @@ verify_agent_archive() {
   actual=${actual%% *}
   [[ $actual == "$expected" ]] || { echo 'Agent archive checksum mismatch' >&2; return 1; }
 }
+
+detect_agent_arch() {
+  local os=$1 machine=$2 translated arm64
+  case $machine in
+    arm64|aarch64) printf 'arm64\n' ;;
+    x86_64|amd64)
+      if [[ $os == darwin ]]; then
+        # uname describes the current process under Rosetta. Query the host
+        # before choosing an archive; Intel Macs may lack these sysctl keys.
+        translated=$(sysctl -in sysctl.proc_translated 2>/dev/null || true)
+        arm64=$(sysctl -in hw.optional.arm64 2>/dev/null || true)
+        if [[ $translated == 1 || $arm64 == 1 ]]; then printf 'arm64\n'; return; fi
+      fi
+      printf 'amd64\n' ;;
+    *) printf 'Unsupported agent architecture: %s/%s\n' "$os" "$machine" >&2; return 1 ;;
+  esac
+}
+
+select_agent_release_urls() {
+  local repo=$1 version=$2 os=$3 arch=$4 candidate url='' checksum_url=''
+  local asset_name="gipny-agent_${version}_${os}-${arch}.tar.gz" asset_count=0 manifest_count=0
+  while IFS= read -r candidate; do
+    case $candidate in
+      "https://github.com/$repo/releases/download/"*)
+        if [[ ${candidate##*/} == "$asset_name" ]]; then url=$candidate; asset_count=$((asset_count+1)); fi
+        if [[ ${candidate##*/} == SHA256SUMS.txt ]]; then checksum_url=$candidate; manifest_count=$((manifest_count+1)); fi ;;
+    esac
+  done
+  if [[ $asset_count == 0 ]]; then
+    printf 'Release %s has no native agent for %s/%s (%s). No installation was attempted.\n' "$version" "$os" "$arch" "$asset_name" >&2
+    return 1
+  fi
+  [[ $asset_count == 1 ]] || { printf 'Ambiguous release: multiple %s assets.\n' "$asset_name" >&2; return 1; }
+  [[ $manifest_count == 1 ]] || { echo 'Release must contain exactly one SHA256SUMS.txt.' >&2; return 1; }
+  printf '%s\n%s\n' "$url" "$checksum_url"
+}
 if [[ -n ${BASH_SOURCE[0]:-} && ${BASH_SOURCE[0]} != "$0" ]]; then return; fi
 
 REPO=gluckdev/gipny-i2p
@@ -81,7 +117,7 @@ done
 [[ $TIMEOUT =~ ^[1-9][0-9]*$ ]] || fail '--timeout должен быть положительным целым числом'
 case $(uname -s) in Linux) OS=linux ;; Darwin) OS=darwin ;; *) fail 'поддерживаются Linux и macOS' ;; esac
 [[ ! -f /etc/openwrt_release ]] || fail 'для OpenWrt используйте install-agent-openwrt.sh и статическую musl-сборку'
-case $(uname -m) in x86_64|amd64) ARCH=amd64 ;; arm64|aarch64) ARCH=arm64 ;; *) fail 'поддерживаются amd64 и arm64' ;; esac
+ARCH=$(detect_agent_arch "$OS" "$(uname -m)") || fail 'не удалось выбрать поддерживаемую архитектуру агента'
 if [[ $(id -u) == 0 ]]; then
   BIN=/usr/local/bin CONFIG=/etc/gipny-agent ENV=/etc/gipny-agent.env DEFAULT_DATA=/var/lib/gipny-agent
   UNIT=/etc/systemd/system/gipny-agent.service SYSTEMCTL=(systemctl)
@@ -180,15 +216,9 @@ release_version=$(sed -n 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"v\{
 [[ $release_version =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][a-zA-Z0-9.+-]+)?$ ]] || fail 'некорректная версия релиза'
 asset_name="gipny-agent_${release_version}_${OS}-${ARCH}.tar.gz"
 release_urls=$(sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/release.json")
-URL=''; checksum_url=''; asset_count=0; manifest_count=0
-while IFS= read -r candidate; do
-  case $candidate in
-    "https://github.com/$REPO/releases/download/"*)
-      if [[ ${candidate##*/} == "$asset_name" ]]; then URL=$candidate; asset_count=$((asset_count+1)); fi
-      if [[ ${candidate##*/} == SHA256SUMS.txt ]]; then checksum_url=$candidate; manifest_count=$((manifest_count+1)); fi ;;
-  esac
-done <<< "$release_urls"
-[[ $asset_count == 1 && $manifest_count == 1 ]] || fail "в релизе нет единственного $asset_name и SHA256SUMS.txt"
+selection=$(select_agent_release_urls "$REPO" "$release_version" "$OS" "$ARCH" <<< "$release_urls") \
+  || fail 'подходящий проверяемый пакет отсутствует; установка не начата'
+URL=${selection%%$'\n'*}; checksum_url=${selection#*$'\n'}
 fetch "$URL" "$TMP/agent.tar.gz"
 fetch "$checksum_url" "$TMP/SHA256SUMS.txt"
 verify_agent_archive "$TMP/agent.tar.gz" "$TMP/SHA256SUMS.txt" "$asset_name" || fail 'проверка архива не пройдена; установка не начата'
