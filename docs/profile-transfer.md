@@ -12,6 +12,13 @@
 storage adapters, парольный криптопротокол, I2P recovery и пользовательский
 перенос ещё не реализованы. Они не доказывают фактический fsync или удаление.
 
+Первый portable schema checkpoint добавляет bounded crypto-state codec и
+immutable manifest layout; остальные домены и import/export adapters ещё впереди.
+После независимого review исправлена очистка частично прочитанного secret key.
+23 model/portable теста, native all-targets check и WASM compile прошли.
+Mapping данных и конечные этапы описаны в
+[переносимой схеме профиля](profile-transfer-schema.md).
+
 ## Пользовательский порядок
 
 1. На получателе рядом с «Создать» доступна «Скачать»: QR-сканер, под ним

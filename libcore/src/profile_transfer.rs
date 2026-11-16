@@ -7,6 +7,7 @@
 
 mod receiver;
 mod source;
+pub mod portable;
 
 pub use receiver::{ReceiverEvent, ReceiverJournal, ReceiverPhase};
 pub use source::{SourceEvent, SourceJournal, SourcePhase};
