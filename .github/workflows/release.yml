@@ -181,7 +181,8 @@ jobs:
           - { os: ubuntu-22.04,     bundles: 'appimage,deb', artifact: gipny-Linux, target: x86_64-unknown-linux-gnu }
           # 22.04 like amd64, so the arm64 bundles carry the same glibc floor.
           - { os: ubuntu-22.04-arm, bundles: 'appimage,deb', artifact: gipny-Linux-arm64, target: aarch64-unknown-linux-gnu }
-          - { os: windows-latest,   bundles: 'nsis',         artifact: gipny-Windows, target: x86_64-pc-windows-msvc }
+          - { os: windows-latest,   bundles: 'nsis',         artifact: gipny-Windows, target: x86_64-pc-windows-msvc, windows_arch: x64, output: target/x86_64-pc-windows-msvc/release }
+          - { os: windows-11-arm,   bundles: 'nsis',         artifact: gipny-Windows-arm64, target: aarch64-pc-windows-msvc, windows_arch: arm64, output: target/aarch64-pc-windows-msvc/release }
           - { os: macos-15,         bundles: 'app,dmg',      artifact: gipny-macOS-arm64, target: aarch64-apple-darwin }
           - { os: macos-15-intel,   bundles: 'app,dmg',      artifact: gipny-macOS-x86_64, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.os }}
@@ -193,7 +194,7 @@ jobs:
       - name: Native Windows source-build tools
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .github/scripts/windows-source-tools.ps1
+        run: .github/scripts/windows-source-tools.ps1 -TargetArchitecture '${{ matrix.windows_arch }}'
       - name: check out i2pd (compiled into the app)
         shell: bash
         run: |
@@ -209,11 +210,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-installed
-          key: vcpkg-x64-windows-static-md-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh') }}
+          key: vcpkg-${{ matrix.os }}-${{ matrix.windows_arch }}-static-md-${{ env.GIPNY_MSVC_TOOLSET }}-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh', '.github/scripts/windows-source-tools.ps1') }}
       - name: boost and OpenSSL (Windows, compiled into the app)
         if: runner.os == 'Windows'
         shell: bash
-        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed"
+        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed" '${{ matrix.windows_arch }}'
       - name: system deps (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -287,7 +288,11 @@ jobs:
         run: cargo install tauri-cli --version '=2.12.2' --locked
       - name: tauri build from this checkout
         working-directory: core
-        run: cargo tauri build --ci --bundles ${{ matrix.bundles }} -- --locked
+        shell: bash
+        run: |
+          target_args=()
+          if [ "$RUNNER_OS" = Windows ]; then target_args=(--target '${{ matrix.target }}'); fi
+          cargo tauri build --ci "${target_args[@]}" --bundles '${{ matrix.bundles }}' -- --locked
       - name: Verify native macOS app composition and ad-hoc signature
         if: runner.os == 'macOS'
         shell: bash
@@ -300,13 +305,13 @@ jobs:
           cargo build --locked --release -p gipny-agent
           VERSION="$(node -p "require('./core/tauri.conf.json').version")"
           case "${{ matrix.os }}" in
-            windows-*) platform=windows; arch=amd64; executable=gipny-agent.exe ;;
+            windows-*) platform=windows; arch='${{ matrix.windows_arch }}'; [ "$arch" != x64 ] || arch=amd64; executable=gipny-agent.exe ;;
             macos-15-intel) platform=darwin; arch=amd64; executable=gipny-agent ;;
             macos-*) platform=darwin; arch=arm64; executable=gipny-agent ;;
           esac
           name="gipny-agent_${VERSION}_${platform}-${arch}"
           mkdir -p "agent-dist/$name"
-          cp "target/release/$executable" "agent-dist/$name/"
+          cp '${{ matrix.output || 'target/release' }}'"/$executable" "agent-dist/$name/"
           cp core/resources/i2pd-netdb-seed.tar.gz "agent-dist/$name/"
           cp scripts/install-agent.sh scripts/install-agent.ps1 scripts/start-agent.ps1 "agent-dist/$name/"
           printf '%s\n' \
@@ -320,16 +325,28 @@ jobs:
             [ -z "$foreign" ] || { echo "agent links libraries absent on a user's Mac: $foreign"; exit 1; }
           fi
           # The existing agent prints usage with exit status 1.
-          "target/release/$executable" --help 2> "$RUNNER_TEMP/agent-help.txt" || test "$?" -eq 1
+          '${{ matrix.output || 'target/release' }}'"/$executable" --help 2> "$RUNNER_TEMP/agent-help.txt" || test "$?" -eq 1
           grep -F 'Usage: gipny-agent' "$RUNNER_TEMP/agent-help.txt"
           tar -C agent-dist -czf "agent-dist/$name.tar.gz" "$name"
+      - name: Verify native Windows payloads and installed NSIS app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/verify-windows-packages.ps1 -BuildDirectory '${{ matrix.output }}' -Architecture '${{ matrix.windows_arch }}'
+      - name: Preserve Windows native ABI and installation receipt
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-native-${{ matrix.windows_arch }}-${{ github.sha }}
+          path: windows-verification/*.json
+          if-no-files-found: error
+          retention-days: 5
       - name: record exact built desktop and agent output hashes
         shell: bash
         run: |
           python3 .github/scripts/build-provenance.py record "build-manifest-desktop-${{ matrix.os }}.json" '${{ matrix.target }}' \
-            --artifact 'target/release/bundle/**/*.AppImage' --artifact 'target/release/bundle/**/*.deb' \
-            --artifact 'target/release/bundle/**/*-setup.exe' --artifact 'target/release/bundle/**/*.dmg' \
-            --artifact 'agent-dist/*.tar.gz'
+            --artifact '${{ matrix.output || 'target/release' }}/bundle/**/*.AppImage' --artifact '${{ matrix.output || 'target/release' }}/bundle/**/*.deb' \
+            --artifact '${{ matrix.output || 'target/release' }}/bundle/**/*-setup.exe' --artifact '${{ matrix.output || 'target/release' }}/bundle/**/*.dmg' \
+            --artifact 'agent-dist/*.tar.gz' --inputs windows-verification
       - uses: actions/upload-artifact@v7
         with:
           name: gipny-provenance-desktop-${{ matrix.os }}
@@ -360,11 +377,11 @@ jobs:
           # repo root, not under core/.
           if-no-files-found: error
           path: |
-            target/release/bundle/**/*.AppImage
-            target/release/bundle/**/*.deb
-            target/release/bundle/**/*-setup.exe
-            target/release/bundle/**/*.msi
-            target/release/bundle/**/*.dmg
+            ${{ matrix.output || 'target/release' }}/bundle/**/*.AppImage
+            ${{ matrix.output || 'target/release' }}/bundle/**/*.deb
+            ${{ matrix.output || 'target/release' }}/bundle/**/*-setup.exe
+            ${{ matrix.output || 'target/release' }}/bundle/**/*.msi
+            ${{ matrix.output || 'target/release' }}/bundle/**/*.dmg
 
   # ---------------------------------------------------------------------------
   # 2c. Headless agent: gipny-agent (the i2p router compiled in, no SAM/proxy

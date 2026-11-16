@@ -198,7 +198,9 @@ def record(output, target, patterns, input_manifests, inputs):
                                  | ({'scripts/apply-i2pd-memory-patches.sh': digest(ROOT / 'scripts/apply-i2pd-memory-patches.sh')}
                                     if (ROOT / 'scripts/apply-i2pd-memory-patches.sh').is_file() else {}),
         'build_config': {key: os.environ[key] for key in ('NDK_VERSION',
-                         'GIPNY_VCPKG_COMMIT', 'I2PD_REV', 'MACOSX_DEPLOYMENT_TARGET',
+                         'GIPNY_VCPKG_COMMIT', 'GIPNY_VCPKG_TRIPLET', 'GIPNY_VCPKG_HOST_TRIPLET',
+                         'GIPNY_WINDOWS_TARGET', 'GIPNY_WINDOWS_ARCH', 'GIPNY_WINDOWS_HOST_ARCH',
+                         'GIPNY_MSVC_TOOLSET', 'I2PD_REV', 'MACOSX_DEPLOYMENT_TARGET',
                          'I2P_EMBED_STATIC_LIBS', 'GIPNY_RESEED_SOURCE_SHA', 'GIPNY_DHT_SEEDS') if key in os.environ},
         'downloaded_inputs': inputs_list,
         'artifacts': [{'name': path.name, 'sha256': digest(path), 'size': path.stat().st_size} for path in files],

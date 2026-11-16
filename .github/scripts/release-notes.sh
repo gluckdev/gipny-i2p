@@ -24,6 +24,7 @@ BASE="https://github.com/$REPO/releases/download/$TAG"
 # platform | what it is | exact file name
 ROWS=(
   "Windows 10/11 · x64|установщик|gipny-i2p_${VERSION}_x64-setup.exe"
+  "Windows 11 · ARM64|нативное приложение, установщик NSIS|gipny-i2p_${VERSION}_arm64-setup.exe"
   "macOS 15+ · Apple Silicon|образ диска|gipny-i2p_${VERSION}_aarch64.dmg"
   "macOS 15+ · Intel|образ диска|gipny-i2p_${VERSION}_x64.dmg"
   "Linux · x86_64|AppImage, любой дистрибутив|gipny-i2p_${VERSION}_amd64.AppImage"
@@ -37,6 +38,7 @@ ROWS=(
   "Агент · macOS 15+ Intel|консольный демон, tar.gz|gipny-agent_${VERSION}_darwin-amd64.tar.gz"
   "Агент · macOS 15+ Apple Silicon|консольный демон, tar.gz|gipny-agent_${VERSION}_darwin-arm64.tar.gz"
   "Агент · Windows x64|консольный демон, tar.gz|gipny-agent_${VERSION}_windows-amd64.tar.gz"
+  "Агент · Windows ARM64|нативный консольный демон, tar.gz|gipny-agent_${VERSION}_windows-arm64.tar.gz"
   "Агент · OpenWrt / Linux AArch64|статический musl, tar.gz|gipny-agent_${VERSION}_aarch64-unknown-linux-musl.tar.gz"
   "Агент · OpenWrt / Linux ARMv7-A|статический musl soft-float, tar.gz|gipny-agent_${VERSION}_armv7-unknown-linux-musleabi.tar.gz"
   "Агент · OpenWrt / Linux x86_64|статический musl, tar.gz|gipny-agent_${VERSION}_x86_64-unknown-linux-musl.tar.gz"

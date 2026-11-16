@@ -1,10 +1,10 @@
 name: agent installers
 on:
   pull_request:
-    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/scripts/*release-guard.py', '.github/workflows/release.yml', '.github/workflows/agent-installers.yml', '.gitattributes']
+    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/verify-windows-pe.py', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/scripts/*release-guard.py', '.github/scripts/*windows*.ps1', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/release.yml', '.github/workflows/agent-installers.yml', '.gitattributes']
   push:
     branches: [main]
-    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/scripts/*release-guard.py', '.github/workflows/release.yml', '.github/workflows/agent-installers.yml', '.gitattributes']
+    paths: ['scripts/*agent*.ps1', 'scripts/*agent*.sh', 'scripts/verify-windows-pe.py', 'scripts/tests/**', '.github/scripts/*provenance.py', '.github/scripts/*release-guard.py', '.github/scripts/*windows*.ps1', '.github/scripts/vcpkg-i2p-deps.sh', '.github/workflows/release.yml', '.github/workflows/agent-installers.yml', '.gitattributes']
   workflow_dispatch:
 permissions:
   contents: read
@@ -20,8 +20,14 @@ jobs:
           python3 .github/scripts/build-provenance.py locks
           python3 .github/scripts/test-build-provenance.py
           python3 .github/scripts/test-release-guard.py
+          python3 scripts/tests/test_verify_windows_pe.py
+          python3 scripts/tests/test_windows_dependencies.py
   windows-bootstrap:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - name: Exact reviewed lockfile bytes and provenance regressions on Windows
@@ -30,6 +36,7 @@ jobs:
           python3 .github/scripts/build-provenance.py locks
           python3 .github/scripts/test-build-provenance.py
           python3 .github/scripts/test-release-guard.py
+          python3 scripts/tests/test_verify_windows_pe.py
       - name: Checksum, interrupted staging and real Windows file replacement
         shell: powershell
         run: scripts/tests/windows-agent-update.ps1

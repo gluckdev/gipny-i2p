@@ -121,18 +121,24 @@ jobs:
   # Windows: MSVC (the toolchain the app builds with), boost and OpenSSL from
   # vcpkg as static libraries against the dynamic CRT Rust uses.
   windows:
-    name: i2p-embed on Windows (MSVC, live)
-    runs-on: windows-latest
+    name: i2p-embed on Windows (${{ matrix.arch }}, MSVC, live)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x64 }
+          - { os: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
-      VCPKG_TRIPLET: x64-windows-static-md
+      VCPKG_TRIPLET: ${{ matrix.arch }}-windows-static-md
     steps:
       - uses: actions/checkout@v7
       - name: Verify pinned miniupnpc sources
         run: python3 i2p-embed/check-source.py
       - name: Native Windows source-build tools
         shell: pwsh
-        run: .github/scripts/windows-source-tools.ps1
+        run: .github/scripts/windows-source-tools.ps1 -TargetArchitecture '${{ matrix.arch }}'
       - name: check out i2pd
         shell: bash
         run: |
@@ -146,14 +152,14 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-installed
-          key: vcpkg-x64-windows-static-md-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh') }}
+          key: vcpkg-${{ matrix.os }}-${{ matrix.arch }}-static-md-${{ env.GIPNY_MSVC_TOOLSET }}-${{ hashFiles('.github/scripts/vcpkg-i2p-deps.sh', '.github/scripts/windows-source-tools.ps1') }}
       - name: boost and OpenSSL from vcpkg
         shell: bash
-        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed"
+        run: .github/scripts/vcpkg-i2p-deps.sh "$RUNNER_TEMP/vcpkg-installed" '${{ matrix.arch }}'
       - uses: dtolnay/rust-toolchain@1.93.1
       - name: build
         shell: bash
-        run: cargo build --release -p i2p-embed --tests
+        run: cargo build --locked --release -p i2p-embed --tests
       - name: device storage regressions with native Windows DPAPI
         shell: bash
         run: cargo test --locked --release -p gipny-libcore --lib device_binding::tests

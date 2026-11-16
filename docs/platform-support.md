@@ -10,7 +10,7 @@ network/UI и защищённого переноса профиля. Налич
 
 | Платформа | Сейчас собирается | Фактическая граница и пробелы |
 |---|---|---|
-| Windows | x86_64 MSVC, NSIS `.exe`; x64 agent | Rust 1.93.1, Tauri 2.12.5 / Wry 0.57.1, наш shim задаёт `_WIN32_WINNT/WINVER=0x0A00`. Windows 10/11; нативные ARM64/x86 пакеты отсутствуют. WebView2 устанавливается стандартным механизмом Tauri; отдельного minimumWebview2Version нет. |
+| Windows | x86_64 MSVC, NSIS `.exe`; x64 agent. ARM64 app/agent добавлены в CI matrix, первый native build/runtime ещё не выполнен | Rust 1.93.1, Tauri 2.12.5 / Wry 0.57.1, наш shim задаёт `_WIN32_WINNT/WINVER=0x0A00`. Проверенный shipping baseline — x64; ARM64 gate на Windows 11. x86 пакета нет. WebView2 устанавливается стандартным механизмом Tauri; отдельного minimumWebview2Version нет. |
 | macOS | Отдельные ARM64 и x86_64 `.app/.dmg`, отдельные агенты | И `core/tauri.conf.json`, и release env задают **15.0**. Ad-hoc signing (`"-"`), не Developer ID/notarization. Intel и Apple Silicon различаются упаковкой, а не сетевым протоколом. |
 | Linux GUI | x86_64 и AArch64, AppImage + DEB, builders Ubuntu 22.04 | WebKitGTK 4.1, GTK, desktop session; статический Boost, OpenSSL/zlib из системы сборки/упаковки. AppImage не отменяет glibc/graphics/Secret Service ограничения. Точный максимум требуемых GLIBC/GLIBCXX символов shipping ELF пока не извлечён. |
 | Linux agent | amd64 и arm64 GNU tar.gz | Не GUI, но SQLCipher и device binding остаются. Службе нужен доступный Secret Service её пользователя; system/root user не наследует desktop credential store автоматически. |
@@ -135,9 +135,20 @@ Windows installer определяет архитектуру самой ОС ч
 (на старой системе без этой API — `GetNativeSystemInfo`), независимо от
 разрядности PowerShell и переменных окружения. Если релиз не содержит
 `windows-arm64.tar.gz`, он сообщает об отсутствии нативного пакета до
-загрузки и установки. Windows ARM64 shipping target ещё не добавлен.
+загрузки и установки. Windows ARM64 shipping target теперь настроен в CI,
+но готового проверенного ARM64 пакета ещё нет.
 Новые PowerShell fixtures включены в существующий installer test script;
 их выполнение на Windows CI после этого изменения ещё требуется.
+
+Новый Windows build glue разделяет x64/ARM64 MSVC и pinned vcpkg static-md,
+cache keys и Cargo output paths. Shipping gate устанавливает NSIS в disposable
+runner, сравнивает установленный executable с исходным и проверяет PE machine
+app/agent/app-local DLL. Сам NSIS launcher остаётся x86 по контракту Tauri.
+ABI/installation receipt сохраняется отдельно от shipping assets, его hash
+включён в build provenance. Эти steps подготовлены, но Windows CI ещё не
+запускался; profile/DPAPI/live/upgrade runtime остаются отдельными gates.
+Локальные checks: PE verifier 6, dependency fixtures 3, updater 27, site 27
+и provenance 10 tests PASS. PowerShell runtime ими не проверен.
 
 ## Windows и Linux: границы зависимостей
 
@@ -225,15 +236,15 @@ provider. Новый installer не должен мигрировать ключ
    installer selectors и release provenance. Сейчас там несколько жёстких
    списков: новый ARM64 Windows файл иначе останется неизвестным сайту.
 3. Native architecture detection и точный unsupported-asset ответ реализованы
-   в установщиках (371c5f0). Для Windows ARM64 остаются genuine ARM64 build,
-   security/runtime tests и shipping inventory; исправленный selector сам
-   по себе не добавляет отсутствующий пакет.
+   в установщиках (371c5f0). Windows ARM64 build/security/live matrix,
+   updater/catalog/exact asset inventory подготовлены; остаётся выполнить
+   genuine native сборку и runtime gates на общем SHA.
 4. `scripts/install-agent.ps1` использует только `/releases/latest`; Unix
    installer имеет `--version`. Для beta нужен явный version/channel selector
    с проверкой exact tag и manifest; не менять stable default молча. Сайт и
    updater тоже сейчас intentionally stable-only, beta не появится в latest.
-5. Для Windows ARM64 добавить target-aware native-dependency builder вместо
-   переиспользования x64 vcpkg libs. Для Mac universal — отдельный merge/sign
+5. Windows ARM64 target-aware native-dependency builder добавлен; проверить
+   его на native runner. Для Mac universal — отдельный merge/sign
    job и native validation обеих slices, затем обновить exact asset inventory.
 6. Lower macOS floor и дополнительные Linux formats делать отдельными jobs,
    с собственными dependency/version receipts; не редактировать upstream defaults.

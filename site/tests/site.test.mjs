@@ -309,6 +309,23 @@ test('a smaller release never invents an absent native architecture; full Releas
   assert.doesNotMatch(rendered, /data-platform="macOS"|data-platform="Linux"|data-platform="Android"/);
 });
 
+test('Windows ARM64 is offered only when its exact native asset exists', () => {
+  const release = releaseFixture('0.5.0');
+  const suffixes = ['gipny-i2p_0.5.0_arm64-setup.exe', 'gipny-agent_0.5.0_windows-arm64.tar.gz'];
+  for (const name of suffixes) release.assets.push({ name, state: 'uploaded', size: 5_000_000,
+    browser_download_url: 'https://github.com/gluckdev/gipny-i2p/releases/download/v0.5.0/' + name });
+  const catalog = releaseCatalog(release);
+  const arm = nativeChoices(catalog).filter(asset => asset.platform === 'Windows' && asset.arch === 'ARM64');
+  assert.equal(arm.length, 1);
+  assert.equal(arm[0].name, suffixes[0]);
+  assert.match(renderCatalog(catalog), /arm64-setup\.exe/);
+  release.assets = release.assets.filter(asset => asset.name !== suffixes[0]);
+  assert.equal(nativeChoices(releaseCatalog(release)).filter(asset => asset.platform === 'Windows' && asset.arch === 'ARM64').length, 0);
+  const hint = detectDevice({}, { platform: 'Windows', architecture: 'arm', bitness: '64' });
+  assert.equal(chooseDownload([{platform:'Windows',architecture:'x64',value:'wrong'},
+    {platform:'Windows',architecture:'arm64',value:'native'}], hint).value, 'native');
+});
+
 test('device selection respects real ARM hints, iPad desktop mode and missing architecture information', () => {
   const choices = [
     { platform: 'macOS', architecture: 'arm64', value: 'mac-arm' }, { platform: 'macOS', architecture: 'x64', value: 'mac-intel' },

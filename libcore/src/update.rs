@@ -23,6 +23,9 @@ use thiserror::Error;
 
 use crate::net::I2pNode;
 
+mod windows_target;
+use windows_target::{package_version as windows_package_version, target_suffix as windows_target_suffix};
+
 /// owner/repo on GitHub whose releases are checked.
 pub const GITHUB_REPO: &str = "gluckdev/gipny-i2p";
 
@@ -465,7 +468,7 @@ fn target_suffix_for(component: Component, os: &str, arch: &str, triple: &str, a
         Component::App if os == "linux" && appimage => {
             Some(("gipny-i2p_", match arch { "aarch64" => "_aarch64.AppImage", "x86_64" => "_amd64.AppImage", _ => return None }))
         }
-        Component::App if os == "windows" && arch == "x86_64" => Some(("gipny-i2p_", "_x64-setup.exe")),
+        Component::App if os == "windows" => windows_target_suffix(component, arch),
         // Installed from a package: update with a package, through the package
         // manager — see `install_deb_now`.
         Component::App if os == "linux" && deb => {
@@ -488,7 +491,7 @@ fn target_suffix_for(component: Component, os: &str, arch: &str, triple: &str, a
         }
         Component::Agent if os == "linux" && triple.ends_with("-gnu") => Some(("gipny-agent_", match arch { "aarch64" => "_linux-arm64.tar.gz", "x86_64" => "_linux-amd64.tar.gz", _ => return None })),
         Component::Agent if os == "macos" => Some(("gipny-agent_", match arch { "aarch64" => "_darwin-arm64.tar.gz", "x86_64" => "_darwin-amd64.tar.gz", _ => return None })),
-        Component::Agent if os == "windows" && arch == "x86_64" => Some(("gipny-agent_", "_windows-amd64.tar.gz")),
+        Component::Agent if os == "windows" => windows_target_suffix(component, arch),
         _ => None,
     }
 }
@@ -733,8 +736,7 @@ fn stage_windows_agent(downloaded: &Path, data_dir: &Path) -> Result<()> {
     use std::io::Write;
     let name = downloaded.file_name().and_then(|name| name.to_str())
         .ok_or_else(|| UpdateError::Unsupported("agent package has no release filename".into()))?;
-    let version = name.strip_prefix("gipny-agent_").and_then(|name| name.strip_suffix("_windows-amd64.tar.gz"))
-        .filter(|version| release_version(version).is_some()).ok_or_else(|| UpdateError::Unsupported("unexpected Windows agent package name".into()))?;
+    let version = windows_package_version(name, Component::Agent, std::env::consts::ARCH)?;
     let directory = data_dir.join("pending_agent");
     std::fs::create_dir_all(&directory)?;
     let ready_path = directory.join("ready.json");
@@ -776,6 +778,9 @@ fn stage_windows_agent(downloaded: &Path, data_dir: &Path) -> Result<()> {
 /// Publish the complete installer directory at once. Never overwrite a
 /// pending/claimed installer another process may already be executing.
 fn stage_windows_installer(downloaded: &Path, data_dir: &Path) -> Result<()> {
+    let name = downloaded.file_name().and_then(|name| name.to_str())
+        .ok_or_else(|| UpdateError::Unsupported("installer has no release filename".into()))?;
+    let version = windows_package_version(name, Component::App, std::env::consts::ARCH)?;
     std::fs::create_dir_all(data_dir)?;
     let staged = tempfile::Builder::new().prefix(".pending-update-").tempdir_in(data_dir)?;
     let installer = staged.path().join(PENDING_INSTALLER);
@@ -783,11 +788,6 @@ fn stage_windows_installer(downloaded: &Path, data_dir: &Path) -> Result<()> {
     std::fs::OpenOptions::new().write(true).open(&installer)?.sync_all()?;
     std::fs::write(staged.path().join("SHA256"), file_digest(&installer)?.to_string())?;
     std::fs::OpenOptions::new().write(true).open(staged.path().join("SHA256"))?.sync_all()?;
-    let version = downloaded.file_name().and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("gipny-i2p_"))
-        .and_then(|name| name.strip_suffix("_x64-setup.exe"))
-        .filter(|version| release_version(version).is_some())
-        .ok_or_else(|| UpdateError::Unsupported("unexpected Windows installer filename".into()))?;
     std::fs::write(staged.path().join("VERSION"), version)?;
     std::fs::OpenOptions::new().write(true).open(staged.path().join("VERSION"))?.sync_all()?;
     std::fs::rename(staged.path(), data_dir.join(PENDING_DIR))?;
@@ -849,12 +849,35 @@ pub fn apply_staged_windows_installer(_: &Path, _: &str) -> Result<bool> { Ok(fa
 mod tests {
     use super::*;
 
+    fn windows_fixture_name(component: Component, version: &str) -> String {
+        let (prefix, suffix) = windows_target_suffix(component, std::env::consts::ARCH).unwrap();
+        format!("{prefix}{version}{suffix}")
+    }
+
+    #[test]
+    fn wrong_windows_architecture_is_rejected_before_staging_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("absent");
+        let other = if std::env::consts::ARCH == "aarch64" { "x86_64" } else { "aarch64" };
+        for component in [Component::App, Component::Agent] {
+            let (prefix, suffix) = windows_target_suffix(component, other).unwrap();
+            let source = dir.path().join(format!("{prefix}0.5.0{suffix}"));
+            let result = match component {
+                Component::App => stage_windows_installer(&source, &target),
+                Component::Agent => stage_windows_agent(&source, &target),
+            };
+            assert!(matches!(result, Err(UpdateError::Unsupported(_))));
+            assert!(!target.exists());
+        }
+    }
+
     #[test]
     fn shipping_targets_select_their_own_architecture_and_runtime() {
         let cases = [
             (Component::App, "linux", "x86_64", "x86_64-unknown-linux-gnu", true, false, "_amd64.AppImage"),
             (Component::App, "linux", "aarch64", "aarch64-unknown-linux-gnu", false, true, "_arm64.deb"),
             (Component::App, "windows", "x86_64", "x86_64-pc-windows-msvc", false, false, "_x64-setup.exe"),
+            (Component::App, "windows", "aarch64", "aarch64-pc-windows-msvc", false, false, "_arm64-setup.exe"),
             (Component::App, "macos", "aarch64", "aarch64-apple-darwin", false, false, "_aarch64.dmg"),
             (Component::App, "macos", "x86_64", "x86_64-apple-darwin", false, false, "_x64.dmg"),
             (Component::App, "android", "arm", "armv7-linux-androideabi", false, false, "_android-armv7.apk"),
@@ -862,6 +885,7 @@ mod tests {
             (Component::Agent, "macos", "aarch64", "aarch64-apple-darwin", false, false, "_darwin-arm64.tar.gz"),
             (Component::Agent, "macos", "x86_64", "x86_64-apple-darwin", false, false, "_darwin-amd64.tar.gz"),
             (Component::Agent, "windows", "x86_64", "x86_64-pc-windows-msvc", false, false, "_windows-amd64.tar.gz"),
+            (Component::Agent, "windows", "aarch64", "aarch64-pc-windows-msvc", false, false, "_windows-arm64.tar.gz"),
             (Component::Agent, "linux", "aarch64", "aarch64-unknown-linux-musl", false, false, "_aarch64-unknown-linux-musl.tar.gz"),
             (Component::Agent, "linux", "arm", "armv7-unknown-linux-musleabi", false, false, "_armv7-unknown-linux-musleabi.tar.gz"),
             (Component::Agent, "linux", "x86", "i686-unknown-linux-musl", false, false, "_i686-unknown-linux-musl.tar.gz"),
@@ -873,7 +897,7 @@ mod tests {
             ("linux", "mips", "mips-unknown-linux-musl"),
             ("linux", "arm", "arm-unknown-linux-musleabi"),
             ("linux", "x86_64", "x86_64-unknown-linux-muslx32"),
-            ("windows", "aarch64", "aarch64-pc-windows-msvc"),
+            ("windows", "x86", "i686-pc-windows-msvc"),
         ] {
             assert_eq!(target_suffix_for(Component::Agent, os, arch, triple, false, false), None);
         }
@@ -961,7 +985,7 @@ mod tests {
     #[test]
     fn windows_launch_failure_restores_pending_and_success_is_claimed_once() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("gipny-i2p_0.4.20_x64-setup.exe");
+        let source = dir.path().join(windows_fixture_name(Component::App, "0.4.20"));
         std::fs::write(&source, b"verified installer").unwrap();
         stage_windows_installer(&source, dir.path()).unwrap();
         let failed = launch_pending_windows_installer(dir.path(), "0.4.19", |_| {
@@ -978,7 +1002,7 @@ mod tests {
     #[test]
     fn windows_pending_tamper_never_launches_and_preserves_package_for_recovery() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("gipny-i2p_0.4.20_x64-setup.exe");
+        let source = dir.path().join(windows_fixture_name(Component::App, "0.4.20"));
         std::fs::write(&source, b"verified installer").unwrap();
         stage_windows_installer(&source, dir.path()).unwrap();
         let pending = dir.path().join(PENDING_DIR).join(PENDING_INSTALLER);
@@ -993,7 +1017,7 @@ mod tests {
     #[test]
     fn windows_agent_publication_keeps_newer_ready_version_and_exact_binary_hash() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("gipny-agent_0.4.20_windows-amd64.tar.gz");
+        let source = dir.path().join(windows_fixture_name(Component::Agent, "0.4.20"));
         agent_archive(&source, &[("release/gipny-agent.exe", b"new agent")]);
         stage_windows_agent(&source, dir.path()).unwrap();
         let ready_path = dir.path().join("pending_agent/ready.json");
@@ -1001,7 +1025,7 @@ mod tests {
         let ready: serde_json::Value = serde_json::from_slice(&first).unwrap();
         let binary = dir.path().join("pending_agent").join(ready["file"].as_str().unwrap());
         assert_eq!(file_digest(&binary).unwrap().to_string(), ready["sha256"].as_str().unwrap());
-        let older = dir.path().join("gipny-agent_0.4.19_windows-amd64.tar.gz");
+        let older = dir.path().join(windows_fixture_name(Component::Agent, "0.4.19"));
         agent_archive(&older, &[("release/gipny-agent.exe", b"old agent")]);
         stage_windows_agent(&older, dir.path()).unwrap();
         assert_eq!(std::fs::read(&ready_path).unwrap(), first);
@@ -1267,7 +1291,7 @@ mod tests {
     #[test]
     fn windows_prerelease_install_hands_over_to_its_stable_installer() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("gipny-i2p_0.5.0_x64-setup.exe");
+        let source = dir.path().join(windows_fixture_name(Component::App, "0.5.0"));
         std::fs::write(&source, b"verified installer").unwrap();
         stage_windows_installer(&source, dir.path()).unwrap();
         assert!(launch_pending_windows_installer(dir.path(), "0.5.0-rc1", |_| Ok(())).unwrap());

@@ -53,6 +53,7 @@ beta/version в установщиках остаётся планом; stable p
 | Linux x86_64 / arm64 deb | `gipny-i2p_<version>_amd64.deb` / `_arm64.deb` | По нажатию пользователя `pkexec apt-get install`; отказ пароля возвращается как ошибка, старая программа продолжает работать |
 | Windows x64 NSIS | `gipny-i2p_<version>_x64-setup.exe` | Публикуется полный `pending_update` с версией и SHA256; установщик запускается при следующем запуске профиля |
 | macOS arm64 / x86_64 | `gipny-i2p_<version>_aarch64.dmg` / `_x64.dmg` | По нажатию пользователя `/usr/bin/open` открывает проверенный DMG; пользователь заменяет приложение обычным способом |
+| Windows ARM64 (native CI pending) | `gipny-i2p_<version>_arm64-setup.exe` | Тот же проверенный staging NSIS; selector реализован, готовый native пакет и runtime ещё не подтверждены |
 | Android arm64 / armv7 | `gipny-i2p_<version>_android-arm64.apk` / `_android-armv7.apk` | Проверенная cache-копия передаётся системному установщику через `FileProvider`; разрешение и подтверждение принадлежат Android |
 
 macOS использует бесплатную ad-hoc подпись и локальный системный Keychain;
@@ -115,15 +116,24 @@ GNU fallback для musl отсутствует. Этот список не оз
 MIPS и ARMv6 в этот контракт не входят. Наличие selector не заменяет успешную
 сборку и проверку конкретного release asset.
 
-Windows shipping пока использует только
-`gipny-agent_<version>_windows-amd64.tar.gz`. Первичный PowerShell installer
+Проверенный Windows shipping baseline использует
+`gipny-agent_<version>_windows-amd64.tar.gz`; новый ARM64 target и updater
+настроены для `_windows-arm64.tar.gz`, но ещё ждут native CI.
+Первичный PowerShell installer
 определяет native architecture ОС через `IsWow64Process2`, с
 `GetNativeSystemInfo` только при отсутствии этой API; environment variables
 и архитектура самого PowerShell не подменяют результат. Он выберет ARM64
 только при наличии точного `gipny-agent_<version>_windows-arm64.tar.gz`;
-сейчас такого shipping target нет, поэтому ARM64 получает явную ошибку до
+пока такого опубликованного пакета нет, ARM64 получает явную ошибку до
 загрузки и установки, без x64 fallback. Unix fixtures нового выбора проходят;
 новые PowerShell fixtures ещё должны пройти Windows CI.
+
+Windows updater выбирает пакет по архитектуре текущего binary и повторно
+проверяет имя при staging; пакет другой архитектуры отклоняется до записи.
+App suffix для ARM64 — `_arm64-setup.exe`, agent — `_windows-arm64.tar.gz`.
+Это не автоматическая миграция x64-emulated установки в ARM64. Прежняя
+stable-only политика обновлятора сохранена; beta по-прежнему требует явной
+первичной установки, пока отдельный channel selector не реализован.
 
 Установщик должен
 настроить Scheduled Task через `start-agent.ps1`; существующая старая установка

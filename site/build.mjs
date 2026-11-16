@@ -16,6 +16,7 @@ export function classifyAsset(name, version) {
   const app = 'gipny-i2p_' + version + '_';
   const native = {
     'x64-setup.exe': ['Windows', 'x86_64', 'EXE', 'windows'],
+    'arm64-setup.exe': ['Windows', 'ARM64', 'EXE', 'windows'],
     'amd64.AppImage': ['Linux', 'x86_64', 'AppImage', 'linux'],
     'aarch64.AppImage': ['Linux', 'ARM64', 'AppImage', 'linux'],
     'amd64.deb': ['Linux', 'x86_64', 'DEB', 'linux'],
@@ -40,6 +41,7 @@ export function classifyAsset(name, version) {
         'darwin-amd64': ['macOS', 'Intel x86_64', 'macos'],
         'darwin-arm64': ['macOS', 'Apple Silicon ARM64', 'macos'],
         'windows-amd64': ['Windows', 'x86_64', 'windows'],
+        'windows-arm64': ['Windows', 'ARM64', 'windows'],
         'aarch64-unknown-linux-musl': ['OpenWrt / musl', 'ARM64 / AArch64', 'router'],
         'armv7-unknown-linux-musleabi': ['OpenWrt / musl', 'ARMv7-A · soft-float', 'router'],
         'i686-unknown-linux-musl': ['OpenWrt / musl', 'x86 · Pentium 4+ / SSE2', 'router'],
