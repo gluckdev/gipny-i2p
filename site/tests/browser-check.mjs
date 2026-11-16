@@ -166,8 +166,9 @@ async function ready(language) {
     return true; })()`);
 }
 
-async function snapshot(width, language) {
-  const name = `${width}-${language}`;
+async function snapshot(width, language, height) {
+  const name = `${width}x${height}-${language}`;
+  const mobileViewport = width <= 740 || (width <= 1000 && height <= 500);
   const choices = await cdp.evaluate(`(() => {
     const select = document.querySelector('#download-system');
     if (!select) return null;
@@ -204,6 +205,44 @@ async function snapshot(width, language) {
   assert(data.hero && data.fonts === 'loaded' && data.brokenImages === 0, `${name}: content/fonts/images are not ready`);
   assert(data.scrollWidth <= data.viewport + 1, `${name}: horizontal overflow (${data.scrollWidth} > ${data.viewport})`);
   assert.equal(data.downloads.length, choices ? 1 : 0, `${name}: expected one selected download`);
+  const webEntrance = await cdp.evaluate(`(() => {
+    scrollTo(0, 0);
+    const link = document.querySelector('.web-entrance-action[data-browser-app]');
+    const limit = document.querySelector('.web-entrance-limit');
+    return link && limit ? { text: link.textContent.trim(), href: link.href, limit: limit.textContent.trim() } : null;
+  })()`);
+  assert(webEntrance?.text && webEntrance.limit, `${name}: web-client entrance is missing its action or availability limit`);
+  assert.equal(new URL(webEntrance.href).searchParams.get('lang'), language, `${name}: web entrance lost its language`);
+  if (mobileViewport) {
+    const mobile = await cdp.evaluate(`(async () => {
+      const bar = document.querySelector('.mobile-actions');
+      const visible = node => { const r = node.getBoundingClientRect();
+        return r.width > 0 && r.height >= 44 && r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight + 1; };
+      const languages = [...document.querySelectorAll('[data-language]')];
+      scrollTo({ top: 0, behavior: 'instant' });
+      const topLanguages = languages.every(visible);
+      const states = [];
+      for (const button of languages) {
+        button.click();
+        for (const y of [0, document.body.scrollHeight / 2, document.body.scrollHeight]) {
+          scrollTo({ top: y, behavior: 'instant' });
+          await new Promise(yes => requestAnimationFrame(() => requestAnimationFrame(yes)));
+          const links = [...bar.querySelectorAll('a')];
+          states.push(links.length === 2 && links.every(visible)
+            && new URL(links[0].href).searchParams.get('lang') === button.dataset.language
+            && links[1].getAttribute('href') === '#downloads');
+        }
+      }
+      document.querySelector('[data-language="${language}"]').click();
+      scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+      await new Promise(yes => requestAnimationFrame(() => requestAnimationFrame(yes)));
+      const footer = document.querySelector('.site-footer').getBoundingClientRect();
+      return { topLanguages, states, clearFooter: footer.bottom <= bar.getBoundingClientRect().top + 1 };
+    })()`);
+    assert(mobile.topLanguages, `${name}: language names are not accessible at the top`);
+    assert(mobile.states.every(Boolean), `${name}: both mobile actions must remain visible in every language while scrolling`);
+    assert(mobile.clearFooter, `${name}: bottom actions obstruct footer content`);
+  }
   const normalMotion = await cdp.evaluate(pathMotion);
   report.checks.at(-1).normalMotion = normalMotion;
   assert(normalMotion.some(item => item.name !== 'none' && item.duration.split(',').some(value => parseFloat(value) > 0)
@@ -235,23 +274,25 @@ async function run() {
   await access(join(root, 'index.html'));
   const base = await startServer(root);
   await startChrome();
-  for (const width of [320, 360, 390, 768, 1440]) {
-    await cdp.call('Emulation.setDeviceMetricsOverride', { width, height: width < 768 ? 844 : 1000,
-      deviceScaleFactor: 1, mobile: width < 768 });
+  for (const [width, height] of [[320, 844], [360, 844], [390, 844], [568, 320], [812, 375], [768, 1000], [1440, 1000]]) {
+    const touchViewport = width <= 740 || (width <= 1000 && height <= 500);
+    await cdp.call('Emulation.setDeviceMetricsOverride', { width, height,
+      deviceScaleFactor: 1, mobile: touchViewport });
+    await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: touchViewport, maxTouchPoints: touchViewport ? 5 : 0 });
     const url = `${base}?browser-check=keep#downloads`;
     const navigation = await cdp.call('Page.navigate', { url });
     assert(!navigation.errorText, navigation.errorText);
     assert(navigation.loaderId, 'Expected a fresh document navigation');
     await until(() => cdp.loaded.has(navigation.loaderId), 'document load event');
     await ready('ru');
-    const russian = await snapshot(width, 'ru');
+    const russian = await snapshot(width, 'ru', height);
     await cdp.evaluate(`document.querySelector('[data-language="en"]').scrollIntoView({block:'center'})`);
     const point = await cdp.evaluate(`(() => { const rect = document.querySelector('[data-language="en"]').getBoundingClientRect();
       return {x:rect.x + rect.width / 2, y:rect.y + rect.height / 2}; })()`);
     await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
     await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
     await ready('en');
-    const english = await snapshot(width, 'en');
+    const english = await snapshot(width, 'en', height);
     const preserved = new URL(english.url);
     assert.equal(preserved.searchParams.get('lang'), 'en');
     assert.equal(preserved.searchParams.get('browser-check'), 'keep');

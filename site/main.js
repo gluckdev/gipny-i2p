@@ -116,6 +116,9 @@ export const messages = {
     "navSecurity": "Защита",
     "navDevices": "Устройства",
     "heroWeb": "Открыть в браузере",
+    "heroWebKicker": "Веб-клиент",
+    "heroWebBenefit": "В отличие от обычной веб-версии, это самостоятельный клиент: не нужны привязанный телефон и номер телефона. Локальный профиль хранит ключи и зашифрованную историю в этом браузере.",
+    "heroWebLimit": "Публичный веб-клиент сейчас офлайн для переписки: для соединения с I2P нужен настроенный и доступный транспортный мост.",
     "webCompareTitle": "Чем это не похоже на веб-версии других мессенджеров",
     "webCompareLead": "Сравните, где лежат ключи и что делает сервер",
     "webCompareQuestion": "Вопрос",
@@ -349,6 +352,9 @@ export const messages = {
     "navSecurity": "Security",
     "navDevices": "Devices",
     "heroWeb": "Open in the browser",
+    "heroWebKicker": "Web client",
+    "heroWebBenefit": "Unlike a typical web version, this is a standalone client: no paired phone or phone number is required. Its local profile keeps keys and encrypted history in this browser.",
+    "heroWebLimit": "The public web client is currently offline for messaging: connecting to I2P requires a configured, available transport bridge.",
     "webCompareTitle": "How this differs from other messengers’ web versions",
     "webCompareLead": "Compare where the keys live and what the server does",
     "webCompareQuestion": "Question",
@@ -582,6 +588,9 @@ export const messages = {
     "navSecurity": "Безпека",
     "navDevices": "Пристрої",
     "heroWeb": "Відкрийте в браузері",
+    "heroWebKicker": "Вебклієнт",
+    "heroWebBenefit": "На відміну від звичайної вебверсії, це самостійний клієнт: не потрібні прив’язаний телефон і номер телефону. Локальний профіль зберігає ключі та зашифровану історію в цьому браузері.",
+    "heroWebLimit": "Публічний вебклієнт зараз офлайн для листування: для з’єднання з I2P потрібен налаштований і доступний транспортний міст.",
     "webCompareTitle": "Чим це відрізняється від веб-версій інших месенджерів",
     "webCompareLead": "Порівняйте, де знаходяться ключі та що робить сервер",
     "webCompareQuestion": "Питання",
@@ -815,6 +824,9 @@ export const messages = {
     "navSecurity": "Sicherheit",
     "navDevices": "Geräte",
     "heroWeb": "Im Browser öffnen",
+    "heroWebKicker": "Web-Client",
+    "heroWebBenefit": "Anders als eine übliche Webversion ist dies ein eigenständiger Client: Weder ein gekoppeltes Telefon noch eine Telefonnummer sind nötig. Sein lokales Profil speichert Schlüssel und verschlüsselten Verlauf in diesem Browser.",
+    "heroWebLimit": "Der öffentliche Web-Client ist für Nachrichten derzeit offline: Die Verbindung zu I2P braucht eine eingerichtete und verfügbare Transportbrücke.",
     "webCompareTitle": "Wie sich dies von den Webversionen anderer Messenger unterscheidet",
     "webCompareLead": "Vergleichen Sie, wo sich die Schlüssel befinden und was der Server tut",
     "webCompareQuestion": "Frage",
@@ -1048,6 +1060,9 @@ export const messages = {
     "navSecurity": "សន្តិសុខ",
     "navDevices": "ឧបករណ៍",
     "heroWeb": "បើកនៅក្នុងកម្មវិធីរុករក",
+    "heroWebKicker": "កម្មវិធីជំនួយលើបណ្ដាញ",
+    "heroWebBenefit": "ខុសពីកំណែបណ្ដាញទូទៅ នេះជាកម្មវិធីជំនួយដែលដំណើរការដោយខ្លួនឯង៖ មិនត្រូវការទូរសព្ទដែលបានភ្ជាប់ ឬលេខទូរសព្ទទេ។ ទម្រង់មូលដ្ឋានរក្សាទុកសោ និងប្រវត្តិដែលបានអ៊ិនគ្រីបក្នុងកម្មវិធីរុករកនេះ។",
+    "heroWebLimit": "កម្មវិធីជំនួយលើបណ្ដាញសាធារណៈបច្ចុប្បន្ននៅក្រៅបណ្ដាញសម្រាប់ការផ្ញើសារ៖ ការតភ្ជាប់ទៅ I2P ត្រូវការស្ពានដឹកជញ្ជូនដែលបានកំណត់រចនាសម្ព័ន្ធ និងអាចប្រើបាន។",
     "webCompareTitle": "របៀបដែលវាខុសគ្នាពីកំណែគេហទំព័ររបស់អ្នកនាំសារផ្សេងទៀត។",
     "webCompareLead": "ប្រៀបធៀបកន្លែងដែលសោរស់នៅ និងអ្វីដែលម៉ាស៊ីនមេធ្វើ",
     "webCompareQuestion": "សំណួរ",
@@ -1281,6 +1296,9 @@ export const messages = {
     "navSecurity": "Bảo mật",
     "navDevices": "Thiết bị",
     "heroWeb": "Mở trong trình duyệt",
+    "heroWebKicker": "Ứng dụng web",
+    "heroWebBenefit": "Không giống một phiên bản web thông thường, đây là ứng dụng khách độc lập: không cần điện thoại đã ghép nối hoặc số điện thoại. Hồ sơ cục bộ lưu khóa và lịch sử đã mã hóa trong trình duyệt này.",
+    "heroWebLimit": "Ứng dụng web công khai hiện đang ngoại tuyến để nhắn tin: kết nối với I2P cần một cầu nối truyền tải đã được cấu hình và đang hoạt động.",
     "webCompareTitle": "Điều này khác với các phiên bản web của các trình nhắn tin khác như thế nào",
     "webCompareLead": "So sánh vị trí của các khóa và chức năng của máy chủ",
     "webCompareQuestion": "Câu hỏi",
@@ -1514,6 +1532,9 @@ export const messages = {
     "navSecurity": "सुरक्षा",
     "navDevices": "उपकरण",
     "heroWeb": "ब्राउज़र में खोलें",
+    "heroWebKicker": "वेब क्लाइंट",
+    "heroWebBenefit": "सामान्य वेब संस्करण के विपरीत, यह एक स्वतंत्र क्लाइंट है: न जुड़े हुए फ़ोन की जरूरत है, न फ़ोन नंबर की। स्थानीय प्रोफ़ाइल इस ब्राउज़र में कुंजियाँ और एन्क्रिप्टेड इतिहास रखती है।",
+    "heroWebLimit": "सार्वजनिक वेब क्लाइंट अभी संदेश भेजने के लिए ऑफ़लाइन है: I2P से जुड़ने के लिए कॉन्फ़िगर किया हुआ और उपलब्ध ट्रांसपोर्ट ब्रिज चाहिए।",
     "webCompareTitle": "यह अन्य संदेशवाहकों के वेब संस्करणों से किस प्रकार भिन्न है",
     "webCompareLead": "तुलना करें कि कुंजियाँ कहाँ रहती हैं और सर्वर क्या करता है",
     "webCompareQuestion": "प्रश्न",
@@ -1747,6 +1768,9 @@ export const messages = {
     "navSecurity": "安全性",
     "navDevices": "设备",
     "heroWeb": "在浏览器中打开",
+    "heroWebKicker": "网页客户端",
+    "heroWebBenefit": "不同于常见的网页版，这是独立客户端：不需要配对手机或手机号码。本地个人档案会将密钥和加密历史记录保存在此浏览器中。",
+    "heroWebLimit": "公开网页客户端目前无法在线通信：连接 I2P 需要已配置且可用的传输桥。",
     "webCompareTitle": "这与其他即时通讯工具的网络版本有何不同",
     "webCompareLead": "比较密钥所在的位置和服务器的功能",
     "webCompareQuestion": "问题",
@@ -1929,6 +1953,10 @@ export function chooseDownload(choices, device) {
   return choices.find(choice => choice.platform === device.platform && choice.architecture === device.architecture) || null;
 }
 
+function browserAppUrl(language) {
+  return './app/browser.html?lang=' + (Object.hasOwn(messages, language) ? language : 'ru');
+}
+
 function renderDownload(root) {
   const select = root.querySelector('#download-system');
   if (!select) return;
@@ -1939,7 +1967,7 @@ function renderDownload(root) {
   const web = select.dataset.web === 'true' && !select.value;
   button.hidden = !select.value && !web;
   button.textContent = web ? copy.browserOpen : option?.value ? copy.catalogDownload + ' ' + option.dataset.platform : '';
-  if (select.value || web) button.setAttribute('href', web ? './app/browser.html' : select.value);
+  if (select.value || web) button.setAttribute('href', web ? browserAppUrl(root.documentElement.lang) : select.value);
   else button.removeAttribute('href');
   detail.textContent = select.value ? option.textContent + ' · ' + option.dataset.size : '';
   root.querySelector('#download-unavailable').hidden = !web;
@@ -1981,6 +2009,7 @@ export function applyLanguage(language, root) {
   for (const node of root.querySelectorAll('[data-i18n]')) node.textContent = copy[node.dataset.i18n];
   for (const node of root.querySelectorAll('[data-i18n-aria]')) node.setAttribute('aria-label', copy[node.dataset.i18nAria]);
   for (const button of root.querySelectorAll('[data-language]')) button.setAttribute('aria-pressed', String(button.dataset.language === selected));
+  for (const link of root.querySelectorAll('[data-browser-app]')) link.setAttribute('href', browserAppUrl(selected));
   renderDownload(root);
   return selected;
 }

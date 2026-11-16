@@ -1,16 +1,11 @@
 package app.gipny
 
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 
 import androidx.core.view.WindowCompat
@@ -53,7 +48,6 @@ class MainActivity : TauriActivity() {
     } else {
       startService(svc)
     }
-    maybeRequestBatteryWhitelist()
     // A share that cold-started the process arrives here; a share to an
     // already-running instance comes through onNewIntent (singleTask).
     if (savedInstanceState == null) stageShareIntent(intent)
@@ -64,51 +58,6 @@ class MainActivity : TauriActivity() {
     super.onNewIntent(intent)
     setIntent(intent)
     stageShareIntent(intent)
-  }
-
-  /**
-   * Show a biometric (or device credential) prompt and report the outcome.
-   *
-   * Allowed authenticators are weak/strong biometrics OR the device
-   * PIN/pattern/password. That combination is the only one androidx.biometric
-   * accepts on every API level from minSdk 24 up: `DEVICE_CREDENTIAL` alone is
-   * rejected below API 30, and `BIOMETRIC_STRONG | DEVICE_CREDENTIAL` is
-   * rejected on API 28–29 (see AuthenticatorUtils.isSupportedCombination).
-   * Allowing the credential half also forbids a negative-button label, so none
-   * is set. `callback` runs on the main thread; `false` covers user cancel,
-   * error, and a missing/unsupported authenticator.
-   */
-  fun authenticateWithBiometrics(title: String, subtitle: String, callback: (Boolean) -> Unit) {
-    val prompt = BiometricPrompt(
-      this,
-      ContextCompat.getMainExecutor(this),
-      object : BiometricPrompt.AuthenticationCallback() {
-        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-          callback(true)
-        }
-
-        override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-          callback(false)
-        }
-
-        // Non-terminal: the prompt stays up for another attempt, so no callback.
-        override fun onAuthenticationFailed() {}
-      },
-    )
-    val info = BiometricPrompt.PromptInfo.Builder()
-      .setTitle(title)
-      .setSubtitle(subtitle)
-      .setAllowedAuthenticators(
-        BiometricManager.Authenticators.BIOMETRIC_WEAK or
-          BiometricManager.Authenticators.DEVICE_CREDENTIAL
-      )
-      .build()
-    try {
-      prompt.authenticate(info)
-    } catch (_: IllegalArgumentException) {
-      // No enrolled authenticator / no hardware on this device.
-      callback(false)
-    }
   }
 
   /** One share-sheet submission, parked until the UI drains it. */
@@ -193,38 +142,4 @@ class MainActivity : TauriActivity() {
     moveTaskToBack(true)
   }
 
-  /**
-   * Ask the user to exempt gipny from battery optimizations (Doze).
-   *
-   * Without this exemption Android pauses network access roughly one minute
-   * after the screen goes off, killing all i2p tunnels.  The previous version
-   * set a "never ask again" flag on the first attempt regardless of the
-   * user's answer; if they tapped "Deny" once, the app would never recover.
-   *
-   * Now we re-check on every launch: if already whitelisted we do nothing;
-   * otherwise we ask at most once per 24 hours (Google Play policy for
-   * ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).
-   */
-  private fun maybeRequestBatteryWhitelist() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-    val pm = getSystemService(POWER_SERVICE) as PowerManager
-    if (pm.isIgnoringBatteryOptimizations(packageName)) return
-
-    val prefs = getSharedPreferences("gipny", Context.MODE_PRIVATE)
-    val lastAsked = prefs.getLong("battery_whitelist_last_asked", 0)
-    if (System.currentTimeMillis() - lastAsked < 24 * 60 * 60 * 1000) return
-
-    try {
-      startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-        data = Uri.parse("package:$packageName")
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      })
-    } catch (_: Exception) {
-      try {
-        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-      } catch (_: Exception) {}
-    }
-    prefs.edit().putLong("battery_whitelist_last_asked", System.currentTimeMillis()).apply()
-  }
 }

@@ -16,6 +16,7 @@ const translationKeys = [...html.matchAll(/data-i18n(?:-aria)?="([^"]+)"/g)].map
 class Element {
   constructor(dataset = {}) { this.dataset = dataset; this.attributes = {}; this.listeners = {}; this.hidden = true; }
   setAttribute(key, value) { this.attributes[key] = value; }
+  removeAttribute(key) { delete this.attributes[key]; }
   addEventListener(name, callback) { this.listeners[name] = callback; }
 }
 
@@ -27,9 +28,10 @@ function documentFixture(source = html) {
   const openGraph = Object.fromEntries(['title', 'description', 'locale', 'locale:alternate'].map(key => [key, new Element()]));
   const alternates = [openGraph['locale:alternate'], ...Array.from({ length: 6 }, () => new Element())];
   const languageSwitch = new Element();
+  const browserLinks = [...source.matchAll(/data-browser-app\b/g)].map(() => new Element());
   return {
-    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch, alternates,
-    querySelectorAll(selector) { return { '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons, 'meta[property="og:locale:alternate"]': alternates }[selector]; },
+    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch, alternates, browserLinks,
+    querySelectorAll(selector) { return { '[data-browser-app]': browserLinks, '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons, 'meta[property="og:locale:alternate"]': alternates }[selector]; },
     querySelector(selector) {
       return { 'meta[name="description"]': description, '.language-switch': languageSwitch,
         ...Object.fromEntries(Object.entries(openGraph).map(([key, node]) => [`meta[property="og:${key}"]`, node])),
@@ -403,6 +405,80 @@ function blocks(source, expression) {
   });
 }
 
+test('mobile controls expose flags and readable names, with safe-area space for both persistent actions', async () => {
+  const names = { en: 'English', ru: 'Русский', uk: 'Українська', de: 'Deutsch', km: 'ខ្មែរ', vi: 'Tiếng Việt', hi: 'हिन्दी', zh: '中文' };
+  for (const [lang, name] of Object.entries(names)) {
+    const button = html.match(new RegExp(`<button[^>]+data-language="${lang}"[^>]*>(.*?)</button>`))[1];
+    assert.ok(button.includes(name));
+    assert.match(button, /<span aria-hidden="true">\p{Regional_Indicator}{2}<\/span>/u);
+  }
+  const actions = html.match(/<div class="mobile-actions">([\s\S]*?)<\/div>/)[1];
+  assert.match(actions, /href="\.\/app\/browser\.html" data-browser-app data-i18n="heroWeb"/);
+  assert.match(actions, /href="#downloads" data-i18n="download"/);
+  assert.match(html, /viewport-fit=cover/);
+  const mobile = blocks(css, /@media \(max-width: 740px\)/g).map(block => block.body).join('\n');
+  assert.match(mobile, /body \{ padding-bottom: var\(--mobile-actions-height\)/);
+  assert.match(mobile, /scroll-padding-bottom: calc\(var\(--mobile-actions-height\)/);
+  assert.match(mobile, /\.mobile-actions \{ position: fixed;[\s\S]*height: var\(--mobile-actions-height\)/);
+  for (const edge of ['top', 'right', 'bottom', 'left']) assert.ok(mobile.includes('env(safe-area-inset-' + edge));
+  assert.match(css, /@media \(max-width: 740px\) and \(orientation: landscape\)[\s\S]*?grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
+  assert.match(css, /@media \(max-width: 740px\) and \(orientation: landscape\)[\s\S]*?--mobile-actions-height/);
+  const [widePhoneLandscape] = blocks(css, /@media \(min-width: 741px\) and \(max-width: 1000px\) and \(max-height: 500px\) and \(orientation: landscape\) and \(any-pointer: coarse\)/g);
+  assert.ok(widePhoneLandscape, 'wide phone landscape rule is present');
+  assert.match(widePhoneLandscape.body, /scroll-padding-bottom: calc\(var\(--mobile-actions-height\)/);
+  assert.match(widePhoneLandscape.body, /body \{ padding-bottom: var\(--mobile-actions-height\)/);
+  assert.match(widePhoneLandscape.body, /\.mobile-actions \{ position: fixed;[\s\S]*height: var\(--mobile-actions-height\)/);
+  for (const edge of ['left', 'right', 'bottom']) assert.ok(widePhoneLandscape.body.includes('env(safe-area-inset-' + edge));
+  const browserCheck = await readFile(resolve(root, 'tests/browser-check.mjs'), 'utf8');
+  assert.match(browserCheck, /\[812, 375\]/);
+  assert.match(browserCheck, /setTouchEmulationEnabled/);
+});
+
+test('homepage leads with a truthful, localized web-client entrance', () => {
+  const heroStart = html.indexOf('<div class="hero-copy">');
+  const entrance = html.indexOf('<div class="web-entrance">', heroStart);
+  const eyebrow = html.indexOf('<p class="eyebrow">', heroStart);
+  const messagePath = html.indexOf('<figure class="message-path">', heroStart);
+  assert.ok(heroStart >= 0 && entrance > heroStart && entrance < eyebrow && eyebrow < messagePath, 'web entrance precedes the rest of the hero');
+  const hero = html.slice(heroStart, messagePath);
+  assert.match(hero, /<a class="button button-primary web-entrance-action" href="\.\/app\/browser\.html" data-browser-app><span data-i18n="heroWeb">/);
+  assert.match(hero, /data-i18n="heroWebBenefit"/);
+  assert.match(hero, /data-i18n="heroWebLimit"/);
+  assert.doesNotMatch(hero, /href="#browser"/);
+  assert.match(messages.ru.heroWebBenefit, /самостоятельный клиент.*привязанный телефон.*номер телефона/i);
+  assert.match(messages.en.heroWebBenefit, /standalone client.*paired phone.*phone number/i);
+  assert.match(messages.ru.heroWebLimit, /сейчас офлайн.*настроенный.*транспортный мост/i);
+  assert.match(messages.en.heroWebLimit, /currently offline.*configured.*transport bridge/i);
+  for (const copy of Object.values(messages)) {
+    assert.ok(copy.heroWebKicker.trim());
+    assert.ok(copy.heroWebBenefit.trim());
+    assert.ok(copy.heroWebLimit.trim());
+  }
+  assert.match(css, /\.web-entrance-action \{ min-height: 58px/);
+});
+
+test('download rendering preserves native choices and localizes the unsupported-device browser fallback', async () => {
+  const doc = documentFixture();
+  const option = { value: 'https://github.com/gluckdev/gipny-i2p/releases/download/v1/package.apk', dataset: { platform: 'Android', architecture: 'arm64', size: '5 MB' }, textContent: 'Android ARM64' };
+  const select = new Element();
+  select.options = [option]; select.selectedOptions = [option]; select.value = '';
+  const nodes = Object.fromEntries(['download-primary', 'download-detail', 'download-unavailable', 'download-choice'].map(id => ['#' + id, new Element()]));
+  nodes['#download-system'] = select;
+  const originalQuery = doc.querySelector.bind(doc);
+  doc.querySelector = selector => nodes[selector] || originalQuery(selector);
+  initialize(doc, { location: new URL('https://example.test/project/?lang=de'), navigator: { userAgent: 'iPhone' }, history: {}, addEventListener() {} });
+  assert.equal(nodes['#download-primary'].hidden, false);
+  assert.equal(nodes['#download-primary'].attributes.href, './app/browser.html?lang=de');
+  applyLanguage('uk', doc);
+  assert.equal(nodes['#download-primary'].attributes.href, './app/browser.html?lang=uk');
+  select.value = option.value;
+  select.listeners.change();
+  assert.equal(nodes['#download-primary'].attributes.href, option.value);
+  applyLanguage('hi', doc);
+  assert.equal(nodes['#download-primary'].attributes.href, option.value);
+  assert.equal(nodes['#download-primary'].textContent, messages.hi.catalogDownload + ' Android');
+});
+
 test('decorative motion requires opt-in and animates no layout or flashing color properties', () => {
   const allowed = blocks(css, /@media\s*\(prefers-reduced-motion:\s*no-preference\)/g);
   const declarations = [...css.matchAll(/\banimation\s*:\s*([^;]+)/g)].filter(match => !match[1].startsWith('none'));
@@ -492,6 +568,11 @@ test('every language switch updates all text, accessible names, buttons and Open
     for (const node of doc.text) assert.equal(node.textContent, copy[node.dataset.i18n]);
     for (const node of doc.aria) assert.equal(node.attributes['aria-label'], copy[node.dataset.i18nAria]);
     for (const button of doc.buttons) assert.equal(button.attributes['aria-pressed'], String(button.dataset.language === lang));
+    for (const link of doc.browserLinks) {
+      const url = new URL(link.attributes.href, 'https://example.test/project/');
+      assert.equal(url.pathname, '/project/app/browser.html');
+      assert.equal(url.search, '?lang=' + lang);
+    }
     assert.ok(html.includes(`data-language="${lang}"`));
   }
 });
