@@ -1,0 +1,971 @@
+{
+  "schema_version": 1,
+  "run_url": "https://github.com/gluckdev/gipny-i2p/actions/runs/43875210051",
+  "artifact_id": 14235656172,
+  "artifact_zip_sha256": "d45b49846bb589404d14294db72f4e86955f682edeba211305fb21f958d60580",
+  "build": {
+    "application_sha": "b1b1795807f3b14b70d46bcfa2ae3261e928a3f7",
+    "native_router": true,
+    "patch_driver_sha256": "12b95914c1ed7cf9dc8774cc1f9c9dbefebb33aff1a3a838ea9a33dca91b0078",
+    "public_patches_sha256": {
+      "i2p-embed/patches/0001-clean-owned-private-material.patch": "2523f4c922727cf7b82799c7e6186b822a1016d990a4fe0fe61f873017706321"
+    },
+    "reseed_source_sha": "3835d09efc722c92fa86c8c31930477315c1abb2",
+    "router_sha": "3835d09efc722c92fa86c8c31930477315c1abb2",
+    "run_attempt": "1",
+    "run_id": "43875210051",
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)\nbinary: rustc\ncommit-hash: 01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf\ncommit-date: 2026-02-11\nhost: x86_64-unknown-linux-gnu\nrelease: 1.93.1\nLLVM version: 21.1.8\n",
+    "schema_version": 1,
+    "sha256": {
+      "e2e-harness": "195e13476392187ee1d904524596b4286cd3ed25d4fea014a032f898aff011c6",
+      "gipny-relay": "a577f0bcac0643ce10a25ed33f8b2435258685f8abf3ae0cd63ed4cdc7d9938b"
+    }
+  },
+  "plan": {
+    "file_bytes": 33554432,
+    "point_timeout_seconds": 1200,
+    "streams": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  "notes": [
+    "Aggregate copy; full probe samples and logs remain in the Actions artifact.",
+    "Sequential single pass; route variation and shared client router prevent a causal or universal optimum claim.",
+    "Probe loss means deadline miss, not proven permanent loss; percentiles exclude late replies.",
+    "Resources cover the harness lifetime including setup and its router, excluding two external relay processes."
+  ],
+  "points": [
+    {
+      "index": 1,
+      "performance_json_sha256": "122e1fa143a53db64ee0dd8c252637914ad354396aa193b8d3a329494d478673",
+      "status": "failed",
+      "failure_kind": "measurement",
+      "harness_exit_code": 1,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 69028,
+      "total_elapsed_ms": 472137,
+      "harness_resources": {
+        "user_seconds": 6.71,
+        "system_seconds": 1.8,
+        "max_rss_kib": 100580
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 1,
+          "timeout_secs": 1125
+        },
+        "configured_file_lanes": 1,
+        "echo_send_errors": 0,
+        "errors": [
+          "probe delivery incomplete; see loss and timeout counts in JSON"
+        ],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 304135,
+          "goodput_bytes_per_sec": 110327.28261504395,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "measurement",
+        "schema_version": 1,
+        "setup_elapsed_ms": 98594,
+        "status": "failed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 13,
+            "peak_receive_lanes": 1,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 1,
+            "queued_parts": 184,
+            "queued_retransmissions": 13,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 5514,
+        "probes": {
+          "attempted": 11,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 4175.666666666667,
+          "late": 4,
+          "lost": 4,
+          "received": 7,
+          "rtt_ms": {
+            "p50": 22727,
+            "p95": 25375,
+            "p99": 25375
+          },
+          "send_errors": 0,
+          "sent": 11,
+          "skipped_in_flight_limit": 36,
+          "stopped_on_timeout": true,
+          "timed_out": 4,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 2,
+      "performance_json_sha256": "54ebd9a3f90c9ac5c80e39c487317818500bfa7cef847a0def567ca6fc134ad0",
+      "status": "passed",
+      "failure_kind": null,
+      "harness_exit_code": 0,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 70027,
+      "total_elapsed_ms": 483136,
+      "harness_resources": {
+        "user_seconds": 8.62,
+        "system_seconds": 2.64,
+        "max_rss_kib": 106124
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 2,
+          "timeout_secs": 1124
+        },
+        "configured_file_lanes": 2,
+        "echo_send_errors": 0,
+        "errors": [],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 314055,
+          "goodput_bytes_per_sec": 106842.22096770136,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "complete",
+        "schema_version": 1,
+        "setup_elapsed_ms": 98395,
+        "status": "passed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 11,
+            "peak_receive_lanes": 2,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 2,
+            "queued_parts": 182,
+            "queued_retransmissions": 11,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 4348,
+        "probes": {
+          "attempted": 95,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 3709.531914893617,
+          "late": 0,
+          "lost": 0,
+          "received": 95,
+          "rtt_ms": {
+            "p50": 6449,
+            "p95": 28810,
+            "p99": 48395
+          },
+          "send_errors": 0,
+          "sent": 95,
+          "skipped_in_flight_limit": 62,
+          "stopped_on_timeout": false,
+          "timed_out": 0,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 3,
+      "performance_json_sha256": "66e45197a64545654eb91d85e01405afc2f856bb3d5ac90d6ed6a13d7bd7a45f",
+      "status": "failed",
+      "failure_kind": "measurement",
+      "harness_exit_code": 1,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 44016,
+      "total_elapsed_ms": 496132,
+      "harness_resources": {
+        "user_seconds": 7.93,
+        "system_seconds": 2.6,
+        "max_rss_kib": 103448
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 3,
+          "timeout_secs": 1150
+        },
+        "configured_file_lanes": 3,
+        "echo_send_errors": 0,
+        "errors": [
+          "probe delivery incomplete; see loss and timeout counts in JSON"
+        ],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 295988,
+          "goodput_bytes_per_sec": 113364.14853697851,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "measurement",
+        "schema_version": 1,
+        "setup_elapsed_ms": 155938,
+        "status": "failed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 17,
+            "peak_receive_lanes": 3,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 3,
+            "queued_parts": 188,
+            "queued_retransmissions": 17,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 33251,
+        "probes": {
+          "attempted": 31,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 5801.172413793103,
+          "late": 1,
+          "lost": 1,
+          "received": 30,
+          "rtt_ms": {
+            "p50": 12493,
+            "p95": 55336,
+            "p99": 56750
+          },
+          "send_errors": 0,
+          "sent": 31,
+          "skipped_in_flight_limit": 41,
+          "stopped_on_timeout": true,
+          "timed_out": 1,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 4,
+      "performance_json_sha256": "95d32e139744588cc5ff6e0e58795d4fb4e43d1add972d018d75abd25dac309e",
+      "status": "passed",
+      "failure_kind": null,
+      "harness_exit_code": 0,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 69027,
+      "total_elapsed_ms": 294099,
+      "harness_resources": {
+        "user_seconds": 6.85,
+        "system_seconds": 1.81,
+        "max_rss_kib": 103128
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 4,
+          "timeout_secs": 1125
+        },
+        "configured_file_lanes": 4,
+        "echo_send_errors": 0,
+        "errors": [],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 165703,
+          "goodput_bytes_per_sec": 202496.6124607714,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "complete",
+        "schema_version": 1,
+        "setup_elapsed_ms": 55418,
+        "status": "passed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 12,
+            "peak_receive_lanes": 4,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 4,
+            "queued_parts": 183,
+            "queued_retransmissions": 12,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 4330,
+        "probes": {
+          "attempted": 72,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 1805.3661971830986,
+          "late": 0,
+          "lost": 0,
+          "received": 72,
+          "rtt_ms": {
+            "p50": 4251,
+            "p95": 14608,
+            "p99": 18731
+          },
+          "send_errors": 0,
+          "sent": 72,
+          "skipped_in_flight_limit": 11,
+          "stopped_on_timeout": false,
+          "timed_out": 0,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 5,
+      "performance_json_sha256": "6cac0f13310caa3327dfdea04935f1b97a84e07e67c5075aacadf691d9be5613",
+      "status": "passed",
+      "failure_kind": null,
+      "harness_exit_code": 0,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 39014,
+      "total_elapsed_ms": 417108,
+      "harness_resources": {
+        "user_seconds": 9.7,
+        "system_seconds": 3.05,
+        "max_rss_kib": 105492
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 5,
+          "timeout_secs": 1155
+        },
+        "configured_file_lanes": 5,
+        "echo_send_errors": 0,
+        "errors": [],
+        "file": {
+          "duplicate_completion_events": 1,
+          "elapsed_ms": 292728,
+          "goodput_bytes_per_sec": 114626.4352772986,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "complete",
+        "schema_version": 1,
+        "setup_elapsed_ms": 81275,
+        "status": "passed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 9,
+            "peak_receive_lanes": 5,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 5,
+            "queued_parts": 182,
+            "queued_retransmissions": 11,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 13402,
+        "probes": {
+          "attempted": 81,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 6166.025,
+          "late": 0,
+          "lost": 0,
+          "received": 81,
+          "rtt_ms": {
+            "p50": 8393,
+            "p95": 35573,
+            "p99": 40886
+          },
+          "send_errors": 0,
+          "sent": 81,
+          "skipped_in_flight_limit": 66,
+          "stopped_on_timeout": false,
+          "timed_out": 0,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 6,
+      "performance_json_sha256": "4024a21008abd19e4706f8883b2a6a5fcb4c97b459f8991ec6366a1eb2d65172",
+      "status": "passed",
+      "failure_kind": null,
+      "harness_exit_code": 0,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 68023,
+      "total_elapsed_ms": 348103,
+      "harness_resources": {
+        "user_seconds": 7.97,
+        "system_seconds": 2.55,
+        "max_rss_kib": 103232
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 6,
+          "timeout_secs": 1126
+        },
+        "configured_file_lanes": 6,
+        "echo_send_errors": 0,
+        "errors": [],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 191449,
+          "goodput_bytes_per_sec": 175265.29135280487,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "complete",
+        "schema_version": 1,
+        "setup_elapsed_ms": 87409,
+        "status": "passed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 8,
+            "peak_receive_lanes": 6,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 6,
+            "queued_parts": 179,
+            "queued_retransmissions": 8,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 12450,
+        "probes": {
+          "attempted": 68,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 2865.5522388059703,
+          "late": 0,
+          "lost": 0,
+          "received": 68,
+          "rtt_ms": {
+            "p50": 2653,
+            "p95": 25303,
+            "p99": 31692
+          },
+          "send_errors": 0,
+          "sent": 68,
+          "skipped_in_flight_limit": 28,
+          "stopped_on_timeout": false,
+          "timed_out": 0,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 7,
+      "performance_json_sha256": "5ac1b825a9f7b7472b38c58a35c634d098d27a8eefa80508ce2d2671e5137cfa",
+      "status": "passed",
+      "failure_kind": null,
+      "harness_exit_code": 0,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 100035,
+      "total_elapsed_ms": 455139,
+      "harness_resources": {
+        "user_seconds": 9.41,
+        "system_seconds": 3.08,
+        "max_rss_kib": 103216
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 7,
+          "timeout_secs": 1094
+        },
+        "configured_file_lanes": 7,
+        "echo_send_errors": 0,
+        "errors": [],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 251249,
+          "goodput_bytes_per_sec": 133550.12840955786,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "complete",
+        "schema_version": 1,
+        "setup_elapsed_ms": 100989,
+        "status": "passed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 24,
+            "peak_receive_lanes": 7,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 7,
+            "queued_parts": 195,
+            "queued_retransmissions": 24,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 49858,
+        "probes": {
+          "attempted": 80,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": 3369.0,
+          "late": 0,
+          "lost": 0,
+          "received": 80,
+          "rtt_ms": {
+            "p50": 5016,
+            "p95": 26853,
+            "p99": 49140
+          },
+          "send_errors": 0,
+          "sent": 80,
+          "skipped_in_flight_limit": 46,
+          "stopped_on_timeout": false,
+          "timed_out": 0,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    },
+    {
+      "index": 8,
+      "performance_json_sha256": "cf1701e59011bee3ef61a6704c0ac510c50660801a24000fffc514933fd92d12",
+      "status": "failed",
+      "failure_kind": "measurement",
+      "harness_exit_code": 1,
+      "client_router_policy": {
+        "bandwidth": "O",
+        "share_percent": 50,
+        "transit_profile": "balanced",
+        "transit_tunnels": 256
+      },
+      "relay_policies": [
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        },
+        {
+          "bandwidth": "L",
+          "inbound_hops": 3,
+          "outbound_hops": 3,
+          "schema_version": 1,
+          "share_percent": 0,
+          "transit_tunnels": 0
+        }
+      ],
+      "relay_startup_elapsed_ms": 65024,
+      "total_elapsed_ms": 973211,
+      "harness_resources": {
+        "user_seconds": 12.02,
+        "system_seconds": 4.25,
+        "max_rss_kib": 116692
+      },
+      "performance": {
+        "config": {
+          "file_bytes": 33554432,
+          "in_process_relays": false,
+          "max_in_flight": 4,
+          "probe_interval_ms": 2000,
+          "probe_timeout_secs": 60,
+          "requested_file_lanes": 8,
+          "timeout_secs": 1129
+        },
+        "configured_file_lanes": 8,
+        "echo_send_errors": 0,
+        "errors": [
+          "probe delivery incomplete; see loss and timeout counts in JSON"
+        ],
+        "file": {
+          "duplicate_completion_events": 0,
+          "elapsed_ms": 744210,
+          "goodput_bytes_per_sec": 45087.27702301326,
+          "requested_bytes": 33554432,
+          "verified_unique_bytes": 33554432
+        },
+        "measurement_started": true,
+        "padded": true,
+        "participant_hops": [
+          3,
+          3,
+          3,
+          3
+        ],
+        "phase": "measurement",
+        "schema_version": 1,
+        "setup_elapsed_ms": 163002,
+        "status": "failed",
+        "topology": "shared_client_router_external_relays",
+        "transport": {
+          "receiver": {
+            "duplicate_parts_received": 8,
+            "peak_receive_lanes": 8,
+            "peak_send_lanes": 0,
+            "queued_parts": 0,
+            "queued_retransmissions": 0,
+            "unique_bytes_received": 33554432
+          },
+          "sender": {
+            "duplicate_parts_received": 0,
+            "peak_receive_lanes": 0,
+            "peak_send_lanes": 8,
+            "queued_parts": 224,
+            "queued_retransmissions": 53,
+            "unique_bytes_received": 0
+          }
+        },
+        "warmup_rtt_ms": 31755,
+        "probes": {
+          "attempted": 4,
+          "budget_exhausted": false,
+          "duplicates": 0,
+          "enqueue_outcome_unknown": 0,
+          "interrupted": 0,
+          "jitter_ms": null,
+          "late": 4,
+          "lost": 4,
+          "received": 0,
+          "rtt_ms": {
+            "p50": null,
+            "p95": null,
+            "p99": null
+          },
+          "send_errors": 0,
+          "sent": 4,
+          "skipped_in_flight_limit": 26,
+          "stopped_on_timeout": true,
+          "timed_out": 4,
+          "total_budget": 1024,
+          "unexpected_echoes": 0
+        }
+      }
+    }
+  ],
+  "metric_definitions": {
+    "goodput": "one completely byte-verified file / time from enqueue start through receiver read and verification; excludes startup and probe drain",
+    "jitter": "mean absolute difference between consecutive on-time RTT samples in arrival order",
+    "lost": "known successfully queued probes without an echo before their deadline; late echoes remain lost; interrupted unknown enqueue outcomes are reported separately",
+    "peak_send_lanes": "open streams available at successful part enqueue; does not prove every stream carried useful bytes",
+    "rtt": "nearest-rank percentiles of unique on-time application echo RTTs; includes queueing; not one-way media latency"
+  }
+}

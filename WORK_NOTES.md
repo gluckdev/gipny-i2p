@@ -693,3 +693,41 @@ git archive без pkg: native tsc/Vite и весь npm test прошли. В un
 Worker остаётся в отдельном Chromium smoke. Из browser test entry удалён
 неиспользуемый export preparation, без подмены криптографии. Старые CI runs
 отменены до публикации, новые должны проверять исправленный общий SHA.
+
+## 2026-11-16: первый native sweep и проверка точного Cromite
+
+Throughput run43875210051 на b1b1795 завершился failure из-за deadline probes
+на 1/3/8 lanes. Все восемь файлов по32MiB доставлены и побайтно проверены.
+Cap4: 202497B/s, p95 echo14.608с; cap6: 175265B/s, p95 25.303с;
+cap8: 45087B/s, 0/4 своевременных echo, все пришли позже60с. Default4 не
+увеличен. Это последовательная серия без повторов, с разными маршрутами и
+общим client router; причинное ускорение/пригодность для голоса не доказаны.
+Полные таблицы — docs/performance-anonymity.md. Агрегированный JSON с hashes
+исходников сохранён в docs/benchmarks; samples/logs остаются в CI artifact.
+Следующий запланированный повтор6,4,6,4 пока не выполнен.
+
+Владелец уточнил Honor: Cromite153.0.8010.37 и ранее работавший browser-owned
+I2P. Официальный Linux build этого выпуска скачан, SHA256 сверен с release
+metadata. В чистом временном профиле API WebAssembly undefined в Window и
+Worker; при разрешении JIT только проверяемому origin обе версии (Pages и
+новая local) загружают WASM и показывают создание профиля без pageerror.
+Android этим не проверен; ADB устройств нет. Точный URL владельца ещё
+ожидается, причина изменения его существующего профиля не установлена.
+Ни профиль телефона, ни OPFS, ни все site data не очищались. Детали и ссылки
+на официальный patch — docs/startup-performance.md.
+
+На candidate7f352f0 normal native e2e4/4, CodeQL3/3, installer2/2, AndroidAPK
+и emulator прошли. Clean tests обнаружили ошибку ожидания fixture DHT:
+повторный destination должен дедуплицироваться; уникальный граничный claim
+теперь проверяется отдельно. Production не менялся, DHT27unit+12sim PASS.
+Site: реальная landscape touch height исправлена с36 до44px; test smooth
+scroll click race и неверный CDP maxTouchPoints=0 устранены без ослабления
+assertions. Полный site unit26 и browser14 PASS. Commit4aae7a6.
+Browser live пока остановился до сети: старый harness не проходил новый
+language setup и трёхшаговый wizard. Оба harness исправлены; реальные Chrome
+и WebKit локально прошли setup и WASM profile creation. Chrome проверил lock,
+WebKit — offline main и сохранность после reload. Runtime не менялся.
+macOS ARM runner capacity
+помешала preview до начала кода; новый candidate требует полного повторения.
+Live updater на7f получил GitHub через outproxy, но stable assets отсутствуют
+(NoStableRelease); установка обновления не проверена и успешной не считается.

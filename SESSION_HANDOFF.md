@@ -16,14 +16,15 @@ remote refs объединены в HEAD `54ddcb3` (до последующих 
 - Последнее уточнение: добиться максимальной полезной пропускной способности
   для будущих голосовых звонков и трансляций экрана без ослабления анонимности.
   Режимы кофеин/кокаин удаляются полностью. Alpha2 ждёт performance-проверок.
-- Готовится последовательный live sweep 1..8 потоков с 3-hop Destination,
+- Выполнен последовательный live sweep 1..8 потоков с 3-hop Destination,
   padding и прежним WINDOW=16: файл + одновременные короткие echo probes.
   Измерять RTT под нагрузкой, уникальные байты, повторы; не выдавать RTT jitter
   за RTP jitter или скорость файла за доказательство пригодности к звонкам.
 - `GIPNY_FILE_LANES=1..8` — ограниченный измерительный override; без него
   остаётся прежняя политика до 4 потоков. Исправлен сброс cursor на каждом
-  batch. Измеренного выигрыша пока нет; GitHub benchmark запущен, результаты
-  ещё ожидаются (ссылка ниже).
+  batch. Первый sweep доставил все 8 файлов, но нарушил probe deadline на
+  1/3/8 lanes. В этой серии 4 lanes быстрее остальных; причинный выигрыш и
+  универсальный оптимум не доказаны. Следующий повтор: 6,4,6,4 (ссылка ниже).
 - Автоматическая релизная рассылка отключена: sender вызывает отсутствующий
   CLI агента. Исправление и явные получатели требуют отдельной реализации.
 
@@ -40,9 +41,12 @@ ancestors перед push; main пока не изменён.
 - Прямой dispatch нового workflow дал 404 до появления в main; существующий
   e2e workflow вызывает его как reusable. Обычные delivery jobs в этом режиме
   skipped: throughput run не заменяет normal e2e gate перед релизом.
-- На момент записи измеренные результаты ещё не получены. Native startup fixes
-  закоммичены локально (`a6756d8`, `6200b44`), browser/UI проходят финальный
-  review; alpha2 не опубликована.
+- Run завершён: 4 lanes — 202497 B/s, echo p95 14.608 с; 6 — 175265 B/s,
+  p95 25.303 с; 8 — 45087 B/s, все 4 probes позже 60 с. Full sweep failure
+  означает deadline misses, все файлы по 32 MiB проверены побайтно. Агрегаты
+  сохранены в docs/benchmarks, подробности — docs/performance-anonymity.md.
+  Native startup (`a6756d8`, `6200b44`) и browser/UI fixes закоммичены;
+  alpha2 не опубликована, main и release tag не изменены.
 
 Изменения: UI modes удалены (`6be4761`), padding/lanes/metrics (`2306baf`),
 native protected throughput benchmark (`940a932`), alpha2 metadata (`a46a01b`),
@@ -65,7 +69,7 @@ netDb прежде сетевого snapshot и отменяемый public-boot
 
 ### Последнее уточнение: браузер на Honor и realme
 
-Honor/Chromium сообщает WebAssembly disabled; realme/Chrome — отсутствие
+Honor/Cromite 153.0.8010.37 сообщает WebAssembly disabled; realme/Chrome — отсутствие
 сетевого сервиса на хостинге. Нужны центральные полупрозрачные уведомления с
 полным текстом и без перехвата нажатий. Пользователь подчёркивает: браузер
 должен запускать собственный I2P-router, как уже работало раньше.
@@ -99,6 +103,27 @@ preparation re-export удалён. Полный npm run build + npm test про
 archive без browser-router/pkg; runtime/crypto не подменялись. Нужен повтор
 всех финальных gates на следующем SHA. Run IDs хранятся также во временном
 /tmp/gipny-alpha2-candidate-ci.json; старые runs не считать финальными.
+
+Следующий candidate `7f352f0`: полный native e2e (external/embedded relays,
+agent/offline) 4/4 и CodeQL 3/3 прошли; installer checks 2/2, Android APK и
+эмулятор также успешны. Clean CI нашёл неверное ожидание DHT fixture при
+повторном Destination: исправлен только тест, DHT 27 unit + 12 sim прошли.
+Site проверка выявила smooth-scroll race в тесте, неверный CDP maxTouchPoints
+и слишком маленькие language buttons в landscape: исправлены, unit26 и
+browser14 прошли. Эти исправления — commit `4aae7a6`.
+Browser live остановился до сети из-за устаревшего сценария теста, не
+проходившего новый setup/трёхшаговое создание профиля; оба harness исправлены.
+Локальные реальные Chrome и WebKit прошли setup, создание WASM-профиля;
+Chrome проверил lock, WebKit — offline main и сохранность после reload.
+macOS ARM preview не получил runner (capacity), это не compile failure.
+Все итоговые gates должны снова пройти на одном исправленном SHA.
+
+Точная Linux-версия Cromite 153.0.8010.37 проверена отдельно в временных
+профилях: по умолчанию WebAssembly отсутствует и в Window, и в Worker;
+с site-specific JIT permission старая Pages и новая локальная сборка
+загружают WASM до создания профиля. Это не проверка Android, не причина
+сбоя существующего профиля Honor и не live delivery. URL владельца ещё
+ожидается. Данные сайта/OPFS не очищать. Детали — startup-performance.md.
 
 ## Как продолжить
 
