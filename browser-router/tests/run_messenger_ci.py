@@ -173,36 +173,85 @@ def file_progress(cdp, message_id):
     return [[item['status'], item['done'], item['total']] for item in rpc(cdp, 'files_progress', messageId=message_id)]
 
 
-def create_ui(cdp, profile, password):
-    # Exercise the shipped auth form and Store/API adapter as well as RPC.
-    # One name field since 2026-11-07: the profile's on-device name is derived
-    # from it (ui/src/profile-name.ts), so `profile` must already be its own
-    # slug for the later lookups by name to hold.
-    values = json.dumps([profile, password, password])
-    evaluate(cdp, f'''(() => {{
-      const fields = [...document.querySelectorAll('.auth input')];
-      const values = {values};
-      if (fields.length !== 3) throw new Error('Browser profile form is missing');
-      fields.forEach((field, i) => {{ field.value = values[i]; field.dispatchEvent(new Event('input', {{bubbles:true}})); }});
-      const button = document.querySelector('.auth-card .row .btn:not(.btn-ghost)');
-      if (!button) throw new Error('Create profile button is missing');
-      button.click();
+def creation_step(cdp, step):
+    return evaluate(cdp, f'''(() => {{
+      const visible = [...document.querySelectorAll('.auth-create-step')]
+        .filter(panel => !panel.hidden && panel.getBoundingClientRect().height > 0);
+      return visible.length === 1 && visible[0].dataset.step === {json.dumps(str(step))};
     }})()''')
+
+
+def setup_ui(cdp):
+    # Fresh browser directories must exercise the real first-run language and
+    # keyboard screen; its checkboxes are not a profile creation form.
+    wait_for(lambda: evaluate(cdp, '!!document.querySelector(".language-setup > .btn")'), 30, 'first-run language setup')
+    evaluate(cdp, '''(() => {
+      const setup = document.querySelector('.language-setup');
+      const english = setup.querySelector('.setup-layouts input[value=en]');
+      if (!english?.checked || !english.disabled) throw new Error('Required English keyboard is missing');
+      const button = setup.querySelector(':scope > .btn');
+      if (button.disabled || button.getBoundingClientRect().height === 0) throw new Error('Language setup action is unavailable');
+      button.click();
+      if (document.querySelector('.language-setup') || localStorage.getItem('gipny.setup') !== 'done')
+        throw new Error('Language setup did not complete');
+    })()''')
+    wait_for(lambda: creation_step(cdp, 1), 30, 'profile name step')
+
+
+def create_ui(cdp, profile, password):
+    # Exercise all shipped wizard steps and the Store/API adapter. `profile`
+    # is already its own slug, matching the on-device name derived by the UI.
+    wait_for(lambda: creation_step(cdp, 1), 30, 'profile name step')
+    values = json.dumps({'create-name': profile, 'create-password': password, 'create-confirm': password})
+    for step, fields in [(1, ['create-name']), (2, ['create-password', 'create-confirm']), (3, [])]:
+        if not creation_step(cdp, step):
+            raise RuntimeError(f'Profile creation step {step} is not visible')
+        evaluate(cdp, f'''(() => {{
+          const values = {values};
+          for (const id of {json.dumps(fields)}) {{
+            const field = document.getElementById(id);
+            if (!field || field.getBoundingClientRect().height === 0) throw new Error('Profile field is not visible');
+            field.value = values[id]; field.dispatchEvent(new Event('input', {{bubbles:true}}));
+          }}
+          const button = document.querySelector('.salon-create .auth-actions .btn:not(.btn-ghost)');
+          if (!button || button.disabled || button.getBoundingClientRect().height === 0)
+            throw new Error('Profile creation action is unavailable');
+          button.click();
+        }})()''')
+        if step < 3:
+            wait_for(lambda: creation_step(cdp, step + 1), 10, f'profile creation step {step + 1}')
+            if rpc(cdp, 'vault_status', profile=profile)['unlocked']:
+                raise RuntimeError('Profile opened before the final creation step')
     wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production profile creation form')
+
+
+def remembered_profile_ready(cdp, profile):
+    label = json.dumps(profile)
+    return evaluate(cdp, f'''(() => {{
+      const password = document.querySelector('#unlock-password');
+      return password?.getBoundingClientRect().height > 0
+        && document.querySelector('.login-cyber .auth-title')?.textContent === {label}
+        && !document.querySelector('.main');
+    }})()''')
 
 
 def unlock_ui(cdp, profile, password, wrong_password='incorrect password'):
     cdp.call('Page.navigate', url='http://localhost:18770/browser.html')
     label = json.dumps(profile)
+    wait_for(lambda: remembered_profile_ready(cdp, profile), 30, 'remembered profile remains locked after reload')
+    evaluate(cdp, 'document.querySelector(".auth-other-profiles").click()')
     wait_for(lambda: evaluate(cdp, f'[...document.querySelectorAll(".salon-profile")].some(button=>button.textContent === {label})'), 30, 'saved profile selector')
     evaluate(cdp, f'[...document.querySelectorAll(".salon-profile")].find(button=>button.textContent === {label}).click()')
-    wait_for(lambda: evaluate(cdp, '!!document.querySelector(".auth input[type=password]")'), 10, 'profile password form')
+    wait_for(lambda: evaluate(cdp, '''(() => {
+      const button = document.querySelector('.login-cyber .auth-actions .btn:not(.btn-ghost)');
+      return !!document.querySelector('#unlock-password') && button && !button.disabled;
+    })()'''), 10, 'profile password form')
     wrong_rejected = evaluate(cdp, '__coreCall("vault_unlock", {profile:' + json.dumps(profile) + ',pass:' + json.dumps(wrong_password) + '}).then(()=>false,()=>true)')
     if not wrong_rejected:
         raise RuntimeError('wrong password accepted')
     evaluate(cdp, f'''(() => {{
-      document.querySelector('.auth input[type=password]').value = {json.dumps(password)};
-      document.querySelector('.auth-card .row .btn:not(.btn-ghost)').click();
+      document.querySelector('#unlock-password').value = {json.dumps(password)};
+      document.querySelector('.login-cyber .auth-actions .btn:not(.btn-ghost)').click();
     }})()''')
     wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production unlock form')
 
@@ -268,7 +317,7 @@ def main():
                 cdp.call('Page.enable'); cdp.call('Runtime.enable')
                 cdp.call('Page.addScriptToEvaluateOnNewDocument', source=BRIDGE)
                 cdp.call('Page.navigate', url='http://localhost:18770/browser.html')
-                wait_for(lambda: evaluate(cdp, 'typeof __coreCall === "function" && document.querySelectorAll("input").length > 0'), 30, 'production UI and worker')
+                setup_ui(cdp)
             alice, bob = clients
             # Exercise the actual main-thread passkey helper with Chrome's
             # virtual PRF authenticator. This is not a physical-device claim.
@@ -285,6 +334,17 @@ def main():
             for client in clients:
                 wait_for(lambda: ready(client), STARTUP_WAIT, 'client destination tunnels')
             receipt['assertions'].append('two independent WASM client destinations ready over live I2P')
+            # link_stats reads the same WASM adapter constants used for client
+            # pools. This records configured policy, not measured path hops
+            # or an independent observation of padding on the wire.
+            receipt['application_tunnel_policy'] = []
+            for client in clients:
+                stats = rpc(client, 'link_stats')
+                policy = {key: stats.get(key) for key in ('our_hops', 'their_hops', 'padded')}
+                receipt['application_tunnel_policy'].append(policy)
+                if policy != dict(our_hops=3, their_hops=3, padded=True):
+                    raise RuntimeError('Ready client reported an unexpected application tunnel policy')
+            receipt['assertions'].append('both ready clients report configured 3/3 application tunnel policy and padding')
             print('MESSENGER_PROGRESS live destinations ready', flush=True)
             alice_card, bob_card = rpc(alice, 'my_card'), rpc(bob, 'my_card')
             alice_address, bob_address = rpc(alice, 'my_b32'), rpc(bob, 'my_b32')
@@ -438,7 +498,7 @@ def main():
             # not prove that service-worker/worker assets work offline.
             server.shutdown(); server.server_close(); server = None
             alice.call('Page.navigate', url='http://localhost:18770/')
-            wait_for(lambda: evaluate(alice, '!!document.querySelector(".salon-profile")'), 30, 'offline root navigation and saved profiles')
+            wait_for(lambda: remembered_profile_ready(alice, 'alice'), 30, 'offline root navigation and locked remembered profile')
             unlock_ui(alice, 'alice', password_new)
             wait_for(lambda: evaluate(alice, '!!document.querySelector(".boot-enter:not(.hidden)") || !!document.querySelector(".sidebar")'), 20, 'offline history entry')
             evaluate(alice, 'document.querySelector(".boot-enter:not(.hidden)")?.click()')

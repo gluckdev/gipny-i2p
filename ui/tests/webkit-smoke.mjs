@@ -13,6 +13,7 @@
 //   node tests/webkit-smoke.mjs [--dist browser-dist] [--out <dir>]
 // The storage lives in a persistent context on purpose: WebKit refuses OPFS
 // in an ephemeral one (navigator.storage.getDirectory() rejects).
+import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -55,6 +56,8 @@ const snapshot = () => page.evaluate(() => {
   return {
     view: app?.firstElementChild?.className ?? null,
     main: !!app?.querySelector('.main'),
+    profiles: [...document.querySelectorAll('.salon-profile .salon-profile-name')]
+      .filter(node => node.getBoundingClientRect().height > 0).map(node => node.textContent.trim()),
     text: (document.body.innerText || '').replace(/\s+/g, ' ').trim(),
     inputs: [...document.querySelectorAll('input')].map(i => i.type || 'text'),
     steps: [...document.querySelectorAll('.boot-step')].map(e => e.className.replace('boot-step ', '') + ': ' + e.innerText.replace(/\s+/g, ' ').trim()),
@@ -79,14 +82,30 @@ const PROFILE = 'probe', PASS = 'correct horse battery staple 42';
 let code = 0;
 try {
   await page.goto(url, { waitUntil: 'load', timeout: 30_000 });
-  await until('create form', st => st.inputs.filter(t => t === 'password').length >= 2, 30_000);
-  await page.evaluate(([name, pass]) => {
-    const inputs = [...document.querySelectorAll('input')];
-    const set = (el, v) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })); };
-    for (const t of inputs.filter(i => (i.type || 'text') === 'text')) set(t, name);
-    const [a, b] = inputs.filter(i => i.type === 'password'); set(a, pass); set(b, pass);
-    [...document.querySelectorAll('button')].find(b => /create|созда/i.test(b.innerText)).click();
-  }, [PROFILE, PASS]);
+  const setup = page.locator('.language-setup');
+  await setup.waitFor({ state: 'visible', timeout: 30_000 });
+  await setup.locator('.auth-language select').selectOption('en');
+  assert(await setup.locator('.setup-layouts input[value=en]').isChecked(), 'English keyboard is required');
+  assert(await setup.locator('.setup-layouts input[value=en]').isDisabled(), 'English keyboard cannot be removed');
+  await setup.locator(':scope > .btn').click();
+  await setup.waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => localStorage.getItem('gipny.setup')), 'done');
+  const step = async number => {
+    await page.locator(`.auth-create-step[data-step="${number}"]`).waitFor({ state: 'visible' });
+    assert.equal(await page.locator('.auth-create-step:visible').count(), 1, 'Only the active creation step is visible');
+    assert.equal(await page.locator('.main').count(), 0, 'No profile opens before final confirmation');
+  };
+  const next = page.locator('.salon-create .auth-actions .btn:not(.btn-ghost)');
+  await step(1);
+  await page.locator('#create-name').fill(PROFILE);
+  await next.click();
+  await step(2);
+  await page.locator('#create-password').fill(PASS);
+  await page.locator('#create-confirm').fill(PASS);
+  await next.click();
+  await step(3);
+  assert.equal(await page.locator('.auth-create-step[data-step="3"] input').count(), 0, 'Browser does not offer native-only duress settings');
+  await next.click();
   const created = Date.now();
   // Nothing is on its way without a network service: the chats open at once.
   const main = await until('main view', st => st.main, 90_000);
@@ -95,7 +114,12 @@ try {
   if (/is-retrying/.test(main.banner.className)) throw new Error('banner promises a retry that nothing arms');
   // The profile survives a reload: OPFS and the vault slots persisted in WebKit.
   await page.reload({ waitUntil: 'load' });
-  const list = await until('profile list', st => st.text.includes(PROFILE) && !/\bauth err\b/.test(st.view ?? ''), 30_000);
+  await page.locator('#unlock-password').waitFor({ state: 'visible', timeout: 30_000 });
+  assert.equal(await page.locator('.login-cyber .auth-title').textContent(), PROFILE, 'Reload selects the remembered profile for unlocking');
+  assert.equal(await page.locator('.main').count(), 0, 'Reload does not unlock a remembered profile');
+  await page.locator('.auth-other-profiles').click();
+  const list = await until('saved profile row', st => !st.main && st.profiles.includes(PROFILE), 30_000);
+  assert.equal(list.profiles.filter(name => name === PROFILE).length, 1, 'Exactly one saved profile row is visible after reload');
   if (list.errors.length) throw new Error(`profile list shows an error: ${list.errors.join(' | ')}`);
   if (pageErrors.length) throw new Error(`uncaught page errors: ${pageErrors.join(' | ')}`);
   say('webkit-smoke: profile created, chats opened offline with the hosting notice, profile listed after reload');
