@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gipny_libcore::security::{UnlockOutcome, Vault};
 
-use super::{drop_prewarm, Prewarm};
+use super::prewarm::{drop_prewarm, Prewarm};
 use crate::{diagnostics::scrub_debug_log, err, profile_dir, AppCtx};
 
 pub(crate) struct ProfileOperation<'a>(&'a AtomicBool);
@@ -39,15 +39,17 @@ impl AppCtx {
 pub(crate) async fn cancel_pending_prewarm(ctx: &AppCtx) {
     let mut slot = ctx.prewarm.lock().await;
     if let Some(prepared) = slot.take() {
+        ctx.invalidate_prewarm();
         drop_prewarm(prepared).await;
     }
 }
 
-async fn cancel_matching_prewarm(slot: &mut Option<Prewarm>, profile: &str) {
+async fn cancel_matching_prewarm(ctx: &AppCtx, slot: &mut Option<Prewarm>, profile: &str) {
     if slot
         .as_ref()
         .is_some_and(|prepared| prepared.profile() == profile)
     {
+        ctx.invalidate_prewarm();
         // Keep the slot locked until both the outer and child builders have
         // stopped; only then may deletion continue or a new prewarm start.
         drop_prewarm(slot.take().expect("matching prewarm exists")).await;
@@ -61,7 +63,7 @@ pub(crate) async fn delete_profile_data(ctx: &AppCtx, profile: &str) -> Result<(
         return Err("profile is active, lock first".into());
     }
     let mut slot = ctx.prewarm.lock().await;
-    cancel_matching_prewarm(&mut slot, profile).await;
+    cancel_matching_prewarm(ctx, &mut slot, profile).await;
     if dir.exists() {
         gipny_libcore::security::secure_wipe_dir(&dir).map_err(err)?;
         let _ = std::fs::remove_dir(&dir);
@@ -94,7 +96,7 @@ async fn unlock_profile_with(
     // removed the vault but failed later. The process-global router remains
     // alive; this does not claim to stop its public cache writes.
     if matches!(&outcome, Ok(UnlockOutcome::Wiped)) || !Vault::exists(dir) {
-        cancel_matching_prewarm(&mut slot, profile).await;
+        cancel_matching_prewarm(ctx, &mut slot, profile).await;
         scrub_debug_log(&ctx.base_dir);
     }
     outcome

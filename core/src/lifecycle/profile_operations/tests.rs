@@ -36,16 +36,21 @@ async fn install_build(ctx: &AppCtx, profile: &str) -> (Arc<AtomicUsize>, Arc<At
         dir: profile_dir(ctx, profile).unwrap(),
     };
     let (started, running) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let _resource = resource;
-        started.send(()).unwrap();
-        std::future::pending().await
-    });
+    let builders = super::super::prewarm::builders::spawn(
+        || Ok::<_, String>(()),
+        |_| async move {
+            let _resource = resource;
+            started.send(()).unwrap();
+            std::future::pending().await
+        },
+        |_| std::future::pending(),
+    );
     running.await.unwrap();
     *ctx.prewarm.lock().await = Some(Prewarm::Building {
         profile: profile.to_owned(),
         settings: Default::default(),
-        task,
+        generation: ctx.invalidate_prewarm(),
+        builders,
     });
     (dropped, existed)
 }
@@ -210,4 +215,25 @@ async fn ordinary_failed_password_keeps_the_prepared_owner() {
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
     assert!(ctx.prewarm.lock().await.is_some());
     delete_profile_data(&ctx, "alice").await.unwrap();
+}
+
+#[tokio::test]
+async fn obsolete_generation_cannot_report_or_retain_a_current_preparation() {
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = AppCtx::new(temp.path().to_owned());
+    profile_fixture(&ctx, "alice");
+    let (dropped, _) = install_build(&ctx, "alice").await;
+    assert_eq!(
+        super::super::prewarm::prewarm_state(&ctx).await.unwrap(),
+        "building"
+    );
+    // Simulate an invalidation delivered before a queued status poll. The old
+    // task must be joined even though its profile/settings still match.
+    ctx.invalidate_prewarm();
+    assert_eq!(
+        super::super::prewarm::prewarm_state(&ctx).await.unwrap(),
+        "off"
+    );
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert!(ctx.prewarm.lock().await.is_none());
 }

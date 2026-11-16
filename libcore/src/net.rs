@@ -202,6 +202,17 @@ impl I2pNode {
         settings: crate::router::RouterSettings,
         progress: Option<crate::router::BootProgress>,
     ) -> Result<Self> {
+        let router = Self::prepare_router(data_dir, settings, &progress)?;
+        Self::start_on_router_with_progress(router, progress).await
+    }
+
+    /// Prepare the one process-global router before starting any destination
+    /// workers. Initialization is synchronous and serialized by embedded.
+    pub fn prepare_router(
+        data_dir: &Path,
+        settings: crate::router::RouterSettings,
+        progress: &Option<crate::router::BootProgress>,
+    ) -> Result<Arc<i2p_embed::Router>> {
         use crate::router::note;
         // The order of these is the order of the work, and the screen's steps
         // are listed in that same order: a router, then an address, then the
@@ -209,13 +220,24 @@ impl I2pNode {
         // moment the router was up — before a single tunnel existed — and to
         // file the real wait, building them, under "session", whose completion
         // line even said "tunnels built".
-        note(&progress, "router", "starting the i2p router inside the app");
+        note(progress, "router", "starting the i2p router inside the app");
         let router = crate::embedded::router(data_dir, settings)
             .map_err(|e| {
-                note(&progress, "router-failed", format!("the router did not start: {e}"));
+                note(progress, "router-failed", format!("the router did not start: {e}"));
                 e
             })?;
-        note(&progress, "router-ready", "router running");
+        note(progress, "router-ready", "router running");
+        Ok(router)
+    }
+
+    /// Build exactly one fresh client destination on a prepared router. This
+    /// can overlap the existing unclaimed relay pool without a second router
+    /// start, a persistent identity or any change to tunnel policy.
+    pub async fn start_on_router_with_progress(
+        router: Arc<i2p_embed::Router>,
+        progress: Option<crate::router::BootProgress>,
+    ) -> Result<Self> {
+        use crate::router::note;
         note(&progress, "session", "generating an address for this session...");
         let privkey = {
             let raw = zeroize::Zeroizing::new(i2p_embed::generate_keys());

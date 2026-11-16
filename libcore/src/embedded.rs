@@ -12,18 +12,29 @@
 //! embedded UPnP manager maps eligible ones.
 
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+
+mod initialization;
 
 use crate::net::NetError;
 use crate::router::RouterSettings;
 
 static ROUTER: OnceLock<Arc<i2p_embed::Router>> = OnceLock::new();
+static ROUTER_INITIALIZATION: Mutex<()> = Mutex::new(());
 
 /// The router, started on first use under `data_dir/i2p/router`.
 pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed::Router>, NetError> {
-    if let Some(r) = ROUTER.get() {
-        return Ok(r.clone());
-    }
+    initialization::get_or_start(
+        &ROUTER,
+        &ROUTER_INITIALIZATION,
+        || start_router(data_dir, settings),
+        || NetError::I2p("router initialization was interrupted".into()),
+    )
+}
+
+/// Called with the initialization lock held, before any destination workers.
+/// OnceLock publication alone does not serialize Router::start side effects.
+fn start_router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed::Router>, NetError> {
     let router_dir = data_dir.join("i2p").join("router");
     std::fs::create_dir_all(&router_dir).map_err(|e| NetError::I2p(format!("router data dir: {e}")))?;
     let seeded = match (crate::router::compiled_in_seed(), crate::router::bundled_seed()) {
@@ -79,9 +90,7 @@ pub fn router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_embed
     let options = i2p_embed::fast::merge(options);
     let started = i2p_embed::Router::start(&options, log.to_str())
         .map_err(|e| NetError::I2p(format!("in-process router: {e}")))?;
-    let started = Arc::new(started);
-    // Another thread may have won the race; theirs is the one kept.
-    Ok(ROUTER.get_or_init(|| started).clone())
+    Ok(Arc::new(started))
 }
 
 /// The router, if this process started one.

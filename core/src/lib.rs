@@ -38,6 +38,7 @@ pub struct AppCtx {
     /// Serializes opening, locking and deleting a profile, including the time
     /// before boot has transferred its destinations into `core`.
     pub(crate) profile_operation: std::sync::atomic::AtomicBool,
+    pub(crate) prewarm_generation: std::sync::atomic::AtomicU64,
     pub profile: Mutex<Option<String>>,
     pub vault: Mutex<Option<Arc<Vault>>>,
     pub core: Mutex<Option<Arc<Core>>>,
@@ -54,6 +55,7 @@ impl AppCtx {
         Self {
             base_dir,
             profile_operation: std::sync::atomic::AtomicBool::new(false),
+            prewarm_generation: std::sync::atomic::AtomicU64::new(0),
             profile: Mutex::new(None),
             vault: Mutex::new(None),
             core: Mutex::new(None),
@@ -95,8 +97,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::profiles::list_profiles,
             commands::profiles::delete_profile,
-            lifecycle::prewarm_network,
-            lifecycle::prewarm_status,
+            lifecycle::prewarm::prewarm_network,
+            lifecycle::prewarm::prewarm_status,
             commands::profiles::vault_status,
             commands::profiles::vault_create,
             commands::profiles::vault_unlock,

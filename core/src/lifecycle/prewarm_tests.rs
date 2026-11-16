@@ -1,4 +1,4 @@
-use super::{abort_prewarm_build, drop_prepared, reuse_ready_destination};
+use super::{builders, drop_prepared, reuse_ready_destination};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -29,18 +29,26 @@ async fn pending_relay(dropped: Arc<AtomicUsize>) -> JoinHandle<()> {
 }
 
 #[tokio::test]
-async fn completed_outer_build_cannot_detach_a_still_running_relay() {
+async fn completed_client_build_cannot_detach_a_still_running_relay() {
     let nodes = Arc::new(AtomicUsize::new(0));
     let relays = Arc::new(AtomicUsize::new(0));
-    let relay = pending_relay(relays.clone()).await;
-    let node = Resource(nodes.clone());
-    let outer = tokio::spawn(async move { Ok::<_, ()>((node, relay)) });
-    // Reproduce the exact race: abort will have no effect on this completed
-    // outer task, while its returned relay builder is still running.
-    while !outer.is_finished() {
+    let relay_resource = Resource(relays.clone());
+    let node_resource = Resource(nodes.clone());
+    let (started, running) = oneshot::channel();
+    let pair = builders::spawn(
+        || Ok::<_, ()>(()),
+        |_| async move { Ok(node_resource) },
+        |_| async move {
+            let _resource = relay_resource;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await
+        },
+    );
+    running.await.unwrap();
+    while !pair.client_finished() {
         tokio::task::yield_now().await;
     }
-    abort_prewarm_build(outer, discard).await;
+    pair.cancel(discard).await;
     assert_eq!(nodes.load(Ordering::SeqCst), 1);
     assert_eq!(relays.load(Ordering::SeqCst), 1);
 }
@@ -50,13 +58,17 @@ async fn cancelling_an_incomplete_build_drops_its_client_before_returning() {
     let nodes = Arc::new(AtomicUsize::new(0));
     let resource = Resource(nodes.clone());
     let (started, running) = oneshot::channel();
-    let outer = tokio::spawn(async move {
-        let _node = resource;
-        started.send(()).unwrap();
-        std::future::pending::<Result<(Resource, JoinHandle<()>), ()>>().await
-    });
+    let pair = builders::spawn(
+        || Ok::<_, ()>(()),
+        |_| async move {
+            let _node = resource;
+            started.send(()).unwrap();
+            std::future::pending::<Result<Resource, ()>>().await
+        },
+        |_| std::future::pending::<()>(),
+    );
     running.await.unwrap();
-    abort_prewarm_build(outer, discard).await;
+    pair.cancel(discard).await;
     assert_eq!(nodes.load(Ordering::SeqCst), 1);
 }
 
