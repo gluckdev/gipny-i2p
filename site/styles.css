@@ -356,6 +356,7 @@ html:lang(en) .shot-ru, html:not(:lang(en)) .shot-en { display: none; }
   :root { --mobile-actions-height: calc(5.25rem + env(safe-area-inset-bottom, 0px)); scroll-padding-bottom: calc(var(--mobile-actions-height) + 1rem); }
   body { padding-bottom: var(--mobile-actions-height); }
   .page-shell { width: auto; margin-left: max(20px, env(safe-area-inset-left, 0px)); margin-right: max(20px, env(safe-area-inset-right, 0px)); }
+  .language-switch button { min-height: 44px; }
   .mobile-actions { position: fixed; z-index: 4; inset: auto 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; height: var(--mobile-actions-height); padding: 12px max(12px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); background: var(--background); border-top: 1px solid var(--line); overflow-y: auto; }
   .mobile-actions .button { min-width: 0; padding: 8px; text-align: center; overflow-wrap: anywhere; line-height: 1.4; }
 }

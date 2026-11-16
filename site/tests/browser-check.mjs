@@ -278,7 +278,7 @@ async function run() {
     const touchViewport = width <= 740 || (width <= 1000 && height <= 500);
     await cdp.call('Emulation.setDeviceMetricsOverride', { width, height,
       deviceScaleFactor: 1, mobile: touchViewport });
-    await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: touchViewport, maxTouchPoints: touchViewport ? 5 : 0 });
+    await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: touchViewport, ...(touchViewport ? { maxTouchPoints: 5 } : {}) });
     const url = `${base}?browser-check=keep#downloads`;
     const navigation = await cdp.call('Page.navigate', { url });
     assert(!navigation.errorText, navigation.errorText);
@@ -286,11 +286,21 @@ async function run() {
     await until(() => cdp.loaded.has(navigation.loaderId), 'document load event');
     await ready('ru');
     const russian = await snapshot(width, 'ru', height);
-    await cdp.evaluate(`document.querySelector('[data-language="en"]').scrollIntoView({block:'center'})`);
-    const point = await cdp.evaluate(`(() => { const rect = document.querySelector('[data-language="en"]').getBoundingClientRect();
-      return {x:rect.x + rect.width / 2, y:rect.y + rect.height / 2}; })()`);
-    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
-    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
+    const point = await cdp.evaluate(`(async () => {
+      const button = document.querySelector('[data-language="en"]');
+      // The mobile snapshot ends at the footer; CSS smooth scrolling would
+      // leave the immediate click coordinates offscreen or still moving.
+      button.scrollIntoView({ block: 'center', behavior: 'instant' });
+      await new Promise(yes => requestAnimationFrame(() => requestAnimationFrame(yes)));
+      const rect = button.getBoundingClientRect();
+      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+      return { x, y, visible: rect.width > 0 && rect.height > 0 && rect.left >= 0
+        && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+        hit: button.contains(document.elementFromPoint(x, y)) };
+    })()`);
+    assert(point.visible && point.hit, `${width}x${height}: English toggle is not an unobstructed visible click target`);
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: point.x, y: point.y });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: point.x, y: point.y });
     await ready('en');
     const english = await snapshot(width, 'en', height);
     const preserved = new URL(english.url);

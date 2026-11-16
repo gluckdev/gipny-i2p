@@ -528,6 +528,12 @@ async fn oversized_destinations_are_not_retained_from_seed_or_caller_paths() {
         from: Some(NodeInfo { destination: max.clone(), stores: true, version: PROTOCOL_VERSION }),
         req: DhtRequest::Ping,
     });
+    assert_eq!(node.table_len(), 1, "a caller already learned as a seed must not create a duplicate");
+
+    let _ = node.handle(&[0; 32], DhtEnvelope {
+        from: Some(NodeInfo { destination: "c".repeat(MAX_NODE_DESTINATION_BYTES), stores: true, version: PROTOCOL_VERSION }),
+        req: DhtRequest::Ping,
+    });
     assert_eq!(node.table_len(), 2, "boundary-sized from claim should still be learned");
 }
 
