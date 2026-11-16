@@ -3,6 +3,39 @@
 Repo `gluckdev/gipny-i2p`. Local handoff file, not committed. The committed
 handoff is `docs/handoff-brief.md` (top section, 2026-11-02).
 
+## Current refactoring — 2026-11-16 (uncommitted)
+
+- Persistent task queue and acceptance criteria: [TASKS.md](TASKS.md).
+- Closing-session checkpoint: [SESSION_HANDOFF.md](SESSION_HANDOFF.md).
+- Owner permits local builds/tests; CI is the final release gate. Work directly,
+  do not invoke Flint. Preserve all existing working-tree and submodule edits.
+- Split large project-owned source files by domain, not arbitrary line ranges.
+  Remove old definitions on extraction; shared behavior needs one implementation.
+- `core/src/backup.rs` owns backup codec/export/restore; Tauri adapters stay thin.
+  This is a structural move, NOT a fix for the audited restore/export problems:
+  restore still lacks rollback/staging, export still reads stored attachment paths
+  directly and suppresses read failures. Fix separately with regression tests.
+- `core/src/commands/{profiles,vault,contacts,identity,network,agent,groups,pins}.rs`
+  now own 56 IPC handlers. `lib.rs` registers their qualified paths; old handler
+  definitions removed. Explicit imports; rustfmt limited to the new modules.
+- Registration check against HEAD: 117 commands before/after, identical names and
+  order, no duplicates. All 56 extracted handler bodies also match HEAD after
+  ignoring comments, whitespace and optional trailing commas from rustfmt.
+  `core/src/lib.rs` is now 1954 lines (2491 before this command extraction).
+  Local `cargo check -p gipny` and `cargo test -p gipny --lib`
+  pass (30 tests). Use `env -u CC -u CXX -u AR` because inherited compiler variables
+  point to a missing Android clang. Existing libcore unused `recv` warning remains.
+- Next entrypoint splits: profile boot/prewarm lifecycle, message/files adapters,
+  DTO mapping, update/diagnostics adapters. Other large sources remain:
+  `libcore/src/{session,db,relay_server,files,update}.rs`, `core/src/core.rs`,
+  `i2p-embed/src/upnp.rs`, browser-router engine, e2e main, site/main.js,
+  UI `app/state.ts` and `features/messaging/chat.ts`.
+- File-lane batch logs now report actual stream count including the main stream
+  in both Core and SessionManager. Current 1→2→3→4 growth is window/ACK-driven,
+  NOT throughput-validated. No measured N-vs-N+1 speed improvement claimed yet.
+- DHT audit remains unfinished; inspect `core/src/core/dht.rs`,
+  `libcore/src/dht_client.rs`, `dht/src/node.rs` and durable dedup semantics.
+
 ## Goal (owner, 2026-11-02)
 «доделывай и доводи до релиза 0.5», then «но сначала релиз с логами».
 Asked and answered: **v0.5.0-rc1 prerelease with Full developer log first,
@@ -478,7 +511,7 @@ Java в Safari не запустить; отдельный роутер = сер
 SECURITY: repo VARIABLE `DHT_SEED_AGE_KEY` содержит приватный age-ключ
 (relay-testnet.yml ждёт SECRET) — перенести в secret и ротировать.
 
-### Итог 2026-11-08 (ветка fix/browser-boot-without-bridge, 4 коммита от fa0819e)
+### Итог 2026-11-08 — PR #154 (ветка fix/browser-boot-without-bridge, 4 коммита от fa0819e; финальные хэши 6c77c5d 104aade 4a40671 a88e7ec)
 - 6c77c5d ui(browser): hosted.state 'unconfigured' в browser-core; экран загрузки
   говорит «на этом хостинге нет сетевого сервиса», вход в чаты сразу; баннер в
   main; ошибка создания/разблокировки остаётся в форме (Store.authError);
@@ -498,3 +531,104 @@ Playwright WebKit локально: ~/.cache/ms-playwright/webkit-2388 собр�
 PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1; в CI достаточно install --with-deps.
 После merge #153 (de.ts) добавить DE для двух новых ключей (Codex).
 Worktree ../gipny-i2pd-wt-browser-boot удалить после merge (one-branch policy).
+
+### 2026-11-08 — оценка заметок и повторный поиск prior art
+Ветка docs/browser-router-prior-art-recheck (worktree ../gipny-i2pd-wt-prior-art):
+docs/plans/2026-11-08-browser-router-prior-art-recheck.md + датированная приписка в
+research_notes/…/prior_art_browser_routers.md + статус в плане 2026-11-01.
+Вывод: чужого I2P-роутера в браузере не найдено; новое — ethereum/webtor-rs v0.5.7,
+FaunaTor, nostra-chat (Safari 16+ «partial»), NeuroMarshal/axon-i2p (PoC, sans-I/O,
+wasm32v1-none в CI). Спайк A (i2pd/Emscripten) из п. 3 выше — снять; спайк B — вести
+как измерения. Вопрос владельцу: Cloudflare Worker как хост моста?
+
+### 2026-11-08 — слияния и живой NTCP2
+- #155 (prior art) слит be3083c; #154 (экран загрузки без моста, Safari 16.4, WebKit smoke) слит e911857 по решению владельца при красном живом NTCP2.
+- Job «Browser NTCP2 and exploratory tunnels» красный на main с 2026-11-06 (все прогоны, включая релизный 1f00d33) и во всех PR: нативный i2pd на раннере после reseed держит 61 RouterInfo старше 36 ч (StaleRouterInfo), NTCP2-сессии к ним рвутся (EOF/reset), свежих записей нет, через 240 с run_ntcp2_ci.py падает «fresh netDb did not provide verified public NTCP2 peers». Это данные reseed-источника, не код. Чинить: несколько reseed-источников или наш опубликованный снапшот netDb для нативного пира в CI.
+- #156 — план групповых чатов (docs/plans/2026-11-08-group-chats.md + roadmap) слит 1981b18. Все три worktree сессии удалены.
+
+### 2026-11-08 — починка живого NTCP2 (ветка fix/ci-live-ntcp2-fresh-netdb, worktree ../gipny-i2pd-wt-netdb)
+collect-netdb перед рукопожатиями → GIPNY_NETDB_SOURCE; browser-router/tests/netdb_seed.py
+подсаживает пиру записи моложе 36 ч (≥25, иначе reseed); run_bootstrap_ci.py берёт тот же
+netDb; 7 unit-тестов в job; docs + раздел «автообновляемые апстримы» в workflows/README
+(принцип владельца: «как можно больше приколюх на автообновляемых перед билдом апстримах»).
+Проверять в CI: summary «Fresh network database», строка NETDB_SEED в логе шага.
+
+### 2026-11-08 — слияние всех веток (лимит сессии достигнут на этом шаге)
+Слиты в main: #157 (живой NTCP2 от свежего netDb; в его прогоне впервые с 06.11 прошли
+рукопожатия, bootstrap и мессенджер по WSS; упал только последний этап WebRTC
+«offline outbox recovered recipient» за 300 с — разобрать отдельно), #158 (планы: загрузка/
+сбор сообщений + экспорт/импорт браузерного профиля), #151, dependabot #146 #147 #148 #150.
+Осталось: #153 (own-keyboard) — origin/main влит в ветку (merge ac93c59, конфликты
+package.json test-script и state.ts решены аддитивно, запушено в origin/feat/own-keyboard;
+локальный checkout владельца отстаёт на этот merge — git pull). В de.ts НЕТ двух ключей
+boot.network_unconfigured / app.network_unconfigured → localization test красный, пока Codex
+не переведёт (spec: scratchpad/codex-translate-de.md; orca worker-start требовал --from).
+Worktree ../gipny-i2pd-wt-keyboard (ветка merge/own-keyboard). После #153: закрыть #152 как
+superseded (ancestor #153, CONFLICTING), запустить release.yml publish=false для общих билдов
+(Windows/Android/…). NixOS-configs: workflow ссылается на несуществующие flake-атрибуты
+(flat имена с суффиксом системы); субагент делал PR в worktree ../NixOS-configs-wt-ci;
+10 уведомлений NixOS оставлены непрочитанными до фикса, остальные 129 закрыты.
+Ветка perf/boot-parallel-relay создана (worktree ../gipny-i2pd-wt-bootperf), кода нет.
+
+
+## Продолжение 2026-11-16: завершён разбор Tauri entrypoint
+
+Прочитаны SESSION_HANDOFF.md/TASKS.md; грязное дерево и подмодули сохранены.
+Выполнены только структурные изменения application entrypoint и отдельный
+статический DHT-аудит. Коммитов, push, CI и релиза нет.
+
+Из core/src/lib.rs выделены lifecycle.rs (boot/prewarm/router settings), dto.rs,
+diagnostics.rs, platform.rs, commands/messages.rs, files.rs, updates.rs,
+backup.rs. qr_svg перенесён в commands/identity.rs; потребители DTO и attachment
+helpers импортируют их из доменных модулей. Старые определения удалены.
+lib.rs: 1954 → 416 строк после scoped rustfmt. Публичные Prewarm/resolve_base_dir
+остались в корне через re-export. Privacy, backup behavior, wire/IPC не менялись.
+
+После каждой логической группы успешны host `cargo check -p gipny` и
+`cargo test -p gipny --lib` с временным `env -u CC -u CXX -u AR`.
+Последний итог: 30 passed, 0 failed; единственное предупреждение — прежний
+unused recv в libcore/src/relay_server.rs. Scoped rustfmt --check и
+`git diff --check -- core/src` успешны. Сравнение с исходным снимком после
+одинакового rustfmt: 113 функций, 16 struct, 1 enum без смысловых изменений
+(исключены видимость и форматирование); run отличается только квалификацией
+обработчиков. Все 117 IPC-имён/порядок совпадают с началом сессии и HEAD.
+Скрипт сравнения и исходный снимок временные: /tmp/gipny-verify-move.py,
+/tmp/gipny-lib-before-20261116.rs. Это проверка переноса, не regression suite.
+
+DHT: отчёты docs/audits/dht-{lifecycle,resources}-2026-11-16.md. Отдельные агенты
+прочитали lifecycle и protocol/storage; ключевые выводы ведущий агент
+перепроверил по исходникам. Подтверждены окна seen-before-commit, неполный
+retry TTL, неограниченная пагинация/collect, обход квоты пустыми values,
+unbounded bootstrap относительно alpha, detached Core lookup/устаревший
+адрес, отсутствие Core DHT refresh OPK, overflow remote delete count;
+латентный alias API допускает backdating ownership и раскрывает ciphertext
+хранящему узлу. Это статические выводы: исправлений, fault-injection и новых
+DHT runtime-тестов в этом шаге нет. Задачи исправлений добавлены в TASKS.md.
+Android/Windows/macOS, frontend и live I2P в этом шаге не запускались.
+
+
+## 2026-11-16: логическая декомпозиция Session, DB, Core и UPnP
+
+По запросу владельца продолжено разбиение крупных собственных исходников.
+Уточнённое правило сохранено в TASKS/HANDOFF: upstream, vendored и generated
+не декомпозировать. UPnP проверен по e9a4721/README: собственный Rust manager,
+не upstream i2pd/miniupnpc. Прежние изменения и грязные подмодули сохранены.
+
+Session 3015→463, DB 2773→547, Core 2595→409, UPnP 1949→272 строк.
+Подробные домены и оставшиеся кандидаты перечислены в TASKS.md. Старые тела
+удалены, публичные paths/codec/cfg сохранены; тесты перемещены по доменам.
+Сравнение одинаково форматированных snapshot: Session 116 fn/1 struct/4 enum,
+Core 166 fn/7 struct/8 enum, DB 298 fn/22 struct/6 enum и 854 SQL/string literals,
+UPnP 128 fn/FFI declarations/22 struct/4 enum/2 trait/4 type и constants совпали
+(кроме imports/visibility). Независимые обзоры Core/DB/Session без замечаний.
+UPnP native fixture сохранил доступ к перемещённым helpers через test imports.
+Изменения поведения DHT/backup/controller не выполнялись.
+
+cargo check -p gipny --tests успешен. cargo test --lib для gipny/libcore/i2p-embed:
+30 + 209 + 29 прошли в песочнице; 3 UPnP HTTP fixture упёрлись в запрет TCP bind.
+Повтор только этих 3 тестов вне песочницы после разрешения: 3 passed.
+Итого 271 тест успешен. Native cfg(gipny_upnp) включён, это не stub.
+CC/CXX/AR очищались на время host-команд. Единственное старое warning — unused
+recv в relay_server. Scoped rustfmt/diff checks успешны. Новые бессодержательные
+тесты для переноса не добавлялись. Не было commit/push/CI/release, frontend,
+других платформ или live I2P. DHT-аудиты дополнены навигацией по новым путям.
