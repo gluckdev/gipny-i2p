@@ -22,11 +22,27 @@ remote refs объединены в HEAD `54ddcb3` (до последующих 
   за RTP jitter или скорость файла за доказательство пригодности к звонкам.
 - `GIPNY_FILE_LANES=1..8` — ограниченный измерительный override; без него
   остаётся прежняя политика до 4 потоков. Исправлен сброс cursor на каждом
-  batch. Измеренного выигрыша пока нет; GitHub benchmark ещё не запускался.
+  batch. Измеренного выигрыша пока нет; GitHub benchmark запущен, результаты
+  ещё ожидаются (ссылка ниже).
 - Автоматическая релизная рассылка отключена: sender вызывает отсутствующий
   CLI агента. Исправление и явные получатели требуют отдельной реализации.
 
 ### Подготовлен baseline для GitHub
+
+Отправлен baseline `b1b1795807f3b14b70d46bcfa2ae3261e928a3f7` в
+`origin/release/0.5.0-alpha.2`. Все актуальные local/remote refs проверены как
+ancestors перед push; main пока не изменён.
+
+- Throughput run: https://github.com/gluckdev/gipny-i2p/actions/runs/43875210051
+  (e2e-i2pd dispatch `throughput=true`, pinned source, 1..8, 32 MiB).
+- Native matrix baseline: https://github.com/gluckdev/gipny-i2p/actions/runs/43874857745
+  (автоматический i2p-embed push run на предыдущем `6c0313e`).
+- Прямой dispatch нового workflow дал 404 до появления в main; существующий
+  e2e workflow вызывает его как reusable. Обычные delivery jobs в этом режиме
+  skipped: throughput run не заменяет normal e2e gate перед релизом.
+- На момент записи измеренные результаты ещё не получены. Native startup fixes
+  закоммичены локально (`a6756d8`, `6200b44`), browser/UI проходят финальный
+  review; alpha2 не опубликована.
 
 Изменения: UI modes удалены (`6be4761`), padding/lanes/metrics (`2306baf`),
 native protected throughput benchmark (`940a932`), alpha2 metadata (`a46a01b`),
@@ -39,10 +55,41 @@ prewarm cancellation 3, release guard 9, provenance regressions 10.
 Rust проверки здесь с I2P_EMBED_STUB=1, shipping native CI ещё требуется.
 UI: обе сборки, полный npm test и layout 316/316; site 26/26 + build.
 
-Browser audit: реальные application tunnels 2/2, pinned Emissary typed API не
-позволяет изменить длину. Не приписывать browser нативные 3/3. Первый safe
-startup шаг — parallel UI/config/WASM, verified local netDb прежде сетевого
-snapshot и отменяемый public-bootstrap prewarm; upstream не редактировать.
+Исторический browser baseline: реальные application tunnels 2/2. Первичный вывод о том, что
+это нельзя изменить без upstream, исправлен после проверки происхождения:
+ClientHandle::create добавлен НАШИМ `client-only-ntcp2.patch` и наследует default.
+Явные 3/3 реализованы в собственном adapter; чужие defaults не изменены.
+Policy unit test, WASM build и frontend tests прошли; live browser CI на новой
+политике ещё требуется. Реализованы parallel UI/config/WASM, verified local
+netDb прежде сетевого snapshot и отменяемый public-bootstrap prewarm.
+
+### Последнее уточнение: браузер на Honor и realme
+
+Honor/Chromium сообщает WebAssembly disabled; realme/Chrome — отсутствие
+сетевого сервиса на хостинге. Нужны центральные полупрозрачные уведомления с
+полным текстом и без перехвата нажатий. Пользователь подчёркивает: браузер
+должен запускать собственный I2P-router, как уже работало раньше.
+
+История это подтверждает: CI `fa60b02`, run `41329839707` — два независимых
+браузерных router, 7 acceptance checks; 2026-11-07 browser ↔ native Honor
+также прошёл (WORK_NOTES.md). Router, identity и tunnels принадлежат браузеру;
+локальный ws://127.0.0.1:18767/stream был только транспортом NTCP2-байтов.
+Не заменять это серверным Core. Старые localhost endpoints нельзя переносить
+в публичную конфигурацию мобильных пользователей.
+
+Проверенный Pages URL: https://gluckdev.github.io/gipny-i2p/app/browser.html.
+Во всех 8 успешных WASM Pages builds 7–8 ноября не было публичной network
+configuration; текущий browser-config.json отвечает 404. Точный URL владельца
+ещё запрошен, поэтому нельзя утверждать, что найденная конфигурация объясняет
+именно его телефон. Новая инфраструктура не создавалась.
+
+Window-проверка WebAssembly перенесена в фактический Worker; Chromium smoke
+проверяет разные realms, недоступный API, CompileError и отсутствие unhandled
+rejections. ToastLayer центрирует полный текст; обычные notices пропускают
+pointer events, слишком длинный текст прокручивается внутри ограниченной
+карточки. Layout316/316 и keyboard/modal/click-through/1000+chars checks прошли.
+Эти изменения ещё не опубликованы и не проверены на самих телефонах.
+Детали: docs/startup-performance.md, docs/browser-network-deployment.md.
 
 ## Как продолжить
 
@@ -50,8 +97,9 @@ snapshot и отменяемый public-bootstrap prewarm; upstream не ред�
    Дерево и подмодули не чистить и не откатывать.
 2. Завершены Tauri entrypoint (416 строк), Session (463), DB (547), Core (409)
    и Rust UPnP manager (272). Не повторять эти переносы.
-3. Последний запрос владельца — продолжать логическую декомпозицию крупных
-   **собственных** файлов. Следующие Rust-кандидаты: libcore/relay_server (1758),
+3. Текущий приоритет — восстановление mobile browser path, общие CI gates и
+   alpha2; подробности последнего уточнения выше. Очередь декомпозиции крупных
+   **собственных** файлов сохраняется. Следующие Rust-кандидаты: libcore/relay_server (1758),
    e2e-harness/main (1444), browser-router/engine (1389), libcore/update (1303),
    libcore/files (1244), core/relay/main (1014). UI/site очередь — TASKS.md.
 4. DHT/backup исправления остаются отдельной очередью, не смешивать их с

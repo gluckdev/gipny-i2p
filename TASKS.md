@@ -194,14 +194,34 @@ file:line в отчётах):
 - [x] Исправить постоянный cursor и гонку резервирования дополнительных streams.
 - [x] Удалить кофеин/кокаин из UI/backend, сохранить исходящий padding.
 - [x] Исправить отмену prewarm, когда завершённая внешняя задача владеет relay-builder.
-- [ ] Ускорить native и browser startup с отменой задач и изоляцией профилей;
-  документировать реализованные и предлагаемые настройки отдельно.
+- [x] Реализовать native и browser startup prewarm с отменой задач и изоляцией
+  профилей; документировать реализованные и предлагаемые настройки отдельно.
+- [ ] Проверить live cold/warm startup на итоговом SHA; local ownership/unit
+  проверки не считать доказательством ускорения живой сети.
 
-Нативный стенд проверяет 3/3 hops. Текущий browser Emissary использует 2/2;
-публичный typed API не предоставляет настройку длины application tunnels.
-Браузерную совместимость с нативными 3/3 не заявлять.
+Нативный стенд проверяет 3/3 hops. Исторический browser baseline использовал 2/2: это
+унаследованный default в нашем добавленном ClientHandle::create, а не
+неизменяемый upstream API. Явные 3/3 заданы в собственном adapter patch;
+чужие defaults не изменены. Unit policy и WASM build прошли; новый browser
+live baseline ещё требуется.
 
-Измеренного улучшения скорости пока нет; live I2P benchmark не запускался.
+Измеренного улучшения скорости пока нет; live I2P benchmark запущен:
+https://github.com/gluckdev/gipny-i2p/actions/runs/43875210051.
+
+### Мобильный браузер: последнее уточнение владельца
+
+- [x] Найти прежние successful browser-owned I2P runs: два Chrome в CI и
+  browser ↔ native Honor. Не переносить router/identity/туннели на сервер.
+- [x] Исправить проверку WebAssembly в правильном Worker realm; проверить
+  реальным Chromium ошибки API/init и отсутствие unhandled rejection.
+- [x] Центрировать transient уведомления, показывать полный текст и сохранить
+  взаимодействие с экраном под ними; keyboard/modal/layout checks прошли.
+- [ ] Опубликовать проверенные изменения и подтвердить на Honor/Chromium и
+  realme/Chrome. Точный URL пользователя ещё не известен; проверенный Pages
+  URL собран без public network config во всех найденных WASM deployments.
+- [ ] Восстановить публичное подключение browser-owned router к NTCP2 peers
+  через существующий byte transport после определения реального endpoint;
+  localhost из CI не является production endpoint.
 
 ## 5. Android, зависимости и границы платформ
 

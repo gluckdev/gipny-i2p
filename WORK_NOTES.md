@@ -632,3 +632,56 @@ CC/CXX/AR очищались на время host-команд. Единстве
 recv в relay_server. Scoped rustfmt/diff checks успешны. Новые бессодержательные
 тесты для переноса не добавлялись. Не было commit/push/CI/release, frontend,
 других платформ или live I2P. DHT-аудиты дополнены навигацией по новым путям.
+
+## 2026-11-16: интеграция alpha2, startup и мобильный браузер
+
+После отдельного разрешения владельца выполнены тематические commits и push
+baseline `b1b1795`, объединены main, feature/fix и Dependabot branches. Повторный
+fetch и ancestry check перед очередной общей сборкой: все branch refs уже
+включены в HEAD. Версии согласованы на 0.5.0-alpha.2; main/release tag пока
+не изменены. Грязные локальные submodules сохранены и не входят в staging.
+
+Кофеин/кокаин удалены из UI/backend, исходящий padding сохранён. Исправлены
+file-lane cursor и гонка резервирования потоков. Добавлены ограниченный
+измерительный override1…8, unique-byte/queue/lane metrics и живой стенд с
+полной побайтной проверкой файла и concurrent echo probes. Native sweep
+[43875210051](https://github.com/gluckdev/gipny-i2p/actions/runs/43875210051)
+на b1b1795 идёт; оптимальное число потоков и выигрыш пока не установлены.
+Default4, WINDOW16 и политика выбора peers не изменены.
+
+Native startup commits `a6756d8`, `6200b44`: foreground ownership, отмена и
+ожидание prepared tasks, проверка актуальной готовности перед reuse, один
+router initialization и параллельное создание существующих client/relay pools.
+Локально lifecycle20/20, libcore214/214, Core all-targets прошли с stub;
+проверка живой сети на итоговом SHA обязательна.
+
+Browser commit `718c6b2`: public-only bootstrap до unlock, проверенные local
+netDb caches прежде HTTP, concurrent UI/config/WASM, generation/abort barriers,
+60s public job deadline и ограниченное ожидание optional config cache. Собственный
+ClientHandle adapter явно задаёт application3/3; чужой default не менялся.
+Worker проверяет WebAssembly в своём realm и возвращает точную причину ошибки
+без предположений о настройках браузера. Startup12/12, config/browser54/54,
+WASMlib8/8, cache2/2, legacyvalidation7/7, policy1/1, ChromiumWorker4/4,
+tsc/browserbuild и Safari16.4 gate3/3 прошли. Это не замер live startup.
+
+Пользователь сообщил Honor/Chromium и realme/Chrome и напомнил, что браузер
+должен владеть своим I2P-router. Архив подтверждает успешные два Chrome в CI
+fa60b02/run41329839707 и browser↔nativeHonor 7 ноября. В этих проверках
+использовался локальный NTCP2 byte forwarder, а не серверный I2P Core. Все
+найденные8 успешных WASM Pages deployments7–8ноября собраны без публичного
+network config; текущий проверенный Pages URL отдаёт404 наbrowser-config.json.
+Точный URL пользователя ещё не получен, связь с его ошибкой остаётся условной.
+Новые облачные ресурсы не создавались. См. docs/browser-network-deployment.md.
+
+Уведомления перенесены в центральную полупрозрачную карточку с полным текстом;
+обычные notices пропускают нажатия. UI suite и layout316/316 прошли. Отдельный
+review обнаружил выход очень длинной ошибки за экран при клавиатуре: этот
+крайний случай исправлен отдельным bounded-scroll шагом. Реальный Chromium
+проверяет1000+символов при430px, прокрутку до последней строки и сохранение
+focus. Только переполненная карточка принимает нажатия/прокрутку; обычные
+уведомления и область вне карточки пропускают их. Обновление ещё
+не опубликовано и не проверено на реальных Honor/realme.
+
+Все настройки и ограничения: docs/startup-performance.md и
+docs/performance-anonymity.md. Известные DHT/backup вопросы остаются отдельными
+задачами; общие зелёные тесты не закрывают их автоматически.
