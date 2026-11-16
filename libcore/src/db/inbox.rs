@@ -56,7 +56,13 @@ impl Db {
         let tx = conn.transaction()?;
         let id = {
             if let Some(id) = spent_prekey {
-                tx.execute("DELETE FROM prekeys WHERE id=?1", params![id])?;
+                let deleted = tx.execute(
+                    "DELETE FROM prekeys WHERE id=?1 AND kind=?2",
+                    params![id, PreKeyKind::OneTime.to_i64()],
+                )?;
+                if deleted != 1 {
+                    return Err(DbError::State);
+                }
             }
             if let Some(state) = session {
                 tx.execute(
@@ -143,6 +149,36 @@ mod tests {
         assert!(db.commit_received(peer + 1000, Some(b"new"), Some(opk), b"letter").is_err());
         assert_eq!(db.get_session(peer).unwrap().as_deref(), Some(b"old".as_slice()));
         assert!(db.get_prekey(opk).unwrap().is_some());
+        assert!(db.inbox_pending(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn commit_received_rejects_non_one_time_prekey_id() {
+        let (_dir, db, peer) = database();
+        db.put_session(peer, b"old").unwrap();
+        let signed = db.add_prekey(PreKeyKind::Signed, &[7; 32], &[8; 32]).unwrap();
+
+        assert!(matches!(
+            db.commit_received(peer, Some(b"new"), Some(signed), b"letter"),
+            Err(DbError::State)
+        ));
+
+        assert_eq!(db.get_session(peer).unwrap().as_deref(), Some(b"old".as_slice()));
+        assert!(db.get_prekey(signed).unwrap().is_some(), "non-OPK prekey must not be consumed");
+        assert!(db.inbox_pending(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn commit_received_rejects_missing_spent_prekey_id() {
+        let (_dir, db, peer) = database();
+        db.put_session(peer, b"old").unwrap();
+
+        assert!(matches!(
+            db.commit_received(peer, Some(b"new"), Some(i64::MAX), b"letter"),
+            Err(DbError::State)
+        ));
+
+        assert_eq!(db.get_session(peer).unwrap().as_deref(), Some(b"old".as_slice()));
         assert!(db.inbox_pending(10).unwrap().is_empty());
     }
 

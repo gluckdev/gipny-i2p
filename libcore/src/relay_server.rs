@@ -24,11 +24,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::net::NetError;
@@ -50,6 +51,10 @@ const MAX_CLIENTS: usize = 256;
 /// How long a new stream may take to send its first frame (auth or a DHT
 /// request). An i2p round trip is seconds; a silent stream is let go.
 const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(60);
+/// Global inbound frame-allocation budget: bytes held by body buffers while
+/// frames are read and deserialized.
+const INBOUND_FRAME_BUDGET_BYTES: u32 = 64 * 1024 * 1024;
+const INBOUND_FRAME_BUDGET_UNIT_BYTES: u32 = 16 * 1024;
 
 /// Live connections by the signing key they authenticated as.
 pub type Connections = Arc<RwLock<HashMap<[u8; 32], Lanes>>>;
@@ -86,6 +91,51 @@ impl Pushed {
 
     fn acked(&mut self, id: u64) {
         self.ids.remove(&id);
+    }
+
+    fn is_claimed(&self, id: u64) -> bool {
+        self.ids.contains(&id)
+    }
+
+    fn release_for_retry(&mut self, id: u64) {
+        self.ids.remove(&id);
+        self.high = self.high.min(id.saturating_sub(1));
+    }
+}
+
+enum EnqueueOutcome {
+    Queued,
+    AlreadyClaimed,
+    Backpressure,
+}
+
+async fn try_enqueue_unclaimed(
+    tx: &mpsc::Sender<RelayToClient>,
+    cursor: &Arc<Mutex<Pushed>>,
+    id: u64,
+    blob: Vec<u8>,
+) -> EnqueueOutcome {
+    let mut c = cursor.lock().await;
+    if c.is_claimed(id) {
+        return EnqueueOutcome::AlreadyClaimed;
+    }
+    let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
+    match tx.try_send(pkt) {
+        Ok(()) => {
+            c.claim(id);
+            EnqueueOutcome::Queued
+        }
+        Err(_) => EnqueueOutcome::Backpressure,
+    }
+}
+
+async fn release_for_retry(cursor: &Arc<Mutex<Pushed>>, ids: &[u64]) {
+    if ids.is_empty() {
+        return;
+    }
+    let mut c = cursor.lock().await;
+    for id in ids {
+        c.release_for_retry(*id);
     }
 }
 
@@ -140,6 +190,79 @@ const CLIENT_SILENT: Duration = Duration::from_secs(90);
 const CLIENT_SILENT: Duration = Duration::from_secs(2);
 const GC_INTERVAL: Duration = Duration::from_secs(600);
 const PUSH_CAPACITY: usize = 512;
+/// Heap cost we charge per stored message in addition to ciphertext bytes.
+///
+/// This keeps quota enforcement robust against many tiny records: every entry
+/// costs map/set nodes, ids, timestamps, and Vec bookkeeping even when payload
+/// is small.
+const MESSAGE_METADATA_BYTES: usize = 96;
+
+#[derive(Clone)]
+struct InboundFrameBudget {
+    unit_bytes: u32,
+    sem: Arc<Semaphore>,
+}
+
+impl InboundFrameBudget {
+    fn new(total_bytes: u32, unit_bytes: u32) -> Self {
+        let unit_bytes = unit_bytes.max(1);
+        let permits = total_bytes.max(1).div_ceil(unit_bytes) as usize;
+        Self { unit_bytes, sem: Arc::new(Semaphore::new(permits)) }
+    }
+
+    fn permits_for_len(&self, len: u32) -> u32 {
+        if len == 0 { 0 } else { len.div_ceil(self.unit_bytes) }
+    }
+
+    async fn acquire_for_len(&self, len: u32) -> Result<Option<OwnedSemaphorePermit>, RelayError> {
+        let permits = self.permits_for_len(len);
+        if permits == 0 {
+            return Ok(None);
+        }
+        let permit = self.sem.clone().acquire_many_owned(permits).await
+            .map_err(|_| RelayError::Proto("inbound frame budget closed".into()))?;
+        Ok(Some(permit))
+    }
+
+    #[cfg(test)]
+    fn available_units(&self) -> usize {
+        self.sem.available_permits()
+    }
+}
+
+fn inbound_frame_budget() -> &'static InboundFrameBudget {
+    static BUDGET: OnceLock<InboundFrameBudget> = OnceLock::new();
+    BUDGET.get_or_init(|| InboundFrameBudget::new(INBOUND_FRAME_BUDGET_BYTES, INBOUND_FRAME_BUDGET_UNIT_BYTES))
+}
+
+async fn recv_server_frame<R, T>(r: &mut R) -> Result<T, RelayError>
+where
+    R: AsyncRead + Unpin,
+    T: serde::de::DeserializeOwned,
+{
+    recv_server_frame_with_budget(r, inbound_frame_budget()).await
+}
+
+async fn recv_server_frame_with_budget<R, T>(r: &mut R, budget: &InboundFrameBudget) -> Result<T, RelayError>
+where
+    R: AsyncRead + Unpin,
+    T: serde::de::DeserializeOwned,
+{
+    let mut len_buf = [0u8; 4];
+    r.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf);
+    if len > crate::relay::MAX_FRAME {
+        return Err(RelayError::Proto("frame too large".into()));
+    }
+    let _budget = budget.acquire_for_len(len).await?;
+    let mut buf = vec![0u8; len as usize];
+    r.read_exact(&mut buf).await?;
+    Ok(bincode::deserialize(&buf)?)
+}
+
+fn accounted_message_bytes(blob_len: usize) -> usize {
+    blob_len.saturating_add(MESSAGE_METADATA_BYTES)
+}
 
 /// Budget for a relay held in RAM.
 ///
@@ -149,11 +272,14 @@ const PUSH_CAPACITY: usize = 512;
 /// recoverable: the sender still holds it unacked and sends it again.
 #[derive(Clone, Debug)]
 pub struct MemStoreLimits {
-    /// All held message bytes together.
+    /// Global message budget including a fixed per-record metadata charge.
     pub max_total_bytes: usize,
     /// Held message bytes for one recipient, so one busy inbox cannot starve
     /// every other.
     pub max_recipient_bytes: usize,
+    /// Global record bound, so many tiny messages cannot exhaust maps/sets by
+    /// count while staying under byte caps.
+    pub max_total_messages: usize,
     /// A prekey bundle is a few hundred bytes; anything far beyond is not one.
     pub max_bundle_bytes: usize,
     pub max_bundles: usize,
@@ -172,6 +298,7 @@ impl Default for MemStoreLimits {
         Self {
             max_total_bytes: 96 * 1024 * 1024,
             max_recipient_bytes: 24 * 1024 * 1024,
+            max_total_messages: 100_000,
             max_bundle_bytes: 16 * 1024,
             max_bundles: 4096,
             message_ttl: Duration::from_secs(3 * 24 * 3600),
@@ -194,6 +321,8 @@ pub enum StoreError {
     TooLarge,
     #[error("this relay does not serve that recipient")]
     NotServed,
+    #[error("invalid message blob")]
+    InvalidBlob,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -222,13 +351,15 @@ struct Inner {
     messages: BTreeMap<u64, Stored>,
     inboxes: HashMap<[u8; 32], Inbox>,
     bundles: HashMap<[u8; 32], (Vec<u8>, Instant)>,
-    total_bytes: usize,
+    total_payload_bytes: usize,
+    total_quota_bytes: usize,
 }
 
 impl Inner {
     fn remove(&mut self, id: u64) -> Option<Stored> {
         let m = self.messages.remove(&id)?;
-        self.total_bytes -= m.blob.len();
+        self.total_payload_bytes -= m.blob.len();
+        self.total_quota_bytes -= accounted_message_bytes(m.blob.len());
         if let Some(inbox) = self.inboxes.get_mut(&m.recipient) {
             inbox.ids.remove(&id);
             inbox.bytes -= m.blob.len();
@@ -263,6 +394,7 @@ impl MemStore {
         // A recipient cap above the total cap would let one deposit push the
         // total over while evicting nothing of that recipient's.
         limits.max_recipient_bytes = limits.max_recipient_bytes.min(limits.max_total_bytes);
+        limits.max_total_messages = limits.max_total_messages.max(1);
         let serving = match limits.only_for {
             Some(owner) => Serving::Only(owner),
             None => Serving::Anyone,
@@ -322,14 +454,22 @@ impl MemStore {
         if !self.serves(to) {
             return Err(StoreError::NotServed);
         }
+        if blob.is_empty() {
+            return Err(StoreError::InvalidBlob);
+        }
+        let cost = accounted_message_bytes(blob.len());
         if blob.len() > self.limits.max_recipient_bytes {
+            return Err(StoreError::TooLarge);
+        }
+        if cost > self.limits.max_total_bytes {
             return Err(StoreError::TooLarge);
         }
         let mut g = self.lock();
         g.next_id += 1;
         let id = g.next_id;
         g.messages.insert(id, Stored { recipient: *to, blob: blob.to_vec(), at: Instant::now() });
-        g.total_bytes += blob.len();
+        g.total_payload_bytes += blob.len();
+        g.total_quota_bytes += cost;
         let inbox = g.inboxes.entry(*to).or_default();
         inbox.ids.insert(id);
         inbox.bytes += blob.len();
@@ -347,7 +487,7 @@ impl MemStore {
                 None => break,
             }
         }
-        while g.total_bytes > self.limits.max_total_bytes {
+        while g.total_quota_bytes > self.limits.max_total_bytes || g.messages.len() > self.limits.max_total_messages {
             let Some(old) = g.messages.keys().next().copied() else { break };
             g.remove(old);
         }
@@ -403,7 +543,7 @@ impl MemStore {
 
     pub fn stats(&self) -> StoreStats {
         let g = self.lock();
-        StoreStats { bundles: g.bundles.len(), messages: g.messages.len(), message_bytes: g.total_bytes }
+        StoreStats { bundles: g.bundles.len(), messages: g.messages.len(), message_bytes: g.total_payload_bytes }
     }
 }
 
@@ -441,7 +581,7 @@ where
         if served >= DHT_MAX_REQUESTS {
             return Ok(());
         }
-        request = match tokio::time::timeout(DHT_IDLE, recv::<_, ClientToRelay>(&mut stream)).await {
+        request = match tokio::time::timeout(DHT_IDLE, recv_server_frame::<_, ClientToRelay>(&mut stream)).await {
             Err(_) => return Ok(()),
             Ok(Err(RelayError::Io(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
             Ok(Err(e)) => return Err(e),
@@ -466,7 +606,7 @@ where
     crate::crypto::fill_random(&mut challenge);
     send(&mut stream, &RelayToClient::Challenge(challenge)).await?;
 
-    let first = tokio::time::timeout(FIRST_FRAME_DEADLINE, recv::<_, ClientToRelay>(&mut stream)).await
+    let first = tokio::time::timeout(FIRST_FRAME_DEADLINE, recv_server_frame::<_, ClientToRelay>(&mut stream)).await
         .map_err(|_| RelayError::Proto("no first frame in time".into()))??;
     let (sign_pk, signature, signed, owner) = match first {
         ClientToRelay::Dht(first) => return serve_dht(stream, challenge, first, dht).await,
@@ -519,11 +659,9 @@ where
             // Another connection of this key is catching up already.
             if !first { return; }
             for (id, blob) in store.pending_above(&sign_pk, 0) {
-                if !cursor.lock().await.claim(id) {
-                    continue;
-                }
-                if push_tx.send(RelayToClient::Incoming { id, from: [0u8; 32], blob }).await.is_err() {
-                    break;
+                match try_enqueue_unclaimed(&push_tx, &cursor, id, blob).await {
+                    EnqueueOutcome::Queued | EnqueueOutcome::AlreadyClaimed => {}
+                    EnqueueOutcome::Backpressure => break,
                 }
             }
         }
@@ -541,11 +679,9 @@ where
                 if !sweeps { continue; }
                 let cur = cursor.lock().await.high;
                 for (id, blob) in store.pending_above(&sign_pk, cur) {
-                    if !cursor.lock().await.claim(id) {
-                        continue;
-                    }
-                    if push_tx.try_send(RelayToClient::Incoming { id, from: [0u8; 32], blob }).is_err() {
-                        break;
+                    match try_enqueue_unclaimed(&push_tx, &cursor, id, blob).await {
+                        EnqueueOutcome::Queued | EnqueueOutcome::AlreadyClaimed => {}
+                        EnqueueOutcome::Backpressure => break,
                     }
                 }
             }
@@ -564,27 +700,38 @@ where
     while let Ok(msg) = push_rx.try_recv() {
         if let RelayToClient::Incoming { id, .. } = msg { given.insert(id); }
     }
-    let mut conns = connections.write().await;
-    if let Some(lanes) = conns.get_mut(&sign_pk) {
-        lanes.senders.retain(|l| !l.tx.same_channel(&push_tx) && !l.tx.is_closed());
-        if lanes.senders.is_empty() {
-            conns.remove(&sign_pk);
-        } else {
-            redeal(lanes, &store.pending_above(&sign_pk, 0), &given);
+    let mut failed_redeal = Vec::new();
+    {
+        let mut conns = connections.write().await;
+        if let Some(lanes) = conns.get_mut(&sign_pk) {
+            lanes.senders.retain(|l| !l.tx.same_channel(&push_tx) && !l.tx.is_closed());
+            if lanes.senders.is_empty() {
+                conns.remove(&sign_pk);
+            } else {
+                failed_redeal = redeal(lanes, &store.pending_above(&sign_pk, 0), &given);
+            }
         }
     }
+    release_for_retry(&cursor, &failed_redeal).await;
     result
 }
 
 /// What a closed connection of a key was given and never acked goes to the
 /// others still open. The cursor is past it, so without this it would wait
 /// until every connection of the key had closed.
-fn redeal(lanes: &Lanes, pending: &[(u64, Vec<u8>)], given: &std::collections::HashSet<u64>) {
+fn redeal(lanes: &Lanes, pending: &[(u64, Vec<u8>)], given: &std::collections::HashSet<u64>) -> Vec<u64> {
+    let mut failed = Vec::new();
     for (id, blob) in pending.iter().filter(|(id, _)| given.contains(id)) {
-        let Some(tx) = lanes.pick() else { return };
+        let Some(tx) = lanes.pick() else {
+            failed.push(*id);
+            continue;
+        };
         let pkt = RelayToClient::Incoming { id: *id, from: [0u8; 32], blob: blob.clone() };
-        tokio::spawn(async move { let _ = tx.send(pkt).await; });
+        if tx.try_send(pkt).is_err() {
+            failed.push(*id);
+        }
     }
+    failed
 }
 
 async fn client_loop<S>(
@@ -635,29 +782,13 @@ where
                     }
                     ClientToRelay::Send { to, blob } => match store.deposit(&to, &blob) {
                         Ok(id) => {
-                            // Marked before the answer to its sender, which can wait
-                            // on i2p: an Ack's sweep meanwhile would push it too.
                             let online = match connections.read().await.get(&to) {
-                                Some(l) => match l.pick() {
-                                    Some(tx) if l.cursor.lock().await.claim(id) => Some(tx),
-                                    _ => None,
-                                },
+                                Some(l) => l.pick().map(|tx| (tx, l.cursor.clone())),
                                 None => None,
                             };
                             send(&mut wr, &RelayToClient::Deposited { id }).await?;
-                            if let Some(tx) = online {
-                                let pkt = RelayToClient::Incoming { id, from: [0u8; 32], blob };
-                                let conns = connections.clone();
-                                tokio::spawn(async move {
-                                    // That connection closed just now: to another of the key's, or
-                                    // it would wait below the cursor until the last one closed.
-                                    if let Err(mpsc::error::SendError(pkt)) = tx.send(pkt).await {
-                                        let again = conns.read().await.get(&to).and_then(|l| l.pick());
-                                        if let Some(tx) = again {
-                                            let _ = tx.send(pkt).await;
-                                        }
-                                    }
-                                });
+                            if let Some((tx, to_cursor)) = online {
+                                let _ = try_enqueue_unclaimed(&tx, &to_cursor, id, blob).await;
                             }
                         }
                         // No Deposited: the sender keeps the message unacked and
@@ -675,11 +806,9 @@ where
                             c.high
                         };
                         for (mid, blob) in store.pending_above(&sign_pk, cur) {
-                            if !cursor.lock().await.claim(mid) {
-                                continue;
-                            }
-                            if push_tx.try_send(RelayToClient::Incoming { id: mid, from: [0u8; 32], blob }).is_err() {
-                                break;
+                            match try_enqueue_unclaimed(push_tx, cursor, mid, blob).await {
+                                EnqueueOutcome::Queued | EnqueueOutcome::AlreadyClaimed => {}
+                                EnqueueOutcome::Backpressure => break,
                             }
                         }
                     }
@@ -690,8 +819,6 @@ where
             push = push_rx.recv() => {
                 let Some(msg) = push else { break };
                 if let RelayToClient::Incoming { id, .. } = &msg {
-                    // Claimed by whoever queued it; a redeal's is claimed already.
-                    cursor.lock().await.claim(*id);
                     if given.insert(*id) {
                         unacked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -709,7 +836,7 @@ where
     R: AsyncRead + Unpin,
     T: serde::de::DeserializeOwned,
 {
-    let res = recv(&mut r).await;
+    let res = recv_server_frame(&mut r).await;
     (r, res)
 }
 
@@ -975,7 +1102,8 @@ mod tests {
 
     #[test]
     fn total_cap_evicts_globally_oldest() {
-        let s = MemStore::new(small(10, 10));
+        let cap = accounted_message_bytes(4) * 2 + 1;
+        let s = MemStore::new(MemStoreLimits { max_total_bytes: cap, max_recipient_bytes: 10, ..Default::default() });
         let a1 = s.deposit(&A, &[0; 4]).unwrap();
         let b1 = s.deposit(&B, &[0; 4]).unwrap();
         let a2 = s.deposit(&A, &[0; 4]).unwrap(); // total 12 > 10
@@ -989,9 +1117,41 @@ mod tests {
     fn oversize_is_refused_not_stored() {
         let s = MemStore::new(small(100, 10));
         assert_eq!(s.deposit(&A, &[0; 11]), Err(StoreError::TooLarge));
+        assert_eq!(s.deposit(&A, &[]), Err(StoreError::InvalidBlob));
         assert_eq!(s.stats().messages, 0);
         let big = vec![0u8; MemStoreLimits::default().max_bundle_bytes + 1];
         assert_eq!(s.store_bundle(&A, &big), Err(StoreError::TooLarge));
+    }
+
+    #[test]
+    fn total_message_count_cap_limits_many_small_messages() {
+        let s = MemStore::new(MemStoreLimits {
+            max_total_bytes: 1 << 20,
+            max_recipient_bytes: 1 << 20,
+            max_total_messages: 3,
+            ..Default::default()
+        });
+        let ids: Vec<u64> = (0..5).map(|_| s.deposit(&A, b"x").unwrap()).collect();
+        let kept: Vec<u64> = s.pending_above(&A, 0).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(kept, ids[2..].to_vec(), "oldest entries are evicted first");
+        assert_eq!(s.stats().messages, 3);
+    }
+
+    #[test]
+    fn metadata_counts_toward_total_byte_cap() {
+        let cost = accounted_message_bytes(1);
+        let s = MemStore::new(MemStoreLimits {
+            max_total_bytes: cost * 2 + 1,
+            max_recipient_bytes: 1024,
+            ..Default::default()
+        });
+        let first = s.deposit(&A, b"a").unwrap();
+        let _second = s.deposit(&A, b"b").unwrap();
+        let _third = s.deposit(&A, b"c").unwrap();
+        let ids: Vec<u64> = s.pending_above(&A, 0).into_iter().map(|(id, _)| id).collect();
+        assert!(!ids.contains(&first), "oldest entry was evicted by metadata-aware byte cap");
+        assert_eq!(s.stats().messages, 2);
+        assert_eq!(s.stats().message_bytes, 2, "payload stats remain payload-only");
     }
 
     #[test]
@@ -1289,6 +1449,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn inbound_budget_blocks_second_advertised_frame_until_first_releases() {
+        use tokio::io::AsyncWriteExt;
+        let budget = InboundFrameBudget::new(1024, 1024);
+        let (mut w_hold, mut r_hold) = tokio::io::duplex(64);
+        let (mut w_wait, mut r_wait) = tokio::io::duplex(64);
+        let body = bincode::serialize(&ClientToRelay::Ping).unwrap();
+        let len = (body.len() as u32).to_be_bytes();
+
+        // First reader takes the whole budget and blocks on body bytes.
+        w_hold.write_all(&len).await.unwrap();
+        w_hold.flush().await.unwrap();
+        let holder_budget = budget.clone();
+        let t_hold = tokio::spawn(async move {
+            recv_server_frame_with_budget::<_, ClientToRelay>(&mut r_hold, &holder_budget).await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while budget.available_units() != 0 {
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("holder must acquire budget");
+
+        // Second reader has a complete frame ready, but must wait for budget.
+        w_wait.write_all(&len).await.unwrap();
+        w_wait.write_all(&body).await.unwrap();
+        w_wait.flush().await.unwrap();
+        let waiter_budget = budget.clone();
+        let t_wait = tokio::spawn(async move {
+            recv_server_frame_with_budget::<_, ClientToRelay>(&mut r_wait, &waiter_budget).await
+        });
+
+        assert!(tokio::time::timeout(Duration::from_millis(100), async {
+            while !t_wait.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        }).await.is_err(), "second reader should stay blocked while budget is held");
+
+        t_hold.abort();
+        let _ = t_hold.await;
+
+        let got = tokio::time::timeout(Duration::from_secs(1), t_wait).await.unwrap().unwrap().unwrap();
+        assert!(matches!(got, ClientToRelay::Ping));
+    }
+
+    #[tokio::test]
+    async fn inbound_budget_is_released_when_read_times_out() {
+        use tokio::io::AsyncWriteExt;
+        let budget = InboundFrameBudget::new(1024, 1024);
+        let (mut w, mut r) = tokio::io::duplex(64);
+        let body = bincode::serialize(&ClientToRelay::Ping).unwrap();
+        w.write_all(&(body.len() as u32).to_be_bytes()).await.unwrap();
+        w.flush().await.unwrap();
+
+        let timed = tokio::time::timeout(Duration::from_millis(50), recv_server_frame_with_budget::<_, ClientToRelay>(&mut r, &budget)).await;
+        assert!(timed.is_err(), "body read should time out");
+        assert_eq!(budget.available_units(), 1, "budget must be released after timeout cancellation");
+
+        let (mut w2, mut r2) = tokio::io::duplex(64);
+        w2.write_all(&(body.len() as u32).to_be_bytes()).await.unwrap();
+        w2.write_all(&body).await.unwrap();
+        w2.flush().await.unwrap();
+        let got = tokio::time::timeout(Duration::from_secs(1), recv_server_frame_with_budget::<_, ClientToRelay>(&mut r2, &budget)).await.unwrap().unwrap();
+        assert!(matches!(got, ClientToRelay::Ping));
+    }
+
+    #[tokio::test]
     async fn wrong_signature_is_refused() {
         let rig = Rig::new();
         let (mut c, task) = rig.open();
@@ -1496,5 +1722,37 @@ mod tests {
         send(&mut a, &ClientToRelay::Send { to: bob.card().sign_pk, blob: b"still here".to_vec() }).await.unwrap();
         let _deposited = next(&mut a).await;
         assert!(matches!(next(&mut new).await, RelayToClient::Incoming { .. }));
+    }
+
+    #[tokio::test]
+    async fn backpressure_does_not_claim_the_cursor() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let cursor = Arc::new(Mutex::new(Pushed::default()));
+
+        assert!(matches!(
+            try_enqueue_unclaimed(&tx, &cursor, 1, vec![1]).await,
+            EnqueueOutcome::Queued
+        ));
+        assert!(matches!(
+            try_enqueue_unclaimed(&tx, &cursor, 2, vec![2]).await,
+            EnqueueOutcome::Backpressure
+        ));
+
+        let c = cursor.lock().await;
+        assert!(c.is_claimed(1));
+        assert!(!c.is_claimed(2));
+        drop(c);
+
+        assert!(matches!(rx.recv().await, Some(RelayToClient::Incoming { id: 1, .. })));
+    }
+
+    #[test]
+    fn releasing_a_claim_rewinds_the_cursor_for_retry() {
+        let mut p = Pushed::default();
+        assert!(p.claim(10));
+        assert_eq!(p.high, 10);
+        p.release_for_retry(10);
+        assert!(!p.is_claimed(10));
+        assert_eq!(p.high, 9);
     }
 }
