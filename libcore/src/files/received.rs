@@ -14,16 +14,28 @@ pub struct Received {
 }
 
 impl Received {
-    pub fn completed(total:u32) -> Self {
-        Self { bits:vec![u8::MAX;total.div_ceil(8) as usize],total,count:total }
+    pub fn completed(total: u32) -> Self {
+        Self {
+            bits: vec![u8::MAX; total.div_ceil(8) as usize],
+            total,
+            count: total,
+        }
     }
     pub fn new(total: u32) -> Self {
-        Self { bits: vec![0; total.div_ceil(8) as usize], total, count: 0 }
+        Self {
+            bits: vec![0; total.div_ceil(8) as usize],
+            total,
+            count: 0,
+        }
     }
 
     /// From the bitmap kept in the database.
     pub fn from_bits(bits: Vec<u8>, total: u32) -> Self {
-        let mut r = Self { bits, total, count: 0 };
+        let mut r = Self {
+            bits,
+            total,
+            count: 0,
+        };
         r.bits.resize(total.div_ceil(8) as usize, 0);
         r.count = (0..total).filter(|&i| r.has(i)).count() as u32;
         r
@@ -57,24 +69,61 @@ impl Received {
 
     /// The first part not held: everything below it is here.
     pub fn up_to(&self) -> u32 {
-        (0..self.total).find(|&i| !self.has(i)).unwrap_or(self.total)
+        (0..self.total)
+            .find(|&i| !self.has(i))
+            .unwrap_or(self.total)
     }
 
     /// Parts known lost: not held, with a later one held.
     pub fn missing(&self) -> Vec<u32> {
-        let Some(last) = (0..self.total).rev().find(|&i| self.has(i)) else { return Vec::new() };
-        (self.up_to()..last).filter(|&i| !self.has(i)).take(MAX_MISSING).collect()
+        self.ack_bounds().2
     }
 
     pub fn ack(&self, file_id: [u8; 16]) -> WireFileAck {
-        let seen_to = (0..self.total).rev().find(|&i| self.has(i)).map_or(0, |i| i + 1);
-        WireFileAck { file_id, received_up_to: self.up_to(), missing: self.missing(), seen_to, resumed: false, echo_index: 0, echo_sent_at: 0 }
+        let (received_up_to, seen_to, missing) = self.ack_bounds();
+        WireFileAck {
+            file_id,
+            received_up_to,
+            missing,
+            seen_to,
+            resumed: false,
+            echo_index: 0,
+            echo_sent_at: 0,
+        }
+    }
+
+    fn ack_bounds(&self) -> (u32, u32, Vec<u32>) {
+        let up_to = self.up_to();
+        let mut seen_to = (0..self.total)
+            .rev()
+            .find(|&i| self.has(i))
+            .map_or(0, |i| i + 1);
+        let mut missing = Vec::new();
+        for index in up_to..seen_to {
+            if self.has(index) {
+                continue;
+            }
+            // Every index below seen_to and not named as missing means HELD.
+            // Stop before an unrepresentable hole, not at the highest held bit.
+            // This matches the browser and keeps arbitrary sparse resumes safe.
+            if missing.len() == MAX_MISSING {
+                seen_to = index;
+                break;
+            }
+            missing.push(index);
+        }
+        (up_to, seen_to, missing)
     }
 
     /// The ack a recipient sends as it starts: what it holds, and that
     /// anything else once in flight to it is gone.
     pub fn resume_ack(&self, file_id: [u8; 16]) -> WireFileAck {
-        WireFileAck { resumed: true, ..self.ack(file_id) }
+        WireFileAck {
+            resumed: true,
+            ..self.ack(file_id)
+        }
     }
 }
 
+#[cfg(test)]
+mod tests;
