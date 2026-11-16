@@ -1,0 +1,198 @@
+import { errorText } from '../../app/error-text';
+import { t as tr } from '../localization/i18n';
+import { Api } from '../../app/api';
+import type { GroupMember } from '../../app/api';
+import type { Store } from '../../app/state';
+import { targetKey } from '../../app/state';
+import { h, busy, short } from '../../app/view';
+import type { App } from '../../app/app';
+
+import { icon } from '../../app/icons';
+export class GroupModal {
+  el: HTMLElement;
+  private unsub: (() => void) | null = null;
+  private unsubContacts: (() => void) | null = null;
+  private unsubOnline: (() => void) | null = null;
+
+  constructor(store: Store, app: App, groupId: string, close: () => void) {
+    const g = store.groups.get().find((x) => x.id === groupId);
+    if (!g) { this.el = h('div'); close(); return; }
+
+    const list = h('div', { class: 'stack', style: { gap: '6px' } });
+    const countLabel = h('div', { class: 'card-label', style: { marginTop: '12px' } }, tr('group.members_0'));
+    const picker = h('select', { class: 'input' }) as HTMLSelectElement;
+    const addBtn = h('button', { class: 'btn btn-amber' }, tr('group.add')) as HTMLButtonElement;
+    const addErr = h('div', { class: 'err' });
+
+    const renderPicker = (): void => {
+      const memberSigns = new Set((store.groupMembers.get().get(groupId) ?? []).map((m) => m.sign_pk));
+      const candidates = store.contacts.get().filter((c) => !memberSigns.has(c.sign_pk) && c.request !== 'incoming');
+      picker.replaceChildren();
+      const opt0 = h('option', { value: '' }, tr('group.pick_contact_bot'));
+      picker.appendChild(opt0);
+      for (const c of candidates) {
+        picker.appendChild(h('option', { value: String(c.id) }, c.name));
+      }
+      addBtn.disabled = candidates.length === 0;
+    };
+
+    const renderMembers = (): void => {
+      const members = store.groupMembers.get().get(groupId) ?? [];
+      list.replaceChildren();
+      countLabel.textContent = tr('group.members', { p0: (members.length) });
+      // Members are contacts, and presence is per contact — so it is the same
+      // dot as everywhere else. Before, only "me" ever lit up, which made the
+      // whole column look like decoration.
+      const online = store.peerOnline.get();
+      const bySign = new Map(store.contacts.get().map((c) => [c.sign_pk, c.id]));
+      const isOnline = (m: GroupMember): boolean => {
+        if (m.is_self) return true;
+        const id = bySign.get(m.sign_pk);
+        return id != null && online.has(id);
+      };
+      for (const m of members) {
+        list.appendChild(h('div', {
+          class: 'contact',
+          style: { cursor: 'default' },
+        },
+          h('div', { class: 'contact-status' + (isOnline(m) ? ' online' : '') }),
+          h('div', { class: 'contact-info' },
+            h('div', { class: 'contact-name' }, m.name, m.is_self ? tr('group.you') : ''),
+            h('div', { class: 'contact-sub' }, short(m.onion)),
+          ),
+        ));
+      }
+      renderPicker();
+    };
+
+    this.unsub = store.groupMembers.subscribe(renderMembers, true);
+    this.unsubContacts = store.contacts.subscribe(() => renderPicker(), false);
+    // The dots go stale on their own, so redraw when presence moves.
+    this.unsubOnline = store.peerOnline.subscribe(() => renderMembers(), false);
+
+    if (!store.groupMembers.get().has(groupId)) {
+      Api.listGroupMembers(groupId).then((members) => {
+        store.groupMembers.update((m) => { const n = new Map(m); n.set(groupId, members); return n; });
+      }).catch(() => {});
+    }
+
+    addBtn.addEventListener('click', async () => {
+      addErr.textContent = '';
+      const cid = parseInt(picker.value, 10);
+      if (!Number.isFinite(cid)) { addErr.textContent = tr('group.pick_a_contact'); return; }
+      addBtn.disabled = true;
+      const orig = addBtn.textContent;
+      addBtn.textContent = '...';
+      try {
+        await store.addGroupMember(groupId, cid);
+        store.showToast(tr('group.member_added'));
+      } catch (e) {
+        addErr.textContent = errorText(e);
+      } finally {
+        addBtn.disabled = false;
+        addBtn.textContent = orig;
+      }
+    });
+
+    const closeWrapped = () => {
+      this.unsub?.(); this.unsub = null;
+      this.unsubContacts?.(); this.unsubContacts = null;
+      this.unsubOnline?.(); this.unsubOnline = null;
+      close();
+    };
+
+    const isMutedNow = store.muted.get().has(targetKey({ kind: 'group', id: groupId }));
+    const muteCb = h('input', { type: 'checkbox', class: 'cb', checked: isMutedNow }) as HTMLInputElement;
+    muteCb.addEventListener('change', () => {
+      store.toggleMute({ kind: 'group', id: groupId }, muteCb.checked).catch((e) => {
+        store.showToast(tr('group.mute_failed') + errorText(e), true);
+      });
+    });
+
+    this.el = h('div', { class: 'modal' },
+      h('div', { class: 'modal-header' },
+        h('div', { class: 'modal-title' }, g.name),
+        h('button', { class: 'icon-btn', title: tr('common.close'), onClick: closeWrapped }, icon('close')),
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'card-label' }, 'id'),
+        h('div', { class: 'card-block' }, g.id),
+        h('label', { class: 'cb-row', style: { marginTop: '10px' } }, muteCb, h('span', null, tr('contact.mute_notifications'))),
+        countLabel,
+        list,
+        h('div', { class: 'divider-text' }, tr('group.add_member')),
+        h('div', { class: 'field' }, picker),
+        h('div', { class: 'row', style: { gap: '8px', marginTop: '6px' } }, addBtn),
+        addErr,
+      ),
+      h('div', { class: 'modal-footer' },
+        h('button', {
+          class: 'btn btn-danger',
+          onClick: async () => {
+            const ok = await app.confirm(tr('group.leave_group'), tr('group.delete_local_copy_of_others_in_the_group', { p0: (g.name) }), true);
+            if (!ok) return;
+            await store.deleteGroup(groupId);
+            closeWrapped();
+          },
+        }, tr('group.leave_local')),
+        h('div', { class: 'grow' }),
+        h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, tr('common.close')),
+      ),
+    );
+  }
+}
+
+export class CreateGroupModal {
+  el: HTMLElement;
+  private selected = new Set<number>();
+  constructor(store: Store, close: () => void) {
+    const nameI = h('input', { class: 'input', placeholder: tr('group.group_name'), autofocus: true, maxlength: '64' }) as HTMLInputElement;
+    const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
+    const list = h('div', { class: 'stack', style: { gap: '4px', maxHeight: '300px', overflowY: 'auto' } });
+
+    for (const c of store.contacts.get()) {
+      if (c.trust === 2 || c.request === 'incoming') continue;
+      const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
+      cb.addEventListener('change', () => {
+        if (cb.checked) this.selected.add(c.id);
+        else this.selected.delete(c.id);
+      });
+      list.appendChild(h('label', { class: 'chk' },
+        cb, h('span', { class: 'box' }),
+        h('span', null, `${c.name}  `, h('span', { class: 'hint', style: { display: 'inline' } }, short(c.onion, 18))),
+      ));
+    }
+
+    this.el = h('div', { class: 'modal' },
+      h('div', { class: 'modal-header' },
+        h('div', { class: 'modal-title' }, tr('sidebar.new_group')),
+        h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'field' }, h('label', null, tr('sidebar.name')), nameI),
+        h('div', { class: 'divider-text' }, tr('chat.members_2')),
+        list,
+        err,
+      ),
+      h('div', { class: 'modal-footer' },
+        h('button', { class: 'btn btn-ghost', onClick: close }, tr('common.cancel')),
+        (() => {
+          const b = h('button', {
+            class: 'btn',
+            onClick: () => busy(b, async () => {
+              const name = nameI.value.trim();
+              if (!name) { err.textContent = tr('group.name_required'); return; }
+              if (this.selected.size === 0) { err.textContent = tr('group.select_at_least_one_member'); return; }
+              try {
+                await store.createGroup(name, [...this.selected]);
+                store.showToast(tr('group.group_created', { p0: (name) }));
+                close();
+              } catch (e) { err.textContent = tr('group.error') + errorText(e); }
+            }),
+          }, tr('group.create')) as HTMLButtonElement;
+          return b;
+        })(),
+      ),
+    );
+  }
+}

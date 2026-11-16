@@ -21,7 +21,8 @@ for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'H
 }
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
 // Browser mode: every command the views send goes to a quiet core.
-ui.configureBrowserBackend({ invoke: async () => null, listen: async () => () => {} });
+const quietCore = { invoke: async () => null, listen: async () => () => {} };
+ui.configureBrowserBackend(quietCore);
 ui.setLang('en');
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
 
@@ -158,6 +159,8 @@ test('a failed profile creation stays readable in the rebuilt form, not only in 
 });
 
 test('a wrong passphrase is reported in the rebuilt unlock form and forgotten on leaving it', async () => {
+  const saved = localStorage.getItem('gipny:last-profile');
+  localStorage.setItem('gipny:last-profile', 'last-success');
   const original = { status: Api.vaultStatus, unlock: Api.vaultUnlock, boot: Api.onBootStatus };
   Api.vaultStatus = async () => ({ exists: true, unlocked: false });
   Api.vaultUnlock = async () => { throw new Error('invalid passphrase'); };
@@ -173,7 +176,385 @@ test('a wrong passphrase is reported in the rebuilt unlock form and forgotten on
     assert.notEqual(app.current, form);
     assert.equal(app.el.querySelector('.err').textContent, t('auth.wrong_pass'));
     assert.equal(store.toast.get().text, t('auth.wrong_pass'));
+    assert.equal(localStorage.getItem('gipny:last-profile'), 'last-success', 'a failed password never remembers a selection');
     store.view.set('profile-select');
     assert.equal(store.authError.get(), null, 'the profile list does not carry another form\'s failure');
-  } finally { app.destroy(); store.endBoot(); Api.vaultStatus = original.status; Api.vaultUnlock = original.unlock; Api.onBootStatus = original.boot; }
+  } finally {
+    app.destroy(); store.endBoot(); Api.vaultStatus = original.status; Api.vaultUnlock = original.unlock; Api.onBootStatus = original.boot;
+    if (saved === null) localStorage.removeItem('gipny:last-profile'); else localStorage.setItem('gipny:last-profile', saved);
+  }
+});
+
+test('startup selects the last successfully used profile but never unlocks or creates it', async () => {
+  const original = { listProfiles: Api.listProfiles, vaultUnlock: Api.vaultUnlock, vaultCreate: Api.vaultCreate };
+  const saved = localStorage.getItem('gipny:last-profile');
+  let authenticationCalls = 0;
+  Api.vaultUnlock = Api.vaultCreate = async () => { authenticationCalls++; };
+  try {
+    for (const [profiles, remembered, expected] of [
+      [[], null, null],
+      [['alice'], null, 'alice'],
+      [['alice', 'bob'], null, 'alice'],
+      [['alice', 'bob'], 'bob', 'bob'],
+      [['alice', 'bob'], 'removed', 'alice'],
+      [[], 'removed', null],
+    ]) {
+      if (remembered) localStorage.setItem('gipny:last-profile', remembered);
+      else localStorage.removeItem('gipny:last-profile');
+      Api.listProfiles = async () => [...profiles];
+      const store = new Store();
+      const prewarmed = [];
+      store.beginPrewarm = (profile) => prewarmed.push(profile);
+      await store.bootstrap();
+      assert.equal(store.currentProfile.get(), expected);
+      assert.equal(store.view.get(), expected ? 'auth-unlock' : 'auth-create');
+      assert.equal(store.identity.get(), null);
+      assert.equal(store.bootCanEnter.get(), false);
+      assert.deepEqual(prewarmed, expected ? [expected] : []);
+      assert.equal(localStorage.getItem('gipny:last-profile'), remembered && profiles.includes(remembered) ? remembered : null,
+        'a fallback selection is not recorded as a successful login');
+      store.endBoot();
+    }
+    assert.equal(authenticationCalls, 0);
+  } finally {
+    Object.assign(Api, original);
+    if (saved === null) localStorage.removeItem('gipny:last-profile'); else localStorage.setItem('gipny:last-profile', saved);
+  }
+});
+
+test('only successful authentication updates the remembered identifier; lock returns to its empty password form', async () => {
+  const saved = localStorage.getItem('gipny:last-profile');
+  const original = { listProfiles: Api.listProfiles, vaultLock: Api.vaultLock };
+  const h = bootHarness(relayInfo({ state: 'unconfigured', reason: UNCONFIGURED }));
+  const store = h.store;
+  store.profiles.set(['alice', 'bob']);
+  store.beginPrewarm = () => {};
+  store.clearHistoryIfAsked = async () => {};
+  Api.listProfiles = async () => ['alice', 'bob'];
+  Api.vaultLock = async () => {};
+  try {
+    localStorage.setItem('gipny:last-profile', 'alice');
+    store.selectProfileForUnlock('bob');
+    assert.equal(localStorage.getItem('gipny:last-profile'), 'alice');
+    await store.beginBoot('bob');
+    await store.onUnlocked('bob');
+    assert.equal(localStorage.getItem('gipny:last-profile'), 'bob');
+    await store.lock();
+    assert.equal(store.view.get(), 'auth-unlock');
+    assert.equal(store.currentProfile.get(), 'bob');
+    assert.equal(store.identity.get(), null);
+    assert.equal(store.bootCanEnter.get(), false);
+    const auth = new ui.AuthUnlock(store);
+    try { assert.equal(auth.passI.value, ''); } finally { auth.destroy(); }
+  } finally {
+    h.restore(); Object.assign(Api, original);
+    if (saved === null) localStorage.removeItem('gipny:last-profile'); else localStorage.setItem('gipny:last-profile', saved);
+  }
+});
+
+test('deleting a remembered profile forgets it without remembering an unverified replacement', async () => {
+  const saved = localStorage.getItem('gipny:last-profile');
+  const original = { listProfiles: Api.listProfiles, deleteProfile: Api.deleteProfile };
+  const store = new Store(); store.profiles.set(['alice', 'bob']); store.beginPrewarm = () => {};
+  Api.deleteProfile = async () => {};
+  Api.listProfiles = async () => ['alice'];
+  try {
+    localStorage.setItem('gipny:last-profile', 'bob');
+    store.selectProfileForUnlock('bob');
+    await store.deleteProfile('bob');
+    assert.equal(localStorage.getItem('gipny:last-profile'), null);
+    assert.equal(store.currentProfile.get(), 'alice');
+    assert.equal(store.view.get(), 'auth-unlock');
+    Api.listProfiles = async () => [];
+    await store.deleteProfile('alice');
+    assert.equal(store.currentProfile.get(), null);
+    assert.equal(store.view.get(), 'auth-create');
+  } finally {
+    store.endBoot(); Object.assign(Api, original);
+    if (saved === null) localStorage.removeItem('gipny:last-profile'); else localStorage.setItem('gipny:last-profile', saved);
+  }
+});
+
+test('the bottom profile selector link counts OTHER profiles, including zero', async () => {
+  const original = Api.vaultStatus;
+  Api.vaultStatus = async () => ({ exists: true, unlocked: false });
+  const store = new Store(); store.profiles.set(['alice', 'bob', 'charlie']); store.currentProfile.set('bob');
+  store.view.set('auth-unlock');
+  let opened = false;
+  store.cancelToProfileSelect = async () => { opened = true; store.view.set('profile-select'); };
+  const auth = new ui.AuthUnlock(store); document.body.append(auth.el);
+  try {
+    const link = auth.el.querySelector('.auth-other-profiles');
+    assert.ok(link);
+    assert.equal(link.textContent, t('auth.other_profiles', { p0: 2 }));
+    assert.equal(auth.passI.value, '');
+    assert.equal(store.identity.get(), null);
+    store.profiles.set(['bob']);
+    assert.equal(link.textContent, t('auth.other_profiles', { p0: 0 }));
+    link.click();
+    assert.equal(opened, true);
+    assert.equal(store.view.get(), 'profile-select');
+  } finally { auth.destroy(); Api.vaultStatus = original; }
+});
+
+test('switching a selected locked profile discards the previous password form', async () => {
+  const original = Api.vaultStatus;
+  Api.vaultStatus = async () => ({ exists: true, unlocked: false });
+  const store = new Store(); store.profiles.set(['alice', 'bob']); store.beginPrewarm = () => {};
+  store.currentProfile.set('alice'); store.view.set('auth-unlock');
+  const app = new ui.App(store); document.body.append(app.el);
+  try {
+    const previous = app.current;
+    previous.passI.value = 'must not cross profiles';
+    store.selectProfileForUnlock('bob');
+    assert.notEqual(app.current, previous);
+    assert.equal(previous.passI.value, '');
+    assert.equal(app.current.passI.value, '');
+    assert.equal(app.current.el.querySelector('.auth-title').textContent, 'bob');
+    assert.equal(store.identity.get(), null);
+  } finally { app.destroy(); store.endBoot(); Api.vaultStatus = original; }
+});
+
+test('a destructive unlock refreshes profiles and removes a wiped remembered identifier', async () => {
+  const saved = localStorage.getItem('gipny:last-profile');
+  const original = { vaultStatus: Api.vaultStatus, vaultUnlock: Api.vaultUnlock, listProfiles: Api.listProfiles, onBootStatus: Api.onBootStatus };
+  Api.vaultStatus = async () => ({ exists: true, unlocked: false });
+  Api.vaultUnlock = async () => { throw new Error('wiped'); };
+  Api.listProfiles = async () => [];
+  Api.onBootStatus = async () => () => {};
+  const store = new Store(); store.profiles.set(['alice']); store.currentProfile.set('alice'); store.view.set('auth-unlock');
+  const auth = new ui.AuthUnlock(store); document.body.append(auth.el);
+  try {
+    localStorage.setItem('gipny:last-profile', 'alice');
+    auth.passI.value = 'duress password';
+    await auth.unlock('password');
+    assert.equal(store.view.get(), 'auth-create');
+    assert.equal(store.currentProfile.get(), null);
+    assert.equal(localStorage.getItem('gipny:last-profile'), null);
+    assert.equal(store.toast.get().text, t('auth.profile_wiped'));
+  } finally {
+    auth.destroy(); store.endBoot(); Object.assign(Api, original);
+    if (saved === null) localStorage.removeItem('gipny:last-profile'); else localStorage.setItem('gipny:last-profile', saved);
+  }
+});
+
+test('registration progresses from one name to password confirmation to truthful browser limitations', async () => {
+  const original = Api.vaultCreate;
+  const calls = [];
+  Api.vaultCreate = async (...args) => { calls.push(args); };
+  const store = new Store(); store.view.set('auth-create');
+  store.beginBoot = async (profile) => { store.currentProfile.set(profile); store.view.set('auth-booting'); };
+  store.isBooting = (profile) => store.currentProfile.get() === profile && store.view.get() === 'auth-booting';
+  store.onUnlocked = async () => {};
+  const auth = new ui.AuthCreate(store); document.body.append(auth.el);
+  const visibleSteps = () => Array.from(auth.el.querySelectorAll('.auth-create-step')).filter((el) => !el.hidden);
+  try {
+    assert.deepEqual(visibleSteps().map((el) => el.dataset.step), ['1']);
+    assert.equal(visibleSteps()[0].querySelectorAll('input').length, 1);
+    assert.equal(auth.nextBtn.textContent, t('auth.next'));
+    await auth.advance();
+    assert.equal(auth.step, 1, 'name is required');
+    auth.displayI.value = 'Alice';
+    await auth.advance();
+    assert.equal(auth.step, 2);
+    assert.equal(visibleSteps()[0].querySelectorAll('input[type=password]').length, 2);
+    assert.equal(auth.el.querySelector('.auth-local-data').textContent, t('auth.local_data_hint'));
+    auth.passI.value = auth.confirmI.value = 'short';
+    await auth.advance();
+    assert.equal(auth.step, 2);
+    auth.passI.value = 'password with spaces ';
+    auth.confirmI.value = 'password with spaces';
+    await auth.advance();
+    assert.equal(auth.step, 2, 'confirmation compares exact password bytes');
+    auth.confirmI.value = auth.passI.value;
+    await auth.advance();
+    assert.equal(auth.step, 3);
+    assert.equal(calls.length, 0, 'Next never creates a profile');
+    assert.equal(auth.nextBtn.textContent, t('auth.create_btn'));
+    assert.equal(visibleSteps()[0].querySelector('input'), null, 'browser does not offer fake duress or wipe controls');
+    assert.equal(auth.el.querySelector('.auth-duress-explanation').textContent, t('auth.duress_unavailable_browser'));
+    // Even an injected unsupported draft must not reach the browser backend.
+    auth.duressI.value = 'unsupported secret'; auth.attemptsI.value = '10'; auth.wipeC.checked = true;
+    await auth.advance();
+    assert.deepEqual(calls, [['alice', 'password with spaces ', 'Alice', null, false, 0]]);
+  } finally { auth.destroy(); store.endBoot(); Api.vaultCreate = original; }
+});
+
+test('registration draft restores the active step in memory and clears the destroyed form', async () => {
+  const before = Array.from({ length: localStorage.length }, (_, i) => [localStorage.key(i), localStorage.getItem(localStorage.key(i))]);
+  const store = new Store(); store.view.set('auth-create');
+  const first = new ui.AuthCreate(store); document.body.append(first.el);
+  let second;
+  try {
+    first.displayI.value = 'Анна';
+    await first.advance();
+    first.passI.value = first.confirmI.value = 'memory-only password';
+    await first.advance();
+    first.advanced.open = true;
+    const draft = first.captureDraft();
+    first.destroy();
+    assert.equal(first.passI.value, ''); assert.equal(first.confirmI.value, ''); assert.equal(first.duressI.value, '');
+    ui.setLang('ru');
+    second = new ui.AuthCreate(store); document.body.append(second.el);
+    second.restoreDraft(draft);
+    assert.equal(second.step, 3);
+    assert.equal(second.passI.value, 'memory-only password');
+    assert.equal(second.confirmI.value, 'memory-only password');
+    assert.equal(second.advanced.open, true);
+    assert.equal(second.nextBtn.textContent, t('auth.create_btn'));
+    assert.match(second.nameHint.textContent, /anna/);
+    assert.equal(second.el.querySelector('[data-step="3"]').hidden, false);
+    second.backBtn.click();
+    assert.equal(second.step, 2);
+    assert.equal(second.passI.value, 'memory-only password');
+    second.confirmI.value = 'changed';
+    await second.advance();
+    assert.equal(second.step, 2, 'restoring never bypasses validation');
+    assert.equal(second.err.textContent, t('auth.passphrases_do_not_match'));
+    // Language itself may persist; neither the draft nor its secrets may do so.
+    for (let i = 0; i < localStorage.length; i++) assert.ok(!localStorage.getItem(localStorage.key(i)).includes('memory-only password'));
+    assert.equal(JSON.stringify(store).includes('memory-only password'), false);
+    assert.ok(before.every(([key, value]) => key === 'gipny.lang' || localStorage.getItem(key) === value));
+  } finally { first.destroy(); second?.destroy(); ui.setLang('en'); }
+});
+
+test('native registration keeps duress optional and preserves exact passwords, wipe mode and attempt limits', async () => {
+  const original = Api.vaultCreate;
+  const calls = [];
+  // Exercise the same shared view in native/preview capability mode; no native
+  // process is started and every backend command used here is stubbed.
+  ui.configureBrowserBackend(null);
+  Api.vaultCreate = async (...args) => { calls.push(args); };
+  const store = new Store(); store.view.set('auth-create');
+  store.beginBoot = async (profile) => { store.currentProfile.set(profile); store.view.set('auth-booting'); };
+  store.isBooting = (profile) => store.currentProfile.get() === profile && store.view.get() === 'auth-booting';
+  store.onUnlocked = async () => {};
+  const auth = new ui.AuthCreate(store); document.body.append(auth.el);
+  let optional;
+  try {
+    auth.displayI.value = 'Alice';
+    await auth.advance();
+    auth.passI.value = auth.confirmI.value = 'primary password';
+    await auth.advance();
+    assert.equal(auth.step, 3);
+    assert.equal(auth.el.querySelector('[data-step="3"] input[type=password]'), auth.duressI);
+    assert.equal(auth.duressI.required, false);
+    assert.equal(auth.el.querySelector('.auth-duress-explanation').textContent, t('auth.duress_setup_hint'));
+    assert.equal(auth.advanced.open, false, 'advanced options start collapsed');
+    assert.equal(auth.attemptsI.value, '10');
+    assert.equal(auth.wipeC.checked, true);
+    auth.duressI.value = auth.passI.value;
+    await auth.advance();
+    assert.equal(calls.length, 0);
+    assert.equal(auth.err.textContent, t('auth.duress_must_differ_from_primary'));
+    auth.duressI.value = 'primary password ';
+    auth.attemptsI.value = '1.5';
+    await auth.advance();
+    assert.equal(calls.length, 0);
+    assert.equal(auth.advanced.open, true);
+    assert.equal(auth.err.textContent, t('auth.invalid_max_attempts'));
+    auth.attemptsI.value = '0'; auth.wipeC.checked = false;
+    await auth.advance();
+    assert.deepEqual(calls, [['alice', 'primary password', 'Alice', 'primary password ', false, 0]]);
+    auth.destroy();
+    store.view.set('auth-create');
+    optional = new ui.AuthCreate(store); document.body.append(optional.el);
+    optional.displayI.value = 'Bob';
+    await optional.advance();
+    optional.passI.value = optional.confirmI.value = 'another password';
+    await optional.advance();
+    await optional.advance();
+    assert.deepEqual(calls[1], ['bob', 'another password', 'Bob', null, true, 10], 'blank duress is optional and existing native defaults remain intact');
+  } finally {
+    auth.destroy(); optional?.destroy(); store.endBoot(); Api.vaultCreate = original; ui.configureBrowserBackend(quietCore);
+  }
+});
+
+// Bypass only the native file picker: the modal, App lifecycle, Store and
+// delayed backend replies below exercise the real shared import interaction.
+for (const [action, duringList] of [
+  ['cancel', false], ['destroy', false], ['language', false],
+  ['navigate', false], ['boot', false], ['new-import', false],
+  ['cancel', true], ['language', true], ['navigate', true], ['boot', true],
+  ['cancel-error', false], ['success', true],
+]) test(`delayed profile import: ${action}${duringList ? ' during list refresh' : ''}`, async () => {
+  const original = { importIdentityToProfile: Api.importIdentityToProfile, listProfiles: Api.listProfiles,
+    vaultStatus: Api.vaultStatus, onBootStatus: Api.onBootStatus };
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const imported = deferred(), listed = deferred();
+  let importCalls = 0, listCalls = 0;
+  Api.importIdentityToProfile = async () => { importCalls++; return imported.promise; };
+  Api.listProfiles = async () => { listCalls++; return listed.promise; };
+  Api.vaultStatus = async () => ({ exists: true, unlocked: false });
+  Api.onBootStatus = async () => () => {};
+  const store = new Store(); store.profiles.set(['alice']); store.beginPrewarm = () => {};
+  const selected = [];
+  const select = store.selectProfileForUnlock.bind(store);
+  store.selectProfileForUnlock = (profile) => { selected.push(profile); select(profile); };
+  const app = new ui.App(store); document.body.append(app.el);
+  try {
+    const selector = app.current;
+    assert.ok(selector instanceof ui.ProfileSelect);
+    selector.showImportModal('/backup.bin');
+    const modal = document.querySelector('.modal');
+    const inputs = modal.querySelectorAll('input');
+    inputs[0].value = 'imported'; inputs[1].value = 'new vault password'; inputs[2].value = 'backup password';
+    const error = modal.querySelector('.err');
+    const submit = modal.querySelector('.modal-footer .btn:not(.btn-ghost)');
+    submit.click(); submit.click();
+    assert.equal(importCalls, 1, 'repeated clicks must not launch competing imports');
+    if (duringList) {
+      imported.resolve(); await tick();
+      assert.equal(listCalls, 1);
+    }
+    if (action === 'cancel' || action === 'cancel-error') app.closeModals();
+    else if (action === 'destroy') selector.destroy();
+    else if (action === 'language') ui.setLang('ru');
+    else if (action === 'navigate' || action === 'boot') {
+      store.selectProfileForUnlock('alice');
+      app.current.passI.value = 'password in the active form';
+      if (action === 'boot') await store.beginBoot('alice');
+    } else if (action === 'new-import') {
+      selector.showImportModal('/another-backup.bin');
+      document.querySelector('.modal input').value = 'new interaction draft';
+    }
+    const before = { view: store.view.get(), profile: store.currentProfile.get(), current: app.current,
+      profiles: store.profiles.get(), toast: store.toast.get(), error: store.authError.get(),
+      modal: document.querySelector('.modal'), selections: [...selected], attempt: store.bootAttempt };
+    if (action === 'cancel-error') imported.reject(new Error('late import failure'));
+    else imported.resolve();
+    await tick();
+    listed.resolve(['alice', 'imported']);
+    await tick();
+    if (action === 'success') {
+      assert.deepEqual(selected, ['imported'], 'a live import still selects after its own close invalidates the operation');
+      assert.equal(store.currentProfile.get(), 'imported');
+      assert.equal(store.view.get(), 'auth-unlock');
+      assert.equal(app.current.passI.value, '', 'selection is not authentication');
+      assert.equal(document.querySelector('.modal'), null);
+      assert.deepEqual(store.profiles.get(), ['alice', 'imported']);
+    } else {
+      assert.deepEqual(selected, before.selections, 'stale completion must not select a profile');
+      assert.equal(store.view.get(), before.view);
+      assert.equal(store.currentProfile.get(), before.profile);
+      assert.equal(app.current, before.current, 'do not replace the active form or startup view');
+      assert.equal(store.profiles.get(), before.profiles, 'do not publish a stale list into the current interaction');
+      assert.equal(store.toast.get(), before.toast, 'no stale success toast');
+      assert.equal(store.authError.get(), before.error);
+      assert.equal(store.bootAttempt, before.attempt, 'ongoing authentication must not be interrupted');
+      assert.equal(document.querySelector('.modal'), before.modal, 'do not close a newer modal');
+      assert.equal(error.textContent, '', 'no stale error writes into the detached form');
+      if (action === 'navigate') assert.equal(app.current.passI.value, 'password in the active form');
+      if (action === 'new-import') assert.equal(before.modal.querySelector('input').value, 'new interaction draft');
+      assert.equal(listCalls, duringList ? 1 : 0, 'cancelled imports do not start a follow-up request');
+    }
+    assert.equal(inputs[1].value, '', 'closing/destroying the interaction clears its password fields');
+    assert.equal(inputs[2].value, '');
+  } finally {
+    app.destroy(); store.endBoot(); Object.assign(Api, original); ui.setLang('en');
+  }
 });

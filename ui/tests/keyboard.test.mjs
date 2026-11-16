@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -598,6 +598,138 @@ test('mounted keyboard keeps its chosen layout while participant layouts change'
     press(panel, fnKey('layout')); assert.equal(panel.layout, 'zh');
     ui.setChatLayouts([]); assert.equal(panel.layout, 'en');
   } finally { ui.setChatLayouts([]); uninstallOsk(); input.remove(); localStorage.removeItem('gipny.osk'); resetOskActive(); }
+});
+
+test('explicit base layouts keep English, ignore invalid IDs and preserve legacy extras', () => {
+  localStorage.setItem('gipny.osk.layouts', 'de');
+  try {
+    ui.setLayouts(['vi', 'xx']);
+    setLang('ru');
+    assert.deepEqual(enabledLayouts(), ['en', 'vi', 'de']);
+    assert.equal(localStorage.getItem('gipny.osk.layouts'), 'de');
+    ui.setChatLayouts(['km']);
+    assert.deepEqual(enabledLayouts(), ['en', 'vi', 'km', 'de']);
+    ui.setLayouts([]);
+    assert.deepEqual(ui.savedLayouts(), ['en']);
+  } finally {
+    ui.setChatLayouts([]); localStorage.removeItem('gipny.osk.base-layouts');
+    localStorage.removeItem('gipny.osk.layouts'); setLang('en');
+  }
+});
+
+test('viewport owner tracks visual viewport, panel reflow and rotation', () => {
+  localStorage.setItem('gipny.osk', 'on'); resetOskActive();
+  const panel = installOsk();
+  let panelHeight = 260;
+  Object.defineProperty(panel.el, 'offsetHeight', { configurable: true, get: () => panelHeight });
+  const originalHeight = window.innerHeight;
+  const originalVV = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+  const originalObserver = Object.getOwnPropertyDescriptor(globalThis, 'ResizeObserver');
+  let notifyResize;
+  let disconnected = false;
+  Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class {
+    constructor(callback) { notifyResize = callback; }
+    observe() {}
+    disconnect() { disconnected = true; }
+  } });
+  const viewport = new win.EventTarget();
+  Object.assign(viewport, { height: 800, offsetTop: 0 });
+  Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+  window.innerHeight = 800;
+  const stop = ui.installViewportTracking();
+  const field = h('input'); document.body.append(field);
+  const height = () => document.body.style.getPropertyValue('--app-height');
+  try {
+    assert.equal(height(), '800px');
+    panel.show(field);
+    assert.equal(height(), '540px');
+    viewport.height = 500;
+    viewport.dispatchEvent(new win.Event('resize'));
+    assert.equal(height(), '240px', 'panel occupies space above the system IME');
+    assert.equal(document.body.style.getPropertyValue('--viewport-bottom'), '300px');
+    viewport.offsetTop = 40;
+    viewport.dispatchEvent(new win.Event('scroll'));
+    assert.equal(height(), '240px', 'visual viewport height excludes the top offset');
+    assert.equal(document.body.style.getPropertyValue('--viewport-top'), '40px');
+    assert.equal(document.body.style.getPropertyValue('--viewport-bottom'), '260px');
+    panelHeight = 200;
+    notifyResize();
+    assert.equal(height(), '300px', 'panel resize is reflected without a window resize');
+    panel.hide();
+    assert.equal(height(), '500px');
+    window.innerHeight = 500; viewport.height = 500; viewport.offsetTop = 0;
+    window.dispatchEvent(new win.Event('resize'));
+    assert.equal(height(), '500px', 'resize-mode IME is not subtracted again');
+    window.innerHeight = 400; viewport.height = 400;
+    panel.show(field); panelHeight = 180;
+    window.dispatchEvent(new win.Event('orientationchange'));
+    assert.equal(height(), '220px');
+    panel.hide();
+    assert.equal(height(), '400px');
+    setViewportOffset(NaN);
+    assert.equal(height(), '400px');
+    panel.show(field);
+    viewport.height = 250; viewport.offsetTop = 25;
+    viewport.dispatchEvent(new win.Event('resize'));
+    assert.equal(height(), '70px');
+    stop();
+    assert.equal(document.body.style.getPropertyValue('--viewport-top'), '0px');
+    assert.equal(document.body.style.getPropertyValue('--viewport-bottom'), '0px');
+    assert.equal(document.body.style.getPropertyValue('--kbd-offset'), '180px', 'still reserves the visible panel');
+    assert.equal(height(), '220px', 'cleanup discards reduced viewport geometry');
+    viewport.dispatchEvent(new win.Event('resize'));
+    assert.equal(height(), '220px', 'stopped listener cannot restore stale geometry');
+    panel.hide();
+    assert.equal(height(), '400px', 'closing the panel restores the full window');
+  } finally {
+    stop(); uninstallOsk(); field.remove(); window.innerHeight = originalHeight;
+    assert.equal(disconnected, true);
+    if (originalVV) Object.defineProperty(window, 'visualViewport', originalVV); else delete window.visualViewport;
+    if (originalObserver) Object.defineProperty(globalThis, 'ResizeObserver', originalObserver); else delete globalThis.ResizeObserver;
+    localStorage.removeItem('gipny.osk'); resetOskActive();
+  }
+});
+
+test('short-landscape rules reserve scrollable chat and composer space', async () => {
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /@media\s*\(orientation:\s*landscape\)\s*and\s*\(max-height:\s*500px\)/);
+  assert.match(css, /\.chat-log-wrap\s*\{\s*flex:\s*1 0 32px;\s*min-height:\s*32px/);
+  assert.match(css, /\.chat-input\s*\{\s*flex:\s*0 0 auto;\s*min-height:\s*60px/);
+  assert.match(css, /\.chat\s*\{\s*overflow-y:\s*auto/);
+});
+
+// Optional real-layout fixture for CI with an installed Playwright Chromium:
+// GIPNY_OSK_BROWSER_TEST=1 node tests/keyboard.test.mjs
+test('short landscape chat keeps the composer and log usable', { skip: process.env.GIPNY_OSK_BROWSER_TEST !== '1' }, async () => {
+  const { chromium } = await import('playwright');
+  const css = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  const browser = await chromium.launch({ headless: true, ...(process.env.GIPNY_CHROMIUM ? { executablePath: process.env.GIPNY_CHROMIUM } : {}) });
+  try {
+    const page = await browser.newPage({ viewport: { width: 568, height: 320 }, isMobile: true, hasTouch: true });
+    await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style>
+      <div id="app"><div class="stack app-root" style="height:100%"><div class="main has-chat"><div class="stack grow" style="min-height:0"><div class="chat">
+      <div class="chat-header">Header</div><div class="chat-log-wrap"><div class="chat-log">Messages</div></div>
+      <div class="chat-input"><div class="chat-input-row"><textarea rows="1"></textarea><button class="btn">Send</button></div></div>
+      </div></div></div></div></div><div class="osk"><div class="osk-rows">${'<div class="osk-row"><button class="osk-key">a</button></div>'.repeat(4)}</div></div>`);
+    const geometry = await page.evaluate(() => {
+      document.documentElement.dataset.osk = 'shown';
+      const keyboard = document.querySelector('.osk');
+      document.body.style.setProperty('--app-height', `${innerHeight - keyboard.offsetHeight}px`);
+      const field = document.querySelector('textarea');
+      field.focus();
+      const chat = document.querySelector('.chat');
+      const composer = document.querySelector('.chat-input');
+      const log = document.querySelector('.chat-log-wrap');
+      const rect = field.getBoundingClientRect();
+      return { active: document.activeElement === field, fieldTop: rect.top, fieldBottom: rect.bottom,
+        keyboardTop: keyboard.getBoundingClientRect().top, chatTop: chat.getBoundingClientRect().top,
+        composerHeight: composer.getBoundingClientRect().height, logHeight: log.getBoundingClientRect().height };
+    });
+    assert.ok(geometry.active);
+    assert.ok(geometry.logHeight >= 32, JSON.stringify(geometry));
+    assert.ok(geometry.composerHeight >= 60, JSON.stringify(geometry));
+    assert.ok(geometry.fieldTop >= geometry.chatTop && geometry.fieldBottom <= geometry.keyboardTop, JSON.stringify(geometry));
+  } finally { await browser.close(); }
 });
 
 test('system languages and an asynchronously reported keyboard are included even with a saved UI language', async () => {

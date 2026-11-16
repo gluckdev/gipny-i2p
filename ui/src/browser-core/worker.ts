@@ -1,6 +1,6 @@
 import init from '../../../browser-router/pkg/gipny_browser_router.js';
 import { BrowserBackend } from './backend';
-import { WorkerRtcSocket } from './rtc-transport';
+import { WorkerRtcSocket } from './networking/rtc-transport';
 
 const scope = globalThis as unknown as {
   onmessage: ((event: MessageEvent) => void) | null;

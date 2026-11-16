@@ -1,25 +1,29 @@
-import { BrowserEngine, AttachmentHasher, attachment_passed_name, attachment_passes_through, clean_attachment, contact_qr_svg, envelope_is_initial, public_network_metrics, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
-import type { BootStatus, Contact, CoreEvent, GroupMember, Message, PendingAttachment, RelayInfo } from '../api';
-import { isValidI2pAddress } from '../contact-card';
-import { ProfileStorage, listProfiles, removeProfile, profileName } from './storage';
-import { BrowserRelay } from './relay';
-import { acknowledgeBrowserDeletion, deletionEvent, forgetRequestObligations, queuePeerReport, queueDeletionControls, receiveDeletionControl } from './deletion';
+import { BrowserEngine, AttachmentHasher, attachment_passed_name, attachment_passes_through, contact_qr_svg, envelope_is_initial, public_network_metrics, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
+import type { BootStatus, CoreEvent, GroupMember, PendingAttachment, RelayInfo } from '../app/api';
+import { isValidI2pAddress } from '../features/contacts/contact-card';
+import { ProfileStorage, listProfiles, removeProfile, profileName } from './profiles/storage';
+import { BrowserRelay } from './networking/relay';
+import { acknowledgeBrowserDeletion, deletionEvent, forgetRequestObligations, queuePeerReport, queueDeletionControls, receiveDeletionControl } from './messaging/deletion';
+import { addContact, getContact, removeContact } from './messaging/contacts';
+import { groupWire, ingestGroup } from './messaging/groups';
+import { validatePayload } from './messaging/validation';
+import { fileIds, messageFiles } from './files/history';
+import { prepareFiles, storeBytes, type PreparedFile } from './files/preparation';
 import {
-  acceptFileOffers, acceptPendingFiles, browserFileProgress, buildChunkLetter, cancelBrowserFiles, chunkSource, failOutgoingFile, failStalledFiles, FILE_CHUNK, fileReservations,
+  acceptFileOffers, acceptPendingFiles, buildChunkLetter, cancelBrowserFiles, chunkSource, failOutgoingFile, failStalledFiles,
   fileWorkDue, finishFileVerification, forgetFlight, inlinePart, isRequestContent, offerOutgoingFile, pendingInlineAllowed, pruneFiles, queueFileChunks, receiveFileControl,
-  repeatFileReceipt, resumeFiles, settleDeposit, validateFilePayload,
-} from './files';
-import { FileStorage, FILE_PREVIEW_LIMIT, MAX_FILE_BYTES, StorageBusy } from './file-storage';
-import { ActionLog, LOG_LOCATION } from './log';
+  repeatFileReceipt, resumeFiles, settleDeposit,
+} from './files/transfers';
+import { FileStorage, FILE_PREVIEW_LIMIT, StorageBusy } from './files/storage';
+import { ActionLog, LOG_LOCATION } from './diagnostics/log';
 import {
   allocate, base64, canSendControls, clearHistory, dueLetters, expireHistory, expireResends, fromBase64, hex, inHistory, redactMessage, loadState, newState, payload, pruneMessageOutbox,
   queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, unbase64, unhex, visible,
-  type BrowserState, type Outbox, type PublicIdentity, type SeenEnvelope, type StoredBlob, type StoredMessage, type WireGroup, type WirePayload,
-} from './model';
+  type BrowserState, type Outbox, type PublicIdentity, type SeenEnvelope, type StoredBlob, type StoredMessage, type WirePayload,
+} from './profiles/model';
 
 type Args = Record<string, unknown>;
 type EventSink = (event: string, payload: unknown) => void;
-type PreparedFile = { name: string; size: number; sha256: number[]; storage: StoredBlob };
 const text = (args: Args, key: string): string => { if (typeof args[key] !== 'string') throw new Error(`Missing ${key}`); return args[key] as string; };
 const number = (args: Args, key: string): number => { const n = args[key]; if (!Number.isSafeInteger(n) || (n as number) < 0) throw new Error(`Invalid ${key}`); return n as number; };
 /** What the interface keeps for itself in the profile — the same keys as the
@@ -82,18 +86,8 @@ export class BrowserBackend {
     const id = this.state?.contacts.find(contact => contact.sign_pk === peer)?.id;
     return id === undefined ? 'unknown sender' : `contact ${id}`;
   }
-  private fileIds(state: BrowserState): Set<string> {
-    return new Set([...state.attachments.flatMap(file => file.storage ? [file.storage.id] : []), ...state.transfers.flatMap(file => file.storage ? [file.storage.id] : [])]);
-  }
-
   private async storeBytes(data: Uint8Array): Promise<StoredBlob> {
-    const store = this.files!;
-    const file = await store.create(data.length, FILE_CHUNK, fileReservations(this.require().state));
-    try {
-      for (let index = 0; index < Math.max(1, Math.ceil(data.length / FILE_CHUNK)); index++) await store.write(file, index, data.subarray(index * FILE_CHUNK, (index + 1) * FILE_CHUNK));
-      return file;
-    } catch (error) { await store.remove(file.id).catch(() => {}); throw error; }
-    finally { data.fill(0); }
+    return storeBytes(this.files!, data, this.require().state);
   }
 
   private async prepareFiles(args: Args): Promise<PreparedFile[]> {
@@ -106,47 +100,9 @@ export class BrowserBackend {
     const store = this.files!;
     const sanitize = state.ui.attachment_privacy !== 'false';
     this.preparingFiles = true;
-    const result: PreparedFile[] = [];
-    const created: string[] = [];
     const active = (): void => { if (this.engine !== engine || this.closing) throw new Error('Profile is locked'); };
-    try {
-      const files: File[] = [...picked, ...inline.map(file => new File([new Uint8Array(unbase64(file.data, FILE_PREVIEW_LIMIT))], file.name))];
-      for (let source of files) {
-        active();
-        if (source.size > MAX_FILE_BYTES || new TextEncoder().encode(source.name).length > 1024) throw new Error('File size limit is 2 GiB');
-        let name = source.name;
-        if (sanitize) {
-          const head = new Uint8Array(await source.slice(0, 1024).arrayBuffer()); active();
-          if (attachment_passes_through(name, head)) name = attachment_passed_name(name);
-          else {
-            if (source.size > FILE_PREVIEW_LIMIT) throw new Error('Metadata cleaning is limited to 32 MiB; convert this file or explicitly turn off attachment metadata cleaning');
-            const bytes = new Uint8Array(await source.arrayBuffer()); active();
-            let data: Uint8Array;
-            try {
-              const clean = clean_attachment(name, bytes);
-              try { name = clean.name; data = clean.take_data(); } finally { clean.free(); }
-            } finally { bytes.fill(0); }
-            source = new File([data as BlobPart], name); data.fill(0);
-          }
-          head.fill(0);
-        }
-        const storage = await store.create(source.size, FILE_CHUNK, fileReservations(this.require().state)); created.push(storage.id);
-        let hash: AttachmentHasher | null = new AttachmentHasher();
-        try {
-          for (let index = 0; index < Math.max(1, Math.ceil(source.size / FILE_CHUNK)); index++) {
-            active();
-            const data = new Uint8Array(await source.slice(index * FILE_CHUNK, (index + 1) * FILE_CHUNK).arrayBuffer()); active();
-            try { hash.update(data); await store.write(storage, index, data); } finally { data.fill(0); }
-          }
-          const sha256 = [...hash.finish()]; hash = null;
-          result.push({ name, size: source.size, sha256, storage });
-        } finally { hash?.free(); }
-      }
-      active(); return result;
-    } catch (error) {
-      for (const id of created) await store.remove(id).catch(() => {});
-      throw error;
-    } finally { this.preparingFiles = false; }
+    try { return await prepareFiles(store, inline, picked, sanitize, active, () => this.require().state); }
+    finally { this.preparingFiles = false; }
   }
 
   private verifyReadyFiles(): void {
@@ -215,7 +171,7 @@ export class BrowserBackend {
     const { state, engine } = this.require(), store = this.files!;
     const files = state.attachments.filter(file => file.message_id === messageId);
     const prepared: PreparedFile[] = [];
-    const original = this.fileIds(state);
+    const original = fileIds(state);
     try {
       for (const file of files) {
         if (!file.storage) { prepared.push(...await this.prepareFiles({ attachments: [{ name: file.name, data: file.data ?? '' }] })); continue; }
@@ -260,7 +216,7 @@ export class BrowserBackend {
         // Refill per-recipient file windows in this same snapshot write.
         queueFileChunks(state, this.identity!, now);
         expireResends(state, now);
-        const oldFiles = this.fileIds(backup), newFiles = this.fileIds(state);
+        const oldFiles = fileIds(backup), newFiles = fileIds(state);
         const removedFiles = [...oldFiles].filter(id => !newFiles.has(id));
         const ciphertext = engine.seal(JSON.stringify(state));
         const next = engine.pending_generation();
@@ -279,8 +235,8 @@ export class BrowserBackend {
           this.closeNow();
           this.emit('browser_fault', 'Profile storage failed; unlock again to recover the last complete transaction');
         } else {
-          const retained = this.fileIds(backup);
-          for (const id of this.fileIds(state)) if (!retained.has(id)) void this.files?.remove(id).catch(() => {});
+          const retained = fileIds(backup);
+          for (const id of fileIds(state)) if (!retained.has(id)) void this.files?.remove(id).catch(() => {});
           engine.rollback();
           this.state = backup;
         }
@@ -363,7 +319,7 @@ export class BrowserBackend {
       if (this.engine !== engine || this.closing) throw new Error('Profile opening was cancelled');
       // No transfer or upload is running during open. Remove only unreferenced
       // encrypted remnants; a normal transaction removes named obsolete files.
-      await this.files.collect(this.fileIds(state));
+      await this.files.collect(fileIds(state));
       const needsExpiry = (): boolean => !!this.state?.messages.some(row => row.deleted_at == null && row.expires_at !== null && row.expires_at <= Date.now());
       const inlineHistory = state.attachments.some(file => file.data !== undefined);
       await this.transact(async next => {
@@ -620,7 +576,7 @@ export class BrowserBackend {
     if (entry.file) return repeatFileReceipt(state, this.identity!, entry.peer, entry.file.id, entry.file.index, entry.file.sent_at);
     if (!entry.ack) return null;
     const ack = structuredClone(entry.ack);
-    if (entry.group) { if (!state.groups.some(group => group.id === entry.group)) return null; ack.group = this.groupWire(state, entry.group); }
+    if (entry.group) { if (!state.groups.some(group => group.id === entry.group)) return null; ack.group = groupWire(state, entry.group); }
     return ack;
   }
 
@@ -653,10 +609,10 @@ export class BrowserBackend {
       if (decoded.sign_pk !== peer) throw new Error('Envelope sender mismatch');
       if (initial) rememberInitial(state, peer, hash);
       const incoming = decoded.payload;
-      this.validatePayload(incoming);
+      validatePayload(incoming);
       if (!contact) {
         if (!incoming.relay_address || !isValidI2pAddress(incoming.relay_address)) throw new Error('New contact has no valid reply address');
-        contact = this.addContact(state, { signPk: peer, dhPk: decoded.dh_pk, onion: incoming.relay_address, relay: incoming.relay_address, name: incoming.sender_name || peer.slice(0, 12) }, 'incoming');
+        contact = addContact(state, this.identity!, this.log, { signPk: peer, dhPk: decoded.dh_pk, onion: incoming.relay_address, relay: incoming.relay_address, name: incoming.sender_name || peer.slice(0, 12) }, 'incoming');
         events.push({ ContactRequest: { contact_id: contact.id } });
       }
       if (incoming.relay_address && isValidI2pAddress(incoming.relay_address)) contact.relay = incoming.relay_address;
@@ -667,7 +623,7 @@ export class BrowserBackend {
         return;
       }
       let groupId: string | null = null;
-      if (incoming.group) { groupId = this.ingestGroup(state, incoming.group, peer); events.push({ GroupUpdated: { group_id: groupId } }); }
+      if (incoming.group) { groupId = ingestGroup(state, this.identity!, incoming.group, peer); events.push({ GroupUpdated: { group_id: groupId } }); }
       const contactId = groupId ? null : contact.id;
       const own = this.identity!;
       let ack = incoming.origin_msg_id > 0 && !incoming.ack_for && contact.request !== 'incoming' ? payload(own, state.displayName) : null;
@@ -696,7 +652,7 @@ export class BrowserBackend {
         if (contact.request !== 'incoming') events.push({ Typing: { contact_id: contactId, group_id: groupId, sender_sign_pk: groupId ? peer : null, typing: incoming.typing } });
       } else if (incoming.wipe === true && groupId === null) {
         erasure = true;
-        engine.forget_peer(peer); this.removeContact(state, contact.id); events.push({ ContactWiped: { contact_id: contact.id, name: contact.name } });
+        engine.forget_peer(peer); removeContact(state, this.log, contact.id); events.push({ ContactWiped: { contact_id: contact.id, name: contact.name } });
       } else if (incoming.edit_of !== null) {
         const row = state.messages.find(value => !value.outgoing && value.author === peer && value.origin === incoming.edit_of && sameScope(value, contactId, groupId));
         if (row && visible(row)) { row.body = incoming.body; row.buttons = incoming.buttons; events.push({ MessageEdited: { message_id: row.id, body: row.body, buttons: row.buttons || null } }); }
@@ -741,72 +697,8 @@ export class BrowserBackend {
     this.schedule(0);
   }
 
-  private validatePayload(value: WirePayload): void {
-    if (!Number.isSafeInteger(value.origin_msg_id) || value.origin_msg_id < 0 || !Number.isSafeInteger(value.sent_at) || typeof value.body !== 'string' || value.body.length > 128 * 1024 || !Array.isArray(value.attachments) || value.attachments.length > 16 || value.attachments.reduce((n, file) => n + file.data.length, 0) > 1024 * 1024 || value.attachments.some(file => new TextEncoder().encode(file.name).length > 1024) || (value.ttl_ms !== null && (!Number.isSafeInteger(value.ttl_ms) || value.ttl_ms < 0 || value.ttl_ms > 365 * 86400000))) throw new Error('Unsupported message payload');
-    validateFilePayload(value);
-    if (value.console !== null || value.callback_data !== null) throw new Error('This browser does not support this message control');
-    if (value.edit_of !== null && (!Number.isSafeInteger(value.edit_of) || value.edit_of <= 0 || value.attachments.length > 0)) throw new Error('Invalid edit payload');
-    if (value.ack_for !== null && (!Number.isSafeInteger(value.ack_for) || value.ack_for < 0)) throw new Error('Invalid receipt');
-    if (value.pin !== null && (value.pin.sender_sign_pk.length !== 32 || !Number.isSafeInteger(value.pin.origin_msg_id) || value.pin.origin_msg_id <= 0)) throw new Error('Invalid pinned-message reference');
-  }
-  private addContact(state: BrowserState, args: Args, request: Contact['request'] = 'outgoing'): Contact {
-    const sign = text(args, 'signPk').toLowerCase(); const dh = text(args, 'dhPk').toLowerCase();
-    unhex(sign); unhex(dh);
-    if (sign === this.identity!.sign_pk) throw new Error('Cannot add your own identity as a contact');
-    const existing = state.contacts.find(value => value.sign_pk === sign);
-    if (existing) {
-      if (existing.dh_pk !== dh) throw new Error('Contact identity key changed');
-      if (typeof args.relay === 'string') { if (!isValidI2pAddress(args.relay)) throw new Error('Invalid I2P destination'); existing.relay = args.relay; }
-      return existing;
-    }
-    if (state.contacts.length >= 512) throw new Error('Contact limit reached');
-    const onion = text(args, 'onion'); const relay = typeof args.relay === 'string' ? args.relay : null;
-    if (!isValidI2pAddress(onion) || (relay !== null && !isValidI2pAddress(relay))) throw new Error('Invalid I2P destination');
-    const contact: Contact = { id: allocate(state), sign_pk: sign, dh_pk: dh, onion, relay, name: text(args, 'name').slice(0, 96), trust: 0, created_at: Date.now(), last_seen: null, is_bot: false, pinned_at: null, last_message_at: null, agent_granted: false, request };
-    state.contacts.push(contact);
-    this.log.info('contact_add', `contact ${contact.id} (${request})`);
-    return contact;
-  }
-  private getContact(state: BrowserState, id: number): Contact { const contact = state.contacts.find(value => value.id === id); if (!contact) throw new Error('Contact not found'); return contact; }
-  private removeContact(state: BrowserState, id: number): void {
-    const contact = this.getContact(state, id);
-    this.log.info('contact_remove', `contact ${contact.id}`);
-    const ids = new Set(state.messages.filter(value => value.contact_id === id).map(value => value.id));
-    state.contacts = state.contacts.filter(value => value.id !== id);
-    state.messages = state.messages.filter(value => value.contact_id !== id);
-    state.attachments = state.attachments.filter(value => !ids.has(value.message_id));
-    state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk);
-  }
-  private ingestGroup(state: BrowserState, wire: WireGroup, peer: string): string {
-    if (wire.id.length !== 32 || wire.name.length > 128 || wire.members.length > 64 || wire.members.length < 2) throw new Error('Invalid group');
-    const id = hex(wire.id);
-    const members: GroupMember[] = wire.members.map(member => {
-      if (member.sign_pk.length !== 32 || member.dh_pk.length !== 32 || !isValidI2pAddress(member.onion) || member.name.length > 96) throw new Error('Invalid group member');
-      return { sign_pk: hex(member.sign_pk), dh_pk: hex(member.dh_pk), onion: member.onion, name: member.name, is_self: hex(member.sign_pk) === this.identity!.sign_pk };
-    });
-    for (const member of members) {
-      const pinned = member.is_self ? this.identity : state.contacts.find(value => value.sign_pk === member.sign_pk);
-      if (pinned && pinned.dh_pk !== member.dh_pk) throw new Error('Group member identity changed');
-    }
-    if (new Set(members.map(member => member.sign_pk)).size !== members.length || !members.some(member => member.is_self) || !members.some(member => member.sign_pk === peer)) throw new Error('Group sender is not a member');
-    let group = state.groups.find(value => value.id === id);
-    if (group && !group.members.some(member => member.sign_pk === peer)) throw new Error('Uninvited group sender');
-    if (!group) { group = { id, name: wire.name, members, created_at: Date.now(), pinned_at: null, last_message_at: Date.now() }; state.groups.push(group); }
-    else for (const member of members) {
-      const known = group.members.find(value => value.sign_pk === member.sign_pk) || state.contacts.find(value => value.sign_pk === member.sign_pk);
-      if (known && known.dh_pk !== member.dh_pk) throw new Error('Group member identity changed');
-      if (!group.members.some(value => value.sign_pk === member.sign_pk)) { if (group.members.length >= 64) throw new Error('Group member limit reached'); group.members.push(member); }
-    }
-    // An established member can introduce a new member. Existing identity keys
-    // stay pinned, and a stale message cannot remove later additions.
-    return id;
-  }
-  private groupWire(state: BrowserState, id: string): WireGroup {
-    const group = state.groups.find(value => value.id === id); if (!group) throw new Error('Group not found');
-    return { id: unhex(id), name: group.name, members: group.members.map(member => ({ sign_pk: unhex(member.sign_pk), dh_pk: unhex(member.dh_pk), onion: member.onion, name: member.name })) };
-  }
   private send(state: BrowserState, args: Args, group: boolean, attachments: PreparedFile[]): number {
-    const contact = group ? null : this.getContact(state, number(args, 'contactId'));
+    const contact = group ? null : getContact(state, number(args, 'contactId'));
     if (contact?.trust === 2) throw new Error('Contact is blocked');
     if (contact?.request === 'incoming') throw new Error('Accept the contact request first');
     const groupId = group ? text(args, 'groupId') : null;
@@ -817,7 +709,7 @@ export class BrowserBackend {
     const ttl = args.ttlSecs;
     if (ttl != null && (!Number.isSafeInteger(ttl) || (ttl as number) < 0 || (ttl as number) > 365 * 86400)) throw new Error('Invalid message lifetime');
     letter.ttl_ms = typeof ttl === 'number' ? ttl * 1000 : null;
-    if (groupId) letter.group = this.groupWire(state, groupId);
+    if (groupId) letter.group = groupWire(state, groupId);
     if (typeof args.replyTo === 'number') {
       const reply = state.messages.find(value => value.id === args.replyTo && sameScope(value, contact?.id || null, groupId));
       if (!reply) throw new Error('Reply target is not in this conversation');
@@ -826,7 +718,7 @@ export class BrowserBackend {
     if (!groupId) letter.dm = { kind: 0, reference: { author: unhex(this.identity!.sign_pk), origin: letter.origin_msg_id, sent_at: letter.sent_at } };
     const row: StoredMessage = { id: letter.origin_msg_id, origin: letter.origin_msg_id, author: this.identity!.sign_pk, contact_id: contact?.id || null, group_id: groupId, sender_sign_pk: groupId ? this.identity!.sign_pk : null, outgoing: true, body, sent_at: letter.sent_at, sent: false, delivered: false, read: true, expires_at: letter.ttl_ms === null ? null : letter.sent_at + letter.ttl_ms, reply_to: typeof args.replyTo === 'number' ? args.replyTo : null, dm_seq: state.messages.filter(value => sameScope(value, contact?.id || null, groupId)).length + 1 };
     state.messages.push(row);
-    const chunked: { offer: import('./model').WireFileOffer; attachment: number }[] = [];
+    const chunked: { offer: import('./profiles/model').WireFileOffer; attachment: number }[] = [];
     for (const attachment of attachments) {
       const id = allocate(state);
       state.attachments.push({ id, message_id: row.id, name: attachment.name, size: attachment.size, storage: attachment.storage });
@@ -835,7 +727,7 @@ export class BrowserBackend {
     }
     const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(member => !member.is_self).map(member => {
       let recipient = state.contacts.find(value => value.sign_pk === member.sign_pk);
-      if (!recipient) recipient = this.addContact(state, { signPk: member.sign_pk, dhPk: member.dh_pk, onion: member.onion, name: member.name }, 'none');
+      if (!recipient) recipient = addContact(state, this.identity!, this.log, { signPk: member.sign_pk, dhPk: member.dh_pk, onion: member.onion, name: member.name }, 'none');
       return recipient;
     }) : [contact!];
     const recipients = peers.filter(peer => peer.trust !== 2);
@@ -907,7 +799,7 @@ export class BrowserBackend {
     if (command === 'link_stats') return { lane: 'normal', our_hops: 2, their_hops: 2, padded: true, route: this.relay ? 'relay' : 'none', rtt_ms: null };
     if (command === 'verify_passphrase') { engine.verify_password(text(args, 'pass')); return null; }
     if (command === 'list_contacts') return state.contacts;
-    if (command === 'get_contact') return this.getContact(state, number(args, 'id'));
+    if (command === 'get_contact') return getContact(state, number(args, 'id'));
     if (command === 'list_groups') return state.groups;
     if (command === 'list_group_members') return state.groups.find(value => value.id === args.groupId)?.members || [];
     if (command === 'list_muted') return state.muted;
@@ -926,8 +818,8 @@ export class BrowserBackend {
       if (!file || !state.messages.some(row => row.id === file.message_id && visible(row))) throw new Error('Attachment not found');
       return { name: file.name, size: file.size, parts: file.storage ? Math.max(1, Math.ceil(file.size / file.storage.chunk_size)) : 1 };
     }
-    if (command === 'files_progress') return this.messageFiles(state, [number(args, 'messageId')])[number(args, 'messageId')]!.progress;
-    if (command === 'message_files') return this.messageFiles(state, args.messageIds as number[]);
+    if (command === 'files_progress') return messageFiles(state, [number(args, 'messageId')])[number(args, 'messageId')]!.progress;
+    if (command === 'message_files') return messageFiles(state, args.messageIds as number[]);
     if (command === 'list_pinned_contact' || command === 'list_pinned_group') return state.messages.filter(value => state.pinnedMessages.includes(value.id) && visible(value) && sameScope(value, command === 'list_pinned_contact' ? number(args, 'contactId') : null, command === 'list_pinned_group' ? text(args, 'groupId') : null));
     if (command === 'search_messages') {
       const query = text(args, 'query').toLocaleLowerCase();
@@ -940,7 +832,7 @@ export class BrowserBackend {
     if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).reverse().findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
     if (command === 'send_message' || command === 'send_group_message' || command === 'forward_message') {
       const currentEngine = engine, store = this.files!;
-      const originalFiles = this.fileIds(state);
+      const originalFiles = fileIds(state);
       const prepared = command === 'forward_message' ? await this.forwardFiles(number(args, 'sourceMessageId')) : await this.prepareFiles(args);
       try {
         if (this.engine !== currentEngine || this.closing) throw new Error('Profile is locked');
@@ -965,7 +857,7 @@ export class BrowserBackend {
     const result = await this.transact(async (next, core) => {
       const value = this.mutate(command, args, next, core);
       if (command === 'accept_contact_request') {
-        const contact = this.getContact(next, number(args, 'id'));
+        const contact = getContact(next, number(args, 'id'));
         forgetRequestObligations(next, contact.id);
         await acceptPendingFiles(next, this.identity!, contact.sign_pk, this.files!, fileEvents);
         for (const row of next.messages) if (row.contact_id === contact.id && row.group_id === null && !row.outgoing && visible(row)) {
@@ -990,37 +882,22 @@ export class BrowserBackend {
     return result;
   }
 
-  private messageFiles(state: BrowserState, ids: number[]): Record<number, import('../api').MessageFiles> {
-    if (!Array.isArray(ids) || ids.length > 500 || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) throw new Error('Invalid file history window');
-    const result: Record<number, import('../api').MessageFiles> = {};
-    for (const id of ids) {
-      const row = state.messages.find(message => message.id === id && visible(message));
-      const attachments = row ? state.attachments.filter(file => file.message_id === id).map(file => ({ id: file.id, message_id: file.message_id, name: file.name, size: file.size })) : [];
-      const transfers = row ? browserFileProgress(state, id) : [];
-      const chunked = new Set(state.transfers.filter(file => file.message_id === id).map(file => file.attachment_id));
-      // A forgotten (closed) outgoing transfer that failed must not look complete.
-      const failed = state.closedFiles.some(file => file.message_id === id && !file.incoming && !file.ok);
-      result[id] = { attachments, progress: [...transfers, ...(row?.outgoing ? attachments.filter(file => !chunked.has(file.id)).map(file => ({ name: file.name, size: file.size, done: row.delivered && !failed ? 1 : 0, total: 1, incoming: false, cancelable: false, status: failed ? 'failed' as const : row.delivered ? 'complete' as const : 'sending' as const })) : [])] };
-    }
-    return result;
-  }
-
   private mutate(command: string, args: Args, state: BrowserState, engine: BrowserEngine): unknown {
     if (command === 'change_passphrase') { engine.change_password(text(args, 'old'), text(args, 'new')); return null; }
     if (command === 'enroll_passkey') { try { engine.enroll_passkey(new Uint8Array(args.credentialId as number[]), text(args, 'rpId'), new Uint8Array(args.salt as number[]), new Uint8Array(args.prf as number[])); } finally { if (Array.isArray(args.prf)) (args.prf as number[]).fill(0); } return null; }
     if (command === 'set_display_name') { state.displayName = text(args, 'name').slice(0, 64); return null; }
     if (command === 'set_ui_data') { const json = text(args, 'json'); if (json.length > 256 * 1024) throw new Error('UI preference size limit'); JSON.parse(json); state.ui[uiKey(args)] = json; this.log.debug('settings_update', `ui:${text(args, 'key')}`); return null; }
     if (command === 'set_muted') { const key = text(args, 'targetKey'); state.muted = state.muted.filter(value => value !== key); if (args.muted === true) state.muted.push(key); this.log.debug('settings_update', `mute:${key}`); return null; }
-    if (command === 'add_contact') return this.addContact(state, args).id;
-    if (command === 'update_contact') { const contact = this.getContact(state, number(args, 'id')); const trust = number(args, 'trust'); if (trust > 2) throw new Error('Invalid contact trust'); contact.name = text(args, 'name').slice(0, 96); contact.trust = trust; return null; }
-    if (command === 'set_contact_bot') { this.getContact(state, number(args, 'id')).is_bot = args.isBot === true; return null; }
-    if (command === 'accept_contact_request') { this.getContact(state, number(args, 'id')).request = 'none'; return null; }
+    if (command === 'add_contact') return addContact(state, this.identity!, this.log, args).id;
+    if (command === 'update_contact') { const contact = getContact(state, number(args, 'id')); const trust = number(args, 'trust'); if (trust > 2) throw new Error('Invalid contact trust'); contact.name = text(args, 'name').slice(0, 96); contact.trust = trust; return null; }
+    if (command === 'set_contact_bot') { getContact(state, number(args, 'id')).is_bot = args.isBot === true; return null; }
+    if (command === 'accept_contact_request') { getContact(state, number(args, 'id')).request = 'none'; return null; }
     if (command === 'decline_contact_request' || command === 'delete_contact') {
       if (args.forBoth) throw new Error('Browser contact removal is local; delete messages individually to notify the peer');
-      engine.forget_peer(this.getContact(state, number(args, 'id')).sign_pk); this.removeContact(state, number(args, 'id')); return null;
+      engine.forget_peer(getContact(state, number(args, 'id')).sign_pk); removeContact(state, this.log, number(args, 'id')); return null;
     }
     if (command === 'reset_contact_session') {
-      const contact = this.getContact(state, number(args, 'id'));
+      const contact = getContact(state, number(args, 'id'));
       this.log.info('contact_session_reset', `contact ${contact.id}`);
       // File parts and one-shot controls are rebuilt from current state.
       state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk || value.row !== null || value.payload !== null);
@@ -1038,8 +915,8 @@ export class BrowserBackend {
       if (!row) throw new Error('Message cannot be edited');
       const letter = payload(this.identity!, state.displayName); letter.edit_of = row.origin; letter.body = text(args, 'newBody');
       if (letter.body.length > 128 * 1024) throw new Error('Message size limit');
-      if (row.group_id) letter.group = this.groupWire(state, row.group_id);
-      const recipients = row.group_id ? state.groups.find(value => value.id === row.group_id)!.members.filter(value => !value.is_self).map(value => value.sign_pk) : [this.getContact(state, row.contact_id!).sign_pk];
+      if (row.group_id) letter.group = groupWire(state, row.group_id);
+      const recipients = row.group_id ? state.groups.find(value => value.id === row.group_id)!.members.filter(value => !value.is_self).map(value => value.sign_pk) : [getContact(state, row.contact_id!).sign_pk];
       recipients.forEach(peer => queueLetter(state, peer, structuredClone(letter), null));
       row.body = letter.body; return null;
     }
@@ -1069,13 +946,13 @@ export class BrowserBackend {
     if (command === 'create_group') {
       const ids = args.memberContactIds as number[];
       if (!Array.isArray(ids) || ids.length < 1 || ids.length > 63 || new Set(ids).size !== ids.length) throw new Error('Invalid group members');
-      const members: GroupMember[] = ids.map(id => { const contact = this.getContact(state, id); return { sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }; });
+      const members: GroupMember[] = ids.map(id => { const contact = getContact(state, id); return { sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }; });
       members.push({ sign_pk: this.identity!.sign_pk, dh_pk: this.identity!.dh_pk, onion: this.identity!.onion, name: state.displayName, is_self: true });
       const id = hex(crypto.getRandomValues(new Uint8Array(32))); state.groups.push({ id, name: text(args, 'name').slice(0, 128), members, created_at: Date.now(), pinned_at: null, last_message_at: null }); return id;
     }
     if (command === 'add_group_member') {
       const group = state.groups.find(value => value.id === args.groupId); if (!group) throw new Error('Group not found');
-      const contact = this.getContact(state, number(args, 'contactId'));
+      const contact = getContact(state, number(args, 'contactId'));
       if (group.members.length >= 64 || group.members.some(value => value.sign_pk === contact.sign_pk)) throw new Error('Group member already exists or group is full');
       group.members.push({ sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }); return null;
     }
@@ -1089,19 +966,19 @@ export class BrowserBackend {
       if (!unpin) state.pinnedMessages.push(row.id);
       const letter = payload(this.identity!, state.displayName);
       letter.pin = { sender_sign_pk: unhex(row.author), origin_msg_id: row.origin, unpin };
-      if (groupId) letter.group = this.groupWire(state, groupId);
-      const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(value => !value.is_self).map(value => value.sign_pk) : [this.getContact(state, contactId!).sign_pk];
+      if (groupId) letter.group = groupWire(state, groupId);
+      const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(value => !value.is_self).map(value => value.sign_pk) : [getContact(state, contactId!).sign_pk];
       for (const peer of peers) queueLetter(state, peer, structuredClone(letter), null);
       return null;
     }
     if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); pruneMessageOutbox(state, rows); state.pinnedMessages = state.pinnedMessages.filter(id => !rows.has(id)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
-    if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? this.getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
+    if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
     if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; this.log.debug('settings_update', 'attachment_privacy'); return null; }
     if (command === 'set_relay_mode') { if (args.mode !== 'builtin') throw new Error('This browser uses its own I2P destination'); return null; }
     if (command === 'set_auto_update' && args.enabled === false) return null;
     if (command === 'send_typing') {
       if (typeof args.contactId !== 'number') return null;
-      const contact = this.getContact(state, args.contactId);
+      const contact = getContact(state, args.contactId);
       if (contact.request !== 'none' || contact.trust === 2) return null;
       const letter = payload(this.identity!, state.displayName); letter.typing = args.typing === true;
       queueReceipt(state, contact.sign_pk, letter); return null;

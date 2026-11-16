@@ -14,7 +14,7 @@ import { buildDefinitions } from './build-policy';
 // earlier 'es2022' setting was looser than that, not stricter. Top-level
 // await stays: the entry relies on it (Safari 15, Chrome 89, Firefox 89).
 // ui/tests/browser-compat.test.mjs holds the build to this floor and
-// src/browser-core/storage.ts names it when an older Safari opens a profile.
+// src/browser-core/profiles/storage.ts names it when an older Safari opens a profile.
 export const BROWSER_FLOOR = ['safari16.4', 'ios16.4', 'chrome108', 'edge108', 'firefox111'];
 
 export default defineConfig(({ command }) => ({
@@ -34,7 +34,7 @@ export default defineConfig(({ command }) => ({
       const files = [...new Set([...Object.keys(bundle), 'browser.html', 'browser-icon.svg', 'browser-icon-256.png', 'browser.webmanifest', 'theme-init.js', 'avatars.webp', 'notify.wav', 'sounds/success.wav'])].filter(name => !name.endsWith('.map') && name !== 'browser-config.json');
       if (!files.some(name => name.endsWith('.wasm')) || !files.some(name => /worker.*\.js$/.test(name))) throw new Error('Offline shell is missing the emitted WASM worker assets');
       const digest = createHash('sha256');
-      const downloadWorker = readFileSync(new URL('./src/browser-download-sw.js', import.meta.url), 'utf8');
+      const downloadWorker = readFileSync(new URL('./src/features/files/browser-download-sw.js', import.meta.url), 'utf8');
       digest.update(downloadWorker);
       for (const name of files) {
         const file = bundle[name];

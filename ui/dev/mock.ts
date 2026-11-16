@@ -20,10 +20,10 @@
  *   demo = 1   presentable fixtures for screenshots (dev/demo.ts)
  *   network = none   the `boot` scene also shows the router's offline verdict
  */
-import { t, setLang, LANGS } from '../src/i18n';
+import { t, setLang, LANGS } from '../src/features/localization/i18n';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
-import type { AgentMaster, Attachment, Contact, Group, GroupMember, Message } from '../src/api';
-import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT, encodeCard } from '../src/api';
+import type { AgentMaster, Attachment, Contact, Group, GroupMember, Message } from '../src/app/api';
+import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT, encodeCard } from '../src/app/api';
 import { demoFixtures } from './demo';
 import { previewUpdates } from './update-mock';
 import { emit } from '@tauri-apps/api/event';
@@ -383,6 +383,6 @@ async function drive(): Promise<void> {
   }
 }
 
-await import('../src/main');
+await import('../src/main.ts');
 if (theme === 'light' || theme === 'dark' || theme === 'system') document.documentElement.setAttribute('data-theme', theme);
 void drive().then(() => document.documentElement.setAttribute('data-preview-ready', scene));

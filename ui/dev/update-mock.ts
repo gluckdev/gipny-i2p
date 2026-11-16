@@ -1,4 +1,4 @@
-import type { CheckResult, CoreEvent } from '../src/api';
+import type { CheckResult, CoreEvent } from '../src/app/api';
 
 /** Stateful preview backend: no downloads, installers or restarts leave the frame. */
 export function previewUpdates(mode = 'current', emit: (event: CoreEvent) => Promise<void>, android = false,

@@ -7,8 +7,8 @@
  * console — with names and text in the selected language. Nothing here is a
  * real person, key or address.
  */
-import type { Attachment, Contact, Group, GroupMember, Message } from '../src/api';
-import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT } from '../src/api';
+import type { Attachment, Contact, Group, GroupMember, Message } from '../src/app/api';
+import { CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OUTPUT } from '../src/app/api';
 
 type Lang = 'ru' | 'en';
 type Make = (p: Partial<Message> & { body: string }) => Message;

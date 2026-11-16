@@ -1,0 +1,3 @@
+# Source profiles are code, not runtime profile data.
+!/features/profiles/
+!/features/profiles/**

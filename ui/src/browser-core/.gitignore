@@ -1,0 +1,3 @@
+# Source modules, not the runtime profile directories ignored repository-wide.
+!/profiles/
+!/profiles/*.ts

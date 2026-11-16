@@ -1,0 +1,826 @@
+import { selectedBrowserFiles, forgetBrowserFiles } from '../features/files/browser-files';
+import { invoke as tauriInvoke } from '@tauri-apps/api/core';
+import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
+
+export const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+
+export interface BrowserBackend {
+  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+  listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn>;
+}
+let browserBackend: BrowserBackend | null = null;
+export function configureBrowserBackend(backend: BrowserBackend): void { browserBackend = backend; }
+export function usesBrowserCore(): boolean { return browserBackend !== null; }
+
+export function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  if (isTauri) {
+    return tauriInvoke(cmd, args);
+  }
+  if (browserBackend) return browserBackend.invoke<T>(cmd, args);
+  return Promise.reject(new Error('Browser core is not configured'));
+}
+
+export function listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
+  if (isTauri) {
+    return tauriListen(event, handler);
+  }
+  if (browserBackend) return browserBackend.listen<T>(event, handler);
+  return Promise.reject(new Error('Browser core is not configured'));
+}
+export type { UnlistenFn };
+
+export interface VaultStatus {
+  exists: boolean;
+  unlocked: boolean;
+  /** Optional backend capabilities. Verification and credential storage stay
+   * in the backend, rather than in UI preferences. */
+  totp_enabled?: boolean;
+  biometric_available?: boolean;
+}
+
+export interface IdentityCard { sign_pk: string; dh_pk: string; }
+
+/** A folder the person made for their contacts. Kept in the vault as JSON;
+ * the backend does not look inside. */
+export interface ContactFolder {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  contacts: number[];
+}
+
+/** What the chat screen remembers between launches.
+ *
+ * `ttlSecs` null means the person turned the disappearing timer off, which is
+ * not the same as never having an opinion: `ttlChosen` separates "I picked
+ * this" from "nobody has picked yet", and only the second is worth a reminder
+ * about the default. */
+export interface ChatPrefs {
+  ttlSecs: number | null;
+  ttlChosen: boolean;
+  /** Empty the transcript the moment the vault is locked. Off unless asked
+   * for: a person who wants the app empty on every close says so, and nobody
+   * else should lose a conversation to a default they never saw. */
+  clearOnLock: boolean;
+  /** Explicit choices by targetKey. A missing key still needs a decision. */
+  saveHistory?: Record<string, boolean>;
+}
+
+export interface Contact {
+  lang?: string | string[];
+  language?: string | string[];
+  id: number;
+  sign_pk: string;
+  dh_pk: string;
+  onion: string;
+  name: string;
+  trust: number;
+  created_at: number;
+  last_seen: number | null;
+  is_bot: boolean;
+  pinned_at: number | null;
+  last_message_at: number | null;
+  /** Relay this contact receives through; null falls back to our own setting. */
+  relay: string | null;
+  /** This contact is running in agent mode with us as master: its console is
+   * open. The chat shows the чат/консоль switch when true. */
+  agent_granted: boolean;
+  /** 'incoming': they introduced themselves and wait for an answer; their
+   * messages are held back until then. 'outgoing': we added their card and
+   * have not heard from them yet. */
+  request: 'none' | 'incoming' | 'outgoing';
+  /** The peer's explicit history choice, independently of message expiry. */
+  save_history?: boolean | null;
+}
+
+export type TransitProfile = 'frugal' | 'balanced' | 'generous';
+
+export interface RouterSettings {
+  /** How much of the line carries other people's tunnels. */
+  transit: TransitProfile;
+  /** Ask the home router to open the transport ports (UPnP). Absent means on. */
+  upnp?: 'on' | 'off';
+}
+
+export interface Button { text: string; callback_data: string; }
+
+/** Console framing on a message. `kind` is one of the CONSOLE_* constants. */
+export interface ConsoleFrame {
+  kind: number;
+  exit_code: number | null;
+  duration_ms: number | null;
+  truncated: boolean;
+}
+
+export type RelayMode = 'builtin' | 'external';
+
+/** The relay this process hosts for itself in built-in mode. */
+export type HostedRelayState =
+  | { state: 'off' }
+  | { state: 'starting' }
+  | { state: 'ready'; address: string }
+  | { state: 'failed'; reason: string }
+  /** Browser core only: the hosting serves the client without a network
+   * service, so unlike `failed` nothing retries. The native core never
+   * reports it. */
+  | { state: 'unconfigured'; reason: string };
+
+export interface RelayInfo {
+  mode: RelayMode;
+  /** The address saved for external mode, whether or not it is in use. */
+  external: string;
+  hosted: HostedRelayState;
+  /** How the attempt to reach our own relay is going. */
+  dial: { attempts: number; last_error: string | null; unreachable_checks: number; unreachable_error: string | null };
+}
+
+/** A contact that put this client into agent mode, from `get_agent_mode`. */
+export interface AgentMaster {
+  contact_id: number;
+  name: string;
+  sign_pk: string;
+}
+
+/**
+ * Console message kinds. Mirrors the `CONSOLE_*` u8 constants in
+ * `libcore/src/session.rs`; a value the UI does not know is drawn as a plain
+ * system line rather than breaking the log.
+ */
+export const CONSOLE_COMMAND = 0;
+export const CONSOLE_OUTPUT = 1;
+export const CONSOLE_GRANT = 2;
+export const CONSOLE_REVOKE = 3;
+export const CONSOLE_OFF = 4;
+
+/** A file of a message on its way in parts (libcore::files). */
+export interface FileProgress {
+  name: string;
+  size: number;
+  /** Parts done: received, or acknowledged by every recipient. */
+  done: number;
+  total: number;
+  incoming: boolean;
+  status: 'waiting' | 'sending' | 'receiving' | 'complete' | 'failed' | 'cancelled';
+  cancelable?: boolean;
+}
+
+export interface MessageFiles { attachments: Attachment[]; progress: FileProgress[] }
+
+export interface DeletionNotice {
+  deleted_at: number;
+  by_sender: boolean;
+  can_ack: boolean;
+}
+
+export interface Message {
+  id: number;
+  contact_id: number | null;
+  group_id: string | null;
+  sender_sign_pk: string | null;
+  outgoing: boolean;
+  body: string;
+  sent_at: number;
+  sent: boolean;
+  delivered: boolean;
+  read: boolean;
+  expires_at: number | null;
+  /** Immutable local arrival number in this direct conversation. */
+  dm_seq?: number | null;
+  deleted_at?: number | null;
+  delete_pending?: boolean;
+  /** Null dismisses only the notice; the anti-replay tombstone is retained. */
+  deletion_notice?: DeletionNotice | null;
+  peer_events?: PeerEvent[];
+  buttons?: Button[][] | null;
+  reply_to: number | null;
+  /** Set when the row is console-framed (command, output or mode marker). */
+  console?: ConsoleFrame | null;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  created_at: number;
+  pinned_at: number | null;
+  last_message_at: number | null;
+}
+
+export interface GroupMember {
+  lang?: string | string[];
+  language?: string | string[];
+  sign_pk: string;
+  dh_pk: string;
+  onion: string;
+  name: string;
+  is_self: boolean;
+}
+
+export interface Attachment {
+  id: number;
+  message_id: number;
+  name: string;
+  size: number;
+}
+
+export interface MediaItem {
+  id: number;
+  message_id: number;
+  name: string;
+  size: number;
+  sent_at: number;
+}
+
+export interface SearchHit {
+  message: Message;
+  contact_id: number | null;
+  group_id: string | null;
+  contact_name: string | null;
+  group_name: string | null;
+}
+
+export interface Bundle {
+  sign_pk: string;
+  dh_pk: string;
+  signed_prekey: string;
+  signed_prekey_sig: string;
+  one_time_prekey: string | null;
+  one_time_id: number | null;
+}
+
+/** One step of opening a profile, from the backend's `boot_status` event.
+ * `stage` is a stable id the interface turns into its own wording; `detail` is
+ * diagnostic context; the ordinary interface uses localized stage labels. */
+export interface BootStatus {
+  /** `network` is not a step but a verdict on the network while the tunnel
+   * steps run: `none` — nothing has answered for long enough that the device
+   * looks offline; `ok` — something did, after such a verdict. */
+  stage: 'vault' | 'router' | 'inbound' | 'outbound' | 'tunnels' | 'session' | 'core' | 'relay' | 'dht' | 'network';
+  state: 'active' | 'done' | 'failed' | 'skipped' | 'none' | 'ok';
+  detail: string;
+}
+
+/** Which speed/anonymity trade is in force.
+ *
+ * Named for what each one does. The buttons say «КОКАИН» and «НИТРО»; those
+ * are labels, and labels change. */
+export type Lane = 'normal' | 'fast';
+
+export interface UpdateInfo {
+  version: string;
+  notes: string;
+  size: number;
+}
+
+/** What a check found. Every "nothing to install" case has its own name:
+ * one sentence for all of them is how a .deb install spent three releases
+ * being told it was current. */
+export type CheckResult =
+  | { status: 'update'; version: string; notes: string; size: number }
+  | { status: 'current'; latest: string }
+  | { status: 'dismissed'; version: string }
+  | { status: 'unavailable' }
+  | { status: 'no_release' }
+  | { status: 'unsupported'; latest: string }
+  | { status: 'no_asset'; latest: string; wanted: string };
+
+
+export type CoreEvent =
+  | 'RelayConnected' | 'RelayDisconnected'
+  | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null; console_kind: number | null } }
+  | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
+  | { MessageDeleted: { contact_id: number; message_id: number; deleted_at: number; pending: boolean; deletion_notice?: DeletionNotice | null } }
+  | { PeerEvent: { contact_id: number; message_id: number; events: PeerEvent[] } }
+  | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
+  | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
+  | { MessageSent: { message_id: number } }
+  | { MessageDelivered: { message_id: number } }
+  | { MessageFailed: { message_id: number; reason: string } }
+  | { FileProgress: { message_id: number; contact_id: number; incoming: boolean; done: number; total: number } }
+  | { FileReceived: { message_id: number; attachment_id: number } }
+  | { FileFailed: { message_id: number; contact_id: number; reason: string } }
+  | { Typing: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; typing: boolean } }
+  | { ContactAdded: { contact_id: number } }
+  | { ContactUpdated: { contact_id: number } }
+  | { PeerHistorySaving: { contact_id: number; save_history: boolean | null } }
+  | { ContactWiped: { contact_id: number; name: string } }
+  | { ContactRequest: { contact_id: number } }
+  | { GroupUpdated: { group_id: string } }
+  // The only presence signal: something arrived from them, written at
+  // `at_ms` by their clock. Mail held on a relay for hours arrives with an
+  // old stamp, which is exactly how "online" tells itself from "delivered".
+  | { PeerSeen: { contact_id: number; at_ms: number } }
+  | { UpdateAvailable: { version: string; notes: string; size: number } }
+  | { UpdateProgress: { downloaded: number; total: number; pct: number } }
+  | { UpdateStaged: { version: string } }
+  | { UpdateInstallerOpened: { version: string; path: string } }
+  | { UpdateReady: { path: string } }
+  | { UpdateFailed: { reason: string } }
+  | { AgentModeChanged: { master: AgentMaster | null } }
+  | { ConsoleActivity: { contact_id: number } }
+  | { RelayInfoChanged: { info: RelayInfo } }
+  // `reached` is the honest half: `peers` is 0 on a fresh profile that has
+  // nobody to bootstrap from, and the UI must not read that as "joined".
+  | { DhtJoined: { peers: number; reached: boolean } }
+  | { ContactReachability: { contact_id: number; unreachable: boolean } }
+  | { LinkRtt: { contact_id: number; ms: number } }
+  | { LaneChanged: { lane: Lane } };
+
+export interface PendingAttachment { name: string; data: string; }
+
+/** What the contact reported doing with one of this chat's messages on their
+ *  device. No content travels: only which message, what, when and how often. */
+export const PEER_EVENT = { copied: 5, saved: 6, screenshot: 7 } as const;
+export type PeerEventKind = typeof PEER_EVENT[keyof typeof PEER_EVENT];
+export interface PeerEvent { kind: PeerEventKind; at: number; count: number; }
+
+export class Api {
+  static listProfiles(): Promise<string[]> {
+    return invoke('list_profiles');
+  }
+  static deleteProfile(profile: string): Promise<void> {
+    return invoke('delete_profile', { profile });
+  }
+  /** Start building i2p tunnels for this profile now, before the password.
+   * Nothing in the transport needs the vault, so the wait can happen while
+   * the unlock screen is on rather than after it. */
+  static prewarmNetwork(profile: string): Promise<void> {
+    return invoke('prewarm_network', { profile });
+  }
+  static prewarmStatus(): Promise<'building' | 'ready' | 'off'> {
+    return invoke('prewarm_status');
+  }
+  static vaultStatus(profile: string): Promise<VaultStatus> {
+    return invoke('vault_status', { profile });
+  }
+  static vaultCreate(profile: string, pass: string, displayName: string, duressPass: string | null, duressWipe: boolean, maxAttempts: number): Promise<void> {
+    return invoke('vault_create', { profile, pass, displayName, duressPass, duressWipe, maxAttempts });
+  }
+  static vaultUnlock(profile: string, pass: string, totpCode?: string): Promise<string | null> {
+    return invoke('vault_unlock', { profile, pass, ...(totpCode ? { totpCode } : {}) });
+  }
+  static vaultUnlockBiometric(profile: string, totpCode?: string): Promise<string | null> {
+    return invoke('vault_unlock_biometric', { profile, ...(totpCode ? { totpCode } : {}) });
+  }
+  /** Checks the profile passphrase without restarting anything. Resolves
+   * 'ok', 'wiped' (a duress passphrase wiped the profile), or rejects. */
+  static verifyPassphrase(pass: string): Promise<string> {
+    return invoke('verify_passphrase', { pass });
+  }
+  static vaultLock(): Promise<void> {
+    return invoke('vault_lock');
+  }
+  static changePassphrase(oldPass: string, newPass: string): Promise<void> {
+    return invoke('change_passphrase', { old: oldPass, new: newPass });
+  }
+  static setDuress(pass: string, duressPass: string | null, wipe: boolean): Promise<void> {
+    return invoke('set_duress', { pass, duressPass, wipe });
+  }
+  static setMaxAttempts(pass: string, max: number): Promise<void> {
+    return invoke('set_max_attempts', { pass, max });
+  }
+  static myCard(): Promise<IdentityCard> {
+    return invoke('my_card');
+  }
+  static myOnion(): Promise<string> {
+    return invoke('my_onion');
+  }
+  static myB32(): Promise<string> {
+    return invoke('my_b32');
+  }
+  static myFingerprint(): Promise<string> {
+    return invoke('my_fingerprint');
+  }
+  static myBundle(): Promise<Bundle> {
+    return invoke('my_bundle');
+  }
+  static getDisplayName(): Promise<string> {
+    return invoke('get_display_name');
+  }
+  static setDisplayName(name: string): Promise<void> {
+    return invoke('set_display_name', { name });
+  }
+  static getRelayAddress(): Promise<string> {
+    return invoke('get_relay_address');
+  }
+  /** Whether an update server destination is baked in; false hides the update UI. */
+  static updateConfigured(): Promise<boolean> {
+    return invoke('update_configured');
+  }
+  static getRouterSettings(): Promise<RouterSettings> {
+    return invoke('get_router_settings');
+  }
+  static setRouterSettings(settings: RouterSettings): Promise<void> {
+    return invoke('set_router_settings', { settings });
+  }
+  static getRelayInfo(): Promise<RelayInfo> {
+    return invoke('get_relay_info');
+  }
+  /** Contacts whose relay has been silent for a while with mail waiting. */
+  static listUnreachableContacts(): Promise<number[]> {
+    return invoke('list_unreachable_contacts');
+  }
+  /** Strip private metadata from local attachments before they are sent. */
+  static getAttachmentPrivacy(): Promise<boolean> {
+    return invoke('get_attachment_privacy');
+  }
+  static setAttachmentPrivacy(enabled: boolean): Promise<void> {
+    return invoke('set_attachment_privacy', { enabled });
+  }
+  static addContact(
+    onion: string, signPk: string, dhPk: string, name: string, relay?: string,
+  ): Promise<number> {
+    return invoke('add_contact', { onion, signPk, dhPk, name, relay: relay ?? null });
+  }
+  static listContacts(): Promise<Contact[]> {
+    return invoke('list_contacts');
+  }
+  static getContact(id: number): Promise<Contact | null> {
+    return invoke('get_contact', { id });
+  }
+  static updateContact(id: number, name: string, trust: number): Promise<void> {
+    return invoke('update_contact', { id, name, trust });
+  }
+  /** `forBoth`: also ask the contact's client to delete the chat and us. */
+  static deleteContact(id: number, forBoth = false): Promise<void> {
+    return invoke('delete_contact', { id, forBoth });
+  }
+  static acceptContactRequest(id: number): Promise<void> {
+    return invoke('accept_contact_request', { id });
+  }
+  static declineContactRequest(id: number): Promise<void> {
+    return invoke('decline_contact_request', { id });
+  }
+  static setContactBot(id: number, isBot: boolean): Promise<void> {
+    return invoke('set_contact_bot', { id, isBot });
+  }
+  static resetContactSession(id: number): Promise<void> {
+    return invoke('reset_contact_session', { id });
+  }
+  /** The contact this client runs console commands for, if agent mode is on. */
+  static getAgentMode(): Promise<AgentMaster | null> {
+    return invoke('get_agent_mode');
+  }
+  /** `some contact` opens this client's console to them; `null` closes it. */
+  static setAgentMode(contactId: number | null): Promise<void> {
+    return invoke('set_agent_mode', { contactId });
+  }
+  /** Master side: one console line, with files to upload before it runs. */
+  static sendConsoleCommand(contactId: number, body: string, paths: string[] = []): Promise<number> {
+    return invoke('send_console_command', { contactId, body, paths });
+  }
+  /** Master side: close the agent's console remotely. */
+  static sendAgentOff(contactId: number): Promise<number> {
+    return invoke('send_agent_off', { contactId });
+  }
+  static messagePosition(contactId: number | null, groupId: string | null, messageId: number): Promise<number | null> {
+    return invoke('message_position', { contactId, groupId, messageId });
+  }
+  static listMessages(contactId: number, limit = 100, beforeId: number | null = null): Promise<Message[]> {
+    return invoke('list_messages', { contactId, limit, beforeId });
+  }
+  static unreadCount(contactId: number): Promise<number> {
+    return invoke('unread_count', { contactId });
+  }
+  static markRead(contactId: number): Promise<void> {
+    return invoke('mark_read', { contactId });
+  }
+  static deleteMessage(id: number): Promise<void> {
+    return invoke('delete_message', { id });
+  }
+
+  static acknowledgeDeletionNotices(contactId: number, messageIds: number[]): Promise<void> {
+    return invoke('acknowledge_deletion_notices', { contactId, messageIds });
+  }
+  /** Tell the contact we copied, saved or screenshotted their message. Best
+   *  effort from the caller's view: the core queues and repeats it. */
+  static reportPeerEvent(messageId: number, kind: PeerEventKind): Promise<void> {
+    return invoke('report_peer_event', { messageId, kind });
+  }
+
+  static clearDmChat(contactId: number): Promise<number> {
+    return invoke('clear_dm_chat', { contactId });
+  }
+  static sendMessage(contactId: number, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+    return invoke('send_message', { contactId, body, attachments, ttlSecs, replyTo });
+  }
+  static sendMessagePaths(contactId: number, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+    if (!isTauri) return invoke<number>('send_message', { contactId, body, browserFiles: selectedBrowserFiles(paths), ttlSecs, replyTo }).then(id => { forgetBrowserFiles(paths); return id; });
+    return invoke('send_message_paths', { contactId, body, paths, ttlSecs, replyTo });
+  }
+  static sendEdit(contactId: number, messageId: number, newBody: string): Promise<void> {
+    return invoke('send_edit', { contactId, messageId, newBody });
+  }
+  static sendEditGroup(groupId: string, messageId: number, newBody: string): Promise<void> {
+    return invoke('send_edit_group', { groupId, messageId, newBody });
+  }
+  static pressButton(contactId: number, messageId: number, callbackData: string): Promise<void> {
+    return invoke('press_button', { contactId, messageId, callbackData });
+  }
+  static pressGroupButton(groupId: string, messageId: number, callbackData: string): Promise<void> {
+    return invoke('press_group_button', { groupId, messageId, callbackData });
+  }
+  /** Files of a message still moving in parts. */
+  static messageFiles(messageIds: number[]): Promise<Record<number, MessageFiles>> {
+    return invoke('message_files', { messageIds });
+  }
+  static cancelFiles(messageId: number): Promise<void> {
+    return invoke('cancel_files', { messageId });
+  }
+  static loadAttachment(attachmentId: number): Promise<string> {
+    return invoke('load_attachment', { attachmentId });
+  }
+  static listMediaContact(contactId: number, limit = 200): Promise<MediaItem[]> {
+    return invoke('list_media_contact', { contactId, limit });
+  }
+  static listMediaGroup(groupId: string, limit = 200): Promise<MediaItem[]> {
+    return invoke('list_media_group', { groupId, limit });
+  }
+  static searchMessages(query: string, contactId: number | null, groupId: string | null, limit = 100): Promise<SearchHit[]> {
+    return invoke('search_messages', { query, contactId, groupId, limit });
+  }
+  static listMuted(): Promise<string[]> {
+    return invoke('list_muted');
+  }
+  static setMuted(targetKey: string, muted: boolean): Promise<void> {
+    return invoke('set_muted', { targetKey, muted });
+  }
+  static exportIdentity(passphrase: string, destPath: string): Promise<void> {
+    return invoke('export_identity', { passphrase, destPath });
+  }
+  static importIdentityToProfile(profile: string, vaultPass: string, backupPath: string, backupPass: string): Promise<void> {
+    return invoke('import_identity_to_profile', { profile, vaultPass, backupPath, backupPass });
+  }
+
+  /** Ensure client device secret (3rd factor) exists in localStorage, or generate a fresh 256-bit hex token */
+  static getOrCreateClientSecret(): string {
+    const KEY = 'gipny_client_secret_hex';
+    let sec = localStorage.getItem(KEY);
+    if (!sec || sec.length !== 64) {
+      const arr = new Uint8Array(32);
+      crypto.getRandomValues(arr);
+      sec = Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(KEY, sec);
+    }
+    return sec;
+  }
+
+  /** Export 3-factor sealed backup (User Pass + Server Key + Client Secret) as base64 */
+  static exportBackup3Factor(passphrase: string, clientSecret?: string): Promise<string> {
+    const sec = clientSecret || Api.getOrCreateClientSecret();
+    return invoke('export_backup_3factor', { passphrase, clientSecret: sec });
+  }
+
+  /** Restore 3-factor sealed backup blob into profile */
+  static importBackup3Factor(profile: string, passphrase: string, blobBase64: string, clientSecret?: string): Promise<void> {
+    const sec = clientSecret || Api.getOrCreateClientSecret();
+    return invoke('import_backup_3factor', { profile, passphrase, blob: blobBase64, clientSecret: sec });
+  }
+
+  /** Trigger browser download for base64 backup */
+  static downloadBackupFile(blobBase64: string, filename = 'gipny-session.backup') {
+    const binary = atob(blobBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  static sendTyping(contactId: number | null, groupId: string | null, typing: boolean): Promise<void> {
+    return invoke('send_typing', { contactId, groupId, typing });
+  }
+  static playNotifySound(name?: string | null): Promise<void> {
+    if (!isTauri) {
+      try {
+        const audio = new Audio(`${import.meta.env.BASE_URL ?? '/'}notify.wav`);
+        audio.play().catch(() => {});
+      } catch (_) {}
+      return Promise.resolve();
+    }
+    return invoke('play_notify_sound', { name: name ?? null });
+  }
+  static notifyOs(title: string, body: string): Promise<void> {
+    if (!isTauri) {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(title, { body });
+      } else if (typeof Notification !== 'undefined' && Notification.permission !== 'denied') {
+        Notification.requestPermission().then((perm) => {
+          if (perm === 'granted') new Notification(title, { body });
+        });
+      }
+      return Promise.resolve();
+    }
+    return invoke('notify_os', { title, body });
+  }
+  static notifyProbe(): Promise<string> {
+    if (!isTauri) return Promise.resolve('web-browser-notifications');
+    return invoke('notify_probe');
+  }
+  static pinChat(contactId: number | null, groupId: string | null): Promise<void> {
+    return invoke('pin_chat', { contactId, groupId });
+  }
+  static unpinChat(contactId: number | null, groupId: string | null): Promise<void> {
+    return invoke('unpin_chat', { contactId, groupId });
+  }
+  static updateTrayBadge(count: number): Promise<void> {
+    if (!isTauri) {
+      if (count > 0) {
+        document.title = `(${count}) gipny`;
+      } else {
+        document.title = `gipny`;
+      }
+      return Promise.resolve();
+    }
+    return invoke('update_tray_badge', { count });
+  }
+  static forwardMessage(sourceMessageId: number, contactId: number | null, groupId: string | null): Promise<number> {
+    return invoke('forward_message', { sourceMessageId, contactId, groupId });
+  }
+  static listGroups(): Promise<Group[]> {
+    return invoke('list_groups');
+  }
+  static createGroup(name: string, memberContactIds: number[]): Promise<string> {
+    return invoke('create_group', { name, memberContactIds });
+  }
+  static listGroupMembers(groupId: string): Promise<GroupMember[]> {
+    return invoke('list_group_members', { groupId });
+  }
+  static addGroupMember(groupId: string, contactId: number): Promise<void> {
+    return invoke('add_group_member', { groupId, contactId });
+  }
+  static listGroupMessages(groupId: string, limit = 100, beforeId: number | null = null): Promise<Message[]> {
+    return invoke('list_group_messages', { groupId, limit, beforeId });
+  }
+  static sendGroupMessage(groupId: string, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+    return invoke('send_group_message', { groupId, body, attachments, ttlSecs, replyTo });
+  }
+  static sendGroupMessagePaths(groupId: string, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+    if (!isTauri) return invoke<number>('send_group_message', { groupId, body, browserFiles: selectedBrowserFiles(paths), ttlSecs, replyTo }).then(id => { forgetBrowserFiles(paths); return id; });
+    return invoke('send_group_message_paths', { groupId, body, paths, ttlSecs, replyTo });
+  }
+  static saveAttachment(attachmentId: number, destPath: string): Promise<void> {
+    return invoke('save_attachment', { attachmentId, destPath });
+  }
+  static savePasteTemp(name: string, data: number[]): Promise<string> {
+    return invoke('save_paste_temp', { name, data });
+  }
+  static pasteClipboardImage(): Promise<string | null> {
+    return invoke('paste_clipboard_image');
+  }
+  static deleteGroup(groupId: string): Promise<void> {
+    return invoke('delete_group', { groupId });
+  }
+  static markGroupRead(groupId: string): Promise<void> {
+    return invoke('mark_group_read', { groupId });
+  }
+  static groupUnreadCount(groupId: string): Promise<number> {
+    return invoke('group_unread_count', { groupId });
+  }
+  static pinContactMessage(contactId: number, messageId: number): Promise<void> {
+    return invoke('pin_contact_message', { contactId, messageId });
+  }
+  static unpinContactMessage(contactId: number, messageId: number): Promise<void> {
+    return invoke('unpin_contact_message', { contactId, messageId });
+  }
+  static listPinnedContact(contactId: number): Promise<Message[]> {
+    return invoke('list_pinned_contact', { contactId });
+  }
+  static pinGroupMessage(groupId: string, messageId: number): Promise<void> {
+    return invoke('pin_group_message', { groupId, messageId });
+  }
+  static unpinGroupMessage(groupId: string, messageId: number): Promise<void> {
+    return invoke('unpin_group_message', { groupId, messageId });
+  }
+  static listPinnedGroup(groupId: string): Promise<Message[]> {
+    return invoke('list_pinned_group', { groupId });
+  }
+  static checkUpdate(): Promise<CheckResult> {
+    return invoke('check_update');
+  }
+  static updateInstallsItself(): Promise<boolean> {
+    return invoke('update_installs_itself');
+  }
+  static restartApp(): Promise<void> {
+    return invoke('restart_app');
+  }
+  static updateAsksForRoot(): Promise<boolean> {
+    return invoke('update_asks_for_root');
+  }
+  static installUpdate(): Promise<void> {
+    return invoke('install_update');
+  }
+  static dismissUpdate(version: string): Promise<void> {
+    return invoke('dismiss_update', { version });
+  }
+  static async getContactFolders(): Promise<ContactFolder[]> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'contact_folders' })) ?? '[]');
+      return Array.isArray(parsed) ? parsed as ContactFolder[] : [];
+    } catch {
+      return [];
+    }
+  }
+  static setContactFolders(folders: ContactFolder[]): Promise<void> {
+    return invoke('set_ui_data', { key: 'contact_folders', json: JSON.stringify(folders) });
+  }
+  /** Avatar picked per key (sign_pk hex → avatar id); unpicked keys get a default. */
+  static async getAvatarChoices(): Promise<Record<string, string>> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'avatars' })) ?? '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+    } catch {
+      return {};
+    }
+  }
+  static setAvatarChoices(choices: Record<string, string>): Promise<void> {
+    return invoke('set_ui_data', { key: 'avatars', json: JSON.stringify(choices) });
+  }
+  /** Per-profile chat preferences the interface owns. `ttlSecs` is the
+   * disappearing-message timer the person last used, `ttlChosen` that they
+   * picked it themselves — which is what stops us reminding them about the
+   * default on every launch. */
+  static async getChatPrefs(): Promise<ChatPrefs> {
+    try {
+      const parsed: unknown = JSON.parse((await invoke<string | null>('get_ui_data', { key: 'chat_prefs' })) ?? '{}');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ttlSecs: null, ttlChosen: false, clearOnLock: false };
+      const o = parsed as Record<string, unknown>;
+      const ttl = o['ttlSecs'];
+      return {
+        ttlSecs: typeof ttl === 'number' && Number.isFinite(ttl) ? ttl : null,
+        ttlChosen: o['ttlChosen'] === true,
+        saveHistory: Object.fromEntries(Object.entries(
+          o['saveHistory'] && typeof o['saveHistory'] === 'object' && !Array.isArray(o['saveHistory'])
+            ? o['saveHistory'] as Record<string, unknown> : {},
+        ).filter(([key, value]) => /^(contact|group):.+$/.test(key) && typeof value === 'boolean')) as Record<string, boolean>,
+        clearOnLock: o['clearOnLock'] === true,
+      };
+    } catch {
+      return { ttlSecs: null, ttlChosen: false, clearOnLock: false };
+    }
+  }
+  /** Change one preference without dropping the others.
+   *
+   * The TTL lives in the chat window and this flag in settings, so each writes
+   * on its own; writing a whole object built from a stale copy would let one
+   * quietly undo the other. */
+  private static chatPrefsWrite: Promise<void> = Promise.resolve();
+  private static chatPrefsListeners = new Set<(prefs: ChatPrefs) => void>();
+  static onChatPrefsChanged(callback: (prefs: ChatPrefs) => void): () => void {
+    Api.chatPrefsListeners.add(callback);
+    return () => { Api.chatPrefsListeners.delete(callback); };
+  }
+  static flushChatPrefs(): Promise<void> { return Api.chatPrefsWrite; }
+  static updateChatPrefs(patch: Partial<ChatPrefs>): Promise<void> {
+    const write = Api.chatPrefsWrite.then(async () => {
+      const current = await Api.getChatPrefs();
+      await Api.setChatPrefs({ ...current, ...patch,
+        ...(patch.saveHistory ? { saveHistory: { ...current.saveHistory, ...patch.saveHistory } } : {}),
+      });
+    });
+    Api.chatPrefsWrite = write.catch(() => {});
+    return write;
+  }
+  static async setChatPrefs(prefs: ChatPrefs): Promise<void> {
+    await invoke('set_ui_data', { key: 'chat_prefs', json: JSON.stringify(prefs) });
+    for (const callback of Api.chatPrefsListeners) callback(prefs);
+  }
+  /** Empty the transcript of this profile. Returns how many messages went. */
+  static clearMessageHistory(preserveSaved = false): Promise<number> {
+    return invoke('clear_message_history', preserveSaved ? { preserveSaved: true } : undefined);
+  }
+  /** Rebuilds tunnels; takes tens of seconds and rejects if it could not. */
+  static setLane(lane: Lane): Promise<void> {
+    return invoke('set_lane', { lane });
+  }
+  static getAutoUpdate(): Promise<boolean> {
+    return invoke('get_auto_update');
+  }
+  static setAutoUpdate(enabled: boolean): Promise<void> {
+    return invoke('set_auto_update', { enabled });
+  }
+  /** The card (or any short text) as an SVG QR picture. */
+  static qrSvg(text: string): Promise<string> {
+    return invoke('qr_svg', { text });
+  }
+  static currentVersion(): Promise<string> {
+    return invoke('current_version');
+  }
+  static onEvent(handler: (e: CoreEvent) => void): Promise<UnlistenFn> {
+    return listen<CoreEvent>('core_event', (ev) => handler(ev.payload));
+  }
+  static onBootStatus(handler: (s: BootStatus) => void): Promise<UnlistenFn> {
+    return listen<BootStatus>('boot_status', (ev) => handler(ev.payload));
+  }
+}
+
+// Shared compact-card codec; import remains compatible with v1/v2.
+export { encodeCard, decodeCard, isValidI2pAddress } from '../features/contacts/contact-card';
+export type { DecodedCard } from '../features/contacts/contact-card';

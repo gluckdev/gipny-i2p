@@ -1,7 +1,7 @@
-import type { BrowserBackend, UnlistenFn } from '../api';
-import { enrollBrowserPasskey, unlockBrowserPasskey } from './passkeys';
-import { RtcBridge, rtcSettings } from './rtc-transport';
-import { loadNetworkConfiguration } from './network-config';
+import type { BrowserBackend, UnlistenFn } from '../app/api';
+import { enrollBrowserPasskey, unlockBrowserPasskey } from './authorization/passkeys';
+import { RtcBridge, rtcSettings } from './networking/rtc-transport';
+import { loadNetworkConfiguration } from './networking/config';
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; command: string };
 export class BrowserCoreClient implements BrowserBackend {

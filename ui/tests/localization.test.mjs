@@ -189,10 +189,11 @@ test('locale choice respects saved preferences and handles unavailable storage',
 
 test('a delayed Russian keyboard detection respects both saved and newly chosen German', async () => {
   await build({ configFile: false, logLevel: 'silent', build: {
-    outDir: dir, emptyOutDir: false, lib: { entry: 'src/i18n.ts', formats: ['es'], fileName: () => 'i18n.mjs' },
+    outDir: dir, emptyOutDir: false, lib: { entry: 'src/features/localization/i18n.ts', formats: ['es'], fileName: () => 'i18n.mjs' },
   } });
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   const originalDateTimeFormat = Intl.DateTimeFormat;
+  const originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
   const saved = localStorage.getItem('gipny.lang');
   const documentLang = document.documentElement.lang;
   let pending = deferred(), layoutRequests = 0;
@@ -215,8 +216,12 @@ test('a delayed Russian keyboard detection respects both saved and newly chosen 
     assert.equal(layoutRequests, 1);
     pending.resolve(russianKeys); await tick();
     assert.equal(detectedGerman.getLang(), 'ru', 'Russian layout overrides automatic German');
+    assert.equal(detectedGerman.getDetectedLang(), 'ru');
     assert.equal(document.documentElement.lang, 'ru');
     assert.equal(localStorage.getItem('gipny.lang'), null, 'automatic detection is not persisted');
+    detectedGerman.setLang('vi');
+    assert.equal(detectedGerman.getDetectedLang(), 'ru', 'the original suggestion survives a manual switch');
+    localStorage.removeItem('gipny.lang');
 
     pending = deferred();
     const chosenGerman = await import(`${moduleUrl}?chosen`);
@@ -245,10 +250,23 @@ test('a delayed Russian keyboard detection respects both saved and newly chosen 
       pending.resolve(russianKeys); await tick();
       assert.equal(explicit.getLang(), 'hi');
     }
+    Object.defineProperty(globalThis, 'location', { configurable: true, value: { search: '?lang=vi' } });
+    localStorage.removeItem('gipny.lang');
+    pending = deferred();
+    const handoff = await import(`${moduleUrl}?handoff`);
+    assert.equal(handoff.getLang(), 'vi');
+    assert.equal(handoff.hasLanguagePreference(), false);
+    pending.resolve(russianKeys); await tick();
+    assert.equal(handoff.getLang(), 'vi', 'site hint is stable during delayed layout detection');
+    assert.equal(localStorage.getItem('gipny.lang'), null);
+    localStorage.setItem('gipny.lang', 'de');
+    const existing = await import(`${moduleUrl}?existing-handoff`);
+    assert.equal(existing.getLang(), 'de', 'site handoff never overrides a saved choice');
   } finally {
     pending.resolve(russianKeys); await tick();
     Object.defineProperty(globalThis, 'navigator', originalNavigator);
     Intl.DateTimeFormat = originalDateTimeFormat;
+    if (originalLocation) Object.defineProperty(globalThis, 'location', originalLocation); else delete globalThis.location;
     if (saved === null) localStorage.removeItem('gipny.lang');
     else localStorage.setItem('gipny.lang', saved);
     document.documentElement.lang = documentLang;
@@ -279,6 +297,20 @@ test('interpolation preserves user data, replacement tokens and braces literally
     const text = t('profile.wiped_toast', { name });
     assert.ok(text.includes(name));
     assert.ok(t('chat.send_failed', { error: '{name}' }).includes('{name}'));
+  }
+});
+
+test('all auth callsite messages exist in every locale, including the onboarding wizard', async () => {
+  const sources = ['profiles/create.ts', 'authorization/unlock.ts', 'authorization/boot.ts'];
+  const source = (await Promise.all(sources.map(path =>
+    readFile(new URL(`../src/features/${path}`, import.meta.url), 'utf8')))).join('\n');
+  const keys = new Set([...source.matchAll(/['"](auth\.[a-z0-9_]+)['"]/g)].map(match => match[1]));
+  for (const key of ['auth.create_step', 'auth.next', 'auth.local_data_hint', 'auth.duress_setup_hint',
+    'auth.duress_unavailable_browser', 'auth.advanced_options', 'auth.invalid_max_attempts', 'auth.other_profiles']) {
+    assert.ok(keys.has(key), `${key}: exercised by an auth view`);
+  }
+  for (const [lang, messages] of Object.entries(translations)) {
+    for (const key of keys) assert.ok(messages[key]?.trim(), `${lang}: ${key}`);
   }
 });
 
@@ -326,33 +358,228 @@ test('device access errors have actionable localized text without changing unkno
   }
 });
 
-test('language is available before login and preserves values while changing forms', () => {
+test('first-launch setup follows App lifecycle, keeps layout choices, and completes once', () => {
+  localStorage.setItem('gipny.setup', 'pending');
+  const store = new Store();
+  const app = new App(store); document.body.append(app.el);
+  try {
+    assert.ok(app.el.querySelector('.language-setup'));
+    const boxes = app.el.querySelectorAll('input[type=checkbox]');
+    assert.equal(boxes.length, 8);
+    assert.ok(boxes[1].checked && boxes[1].disabled, 'English cannot be removed');
+    boxes[3].checked = true; boxes[3].dispatchEvent(new win.Event('change'));
+    boxes[0].checked = false; boxes[0].dispatchEvent(new win.Event('change'));
+    const detected = LANGS.find(({ id }) => id === ui.getDetectedLang());
+    for (const { id, label, flag } of LANGS) {
+      const picker = app.el.querySelector('select');
+      assert.equal(picker.querySelector(`option[value=${id}]`).textContent, `${flag} ${label}`);
+      picker.value = id; picker.dispatchEvent(new win.Event('change'));
+      assert.ok(app.el.textContent.includes(t('setup.title')));
+      assert.ok(app.el.textContent.includes(t('setup.detected', { language: detected.label })));
+      for (const layout of LANGS) {
+        assert.equal(app.el.querySelector(`input[value=${layout.id}]`).closest('label').textContent, `${layout.flag} ${layout.label}`);
+      }
+      assert.equal(app.el.querySelectorAll('input')[3].checked, true);
+      assert.equal(app.el.querySelectorAll('input')[0].checked, false);
+    }
+    store.view.set('auth-create'); // asynchronous bootstrap must not dismiss setup
+    assert.ok(app.el.querySelector('.language-setup'));
+    app.el.querySelector('button.btn').click();
+    assert.equal(app.el.querySelector('.language-setup'), null);
+    assert.ok(app.el.textContent.includes(t('auth.create_step', { p0: 1 })));
+    assert.equal(localStorage.getItem('gipny.setup'), 'done');
+    assert.ok(ui.savedLayouts().includes('en') && ui.savedLayouts().includes('de'));
+    assert.ok(!ui.savedLayouts().includes('ru'));
+    assert.equal(ui.needsLanguageSetup(), false);
+    const reopened = new App(store);
+    try { assert.equal(reopened.el.querySelector('.language-setup'), null, 'completion survives rebuilding App'); }
+    finally { reopened.destroy(); }
+    const persisted = localStorage.getItem('gipny.osk.base-layouts');
+    setLang('ru');
+    assert.equal(localStorage.getItem('gipny.osk.base-layouts'), persisted);
+    localStorage.removeItem('gipny.setup');
+    assert.equal(ui.needsLanguageSetup(), false, 'legacy explicit preferences skip setup');
+  } finally { app.destroy(); localStorage.removeItem('gipny.setup'); localStorage.removeItem('gipny.osk.base-layouts'); }
+});
+
+test('setup merges keyboard detection resolved after App mounts without overriding checkbox choices', async () => {
+  const navigatorProps = new Map(['languages', 'language', 'keyboard'].map(key => [key, Object.getOwnPropertyDescriptor(navigator, key)]));
+  const originalDateTimeFormat = Intl.DateTimeFormat;
+  const originalLocation = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const documentLang = document.documentElement.lang;
+  const storage = new Map(['gipny.lang', 'gipny.setup', 'gipny.osk.base-layouts', 'gipny.osk.layouts']
+    .map(key => [key, localStorage.getItem(key)]));
+  let app, pending;
+  try {
+    Object.defineProperty(navigator, 'languages', { configurable: true, value: ['en-US'] });
+    Object.defineProperty(navigator, 'language', { configurable: true, value: 'en-US' });
+    Object.defineProperty(navigator, 'keyboard', { configurable: true, value: { getLayoutMap: () => pending.promise } });
+    Object.defineProperty(globalThis, 'location', { configurable: true, value: { search: '' } });
+    Intl.DateTimeFormat = () => ({ resolvedOptions: () => ({ locale: 'en-US' }) });
+    for (const scenario of ['untouched', 'ru-removed', 'other-choice']) {
+      for (const key of storage.keys()) localStorage.removeItem(key);
+      pending = deferred();
+      // A fresh instance of the real bundled App also starts fresh automatic
+      // locale detection. Keep its layout promise unresolved until after mount.
+      const fresh = await import(`${pathToFileURL(join(dir, 'entry.mjs')).href}?late-setup-${scenario}`);
+      const store = new fresh.Store(); store.view.set('auth-create');
+      app = new fresh.App(store); document.body.append(app.el);
+      assert.equal(fresh.getLang(), 'en');
+      assert.deepEqual([...app.el.querySelectorAll('input:checked')].map(input => input.value), ['en']);
+      const change = (id, checked) => {
+        const input = app.el.querySelector(`input[value=${id}]`);
+        input.checked = checked; input.dispatchEvent(new win.Event('change'));
+      };
+      if (scenario === 'ru-removed') {
+        change('ru', true); change('ru', false);
+      } else if (scenario === 'other-choice') {
+        change('de', true);
+      }
+      pending.resolve(new Map([['KeyS', 'ы'], ['BracketRight', 'ъ'], ['Quote', 'э']]));
+      await tick();
+      assert.equal(fresh.getLang(), 'ru');
+      assert.equal(app.el.querySelector('select').value, 'ru');
+      assert.equal(app.el.querySelector('input[value=ru]').checked, scenario !== 'ru-removed');
+      assert.equal(app.el.querySelector('input[value=de]').checked, scenario === 'other-choice');
+      assert.equal(app.el.querySelector('input[value=en]').checked, true);
+      assert.equal(app.el.querySelector('input[value=en]').disabled, true);
+      assert.equal(localStorage.getItem('gipny.osk.base-layouts'), null, 'inference is not an explicit preference yet');
+      // A manual language switch must not discard overrides or infer that
+      // language as another keyboard choice.
+      fresh.setLang('vi');
+      assert.equal(app.el.querySelector('input[value=vi]').checked, false);
+      assert.equal(app.el.querySelector('input[value=ru]').checked, scenario !== 'ru-removed');
+      app.el.querySelector('button.btn').click();
+      const expected = ['en', ...(scenario === 'ru-removed' ? [] : ['ru']), ...(scenario === 'other-choice' ? ['de'] : [])];
+      assert.deepEqual([...fresh.savedLayouts()].sort(), expected.sort());
+      assert.equal(localStorage.getItem('gipny.setup'), 'done');
+      assert.equal(fresh.needsLanguageSetup(), false);
+      app.destroy(); app = null;
+    }
+  } finally {
+    app?.destroy();
+    pending?.resolve(new Map()); await tick();
+    for (const [key, descriptor] of navigatorProps) {
+      if (descriptor) Object.defineProperty(navigator, key, descriptor);
+      else delete navigator[key];
+    }
+    Intl.DateTimeFormat = originalDateTimeFormat;
+    if (originalLocation) Object.defineProperty(globalThis, 'location', originalLocation);
+    else delete globalThis.location;
+    for (const [key, value] of storage) {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    }
+    document.documentElement.lang = documentLang;
+  }
+});
+
+test('site language hints accept only the eight exact locale IDs', () => {
+  for (const { id } of LANGS) assert.equal(ui.languageHint(`?lang=${id}`), id);
+  for (const query of ['', '?lang=xx', '?lang=EN', '?lang=en-US', '?lang=%3Cscript%3E']) {
+    assert.equal(ui.languageHint(query), null);
+  }
+});
+
+test('language is available before login and preserves the complete creation wizard in memory', () => {
   const store = new Store();
   store.view.set('auth-create');
   setLang('ru');
   const app = new App(store); document.body.append(app.el);
-  const inputs = [...app.el.querySelectorAll('input')];
-  inputs[0].value = 'alice'; inputs[2].value = 'private-passphrase';
-  assert.equal(app.el.querySelector('.auth-language option[value=de]').textContent, 'Deutsch');
-  for (const lang of ['en', 'de']) {
+  const draft = { step: 3, displayName: 'Alice', password: 'private-passphrase', confirmation: 'private-passphrase',
+    duressPassword: 'different-duress', wipeOnDuress: false, maxAttempts: '7', advancedOpen: true };
+  app.current.restoreDraft(draft);
+  assert.equal(app.el.querySelector('.auth-language option[value=de]').textContent, '🇩🇪 Deutsch');
+  for (const lang of LANGS.map(({ id }) => id)) {
+    const previous = app.current;
+    const previousPassword = previous.el.querySelector('#create-password');
     const picker = app.el.querySelector('.auth-language select');
-    assert.deepEqual([...picker.options].map((option) => ({ id: option.value, label: option.textContent })), LANGS);
+    assert.deepEqual([...picker.options].map((option) => ({ id: option.value, label: option.textContent })), LANGS.map(({ id, label, flag }) => ({ id, label: `${flag} ${label}` })));
     picker.value = lang; picker.dispatchEvent(new win.Event('change'));
     assert.equal(getLang(), lang);
     assert.equal(document.documentElement.lang, lang);
     assert.equal(app.el.querySelector('.auth-language select').value, lang);
     assert.equal(app.el.querySelector('.auth-language select').getAttribute('aria-label'), t('settings.language'));
     assert.ok(app.el.textContent.includes(t('auth.create_btn')));
-    const current = [...app.el.querySelectorAll('input')];
-    assert.equal(current[0].value, 'alice'); assert.equal(current[2].value, 'private-passphrase');
+    assert.deepEqual(app.current.captureDraft(), draft);
+    assert.equal(app.el.querySelector('[data-step="3"]').hidden, false);
+    assert.equal(app.el.querySelector('.auth-step').textContent, t('auth.create_step', { p0: 3 }));
+    assert.equal(app.el.querySelector('.hint').textContent, t('auth.name_hint', { p0: 'alice' }));
+    if (previous !== app.current) assert.equal(previousPassword.value, '', 'destroyed views clear password fields');
+  }
+  for (const step of [1, 2]) {
+    const earlier = { ...draft, step };
+    app.current.restoreDraft(earlier);
+    setLang(step === 1 ? 'en' : 'uk');
+    assert.deepEqual(app.current.captureDraft(), earlier);
+    assert.equal(app.el.querySelector(`[data-step="${step}"]`).hidden, false);
+    assert.equal(app.el.querySelector('.auth-actions .btn:not(.btn-ghost)').textContent, t('auth.next'));
   }
   assert.ok(!JSON.stringify(localStorage).includes('private-passphrase'));
+  assert.ok(!JSON.stringify(localStorage).includes('different-duress'));
+  setLang('de');
+  const password = app.el.querySelector('#create-password');
   store.view.set('auth-booting');
+  assert.equal(password.value, '', 'leaving the wizard clears credentials rather than retaining a draft');
   assert.match(app.el.textContent, /SYSTEMSTART/);
   setLang('en');
   assert.match(app.el.textContent, /SYSTEM INITIALIZATION/);
   setLang('ru'); assert.match(app.el.textContent, /ЗАПУСК СИСТЕМЫ/);
   app.destroy();
+});
+
+test('pending setup survives an interrupted language choice and English-only selection', () => {
+  localStorage.setItem('gipny.setup', 'pending');
+  const store = new Store();
+  let app = new App(store);
+  try {
+    setLang('de');
+    assert.equal(ui.needsLanguageSetup(), true, 'choosing a language is not completion');
+    app.destroy();
+    app = new App(store);
+    assert.ok(app.el.querySelector('.language-setup'));
+    for (const input of app.el.querySelectorAll('input[type=checkbox]')) {
+      if (input.value === 'en') continue;
+      input.checked = false; input.dispatchEvent(new win.Event('change'));
+    }
+    setLang('vi');
+    const english = app.el.querySelector('input[value=en]');
+    assert.equal(english.checked, true); assert.equal(english.disabled, true);
+    assert.equal(app.el.querySelectorAll('input:checked').length, 1);
+    app.el.querySelector('button.btn').click();
+    assert.deepEqual(ui.savedLayouts(), ['en']);
+    assert.equal(localStorage.getItem('gipny.setup'), 'done');
+  } finally {
+    app.destroy(); localStorage.removeItem('gipny.setup'); localStorage.removeItem('gipny.osk.base-layouts');
+  }
+});
+
+test('root and locale refresh preserve unlock fields without automatically opening an unlocked profile', async () => {
+  const original = Api.vaultStatus;
+  Api.vaultStatus = async () => ({ exists: true, unlocked: true, totp_enabled: true, biometric_available: true });
+  const store = new Store();
+  store.profiles.set(['alice', 'bob']); store.currentProfile.set('alice'); store.view.set('auth-unlock');
+  const before = calls.length;
+  let opened = 0;
+  store.onUnlocked = async () => { opened++; };
+  const app = new App(store); document.body.append(app.el);
+  try {
+    await tick();
+    app.el.querySelector('#unlock-password').value = 'unlock-draft';
+    app.el.querySelector('#unlock-totp').value = '012345';
+    for (const { id } of LANGS) {
+      setLang(id); await tick();
+      assert.equal(store.view.get(), 'auth-unlock');
+      assert.equal(app.el.querySelector('#unlock-password').value, 'unlock-draft');
+      assert.equal(app.el.querySelector('#unlock-totp').value, '012345');
+      assert.equal(app.el.querySelector('.auth-other-profiles').textContent, t('auth.other_profiles', { p0: 1 }));
+    }
+    assert.equal(opened, 0);
+    assert.ok(!calls.slice(before).some(cmd => /vault_unlock|vault_create/.test(cmd)));
+    assert.ok(!JSON.stringify(localStorage).includes('unlock-draft'));
+    const password = app.el.querySelector('#unlock-password');
+    app.destroy(); assert.equal(password.value, '');
+  } finally { app.destroy(); Api.vaultStatus = original; }
 });
 
 test('settings list language endonyms and switch to German without duplicating modals', async () => {
@@ -366,7 +593,7 @@ test('settings list language endonyms and switch to German without duplicating m
       assert.equal(modal.querySelector('label[for=opt-lang-de] .opt-title').textContent, 'Deutsch');
       assert.deepEqual([...modal.querySelectorAll('input[name=language]')].map((radio) => ({
         id: radio.id.slice('opt-lang-'.length), label: radio.closest('label').querySelector('.opt-title').textContent,
-      })), LANGS);
+      })), LANGS.map(({ id, label }) => ({ id, label })));
       const radio = modal.querySelector(`#opt-lang-${lang}`);
       radio.checked = true; radio.dispatchEvent(new win.Event('change')); await tick();
       assert.equal(getLang(), lang);
@@ -845,7 +1072,7 @@ test('DM notices survive automatic receipts and disappear only after explicit hu
 });
 
 test('only active chat content is cached and stale list/pinned replies cannot return after switch or lock', async () => {
-  const previous = { list: Api.listMessages, pinned: Api.listPinnedContact, lock: Api.vaultLock };
+  const previous = { list: Api.listMessages, pinned: Api.listPinnedContact, lock: Api.vaultLock, profiles: Api.listProfiles };
   const store = chatStore();
   const target = { kind: 'contact', id: 1 };
   try {
@@ -873,7 +1100,7 @@ test('only active chat content is cached and stale list/pinned replies cannot re
     Api.listMessages = () => afterLock.promise;
     Api.listPinnedContact = () => afterLockPins.promise;
     Api.vaultLock = () => vault.promise;
-    store.cancelToProfileSelect = async () => { store.view.set('profile-select'); };
+    Api.listProfiles = async () => [];
     store.beginPrewarm = () => {};
     const lateList = store.loadMessages(target), latePins = store.loadPinned(target);
     const locking = store.lock();
@@ -884,7 +1111,7 @@ test('only active chat content is cached and stale list/pinned replies cannot re
     assert.equal(store.messages.get().size, 0); assert.equal(store.pinned.get().size, 0);
     vault.resolve(); await locking;
     assert.equal(store.messages.get().size, 0); assert.equal(store.pinned.get().size, 0);
-  } finally { Api.listMessages = previous.list; Api.listPinnedContact = previous.pinned; Api.vaultLock = previous.lock; }
+  } finally { Api.listMessages = previous.list; Api.listPinnedContact = previous.pinned; Api.vaultLock = previous.lock; Api.listProfiles = previous.profiles; }
 });
 
 test('destroy and deletion clear chat-owned plaintext/images and reject late attachment replies', async () => {

@@ -1,18 +1,19 @@
 import './compat';
-import { isTauri, usesBrowserCore } from './api';
-import { clearBrowserFiles } from './browser-files';
-import { Store } from './state';
-import { App } from './app';
-import { SearchModal } from './search';
-import { applyTheme } from './theme';
-import { installOsk, setViewportOffset } from './osk';
-import { errorText } from './error-text';
+import { isTauri, usesBrowserCore } from './app/api';
+import { clearBrowserFiles } from './features/files/browser-files';
+import { Store } from './app/state';
+import { App } from './app/app';
+import { SearchModal } from './features/messaging/search';
+import { applyTheme } from './app/theme';
+import { installOsk, installViewportTracking } from './features/keyboard/osk';
+import { errorText } from './app/error-text';
 
 // theme-init.js already set this before paint; re-apply in case it was blocked.
 applyTheme();
 // On a phone the app's own keyboard replaces the system one: mounted before
 // the first screen renders, so every field it draws is already covered.
 installOsk();
+installViewportTracking();
 
 const root = document.getElementById('app');
 if (!root) throw new Error('no #app');
@@ -63,13 +64,3 @@ window.addEventListener('keydown', (e) => {
     app.openModal((close) => new SearchModal(store, close, scope).el);
   }
 }, true);
-
-// A system keyboard, where one still appears (a desktop with a touch screen,
-// a browser without the app's keyboard): --kbd-offset follows the viewport.
-// osk.ts merges this with its own panel's height.
-const vv = window.visualViewport;
-if (vv) {
-  const update = (): void => setViewportOffset(window.innerHeight - vv.height - vv.offsetTop);
-  vv.addEventListener('resize', update);
-  vv.addEventListener('scroll', update);
-}

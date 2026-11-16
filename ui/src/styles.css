@@ -2286,7 +2286,7 @@ a { color: var(--phosphor); }
    shrinks by --kbd-offset, which osk.ts sets to the panel's height. Margins,
    not flex gap: Chromium 83 (Huawei WebView 11) has no gap in flexbox. */
 .osk {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200;
+  position: fixed; left: 0; right: 0; bottom: var(--viewport-bottom, 0px); z-index: 1200;
   padding: 6px 3px calc(6px + var(--safe-bottom, 0px));
   background: var(--surface-2);
   border-top: 1px solid var(--border-bright);
@@ -2318,13 +2318,40 @@ a { color: var(--phosphor); }
 .osk-blank { visibility: hidden; }
 .osk-emoji { flex-wrap: wrap; max-height: 150px; overflow-y: auto; }
 .osk-emoji .osk-key { flex: 0 0 calc(12.5% - 4px); height: 44px; margin-bottom: 4px; font-size: 22px; }
-/* With the panel up, the window's bottom belongs to it. A sign-in screen
-   gets room below its card so the focused field can scroll above the keys. */
-:root[data-osk="shown"] #app { height: calc(100% - var(--kbd-offset, 0px)); }
-:root[data-osk="shown"] .auth { padding-bottom: calc(var(--kbd-offset, 0px) + 12px) !important; }
-/* A modal's own scroll area ends where the keys begin, so a field or a
-   footer button at its bottom can be reached. */
-:root[data-osk="shown"] .modal-backdrop { bottom: var(--kbd-offset, 0px); }
+/* Only the app shell is reduced; descendants use its available flex height.
+   Pixel sizing from osk.ts works on Chromium 83 and avoids dvh/IME double cuts. */
+#app { position: relative; top: var(--viewport-top, 0px); height: var(--app-height, 100%); min-height: 0; }
+.setup-layouts { border: 1px solid var(--border); margin: 16px 0; padding: 8px; }
+.setup-layouts .opt { min-height: 44px; }
+.language-setup { max-height: 100%; overflow-y: auto; }
+/* Fixed modals share the same available area, without subtracting twice. */
+.modal-backdrop { top: var(--viewport-top, 0px); height: var(--app-height, 100%); bottom: auto; }
+.modal { max-height: 100%; min-height: 0; }
+.modal > * { flex-shrink: 0; }
+/* Auto margins center short cards but do not make tall forms unscrollable. */
+.auth { align-items: flex-start; }
+.auth-card { flex-shrink: 0; margin: auto; }
+.auth-step { color: var(--text-dim); margin: 0 0 12px; }
+.auth-local-data, .auth-duress-explanation { color: var(--text-dim); margin: 0 0 14px; overflow-wrap: anywhere; }
+.auth-other-profiles { margin-top: 10px; }
+:root[data-osk="shown"] .chat-input { min-height: 0; max-height: 100%; overflow-y: auto; }
+
+/* A 320px-high landscape viewport leaves too little room for four 42px
+   rows and the chat chrome. Keep the actual chat as a scrollport, with a
+   nonzero log and a non-shrinking composer. revealField() scrolls that
+   scrollport, not the body, if notices or attachments push the field down. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .osk { padding-top: 3px; padding-bottom: calc(3px + var(--safe-bottom, 0px)); }
+  .osk-row { margin-top: 3px; }
+  .osk-key { height: 28px; font-size: 15px; }
+  .osk-emoji { max-height: 62px; }
+  .osk-emoji .osk-key { height: 28px; font-size: 18px; }
+  :root[data-osk="shown"] .chat { overflow-y: auto; }
+  :root[data-osk="shown"] .chat > * { flex-shrink: 0; }
+  :root[data-osk="shown"] .chat-header { display: none; }
+  :root[data-osk="shown"] .chat-log-wrap { flex: 1 0 32px; min-height: 32px; }
+  :root[data-osk="shown"] .chat-input { flex: 0 0 auto; min-height: 60px; max-height: none; overflow: visible; }
+}
 
 /* --- 1. Nothing may make the page wider than the viewport ---------------- */
 
@@ -2488,8 +2515,8 @@ select.input { width: 100%; text-overflow: ellipsis; }
 /* --- 5. Phone: one pane at a time ---------------------------------------- */
 
 @media (max-width: 600px) {
-  html, body { overflow-y: auto !important; height: auto !important; }
-  #app { min-height: 100vh; }
+  html, body { overflow: hidden !important; height: 100% !important; }
+  #app { min-height: 0; }
   .auth {
     align-items: flex-start !important;
     min-height: 0;
@@ -2498,10 +2525,8 @@ select.input { width: 100%; text-overflow: ellipsis; }
   }
   .auth-card { width: 100% !important; max-width: 100% !important; padding: 16px !important; }
 
-  /* vh first: a WebView without dvh (Chromium < 108) keeps this line and
-     skips the next; a newer one lets the dvh line win. */
-  html, body, #app, .main { height: calc(100vh - var(--kbd-offset, 0px)) !important; }
-  html, body, #app, .main { height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
+  #app { height: var(--app-height, 100%) !important; }
+  .main { height: 100% !important; min-height: 0; }
   /* One pane at a time, as a flex column rather than a one-column grid: on
      Chromium 83 the grid's row kept the content height inside a `calc()`-sized
      .main (365 px of 800 on the Honor), a flex item fills it. */
@@ -2562,8 +2587,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .modal-backdrop { align-items: stretch; }
   .modal, .modal-wide {
     width: 100% !important; max-width: 100vw !important;
-    height: 100vh; max-height: 100vh !important;
-    height: 100dvh; max-height: 100dvh !important;
+    height: 100%; max-height: 100% !important;
     border: none !important; border-radius: 0 !important;
     padding-bottom: var(--safe-bottom);
   }
@@ -2776,9 +2800,6 @@ button { overflow-wrap: anywhere; }
   .boot-step-ms:empty { display: none; }
   .boot-steps { margin: 8px 0; }
   .modal-title { letter-spacing: 0; }
-  /* The modal must also shrink above the OSK; its footer stays reachable. */
-  :root[data-osk="shown"] .modal { height: calc(100vh - var(--kbd-offset, 0px)); max-height: calc(100vh - var(--kbd-offset, 0px)) !important; }
-  :root[data-osk="shown"] .modal { height: calc(100dvh - var(--kbd-offset, 0px)); max-height: calc(100dvh - var(--kbd-offset, 0px)) !important; }
 }
 
 /* Controls keep whole words when a narrow console header wraps. */

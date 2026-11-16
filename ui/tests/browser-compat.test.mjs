@@ -202,7 +202,7 @@ test(`the storage shape check names Safari/iOS ${floor}, the floor the build tar
   const { build } = await import('vite');
   const dir = await mkdtemp(join(tmpdir(), 'gipny-storage-'));
   try {
-    await build({ configFile: false, logLevel: 'silent', root: ui, build: { outDir: dir, emptyOutDir: false, lib: { entry: 'src/browser-core/storage.ts', formats: ['es'], fileName: () => 'storage.mjs' } } });
+    await build({ configFile: false, logLevel: 'silent', root: ui, build: { outDir: dir, emptyOutDir: false, lib: { entry: 'src/browser-core/profiles/storage.ts', formats: ['es'], fileName: () => 'storage.mjs' } } });
     const storage = await import(pathToFileURL(join(dir, 'storage.mjs')).href);
     storage.assertSyncHandle({ getSize: () => 0 });
     storage.assertSyncHandle({ getSize: () => 16 * 1024 * 1024 });

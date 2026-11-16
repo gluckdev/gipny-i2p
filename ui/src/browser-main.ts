@@ -1,6 +1,6 @@
-import { configureBrowserBackend } from './api';
+import { configureBrowserBackend } from './app/api';
 import { BrowserCoreClient } from './browser-core/client';
-import { clearBrowserFiles } from './browser-files';
+import { clearBrowserFiles } from './features/files/browser-files';
 
 const client = new BrowserCoreClient();
 configureBrowserBackend(client);
