@@ -946,7 +946,10 @@ jobs:
   notify:
     name: release notification
     needs: [version, publish]
-    if: needs.version.outputs.publish == 'true'
+    # Disabled until a supported sender with explicit recipients exists.
+    # notify-release.py currently requires CLI commands gipny-agent does not
+    # implement; publication must not report a successful notification.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
