@@ -1,70 +1,75 @@
-# План зеркал сайта / Website mirror plan
+# Зеркала сайта в I2P / I2P website mirrors
 
 ## Русский
 
-Статус: требование владельца от **2026-11-06**, запланировано. Это зеркала
-публичной страницы проекта и документации, а не новый сервер переписки.
-Адреса ещё не созданы и не опубликованы.
+Статус на **2026-11-16**: запланировано, действующих адресов нет.
+Зеркала распространяют публичную страницу проекта и документацию.
+Они не хранят профили и не заменяют I2P-роутер приложения серверным ядром.
 
-1. Подготовить неизменяемый комплект сайта RU/EN из того же коммита, что и
-   основная страница. Шрифты, стили, изображения и скрипты — локальные. Переход
-   к GitHub Releases остаётся явной внешней ссылкой, без автоматических запросов.
-2. Подобрать **v3 onion-адрес, начинающийся с `gipny`**. Генератор — проверенная
-   закреплённая ревизия [mkp224o](https://github.com/cathugger/mkp224o).
-   Подбор выполнять на контролируемой машине, с ограничением числа потоков и
-   времени; сохранить ключи службы в отдельном защищённом хранилище.
-   Адрес кодирует публичный ключ, checksum и версию, поэтому произвольное имя
-   не назначается вручную: [формат onion v3](https://spec.torproject.org/rend-spec/encoding-onion-addresses.html).
-3. Подобрать I2P Destination с адресом **`gipny….b32.i2p`**. Кандидат инструмента —
-   `vain` из [i2pd-tools](https://github.com/PurpleI2P/i2pd-tools); проверить
-   конкретную ревизию, форматы ключей и соответствие выведенного адреса перед
-   использованием. Дополнительно опубликовать привязку читаемого имени вроде
-   `gipny.i2p` через поддерживаемые адресные книги. Имя не является глобально
-   уникальным DNS-доменом: основной проверяемый адрес — полный b32/Destination.
-   См. [именование I2P](https://i2p.net/en/docs/overview/naming/).
-4. Развернуть статический сервер отдельно от данных мессенджера; локальный
-   listener доступен только Tor/i2pd. Настроить обновления обоих зеркал из
-   проверенного артефакта, health checks, rollback и резервные копии ключей.
-   Ключи зеркал не включать в Git, публичный CI, логи или сборочные артефакты.
-5. Подтвердить владение адресами публикацией одинакового манифеста на основной
-   странице и обоих зеркалах; включить исходный SHA и digest артефакта. Затем
-   добавить проверенные адреса на сайт и в документацию. Смена хостинга должна
-   сохранять адреса; компрометация ключа требует отдельного объявления и замены.
-6. Отдельно проверить возможность запуска WASM-клиента на каждом origin:
-   `isSecureContext`, WebCrypto, Worker, OPFS, Web Locks, Service Worker,
-   WebRTC/WSS и политику Tor Browser. HTTP-страница `.i2p` сама по себе не
-   гарантирует доступ к этим API; разрешения и требования браузера описаны в
-   [Secure Contexts](https://www.w3.org/TR/secure-contexts/). Если среда не подходит,
-   зеркало остаётся страницей проекта без обещания работающего веб-клиента.
+Используем терминологию I2P: Destination, адреса `.b32.i2p` и имена `.i2p`
+из адресной книги. Garlic routing описывает сетевые механизмы I2P, а не
+отдельную доменную зону. Читаемое имя не является глобально уникальным DNS:
+публикация зеркала должна включать проверяемый криптографический адрес.
+[Именование I2P](https://i2p.net/en/docs/overview/naming/),
+[терминология garlic routing](https://i2p.net/en/docs/overview/garlic-routing/).
 
-Критерии готовности: адреса имеют нужный префикс и независимо пересчитаны из
-ключей; страницы доступны через соответствующие сети; RU/EN совпадают;
-внешних фоновых запросов нет; обновление/откат и восстановление ключей проверены.
-Подбор адресов и развёртывание ещё не выполнялись. Предсказуемые секретные ключи,
-передача ключей стороннему сервису подбора и ослабление алгоритмов недопустимы.
+1. Подготовить неизменяемый комплект `site/` со всеми восемью языками из того
+   же коммита, что и основная страница. Шрифты, стили, изображения и скрипты
+   должны быть локальными; GitHub Releases остаётся явной внешней ссылкой.
+2. Создать Destination на контролируемом хосте и независимо проверить
+   соответствие его ключей полному адресу. Ключи хранятся отдельно от Git,
+   публичного CI, логов и артефактов; подготовить защищённое восстановление.
+   Читаемое имя в адресной книге можно добавить после проверки адреса.
+3. Размещать статические файлы отдельно от данных мессенджера. Локальный
+   HTTP listener обслуживается через I2P; возможность доступа из обычного
+   Интернета не подразумевается. Проверить обновление из артефакта, rollback,
+   достижимость через I2P и сохранение адреса после восстановления хоста.
+4. Перед публикацией разместить согласованный manifest на основной странице
+   и зеркале: исходный SHA, digest комплекта и полный адрес. После проверки
+   добавить адрес на сайт. Компрометация ключа требует смены адреса и отдельного
+   объявления, а не незаметной подмены записи.
+5. Возможность запуска WASM-клиента проверить отдельно на origin зеркала:
+   `isSecureContext`, WebCrypto, Worker WebAssembly, OPFS, Web Locks,
+   Service Worker и доступный транспорт. Сам по себе HTTP-адрес `.i2p` не
+   обеспечивает браузеру secure context. Зеркало страницы может работать,
+   даже когда браузерная среда не поддерживает запуск мессенджера.
+   [W3C Secure Contexts](https://www.w3.org/TR/secure-contexts/).
+
+Критерии готовности: криптографический адрес независимо проверен; комплект
+всех языков совпадает по SHA; внешний доступ и фоновые запросы соответствуют
+опубликованной конфигурации; обновление, откат и восстановление ключей проверены.
+Создание адреса и развёртывание этого плана пока не выполнялись. Возможности
+веб-клиента и его byte-forwarder описаны отдельно в
+[browser-messenger.md](browser-messenger.md).
 
 ## English
 
-Status: owner requirement dated **2026-11-06**, planned. These are mirrors of the
-public project page/documentation, not messaging servers. No addresses exist yet.
+Status on **2026-11-16**: planned, with no live addresses. Mirrors serve the
+public project page and documentation. They hold no profiles and do not replace
+an application's own I2P router with a server-side core.
 
-Publish identical RU/EN static artifacts from the same commit, with local assets
-and explicit external release links. Generate a **`gipny`-prefixed v3 onion**
-using a reviewed pinned [mkp224o](https://github.com/cathugger/mkp224o), and a
-**`gipny….b32.i2p` Destination** using a reviewed pinned tool such as `vain` from
-[i2pd-tools](https://github.com/PurpleI2P/i2pd-tools). Independently derive and
-verify each address from its keys. Run bounded generation on a controlled host;
-keep service keys out of Git, public CI, logs and artifacts, with protected backups.
-The [onion encoding](https://spec.torproject.org/rend-spec/encoding-onion-addresses.html)
-requires key search rather than assigning an arbitrary hostname. An additional
-friendly I2P address-book name is useful but not globally unique; publish the full
-cryptographic address as explained by [I2P naming](https://i2p.net/en/docs/overview/naming/).
+Use I2P terminology: Destination, `.b32.i2p` addresses and `.i2p` address-book
+names. Garlic routing describes I2P networking mechanisms; it is not a separate
+domain suffix. Address-book names are locally meaningful, rather than globally
+unique DNS names, so publish the independently verified cryptographic address.
+[I2P naming](https://i2p.net/en/docs/overview/naming/),
+[garlic routing terminology](https://i2p.net/en/docs/overview/garlic-routing/).
 
-Serve static files on a local listener reached by Tor/i2pd. Validate updates,
-rollback, reachability and key recovery before publishing cross-referenced mirror
-manifests/addresses. Preserve addresses across hosting changes. Key compromise
-requires a separate rotation announcement. Check secure-context APIs and transport
-availability independently before offering WASM on either mirror; an HTTP I2P
-page does not automatically qualify under [Secure Contexts](https://www.w3.org/TR/secure-contexts/).
-If necessary, offer the informational mirror first. No vanity generation or
-deployment has been performed for this plan.
+Publish the same immutable eight-language `site/` artifact and source SHA as
+the primary site, with local assets and explicit external release links.
+Create the Destination on a controlled host, independently verify its full
+address, and keep its keys and protected recovery copies out of Git, public CI,
+logs and artifacts. Add a readable address-book name only after verification.
+
+Serve static files on a local HTTP listener reached through I2P, separately
+from messenger data. Verify reachability, artifact updates, rollback and key
+recovery. Cross-publish a manifest containing the source SHA, artifact digest
+and full address before adding a live mirror link. Preserve the address across
+host recovery; a compromised key requires an announced address rotation.
+
+Validate browser secure-context APIs, Worker WebAssembly, OPFS and transport
+availability independently before offering the WASM messenger on the mirror.
+An HTTP I2P page does not automatically qualify as a
+[secure context](https://www.w3.org/TR/secure-contexts/). The informational site
+can remain useful when its origin cannot run the messenger. Address generation
+and deployment have not been performed for this plan.

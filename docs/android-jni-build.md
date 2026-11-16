@@ -1,8 +1,21 @@
 # Android: JNI установщика и подготовка APK
 
-Состояние на 2026-10-28: исправление подготовлено для общей ветки дня;
+Историческое состояние на 2026-10-28: исправление подготовлено для общей ветки дня;
 выпущено в `v0.4.19` (2026-10-29). База — `26487a5`; версии библиотек закреплены lockfile:
 `jni 0.21.1`, Tauri `2.11.5`, Wry `0.55.1`.
+
+Актуализация 2026-11-16: текущий Cargo.lock содержит Tauri 2.12.5 и Wry 0.57.1;
+JNI остаётся 0.21.1. Shipping ABI — ARM64 и ARMv7, minSdk 24, targetSdk 36,
+обязателен поддерживаемый аппаратный Keystore.
+[Общая матрица и границы runtime](platform-support.md),
+[обновления и сохранность профиля](platform-updates.md).
+
+Для Android 16 KiB в нашем `android-router/jni/Android.mk` добавлены оба
+linker flags NDK 27: `max-page-size=16384`, `common-page-size=16384`.
+Release workflow проверяет ELF всех native `.so` и zipalign подписанного APK
+через `scripts/verify-android-pages.py`; ARM64 политика 16 KiB, ARMv7 —4 KiB.
+Структурный gate не заменяет запуск нового APK на 16 KiB устройстве: он ещё
+требуется. Старый preview 589ad57 имеет 4 KiB `libi2pd.so` в ARM64 APK.
 
 ## Что исправлено
 

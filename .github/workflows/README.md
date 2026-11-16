@@ -6,6 +6,12 @@
 
 Всё собирается только здесь, на раннерах GitHub: локальных сборок у проекта нет. Этот файл описывает и соседей: `.github/scripts/`, `.github/codeql/`, `.github/dependabot.yml`.
 
+Решение владельца от **2026-11-16**: alpha2 не публикуется. Следующий beta
+требует общего проверенного SHA, совместимости платформ, адаптивных network/UI
+и защищённого переноса профиля. Старые preview служат baseline; наличие
+workflow `publish=true` само по себе не разрешает публикацию.
+[Платформы, проверенные минимумы и незакрытые gates](../../docs/platform-support.md).
+
 ## Что здесь
 
 | Файл | Когда запускается | Джобы | Что доказывает / производит |
@@ -161,6 +167,16 @@ reviewed Cargo/npm lockfiles. `I2P_EMBED_STUB`, `I2P_EMBED_SKIP_NATIVE` и relea
 assertions блокируются shipping gate. Debug stub APK из `build.yml` не являются
 релизами. Проверки manifest на синтетических данных выполняет
 `.github/scripts/test-build-provenance.py`; они не компилируют приложение.
+
+Android shipping gate дополнен `scripts/verify-android-pages.py`: standalone
+router после strip и все native `.so` внутри signed APK проверяются по ELF
+class/machine/LOAD alignment, затем APK проходит SDK zipalign. ARM64 требует
+16 KiB, ARMv7 сохраняет минимум 4 KiB. `android-router-pages-*` и
+`android-apk-pages-*` — отдельные CI receipts, они не входят в `gipny-*`
+collection и не увеличивают shipping inventory. Поле `runtime_tested:false`
+не позволяет трактовать структурную проверку как запуск на 16-KiB устройстве.
+15 parser/ZIP rejection regressions запускаются до длительной build matrix;
+новый native APK/runtime gate остаётся обязательным условием beta.
 
 Windows preview выявил exact-byte drift `Cargo.lock` после успешной сборки
 приложения и агента. Теперь все три reviewed lockfiles имеют `text eol=lf`

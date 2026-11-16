@@ -5,8 +5,11 @@
 зависимостей в `deps/` с проверкой SHA256; `build_openssl.sh arm64|arm`
 собирает OpenSSL. Boost program_options компилирует наш `jni/Android.mk`.
 
-На 2026-10-31 подготовлен переход на layout i2pd-android 3.0.0 (`0d2008a`);
-проверка настоящей библиотеки с этим layout в GitHub Actions ещё требуется.
+Переход на layout i2pd-android 3.0.0 (`0d2008a`) был подготовлен 2026-10-31.
+В [preview 589ad57](https://github.com/gluckdev/gipny-i2p/actions/runs/43891757344)
+2026-11-16 обе настоящие ARM router libraries и подписанные APK собраны успешно.
+Это отдельное доказательство от старого stub cross-check;16 KiB runtime
+ещё не проверен. [Матрица платформ](../docs/platform-support.md).
 
 Роутер запускает, использует и останавливает Rust-сторона приложения, в своём
 процессе: `libgipny_lib.so` линкуется с `libi2pd.so`
@@ -22,7 +25,7 @@ NTCP2/SSU2 и discovery/reseed остаются. `libi2pd_client`, демон с
 |---|---|
 | `jni/gipny_i2pd_jni.cpp` | Единственная точка входа JNI: `Java_app_gipny_GipnyService_nativeNetworkChanged` (смена сети → `gipny_router_set_online`) |
 | `jni/Android.mk` | Состав библиотеки: `libi2pd/*.cpp`, `i2p-embed/shim/shim.cpp`, `ifaddrs`, Boost program_options из `deps/boost/libs/program_options/src/*.cpp`, статический OpenSSL из `deps/openssl/out/<abi>` |
-| `jni/Application.mk` | Флаги: `-std=c++20`, без UPnP, `c++_static`; путь к прослойке `SHIM_PATH` |
+| `jni/Application.mk` | Флаги: `-std=c++20`, `c++_static`; пути `SHIM_PATH` и нашего pinned miniupnpc |
 | `prebuilt/<abi>/libi2pd.so` | (не в git) Место для локально подложенной библиотеки; сюда же её скачивает `release.yml` |
 
 ## Куда вносить правки
@@ -42,8 +45,9 @@ NTCP2/SSU2 и discovery/reseed остаются. `libi2pd_client`, демон с
 - **Имя JNI-символа должно совпадать с пакетом и классом Kotlin.**
 - **Функции прослойки экспортируются** (`GIPNY_API` в `shim.h`): Rust-сторона ищет их в динамической таблице `libi2pd.so`. Проверяют шаги `build libi2pd.so` в `release.yml` и в `i2p-embed.yml`.
 - **Кэшируются зависимости, а не роутер.** Оба workflow используют один ключ `android-deps-*`: ABI, NDK, commit i2pd-android и общий хэш `fetch_deps.sh`/`build_openssl.sh`. В кэше — `deps/boost`, `deps/openssl/out/<abi>` и `deps/*.tar.gz`; пин i2pd и изменения JNI/прослойки его не сбрасывают. Boost program_options и `libi2pd.so` каждый раз компилируются заново.
-- **`deps.mk` не подключается.** Его проверка miniupnpc не выполняется. `fetch_deps.sh` всё равно распаковывает miniupnpc; архив попадает в кэш, но исходники miniupnpc, Boost JSON/URL и UPnP в библиотеку не входят.
-- **NDK остаётся r27d.** Апстрим указывает `29.0.14206865` в `gradle/libs.versions.toml`, но прочитанные dependency scripts не требуют эту версию. OpenSSL собирается для API 23 без прежней подмены API 16 → 21; наша библиотека — для API 24. Совместимость подтверждает следующий CI-прогон.
+- **`deps.mk` не подключается.** Его проверка miniupnpc не выполняется. Наш `jni/Android.mk` включает pinned `i2p-embed/vendor/miniupnpc` через whole-static linking для Rust UPnP manager; upstream daemon UPnP manager и Boost JSON/URL не собираются.
+- **NDK остаётся r27d.** Апстрим указывает `29.0.14206865` в `gradle/libs.versions.toml`, но прочитанные dependency scripts не требуют эту версию. OpenSSL собирается для API23, наша библиотека — для API24. Полная совместимость устройств отдельно от успешной CI-сборки.
+- **Android 16 KiB проверяется по готовым байтам.** Наши linker flags `max-page-size=16384` и `common-page-size=16384` исправляют финальный `libi2pd.so`; `scripts/verify-android-pages.py` проверяет standalone ELF и все `.so` подписанного APK, затем SDK zipalign. ARM64 требует 16 KiB, ARMv7 сохраняет 4 KiB минимум. Receipt содержит `runtime_tested:false`: запуск на 16 KiB устройстве остаётся отдельным gate.
 - **Сбой C++ делит процесс с приложением.** Восстановление туннелей не является перезапуском отдельного daemon после crash.
 - **Политика журналов общая с Rust.** В release подробный native logger и файл i2pd отключены; тестовые и диагностические сборки сохраняют диагностику. [Контракт](../docs/release-diagnostics.md).
 

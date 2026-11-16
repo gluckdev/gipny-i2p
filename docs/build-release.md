@@ -7,6 +7,11 @@
 AiBlow, а не сборок приложения. Локальные результаты предыдущих проверок —
 исторические наблюдения, их нельзя выдавать за новый CI результат.
 
+Решение владельца от **2026-11-16**: alpha2 не публикуется. Beta допускается
+после межплатформенной совместимости, адаптивных network/UI и защищённого
+переноса профиля на общем проверенном SHA. Старые preview остаются baseline.
+[Матрица платформ, минимумы и незакрытые gates](platform-support.md).
+
 ## Что собирается
 
 Автономный браузерный клиент собирается отдельным workflow
@@ -26,8 +31,8 @@ CI-артефакт не означает публичное развёртыв�
 
 | Платформа | GitHub runner | Результат |
 |---|---|---|
-| Linux x86_64 | `ubuntu-22.04` | AppImage, deb, GNU agent и relay |
-| Linux arm64 | `ubuntu-22.04-arm` | AppImage, deb, GNU agent и relay |
+| Linux x86_64 | `ubuntu-22.04` | AppImage, deb, GNU agent |
+| Linux arm64 | `ubuntu-22.04-arm` | AppImage, deb, GNU agent |
 | Windows x64 | `windows-latest` | NSIS и agent; MSVC, статические зависимости vcpkg |
 | macOS arm64 | `macos-15` | DMG и agent |
 | macOS Intel | `macos-15-intel` | DMG и agent |
@@ -40,6 +45,13 @@ macOS и Windows собираются на настоящих macOS/Windows runn
 OpenWrt не означает любой роутер: точные ABI и ограничения перечислены в
 [openwrt.md](openwrt.md).
 
+Текущие macOS пакеты имеют minimumSystemVersion 15.0 и отдельные архитектуры;
+universal DMG и Windows ARM64 пока не выпускаются. Android minSdk 24 и две ARM
+ABI не означают проверку всех устройств: нужен hardware Keystore и runtime
+на 4/16 KiB страницах. Собственный verifier проверяет byte-level ELF/ZIP
+выравнивание в `release.yml`; receipts `android-*-pages-*` отделены от shipping
+inventory. Для beta новый 16 KiB APK ещё должен пройти device/emulator gate.
+
 Rust закреплён на `1.93.1`, Android NDK — `27.3.13750724`. `tauri-cli 2.12.2`
 компилируется через `cargo install --locked` из публичного crate; fallback на
 готовый CLI удалён. Прямые shipping Cargo builds используют `--locked`, UI —
@@ -48,7 +60,9 @@ Rust закреплён на `1.93.1`, Android NDK — `27.3.13750724`. `tauri-c
 внешний vcpkg binary registry отключён. SHA объекта annotated tag отличается
 от SHA commit: guard проверяет тип объекта до checkout и точный `HEAD` после.
 Первый preview на `a66d223` выявил такую ошибку pin и остановил Windows job
-до сборки зависимостей; следующий preview должен подтвердить исправление.
+до сборки зависимостей. Windows shipping job позднего preview `589ad57`
+[прошёл](https://github.com/gluckdev/gipny-i2p/actions/runs/43891757344/job/133394702166);
+это не проверка установки NSIS на компьютере пользователя.
 
 Windows memory-security CI также выявил upstream SQLCipher logger recursion
 при `VirtualLock` quota failure. Workspace и отдельный relay manifest/lock

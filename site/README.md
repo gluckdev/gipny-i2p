@@ -30,7 +30,10 @@
 Для неподдерживаемой ОС предлагается веб-клиент. Без JavaScript работает
 ссылка на все релизы. Раздел WASM объясняет локальное выполнение, отсутствие
 сервера переписки GitHub, роль моста и границы повторного запуска без хостинга.
-[Зеркала Tor/I2P с префиксом gipny](../docs/site-mirrors.md) пока только в плане.
+[Зеркала страницы в I2P](../docs/site-mirrors.md) пока только в плане;
+действующих адресов нет. Garlic — термин маршрутизации I2P, а не отдельная
+доменная зона. [Платформы и проверенные ограничения](../docs/platform-support.md)
+отделены от планируемого расширения поддержки.
 
 [Pages workflow](../.github/workflows/pages.yml) собирает сайт и WASM UI из одного
 SHA, помещает клиент в `_site/app/`, проверяет публичную конфигурацию через
@@ -46,6 +49,9 @@ SHA, помещает клиент в `_site/app/`, проверяет публ�
 проверок. Подготовка исходников не означает deploy. App builds и executable UI
 checks выполняются в GitHub Actions; локально допустимы проверки текстов/данных.
 
+Карточка сетевой защиты описывает текущие трёхузловые туннели приложения
+в обоих направлениях и включённое выравнивание кадров. Скорость зависит от I2P;
+ускорение и адаптация не объявляются поводом ослаблять эту политику.
 Текст не должен обещать неразличимость трафика, защиту от захваченной ОС,
 гарантированное удаление у получателя или реализованные лишь в планах функции.
 WSS через CDN и WebRTC через ICE/TURN объясняются отдельно.
@@ -73,8 +79,10 @@ architecture requires an explicit selection; MacIntel does not prove an Intel
 processor. Linux prefers AppImage; DEB and server components remain in Releases.
 Unsupported systems are offered the web client. Releases also work without JS.
 The WASM section explains local execution, GitHub's hosting role, independent
-transport and limits of restarting without hosting. [Tor/I2P mirrors with gipny
-prefixes](../docs/site-mirrors.md) are planned, not deployed.
+transport and limits of restarting without hosting. [I2P page mirrors](../docs/site-mirrors.md)
+are planned, with no live addresses. Garlic is I2P routing terminology, not a
+separate domain suffix. [Platform support and verified limits](../docs/platform-support.md)
+distinguish current evidence from planned expansion.
 
 The Pages workflow builds the site and WASM UI from one SHA and places the app
 under `_site/app/`. The validated repository variable
@@ -85,6 +93,9 @@ Operators separately provide the netDb snapshot, Rust bridge and TURN service.
 Deployment requires trusted main and passing workflow checks. Preparing sources
 is not deployment; application builds/tests run in GitHub Actions.
 
+The network protection card describes current three-hop application tunnels
+in both directions and enabled frame padding. Throughput depends on I2P;
+performance adaptation must preserve this policy.
 Copy must distinguish implemented behavior, plans and validation. It must not
 promise traffic indistinguishability, protection from a compromised OS, or
 forced erasure at a recipient. CDN WSS and ICE/TURN RTC are distinct paths.
