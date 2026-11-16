@@ -259,12 +259,6 @@ export interface BootStatus {
   detail: string;
 }
 
-/** Which speed/anonymity trade is in force.
- *
- * Named for what each one does. The buttons say «КОКАИН» and «НИТРО»; those
- * are labels, and labels change. */
-export type Lane = 'normal' | 'fast';
-
 export interface UpdateInfo {
   version: string;
   notes: string;
@@ -322,8 +316,7 @@ export type CoreEvent =
   // nobody to bootstrap from, and the UI must not read that as "joined".
   | { DhtJoined: { peers: number; reached: boolean } }
   | { ContactReachability: { contact_id: number; unreachable: boolean } }
-  | { LinkRtt: { contact_id: number; ms: number } }
-  | { LaneChanged: { lane: Lane } };
+  | { LinkRtt: { contact_id: number; ms: number } };
 
 export interface PendingAttachment { name: string; data: string; }
 
@@ -360,11 +353,6 @@ export class Api {
   }
   static vaultUnlockBiometric(profile: string, totpCode?: string): Promise<string | null> {
     return invoke('vault_unlock_biometric', { profile, ...(totpCode ? { totpCode } : {}) });
-  }
-  /** Checks the profile passphrase without restarting anything. Resolves
-   * 'ok', 'wiped' (a duress passphrase wiped the profile), or rejects. */
-  static verifyPassphrase(pass: string): Promise<string> {
-    return invoke('verify_passphrase', { pass });
   }
   static vaultLock(): Promise<void> {
     return invoke('vault_lock');
@@ -795,10 +783,6 @@ export class Api {
   /** Empty the transcript of this profile. Returns how many messages went. */
   static clearMessageHistory(preserveSaved = false): Promise<number> {
     return invoke('clear_message_history', preserveSaved ? { preserveSaved: true } : undefined);
-  }
-  /** Rebuilds tunnels; takes tens of seconds and rejects if it could not. */
-  static setLane(lane: Lane): Promise<void> {
-    return invoke('set_lane', { lane });
   }
   static getAutoUpdate(): Promise<boolean> {
     return invoke('get_auto_update');

@@ -97,6 +97,11 @@ function scan(src, entry) {
     const parent = ancestors[ancestors.length - 2];
     const topLevel = () => !ancestors.slice(0, -1).some(a => fnTypes.has(a.type));
     switch (node.type) {
+      case 'VariableDeclaration':
+        if (node.kind === 'using' || node.kind === 'await using') {
+          fail(`${node.kind} declaration (explicit resource management, newer than Safari ${floor})`, node);
+        }
+        break;
       case 'AssignmentExpression':
         if (['||=', '&&=', '??='].includes(node.operator) && lacks('14')) fail(`logical assignment ${node.operator} (Safari 14)`, node);
         break;
@@ -195,7 +200,10 @@ new Uint8Array(1).toBase64(); Uint8Array.fromBase64('AA=='); m.values().map(x =>
   ];
   assert.deepEqual(scan(fixture, false).map(f => f.what).sort(), expected.sort());
   assert.deepEqual(scan(fixture, true).map(f => f.what).filter(what => what.startsWith('top-level')), [], 'the entry module may await at top level');
-  assert.match(scan('using x = y;', false)[0].what, /does not parse at all/);
+  for (const declaration of ['using', 'await using']) {
+    assert.ok(scan(`${declaration} x = y;`, false).some(finding => finding.what ===
+      `${declaration} declaration (explicit resource management, newer than Safari ${floor})`));
+  }
 });
 
 test(`the storage shape check names Safari/iOS ${floor}, the floor the build targets`, async () => {

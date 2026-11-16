@@ -68,6 +68,11 @@ async function run() {
       await page.waitForTimeout(80);
       const result = await page.evaluate(measure);
       if (scene === 'auth') {
+        await page.locator('#create-name').fill('Preview');
+        await page.locator('.auth-actions .btn:not(.btn-ghost)').click();
+        await page.locator('#create-password').fill('preview-password');
+        await page.locator('#create-confirm').fill('preview-password');
+        await page.locator('.auth-actions .btn:not(.btn-ghost)').click();
         await page.locator('.auth-security summary').click();
         const expanded = await page.evaluate(measure);
         result.expandedNeed = expanded.need;

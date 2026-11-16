@@ -7,13 +7,13 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'vite';
 import { Window } from 'happy-dom';
 
-// The app's own on-screen keyboard (ui/src/osk*.ts): layouts, the editing
+// The app's own on-screen keyboard (ui/src/features/keyboard): layouts, the editing
 // arithmetic, and the panel driving a real field in happy-dom. Built with the
 // same compiler as production, like the other UI tests.
 const dir = await mkdtemp(join(tmpdir(), 'gipny-osk-'));
 await build({ configFile: false, logLevel: 'silent', build: {
   outDir: dir, emptyOutDir: false, rolldownOptions: { output: { banner: 'const Event = window.Event;' } },
-  lib: { entry: { entry: 'tests/entry.ts', telex: 'src/osk-telex.ts' }, formats: ['es'], fileName: (_, name) => `${name}.mjs` },
+  lib: { entry: { entry: 'tests/entry.ts', telex: 'src/features/keyboard/osk-telex.ts' }, formats: ['es'], fileName: (_, name) => `${name}.mjs` },
 } });
 const win = new Window({ url: 'http://localhost/' });
 for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement',

@@ -31,7 +31,7 @@ ui.mockIPC((cmd, args) => {
   const responses = {
     get_contact_folders: [], get_avatar_choices: {}, get_chat_prefs: { ttlSecs: null, ttlChosen: true },
     list_attachments: [], files_progress: [], list_group_members: [], list_media_contact: [], list_media_group: [],
-    link_stats: { lane: 'normal', our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: null }, get_relay_info: null, get_relay_address: '', my_b32: '',
+    link_stats: { our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: null }, get_relay_info: null, get_relay_address: '', my_b32: '',
     update_configured: false, list_apk_artifacts: { version: '0.4.18', artifacts: [] },
     current_version: '0.4.18', get_attachment_privacy: true, get_clear_on_lock: false,
     get_agent_mode: null, get_router_settings: { transit: 'balanced', upnp: 'on' },

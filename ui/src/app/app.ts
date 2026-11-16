@@ -389,10 +389,6 @@ class MainView extends View {
     );
     chatSlot.appendChild(empty);
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
-    // In «кофеин» there is one chat and no way around it: the list, and with it
-    // settings and lock, are not on screen at all.
-    this.sub(store.caffeine, (on) => main.classList.toggle('caffeine', !!on), true);
-
     // Ambient connection feedback never takes pointer events or focus.
     const networkText = h('span', { class: 'network-ambient-label', role: 'status', 'aria-live': 'polite' });
     const network = h('div', { class: 'network-ambient hidden' },

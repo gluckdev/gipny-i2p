@@ -1937,9 +1937,6 @@ a { color: var(--phosphor); }
 .trust-2 { background: var(--danger-soft); color: var(--danger); }
 .chat-notice { border-radius: 12px; margin: 8px 16px 0; border: none; background: rgba(230, 150, 20, 0.12); color: var(--text); font-size: 13px; }
 
-.btn-fast { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; letter-spacing: 0.04em; }
-.btn-fast.hidden { display: none; }
-
 .chat-log { padding: 16px 20px; gap: 4px; }
 .msg, .msg.in, .msg.out {
   padding: 0; border: none; background: none; box-shadow: none;
@@ -2103,20 +2100,6 @@ a { color: var(--phosphor); }
 .about-hero { position: relative; overflow: hidden; }
 .art-network { position: absolute; right: -10px; top: -6px; opacity: 0.55; pointer-events: none; }
 .about-hero > :not(.art) { position: relative; }
-
-/* --- «Кофеин»: one chat, screen on, passphrase to leave ---------------------- */
-.main.caffeine { grid-template-columns: minmax(0, 1fr); }
-.main.caffeine > .sidebar { display: none; }
-.caffeine-bar {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px;
-  background: linear-gradient(90deg, rgba(230, 150, 20, 0.16), rgba(230, 150, 20, 0.06));
-  border-bottom: 1px solid var(--border);
-  color: var(--text);
-}
-.caffeine-text { flex: 1; min-width: 0; }
-.caffeine-title { font-size: 14px; font-weight: 600; }
-.caffeine-hint { font-size: 12px; color: var(--text-dim); }
 
 /* --- QR: sharing a card and reading one ------------------------------------- */
 .card-qr { display: grid; justify-items: center; gap: 8px; margin: 10px 0 12px; }
@@ -2715,7 +2698,7 @@ button { overflow-wrap: anywhere; }
 .chat.console .chat-send { color: var(--accent-fg); background: var(--accent); }
 .trust-badge, .ttl-chip, .about-chip { border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
 .trust-1 { color: var(--ok); background: var(--bg-panel); }
-.icon-btn-accent, .icon-btn-accent:hover, .contact-badge, .btn-fast,
+.icon-btn-accent, .icon-btn-accent:hover, .contact-badge,
 .ttl-chip.active { color: var(--accent-fg); }
 .about-hero { padding: 18px; }
 .about-chip { font-family: var(--mono); color: var(--fg-dim); }

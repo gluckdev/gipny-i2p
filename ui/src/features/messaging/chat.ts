@@ -3,7 +3,7 @@ import { t as tr } from '../localization/i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { forgetBrowserFiles } from '../files/browser-files';
 import { saveBrowserAttachment } from '../files/browser-download';
-import { Api, isTauri, usesBrowserCore, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF, PEER_EVENT } from '../../app/api';
+import { Api, isTauri, CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF, PEER_EVENT } from '../../app/api';
 import type { Message, MessageFiles, ChatPrefs, PeerEvent } from '../../app/api';
 import type { Store, ChatTarget } from '../../app/state';
 import { targetKey, sameTarget, pasteFileToTempPath } from '../../app/state';
@@ -112,10 +112,6 @@ export class ChatView extends View {
   private agentOffBtn: HTMLButtonElement;
   private promptEl: HTMLElement;
   private unreachableNote: HTMLElement;
-  private caffeineBar: HTMLElement;
-  private turboTitle: HTMLElement;
-  private turboHint: HTMLElement;
-  private fastBtn: HTMLButtonElement;
   private consoleHistory: string[] = [];
   private historyIndex = -1;
   private consoleDraft = '';
@@ -297,13 +293,6 @@ export class ChatView extends View {
       h('span', { class: 'chat-details-label' }, isGroup ? tr('chat.members_2') : tr('chat.profile')),
     );
     const searchBtn = h('button', { class: 'icon-btn', title: tr('chat.search_this_chat'), onClick: () => this.openSearch() }, icon('search'));
-    // «Кофеин»: экран не гаснет, чат не сменить, выход — по паролю профиля.
-    // Ускорение живёт внутри него, отдельной кнопкой.
-    const caffeineBtn = h('button', {
-      class: 'icon-btn',
-      title: tr('chat.caffeine_keep_the_screen_awake_and_stay_in'),
-      onClick: () => void store.startCaffeine(target),
-    }, icon('coffee'));
     const mediaBtn = h('button', { class: 'icon-btn', title: tr('chat.media_and_files'), onClick: () => this.openMedia() }, icon('image'));
 
     const agentControls = h('div', { class: 'agent-controls' });
@@ -344,11 +333,10 @@ export class ChatView extends View {
     renderAgentControls();
 
     const headerRight = isGroup
-      ? h('div', { class: 'row chat-actions' }, caffeineBtn, searchBtn, mediaBtn, detailsBtn)
+      ? h('div', { class: 'row chat-actions' }, searchBtn, mediaBtn, detailsBtn)
       : (() => {
           const c = store.contacts.get().find((x) => x.id === (target.id as number));
           return h('div', { class: 'row chat-actions' },
-            caffeineBtn,
             (c?.trust ?? 0) !== 0 && h('span', {
               class: 'trust-badge trust-' + (c?.trust ?? 0),
               title: trustLabel(c?.trust ?? 0),
@@ -400,29 +388,7 @@ export class ChatView extends View {
     }));
     void this.loadPrefs();
 
-    this.turboTitle = h('div', { class: 'caffeine-title' }, tr('chat.turbo'));
-    this.turboHint = h('div', { class: 'caffeine-hint' });
-    this.fastBtn = h('button', {
-      class: 'btn btn-sm btn-fast',
-      title: tr('chat.cocaine_one_fewer_hop_and_no_message_size'),
-      onClick: () => void this.enterFast(),
-    }, tr('chat.cocaine')) as HTMLButtonElement;
-    this.caffeineBar = h('div', { class: 'caffeine-bar hidden' },
-      icon('coffee', 18),
-      h('div', { class: 'caffeine-text' }, this.turboTitle, this.turboHint),
-      this.fastBtn,
-      h('button', { class: 'btn btn-sm', onClick: () => void this.leaveCaffeine() }, tr('chat.exit')),
-    );
-    this.sub(store.caffeine, (on) => {
-      const mine = !!on && sameTarget(on, target);
-      this.caffeineBar.classList.toggle('hidden', !mine);
-      caffeineBtn.classList.toggle('hidden', mine);
-    }, true);
-    this.sub(store.lane, () => this.paintTurboBar());
-    this.sub(store.laneSwitching, () => this.paintTurboBar());
-
     this.el = h('div', { class: 'chat' },
-      this.caffeineBar,
       h('div', { class: 'chat-header' },
         h('button', {
           class: 'chat-back icon-btn',
@@ -1703,59 +1669,6 @@ export class ChatView extends View {
 
   private openGroupDetails(): void {
     this.app.openModal((close) => new GroupModal(this.store, this.app, this.target.id as string, close).el);
-  }
-
-  /** Enter «кокаин», having said what it costs.
-   *
-   * The confirmation is words and not a tooltip on purpose: this shortens the
-   * path at our own expense and stops hiding how much was said. Somebody who
-   * taps it should already know both before the tunnels come down. */
-  private async enterFast(): Promise<void> {
-    const ok = await this.app.confirm(tr('chat.enable_cocaine'),
-      tr('chat.the_route_will_be_one_hop_shorter_and'));
-    if (!ok) return;
-    await this.store.startFast();
-  }
-
-  /** The «кофеин» bar: what is on, and what can be turned on next. */
-  private paintTurboBar(): void {
-    const lane = this.store.lane.get();
-    if (this.store.laneSwitching.get()) {
-      this.turboTitle.textContent = tr('chat.rebuilding_tunnels');
-      this.turboHint.textContent = tr('chat.nothing_is_sent_while_tunnels_are_being_built');
-      this.fastBtn.classList.add('hidden');
-      return;
-    }
-    if (lane === 'fast') {
-      this.turboTitle.textContent = tr('chat.cocaine');
-      this.turboHint.textContent = tr('chat.two_hops_no_size_padding_screen_stays_awake');
-      this.fastBtn.classList.add('hidden');
-      return;
-    }
-    this.turboTitle.textContent = tr('chat.caffeine_enabled');
-    this.turboHint.textContent = tr('chat.screen_stays_awake_chat_stays_selected');
-    this.fastBtn.classList.toggle('hidden', usesBrowserCore());
-  }
-
-  private async leaveCaffeine(): Promise<void> {
-    const pass = await this.app.prompt(
-      tr('chat.exit_caffeine'),
-      tr('chat.profile_passphrase'),
-      '',
-      tr('chat.exit'),
-      true,
-    );
-    if (!pass) return;
-    try {
-      const result = await Api.verifyPassphrase(pass);
-      await this.store.stopCaffeine();
-      if (result === 'wiped') {
-        this.store.showToast(tr('auth.profile_wiped'), true);
-        await this.store.lock();
-      }
-    } catch {
-      this.store.showToast(tr('auth.wrong_pass'), true);
-    }
   }
 
   private openSearch(): void {

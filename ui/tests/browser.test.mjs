@@ -857,6 +857,7 @@ function updateFixture(overrides = {}) {
     getAutoUpdate: async () => true, setAutoUpdate: async () => {}, installUpdate: async () => {},
     dismissUpdate: async () => {}, restartApp: async () => {},
     vaultLock: async () => {}, clearMessageHistory: async () => {}, listProfiles: async () => ['ops'],
+    prewarmNetwork: async () => {}, prewarmStatus: async () => 'off',
     ...overrides,
   };
   const saved = Object.fromEntries(Object.keys(implementations).map(key => [key, ui.Api[key]]));

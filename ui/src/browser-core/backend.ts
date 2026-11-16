@@ -796,8 +796,7 @@ export class BrowserBackend {
     if (command === 'my_b32') return identity.onion;
     if (command === 'my_fingerprint') return identity.fingerprint;
     if (command === 'get_display_name') return state.displayName;
-    if (command === 'link_stats') return { lane: 'normal', our_hops: 2, their_hops: 2, padded: true, route: this.relay ? 'relay' : 'none', rtt_ms: null };
-    if (command === 'verify_passphrase') { engine.verify_password(text(args, 'pass')); return null; }
+    if (command === 'link_stats') return { our_hops: 2, their_hops: 2, padded: true, route: this.relay ? 'relay' : 'none', rtt_ms: null };
     if (command === 'list_contacts') return state.contacts;
     if (command === 'get_contact') return getContact(state, number(args, 'id'));
     if (command === 'list_groups') return state.groups;

@@ -188,13 +188,6 @@ if (params.get('demo') === '1') {
 }
 
 let avatars = '{}';
-// The lane the preview is in, so ТУРБО and НИТРО can actually be pressed and
-// the readout follows. Round trip drops with the hop count, roughly as it does
-// in life: most of the wait is the hops.
-let lane: 'normal' | 'fast' = 'normal';
-let hops = 3;
-const laneRtt = (): number => (lane === 'normal' ? 1840 : 1120);
-
 const updates = previewUpdates(params.get('update') ?? 'current', event => emit('core_event', event), params.get('platform') === 'android');
 
 mockWindows('main');
@@ -234,7 +227,6 @@ mockIPC(async (cmd, payload) => {
     case 'log_settings': return { available: true, enabled: true, path: '/home/you/.local/share/gipny-i2p/debug.log' };
     case 'set_log_enabled': return null;
     case 'clear_debug_log': return null;
-    case 'verify_passphrase': return String((payload as Record<string, unknown>)?.pass ?? '') === 'preview' ? 'ok' : Promise.reject('invalid passphrase');
     case 'qr_svg': return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" shape-rendering="crispEdges">'
       + '<rect width="8" height="8" fill="#fff"/><path d="M0 0h3v3H0zM5 0h3v3H5zM0 5h3v3H0zM4 4h1v1H4zM6 5h1v1H6zM5 7h2v1H5z" fill="#000"/></svg>';
     case 'list_contacts': return contacts;
@@ -247,15 +239,8 @@ mockIPC(async (cmd, payload) => {
     // Contact 2 is the unreachable one, so it shows the «архив» wording and
     // has no round trip to report — both branches of the readout on one page.
     case 'link_stats': return num(a, 'contactId') === 2
-      ? { lane, our_hops: hops, their_hops: hops, padded: lane === 'normal', route: 'archive', rtt_ms: null }
-      : { lane, our_hops: hops, their_hops: hops, padded: lane === 'normal', route: 'relay', rtt_ms: laneRtt() };
-    // Rebuilding tunnels really does take tens of seconds; the preview waits a
-    // beat so the «перестраиваю туннели» state is something you can look at.
-    case 'set_lane':
-      lane = String((a ?? {}).lane ?? 'normal') as 'normal' | 'fast';
-      hops = lane === 'normal' ? 3 : 2;
-      await new Promise((r) => setTimeout(r, 1200));
-      return null;
+      ? { our_hops: 3, their_hops: 3, padded: true, route: 'archive', rtt_ms: null }
+      : { our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: 1840 };
     case 'get_contact': return contacts.find((c) => c.id === num(a, 'id')) ?? null;
     case 'list_groups': return groups;
     case 'list_group_members': return members;

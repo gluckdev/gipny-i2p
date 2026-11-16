@@ -1,6 +1,6 @@
 import { errorText } from './error-text';
 import { t as tr } from '../features/localization/i18n';
-import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus, Lane } from './api';
+import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus } from './api';
 import { CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF } from './api';
 
 const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, CONSOLE_REVOKE, CONSOLE_OFF]);
@@ -112,12 +112,6 @@ export class Store {
   bootResuming = new Signal<boolean>(false);
   /** Live progress of opening a profile; the unlock screen renders it. */
   bootSteps = new Signal<BootStep[]>(freshBootSteps());
-  /** The technical lines behind those steps, newest last. */
-  /** «Кофеин»: the app is pinned to this chat and the screen is kept awake
-   * until someone types the profile passphrase. */
-  caffeine = new Signal<ChatTarget | null>(null);
-  private wakeLock: { release: () => Promise<void> } | null = null;
-
   /** Set when the core is up and only the relay is still coming. */
   bootCanEnter = new Signal<boolean>(false);
   /** The router's verdict on the network while tunnels build: `none` means
@@ -259,12 +253,6 @@ export class Store {
    * Only ever a measurement: a contact we have not heard back from is absent
    * from the map rather than shown as zero. */
   linkRtt = new Signal<Map<number, number>>(new Map());
-  /** The speed/anonymity trade in force, as the core reports it. */
-  lane = new Signal<Lane>('normal');
-  /** True while tunnels are being rebuilt. Nothing sends during this, so the
-   * interface says so rather than looking frozen — the same lesson the unlock
-   * screen taught. */
-  laneSwitching = new Signal<boolean>(false);
   private lastSeenMs: Map<number, number> = new Map();
   private onlineTickTimer: number | null = null;
   private static readonly ONLINE_WINDOW_MS = 60_000;
@@ -649,72 +637,6 @@ export class Store {
     }
   }
 
-  /** Pin the app to this chat and keep the screen on.
-   *
-   * «Кофеин» and nothing more: it touches the screen and the chat list, never
-   * the network. Trading anonymity for speed lives inside it, behind its own
-   * button, so that sitting on one chat with the screen lit is not silently
-   * also a decision about how exposed you are. */
-  async startCaffeine(target: ChatTarget): Promise<void> {
-    this.caffeine.set(target);
-    await this.acquireWakeLock();
-  }
-
-  /** «Кокаин»: two hops and no padding. Only from inside «кофеин». */
-  async startFast(): Promise<void> {
-    if (!this.caffeine.get() || this.lane.get() !== 'normal') return;
-    this.laneSwitching.set(true);
-    try {
-      await Api.setLane('fast');
-      this.lane.set('fast');
-    } catch {
-      this.lane.set('normal');
-    } finally {
-      this.laneSwitching.set(false);
-    }
-  }
-
-  /** Let go — the caller has already checked the passphrase. */
-  async stopCaffeine(): Promise<void> {
-    this.caffeine.set(null);
-    if (this.lane.get() !== 'normal') {
-      this.laneSwitching.set(true);
-      // Back to three hops, whatever happens: this is the safe direction, and
-      // reporting failure by leaving the fast lane on would be the one lie
-      // this feature cannot afford.
-      try { await Api.setLane('normal'); } finally {
-        this.lane.set('normal');
-        this.laneSwitching.set(false);
-      }
-    }
-    await this.releaseWakeLock();
-  }
-
-  /** The screen lock is the system's, not ours: the browser API is all we
-   * have, and it is dropped whenever the window goes away, so it is taken
-   * again every time the window comes back. */
-  private async acquireWakeLock(): Promise<void> {
-    type Sentinel = { release: () => Promise<void> };
-    const nav = navigator as unknown as { wakeLock?: { request: (t: string) => Promise<Sentinel> } };
-    if (!nav.wakeLock) return;
-    try {
-      this.wakeLock = await nav.wakeLock.request('screen');
-      document.addEventListener('visibilitychange', this.reacquireWakeLock);
-    } catch { /* refused or unsupported: the chat still stays pinned */ }
-  }
-
-  private reacquireWakeLock = (): void => {
-    if (document.visibilityState !== 'visible' || !this.caffeine.get()) return;
-    void this.acquireWakeLock();
-  };
-
-  private async releaseWakeLock(): Promise<void> {
-    document.removeEventListener('visibilitychange', this.reacquireWakeLock);
-    const lock = this.wakeLock;
-    this.wakeLock = null;
-    try { await lock?.release(); } catch { /* already gone */ }
-  }
-
   /** Leave the loading screen for the chats. */
   enterMain(): void {
     // Relay events can precede vaultUnlock and refreshAll completing.
@@ -977,7 +899,6 @@ export class Store {
     this.unreachable.set(new Set());
     this.linkRtt.set(new Map());
     this.bootStage.set('unlocking');
-    void this.stopCaffeine();
     this.bootResuming.set(false);
     this.bootSteps.set(freshBootSteps());
     this.bootCanEnter.set(false);
@@ -1110,9 +1031,6 @@ export class Store {
 
   async selectChat(target: ChatTarget | null): Promise<void> {
     if (this.contentLocked) return;
-    // In «кофеин» the chat does not change, whatever gets tapped.
-    const pinnedTo = this.caffeine.get();
-    if (pinnedTo && !sameTarget(pinnedTo, target)) return;
     this.selectedChat.set(target);
     if (!target) return;
     const epoch = this.contentEpoch;
