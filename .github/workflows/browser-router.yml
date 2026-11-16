@@ -91,6 +91,24 @@ jobs:
           npm ci --prefix ../ui
           npm run build:browser --prefix ../ui
           npm test --prefix ../ui
+      - name: Verify actual worker WASM startup and bounded failure handling
+        working-directory: ui
+        env:
+          GIPNY_CHROMIUM: /usr/bin/google-chrome
+        run: node tests/worker-startup.test.mjs
+      - name: Verify mobile notices with keyboard, safe areas and modal controls
+        working-directory: ui
+        env:
+          GIPNY_CHROMIUM: /usr/bin/google-chrome
+          GIPNY_TOAST_SCREENSHOT: ${{ runner.temp }}/browser-toast-keyboard.png
+        run: node tests/toast-layout.test.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: browser-frontend-regressions
+          path: ${{ runner.temp }}/browser-toast-keyboard*.png
+          if-no-files-found: warn
+          retention-days: 5
       - uses: actions/upload-artifact@v7
         with:
           name: browser-messenger-pwa
