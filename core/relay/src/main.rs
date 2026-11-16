@@ -178,6 +178,13 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = std::env::var("GIPNY_RELAY_DATA").unwrap_or_else(|_| "./relay-data".to_string());
     let data_dir = PathBuf::from(data_dir);
     std::fs::create_dir_all(&data_dir)?;
+    // A readiness policy from a previous process must not describe this start.
+    let policy_path = data_dir.join("destination-policy.json");
+    if let Err(error) = std::fs::remove_file(&policy_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error.into());
+        }
+    }
 
     let storage = Arc::new(Storage::open(&data_dir.join("relay.db"))?);
     let connections: Connections = Arc::new(RwLock::new(HashMap::new()));
@@ -224,21 +231,32 @@ async fn main() -> anyhow::Result<()> {
     // command-line parser dies on a repeated option, and this list already
     // carries `--share` and `--limits.transittunnels`.
     let options = i2p_embed::fast::merge(options);
+    let bandwidth = options.iter().find_map(|o| o.strip_prefix("--bandwidth="))
+        .ok_or_else(|| anyhow::anyhow!("relay bandwidth option missing"))?;
+    if !bandwidth.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        anyhow::bail!("invalid relay bandwidth option");
+    }
+    let share_percent: u8 = options.iter().find_map(|o| o.strip_prefix("--share="))
+        .ok_or_else(|| anyhow::anyhow!("relay share option missing"))?.parse()?;
+    let transit_tunnels: u32 = options.iter().find_map(|o| o.strip_prefix("--limits.transittunnels="))
+        .ok_or_else(|| anyhow::anyhow!("relay transit limit missing"))?.parse()?;
     let router = Arc::new(i2p_embed::Router::start(&options, router_dir.join("i2pd.log").to_str())
         .map_err(|e| anyhow::anyhow!("i2p router: {e}"))?);
 
     let (dest_pub, privkey) = load_or_create_identity(&data_dir)?;
 
-    let destination_hash = destination_hash(&dest_pub)
+    let relay_destination_hash = destination_hash(&dest_pub)
         .ok_or_else(|| anyhow::anyhow!("dest.pub is not an i2p destination"))?;
     eprintln!("========================================================");
     eprintln!("[relay] I2P DESTINATION (paste into the client's Settings as an external relay, or publish as a seed via GIPNY_DHT_SEEDS):");
     eprintln!("{dest_pub}");
     eprintln!("========================================================");
-    // Relay doesn't need long exploratory tunnels: use 2 hops instead of 3.
-    // Under the measuring profile (GIPNY_FAST / GIPNY_FAST_HOPS) it follows
-    // that instead, down to zero — see i2p_embed::fast for what zero costs.
-    let hops = i2p_embed::fast::hops().unwrap_or(2);
+    // The relay's published Destination uses three-hop inbound and outbound
+    // tunnels, matching the normal client policy. These are client tunnels,
+    // not the router's exploratory tunnels.
+    // Only the explicit measuring profile may override this; see
+    // i2p_embed::fast for the anonymity cost of shorter paths.
+    let hops = i2p_embed::fast::hops().unwrap_or(3);
     let dest_opts = i2p_embed::DestinationOptions {
         publish: true,
         inbound_length: hops,
@@ -248,6 +266,20 @@ async fn main() -> anyhow::Result<()> {
     let dest = i2p_embed::Destination::new(&router, Some(&privkey), &dest_opts)
         .map_err(|e| anyhow::anyhow!("relay destination: {e}"))?;
     dest.ready(Duration::from_secs(1800)).await.map_err(|e| anyhow::anyhow!("relay tunnels: {e}"))?;
+    // Published only after native destination readiness. The benchmark binds
+    // this policy to dest.pub, rather than assuming every external relay uses
+    // the client's settings. This records accepted options, not a packet trace.
+    let actual_destination = dest.address();
+    destination_hash(actual_destination)
+        .ok_or_else(|| anyhow::anyhow!("native relay destination is not I2P base64"))?;
+    // The validated base64 alphabet contains no JSON string escape characters.
+    let policy = format!(
+        "{{\"schema_version\":1,\"destination\":\"{actual_destination}\",\"inbound_hops\":{},\"outbound_hops\":{},\"bandwidth\":\"{bandwidth}\",\"share_percent\":{share_percent},\"transit_tunnels\":{transit_tunnels}}}\n",
+        dest_opts.inbound_length, dest_opts.outbound_length,
+    );
+    let pending_policy = data_dir.join("destination-policy.json.tmp");
+    std::fs::write(&pending_policy, policy)?;
+    std::fs::rename(pending_policy, policy_path)?;
     eprintln!("[relay] tunnels up; accepting");
 
     let dht = if dht_on {
@@ -284,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
                 let dht = dht.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    if let Err(e) = handle_client(stream, storage, connections, destination_hash, dht).await {
+                    if let Err(e) = handle_client(stream, storage, connections, relay_destination_hash, dht).await {
                         i2p_embed::debug_trace!("[relay] client disconnected: {}", e);
                     }
                 });

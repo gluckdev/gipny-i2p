@@ -35,6 +35,9 @@
 //! * `E2E_BIG_FILE_RESTART=1` — with E2E_BIG_FILE: bot-b stops once a third
 //!   of the parts are in and starts again on the same data, and the file
 //!   must still arrive whole — the transfer picks up where it was.
+//! * `E2E_PERFORMANCE=1` — separate controlled file/echo benchmark, writing
+//!   JSON to `E2E_PERF_REPORT`. Three-hop participants and bounded probes;
+//!   see README.md for relay policy manifests, controls, and metric definitions.
 //! * `E2E_UPDATE_CHECK=1` — a different test: one router, and the updater
 //!   asks GitHub for the latest release through the i2p outproxy and fetches
 //!   its smallest file, as an installed app would. While GitHub has only
@@ -62,6 +65,8 @@ use gipny_libcore::{
 };
 use tokio::sync::{Mutex, Notify};
 
+mod file_transfer;
+mod performance;
 mod ports;
 
 /// Longest a router may take to be ready: reseed, then tunnels. Minutes at
@@ -917,6 +922,9 @@ fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
+    if std::env::var("E2E_PERFORMANCE").is_ok_and(|v| v == "1") {
+        return performance::run().await;
+    }
     if let Some(bin) = std::env::var_os("E2E_AGENT_BIN") {
         return run_agent_mode(PathBuf::from(bin)).await;
     }
@@ -1359,61 +1367,10 @@ async fn run() -> Result<()> {
     }
 
     if big_file > 0 {
-        let data: Vec<u8> = (0..big_file).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
-        let t0 = Instant::now();
-        a.session
-            .send_message(contact_b_in_a, BIG_FILE_BODY.into(), vec![("big.bin".into(), data.clone())], None, None, None)
-            .await
-            .context("send the big file")?;
-        eprintln!("[e2e] bot-a: sent a {big_file}-byte file in parts");
-        if restart {
-            // A third in, bot-b goes away and comes back on the same data.
-            let left = timeout.saturating_sub(t_start.elapsed());
-            tokio::time::timeout(left, async {
-                loop {
-                    let (done, total) = (b_parts.0.load(std::sync::atomic::Ordering::SeqCst), b_parts.1.load(std::sync::atomic::Ordering::SeqCst));
-                    if total > 0 && done * 3 >= total { break; }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            }).await.context("timeout: bot-b never got a third of the file")?;
-            let held = b_parts.0.load(std::sync::atomic::Ordering::SeqCst);
-            eprintln!("[e2e] bot-b: stopping with {held} parts in");
-            b.session.shutdown();
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            let (again, mut again_events) = SessionManager::start(work_dir.join("bot-b"), b.session.db.clone(), b.session.node.clone())
-                .await
-                .context("bot-b: start again")?;
-            eprintln!("[e2e] bot-b: started again");
-            let (b_file, b_file_notify) = (b_file.clone(), b_file_notify.clone());
-            tokio::spawn(async move {
-                while let Some(ev) = again_events.recv().await {
-                    if let SessionEvent::FileReceived { attachment_id, .. } = ev {
-                        let got = again.db.get_attachment(attachment_id).ok().flatten()
-                            .and_then(|a| again.read_attachment(&a).ok());
-                        eprintln!("[e2e] bot-b (again): file whole ({} bytes)", got.as_ref().map_or(0, |g| g.len()));
-                        *b_file.lock().await = got;
-                        b_file_notify.notify_one();
-                    }
-                }
-            });
-        }
-        let left = timeout.saturating_sub(t_start.elapsed());
-        tokio::time::timeout(left, async {
-            loop {
-                let n = b_file_notify.notified();
-                if b_file.lock().await.is_some() { break; }
-                n.await;
-            }
-        }).await.context("timeout: the big file never arrived whole")?;
-        let got = b_file.lock().await.take().unwrap_or_default();
-        if got != data {
-            bail!("big file: {} bytes arrived, not equal to the {} sent", got.len(), data.len());
-        }
-        let secs = t0.elapsed().as_secs_f64();
-        eprintln!(
-            "[e2e] big file: {big_file} bytes whole and equal in {secs:.1} s ({:.0} KiB/s)",
-            big_file as f64 / 1024.0 / secs
-        );
+        file_transfer::Transfer {
+            a: &a, b: &b, contact_b_in_a, work_dir: &work_dir, big_file, restart,
+            b_file, b_file_notify, b_parts, timeout, t_start,
+        }.run().await?;
     }
 
     a.session.shutdown();

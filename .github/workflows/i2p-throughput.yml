@@ -1,0 +1,120 @@
+name: I2P throughput exploration
+
+on:
+  workflow_dispatch:
+    inputs:
+      streams:
+        description: 'Sequential file-lane counts, 1..8; at most 12 points (e.g. 4,5,6,7,8,4)'
+        type: string
+        default: '1,2,3,4,5,6,7,8'
+      file_bytes:
+        description: 'Verified file bytes per point; 1 MiB..128 MiB (default 32 MiB)'
+        type: string
+        default: '33554432'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: i2p-throughput-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  I2P_EMBED_STUB: '0'
+  I2P_EMBED_SKIP_NATIVE: '0'
+  CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS: 'false'
+
+jobs:
+  build:
+    name: One pinned native build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test measurement orchestration and failure handling
+        run: python3 .github/scripts/test-i2p-throughput.py
+      - name: Validate bounded measurement inputs
+        env:
+          INPUT_STREAMS: ${{ inputs.streams }}
+          INPUT_FILE_BYTES: ${{ inputs.file_bytes }}
+        run: python3 .github/scripts/i2p-throughput.py --validate-only
+      - name: Compile the committed router pin only
+        run: |
+          set -euo pipefail
+          pin="$(git rev-parse HEAD:third_party/i2pd)"
+          .github/scripts/i2pd-under-test.sh "$pin"
+          test "$(git -C third_party/i2pd rev-parse HEAD)" = "$pin"
+          python3 i2p-embed/check-source.py
+          python3 .github/scripts/build-provenance.py locks
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core/relay
+            . -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: i2p-throughput-native
+      - name: Build the two measured executables once
+        run: |
+          cargo build --locked --release --manifest-path core/relay/Cargo.toml
+          cargo build --locked --release -p e2e-harness
+      - name: Bind executables to exact source and router SHA
+        run: |
+          mkdir throughput-bin
+          cp target/release/e2e-harness core/relay/target/release/gipny-relay throughput-bin/
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          app, pin = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD:third_party/i2pd')
+          assert app == os.environ['GITHUB_SHA']
+          assert git('-C', 'third_party/i2pd', 'rev-parse', 'HEAD') == pin
+          assert os.environ['I2P_EMBED_STUB'] == os.environ['I2P_EMBED_SKIP_NATIVE'] == '0'
+          directory = pathlib.Path('throughput-bin')
+          names = ('e2e-harness', 'gipny-relay')
+          report = {'schema_version': 1, 'application_sha': app, 'router_sha': pin,
+                    'native_router': True, 'run_id': os.environ['GITHUB_RUN_ID'],
+                    'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+                    'reseed_source_sha': os.environ['GIPNY_RESEED_SOURCE_SHA'],
+                    'rustc': subprocess.check_output(['rustc', '-Vv'], text=True),
+                    'patch_driver_sha256': hashlib.sha256(pathlib.Path('scripts/apply-i2pd-memory-patches.sh').read_bytes()).hexdigest(),
+                    'sha256': {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in names},
+                    'public_patches_sha256': {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in sorted(pathlib.Path('i2p-embed/patches').glob('*.patch'))}}
+          (directory / 'build.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: throughput-native-${{ github.sha }}
+          path: throughput-bin/
+          if-no-files-found: error
+          retention-days: 5
+
+  sweep:
+    name: Sequential protected-path measurements
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 260
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: throughput-native-${{ github.sha }}
+          path: throughput-bin
+      - name: Native runtime dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libboost-program-options-dev libssl-dev zlib1g-dev time
+      - name: Run each point after the previous result
+        env:
+          INPUT_STREAMS: ${{ inputs.streams }}
+          INPUT_FILE_BYTES: ${{ inputs.file_bytes }}
+        run: python3 .github/scripts/i2p-throughput.py
+      - name: Preserve diagnostics and measured results, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: throughput-results-${{ github.sha }}-${{ github.run_attempt }}
+          path: throughput-reports/
+          if-no-files-found: warn
+          retention-days: 14
