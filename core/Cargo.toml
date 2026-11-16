@@ -1,6 +1,6 @@
 [package]
 name = "gipny"
-version = "0.5.0-rc3"
+version = "0.5.0-alpha.2"
 edition = "2021"
 
 [lib]
