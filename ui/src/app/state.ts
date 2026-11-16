@@ -11,6 +11,7 @@ function isConsoleEvent(kind: number | null): boolean {
 }
 import { Api, isTauri } from './api';
 import { registerBrowserFile, clearBrowserFiles } from '../features/files/browser-files';
+import { toastLifetime } from '../features/notifications/toast';
 import {
   isPermissionGranted,
   requestPermission,
@@ -157,6 +158,7 @@ export class Store {
   peerOnline = new Signal<Set<number>>(new Set());
   unread = new Signal<Map<string, number>>(new Map());
   toast = new Signal<{ text: string; err: boolean } | null>(null);
+  private toastTimer: ReturnType<typeof window.setTimeout> | null = null;
   relayConnected = new Signal<boolean>(false);
   muted = new Signal<Set<string>>(new Set());
   /** The contact driving this client's console, or null when agent mode is off. */
@@ -870,6 +872,8 @@ export class Store {
     this.pinned.set(new Map());
     this.deletedMessages.clear();
     this.clearAudio();
+    if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
+    this.toastTimer = null;
     this.toast.set(null);
     this.stopWatchdog();
     this.unsubEvents?.();
@@ -1641,8 +1645,13 @@ export class Store {
   }
 
   showToast(text: string, err = false): void {
-    this.toast.set({ text, err });
-    setTimeout(() => this.toast.set(null), 2800);
+    if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
+    const notice = { text, err };
+    this.toast.set(notice);
+    this.toastTimer = window.setTimeout(() => {
+      if (this.toast.get() === notice) this.toast.set(null);
+      this.toastTimer = null;
+    }, toastLifetime(text));
   }
 }
 

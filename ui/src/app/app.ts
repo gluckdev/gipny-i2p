@@ -11,6 +11,7 @@ import { AuthUnlock } from '../features/authorization/unlock';
 import { AuthBooting } from '../features/authorization/boot';
 import { Sidebar } from '../features/messaging/sidebar';
 import { ChatView } from '../features/messaging/chat';
+import { ToastLayer } from '../features/notifications/toast';
 
 export class App extends View {
   el: HTMLElement;
@@ -23,7 +24,7 @@ export class App extends View {
   private updateStatusEl: HTMLElement | null = null;
   private updateActionsEl: HTMLElement | null = null;
   private modalClosers = new Set<() => void>();
-  private toastNodes = new Set<HTMLElement>();
+  private toasts = new ToastLayer();
 
   constructor(private store: Store) {
     super();
@@ -73,6 +74,7 @@ export class App extends View {
   override destroy(): void {
     this.closeModals();
     this.clearToasts();
+    this.toasts.destroy();
     this.current?.destroy();
     this.current = null;
     this.closeUpdateModal();
@@ -104,19 +106,11 @@ export class App extends View {
   }
 
   private renderToast(t: { text: string; err: boolean } | null): void {
-    if (!t) { this.clearToasts(); return; }
-    const el = h('div', { class: t.err ? 'toast err' : 'toast' }, t.text);
-    const existing = document.querySelectorAll('.toast');
-    const offset = existing.length * 56;
-    (el as HTMLElement).style.bottom = `${20 + offset}px`;
-    document.body.appendChild(el);
-    this.toastNodes.add(el);
-    setTimeout(() => { el.replaceChildren(); el.remove(); this.toastNodes.delete(el); }, 3500);
+    this.toasts.show(t);
   }
 
   private clearToasts(): void {
-    for (const el of this.toastNodes) { el.replaceChildren(); el.remove(); }
-    this.toastNodes.clear();
+    this.toasts.show(null);
   }
 
   closeModals(): void {

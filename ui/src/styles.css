@@ -957,20 +957,31 @@ a:hover { text-decoration: underline; }
   content: ''; flex: 1; height: 1px; background: var(--border);
 }
 
-.toast {
+.toast-layer {
   position: fixed;
-  bottom: 20px; right: 20px;
-  padding: 10px 16px;
-  background: var(--surface);
+  top: var(--viewport-top, 0px); left: 0; right: 0;
+  height: var(--app-height, 100%);
+  padding: calc(var(--safe-top) + 12px) calc(var(--safe-right) + 12px) calc(var(--safe-bottom) + 12px) calc(var(--safe-left) + 12px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 900; /* Required modal choices (1000) stay fully visible. */
+  pointer-events: none;
+}
+.toast {
+  max-width: 620px; width: max-content; min-width: 0;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, .88);
   border: 1px solid var(--phosphor-dim);
-  color: var(--phosphor);
-  font-size: 12px;
-  letter-spacing: 0.05em;
-  z-index: 2000;
-  box-shadow: 0 0 20px var(--phosphor-glow);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 14px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .16);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   animation: toast-in 0.2s;
 }
-.toast.err { color: var(--danger); border-color: var(--danger); box-shadow: 0 0 20px var(--danger-soft); }
+:root[data-theme="dark"] .toast { background: rgba(22, 29, 40, .88); }
+.toast.err { color: var(--danger); border-color: var(--danger); }
 @keyframes toast-in {
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
@@ -2583,7 +2594,7 @@ select.input { width: 100%; text-overflow: ellipsis; }
   .modal-footer { padding-inline: calc(var(--safe-left) + 16px) calc(var(--safe-right) + 16px); flex-wrap: wrap; }
   .modal-footer .btn { flex: 1 1 auto; }
 
-  .toast { left: 12px; right: 12px; bottom: calc(var(--safe-bottom) + 14px); }
+  .toast { max-width: 100%; }
 }
 
 /* A phone on its side: height is what is scarce. */
