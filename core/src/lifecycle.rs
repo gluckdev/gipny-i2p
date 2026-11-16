@@ -10,6 +10,9 @@ use crate::core::{self, Core};
 use crate::diagnostics::scrub_debug_log;
 use crate::{core_of, err, profile_dir, AppCtx};
 
+#[cfg(test)]
+mod prewarm_tests;
+
 /// A node started before any profile was opened, held for the profile it was
 /// started for. Exactly one of these exists at a time: its destination and
 /// its relay's are dropped when another profile is picked.
@@ -273,19 +276,35 @@ pub(crate) async fn prewarm_status(ctx: State<'_, AppCtx>) -> Result<&'static st
     })
 }
 
-/// Tear a prewarmed node down and wait for its router to actually be gone:
-/// i2pd locks its data directory, and the next one refuses to start while the
-/// lock is held ("Could not lock pid file").
+/// Stop and join the relay builder before dropping the client destination.
+/// Dropping a running JoinHandle alone would detach its relay construction.
+async fn drop_prepared<Node, Relay>(node: Node, relay: tokio::task::JoinHandle<Relay>) {
+    relay.abort();
+    let _ = relay.await;
+    drop(node);
+}
+
+/// Abort also races with a completed outer task. Its output owns the child
+/// relay builder, which must be explicitly joined even when abort was too late.
+async fn abort_prewarm_build<Node, Relay, Error>(
+    task: tokio::task::JoinHandle<Result<(Node, tokio::task::JoinHandle<Relay>), Error>>,
+) {
+    task.abort();
+    if let Ok(Ok((node, relay))) = task.await {
+        drop_prepared(node, relay).await;
+    }
+}
+
+/// Drop only this prewarm's destinations and await its owned builders. The
+/// embedded router is process-global and remains alive with its original data
+/// directory/settings until the application exits.
 async fn drop_prewarm(p: Prewarm) {
     match p {
         Prewarm::Building { task, .. } => {
-            task.abort();
-            let _ = task.await;
+            abort_prewarm_build(task).await;
         }
         Prewarm::Ready { node, relay, .. } => {
-            relay.abort();
-            node.shutdown().await;
-            drop(node);
+            drop_prepared(node, relay).await;
         }
     }
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -306,9 +325,9 @@ async fn take_prewarmed(
             "router",
             "active",
             if taken.profile() != profile {
-                "the router was started for another profile; restarting it"
+                "the destinations were prepared for another profile; rebuilding them"
             } else {
-                "the router was started with other settings; restarting it"
+                "discarding destinations prepared with another settings hint; router settings require an application restart"
             },
         );
         drop_prewarm(taken).await;
@@ -591,9 +610,8 @@ pub(crate) async fn get_router_settings(
     Ok(RouterSettingsDto { transit, upnp })
 }
 
-/// Stored for the next start. i2pd reads these from its command line and has no
-/// reachable way to change them while running, so this cannot take effect until
-/// the router restarts — the UI says so rather than implying otherwise.
+/// Stored for the next application start. The process-global router reads
+/// these once; switching or reopening a profile does not restart that router.
 #[tauri::command]
 pub(crate) async fn set_router_settings(
     settings: RouterSettingsDto,
