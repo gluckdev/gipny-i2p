@@ -2,6 +2,7 @@
 pub mod agent;
 pub mod card;
 pub mod crypto;
+pub mod profile_transfer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod data_lock;
 #[cfg(not(target_arch = "wasm32"))]
