@@ -28,6 +28,13 @@ def report(status="passed", measured=True):
             "padded": True, "file": {"verified_unique_bytes": MIB}}
 
 
+def checkpoint(measured=True):
+    return dict(report("running", measured), source_sha=APP_SHA,
+                config={"file_bytes": MIB}, phase="measurement" if measured else "setup",
+                setup_elapsed_ms=50 if measured else None,
+                warmup_rtt_ms=10 if measured else None)
+
+
 class InputTests(unittest.TestCase):
     def test_bounds_and_repeat_baselines(self):
         self.assertEqual(runner.inputs("4,5,6,7,8,4", str(MIB)),
@@ -108,6 +115,30 @@ class ArtifactTests(unittest.TestCase):
 
 
 class PolicyAndResultTests(unittest.TestCase):
+    def test_interruption_checkpoint_proves_phase_but_never_completion(self):
+        self.assertEqual(runner.interrupted_phase(checkpoint(), 4, MIB, APP_SHA), "measurement")
+        self.assertEqual(runner.interrupted_phase(checkpoint(False), 4, MIB, APP_SHA), "setup")
+        for changes in ({"source_sha": "c" * 40}, {"configured_file_lanes": 6},
+                        {"config": {"file_bytes": MIB * 2}}, {"padded": False},
+                        {"participant_hops": [3, 3, 2, 3]}, {"warmup_rtt_ms": None},
+                        {"phase": "setup"}, {"status": "invalid"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                runner.interrupted_phase(dict(checkpoint(), **changes), 4, MIB, APP_SHA)
+
+    def test_incomplete_snapshot_never_displays_initial_zero_or_apparent_success(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
+            directory = Path(temporary)
+            point = {"index": 1, "file_lanes": 4, "status": "failed", "report_state": "incomplete"}
+            result_dir = directory / "01-lanes-4"
+            result_dir.mkdir()
+            for state in ("incomplete", "missing"):
+                point["report_state"] = state
+                for value in (dict(checkpoint(False), file={"verified_unique_bytes": 0}), report()):
+                    runner.save(result_dir / "performance.json", value)
+                    runner.summary(directory, [point])
+                    self.assertIn("| 1 | 4 | — / — | failed | — | — | — |",
+                                  (directory / "summary.md").read_text())
+
     def test_relay_manifest_binds_destination_and_all_baseline_settings(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -182,6 +213,65 @@ class SweepTests(unittest.TestCase):
 
     def test_all_measured_points_pass(self):
         self.assertEqual(self.run_mocked_sweep([None, None, None]), (0, 3, 3))
+
+
+class OuterTimeoutTests(unittest.TestCase):
+    def run_timeout(self, value):
+        class Process:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
+            directory = Path(temporary)
+            reports, state = directory / "reports", directory / "state"
+            reports.mkdir()
+            state.mkdir()
+            processes = []
+
+            def spawn(*args, **kwargs):
+                process = Process()
+                processes.append(process)
+                if len(processes) == 3 and value is not None:
+                    runner.save(reports / "01-lanes-4" / "performance.json", value)
+                return process
+
+            def stop(process):
+                process.returncode = -15
+
+            original_classifier = runner.interrupted_phase
+
+            def classify(*args):
+                self.assertTrue(all(p.returncode is not None for p in processes))
+                return original_classifier(*args)
+
+            with patch.object(runner.subprocess, "Popen", side_effect=spawn), \
+                    patch.object(runner, "stop", side_effect=stop), \
+                    patch.object(runner, "interrupted_phase", side_effect=classify), \
+                    patch.object(runner, "relay_policy", return_value={"destination": "fixture"}), \
+                    patch.object(runner.shutil, "copyfile"), \
+                    patch.object(runner.time, "monotonic", side_effect=[0, 0, 0, 1201, 1202]):
+                point = runner.run_point(1, 4, MIB, directory / "bin", reports, state,
+                                         {"application_sha": APP_SHA, "router_sha": "b" * 40})
+            self.assertEqual(point["status"], "failed")
+            self.assertEqual(point["report_state"], "incomplete")
+            self.assertEqual(point["harness_exit_code"], -15)
+            self.assertTrue(all(p.returncode == -15 for p in processes))
+            return point
+
+    def test_outer_timeout_after_protected_checkpoint_is_a_failed_measurement(self):
+        point = self.run_timeout(checkpoint())
+        self.assertEqual(point["failure_kind"], "measurement")
+        self.assertIn("20-minute total budget", point["errors"][0])
+        self.assertEqual(SweepTests().run_mocked_sweep([point["failure_kind"], None, None]), (1, 3, 3))
+
+    def test_outer_timeout_before_checkpoint_or_with_wrong_policy_stops_sweep(self):
+        for value in (None, checkpoint(False), dict(checkpoint(), padded=False)):
+            with self.subTest(value=value):
+                point = self.run_timeout(value)
+                self.assertEqual(point["failure_kind"], "setup")
+                self.assertEqual(SweepTests().run_mocked_sweep([point["failure_kind"]]), (1, 1, 1))
 
 
 if __name__ == "__main__":

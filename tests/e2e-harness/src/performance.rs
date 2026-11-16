@@ -10,6 +10,7 @@ use gipny_libcore::{SessionEvent, SessionManager};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    future::Future,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -185,7 +186,26 @@ fn write_report(path: &Path, config: &Config, report: &Report) -> Result<()> {
         "lost": "known successfully queued probes without an echo before their deadline; late echoes remain lost; interrupted unknown enqueue outcomes are reported separately",
         "peak_send_lanes": "open streams available at successful part enqueue; does not prove every stream carried useful bytes"
     });
-    std::fs::write(path, serde_json::to_vec_pretty(&value)?).context("write performance report")
+    // The outer watchdog may read this while the harness is still alive.
+    // Publish a complete checkpoint with one same-directory rename.
+    let pending = path.with_extension("json.tmp");
+    std::fs::write(&pending, serde_json::to_vec_pretty(&value)?)
+        .context("write performance report checkpoint")?;
+    std::fs::rename(pending, path).context("publish performance report checkpoint")
+}
+
+async fn within<T>(
+    deadline: Instant,
+    phase: &str,
+    work: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    ensure!(
+        Instant::now() < deadline,
+        "performance deadline reached before {phase}"
+    );
+    tokio::time::timeout_at(deadline.into(), work)
+        .await
+        .with_context(|| format!("performance deadline reached during {phase}"))?
 }
 
 pub(super) async fn run() -> Result<()> {
@@ -275,6 +295,9 @@ fn external_relay(name: &str, fallback: Option<&str>) -> Result<String> {
 
 async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Result<()> {
     let setup = Instant::now();
+    // E2E_TIMEOUT_SECS is the remaining total harness budget supplied by the
+    // runner. Every phase consumes this same deadline, including startup.
+    let deadline = setup + Duration::from_secs(config.timeout_secs);
     // A new directory for every run prevents old queued messages or attachments
     // from satisfying this run, without deleting previous measurement data.
     let work_dir = config
@@ -291,45 +314,69 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
             external_relay("B", fallback.as_deref())?,
         )
     };
-    let (a, mut a_events) = start_bot("bot-a", &work_dir, &relay_a, &[]).await?;
-    let (b, mut b_events) = start_bot("bot-b", &work_dir, &relay_b, &[]).await?;
-    let owned_relays = if config.in_process_relays {
-        let (ra, rb) =
-            start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk).await?;
-        ensure!(
-            ra.hops() == 3 && rb.hops() == 3,
-            "personal relays must have three-hop tunnels"
-        );
-        a.session.set_relay_onion(ra.address())?;
-        b.session.set_relay_onion(rb.address())?;
-        Some((ra, rb))
-    } else {
-        None
+    let (a, mut a_events) = within(
+        deadline,
+        "bot-a startup",
+        start_bot("bot-a", &work_dir, &relay_a, &[]),
+    )
+    .await?;
+    let (b, mut b_events) = match within(
+        deadline,
+        "bot-b startup",
+        start_bot("bot-b", &work_dir, &relay_b, &[]),
+    )
+    .await
+    {
+        Ok(bot) => bot,
+        Err(error) => {
+            a.session.shutdown();
+            return Err(error);
+        }
     };
-    ensure!(
-        a.session.node.hops() == 3 && b.session.node.hops() == 3,
-        "both clients must have three-hop tunnels"
-    );
-    report.participant_hops = Some([3, 3, 3, 3]);
-    let relay_a = owned_relays
-        .as_ref()
-        .map(|r| r.0.address())
-        .unwrap_or(&relay_a);
-    let relay_b = owned_relays
-        .as_ref()
-        .map(|r| r.1.address())
-        .unwrap_or(&relay_b);
-    let b_in_a = a
-        .session
-        .add_contact_via(&b.card, &b.onion, "bot-b", Some(relay_b))
-        .await?;
-    let a_in_b = b
-        .session
-        .add_contact_via(&a.card, &a.onion, "bot-a", Some(relay_a))
-        .await?;
-    let budget = Duration::from_secs(config.timeout_secs);
     let result = async {
-        wait_connected(&mut a_events, &mut b_events, budget).await?;
+        let owned_relays = if config.in_process_relays {
+            let (ra, rb) = within(
+                deadline,
+                "personal relay startup",
+                start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk),
+            )
+            .await?;
+            ensure!(
+                ra.hops() == 3 && rb.hops() == 3,
+                "personal relays must have three-hop tunnels"
+            );
+            a.session.set_relay_onion(ra.address())?;
+            b.session.set_relay_onion(rb.address())?;
+            Some((ra, rb))
+        } else {
+            None
+        };
+        ensure!(
+            a.session.node.hops() == 3 && b.session.node.hops() == 3,
+            "both clients must have three-hop tunnels"
+        );
+        report.participant_hops = Some([3, 3, 3, 3]);
+        let relay_a = owned_relays
+            .as_ref()
+            .map(|r| r.0.address())
+            .unwrap_or(&relay_a);
+        let relay_b = owned_relays
+            .as_ref()
+            .map(|r| r.1.address())
+            .unwrap_or(&relay_b);
+        let b_in_a = within(deadline, "bot-a contact setup", async {
+            Ok(a.session
+                .add_contact_via(&b.card, &b.onion, "bot-b", Some(relay_b))
+                .await?)
+        })
+        .await?;
+        let a_in_b = within(deadline, "bot-b contact setup", async {
+            Ok(b.session
+                .add_contact_via(&a.card, &a.onion, "bot-a", Some(relay_a))
+                .await?)
+        })
+        .await?;
+        wait_connected(&mut a_events, &mut b_events, deadline).await?;
         report.warmup_rtt_ms = Some(
             warmup(
                 &a,
@@ -339,7 +386,7 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
                 &mut a_events,
                 &mut b_events,
                 &report.run_id,
-                budget,
+                deadline,
             )
             .await?,
         );
@@ -356,6 +403,7 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
             a_in_b,
             &mut a_events,
             &mut b_events,
+            deadline,
         )
         .await
     }
@@ -364,16 +412,15 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
         json!({ "sender": a.session.file_metrics(), "receiver": b.session.file_metrics() });
     a.session.shutdown();
     b.session.shutdown();
-    drop(owned_relays);
     result
 }
 
 async fn wait_connected(
     a: &mut Receiver<SessionEvent>,
     b: &mut Receiver<SessionEvent>,
-    budget: Duration,
+    deadline: Instant,
 ) -> Result<()> {
-    tokio::time::timeout(budget, async {
+    within(deadline, "relay connections", async {
         let (mut a_ready, mut b_ready) = (false, false);
         while !a_ready || !b_ready {
             tokio::select! {
@@ -392,7 +439,7 @@ async fn wait_connected(
         Ok::<_, anyhow::Error>(())
     })
     .await
-    .context("timeout waiting for both relays")?
+    .context("waiting for both relays")
 }
 
 async fn send(
@@ -401,6 +448,10 @@ async fn send(
     body: String,
     deadline: Instant,
 ) -> Result<()> {
+    ensure!(
+        Instant::now() < deadline,
+        "message enqueue deadline reached"
+    );
     tokio::time::timeout_at(
         deadline.into(),
         session.send_message(contact, body, vec![], None, None, None),
@@ -419,12 +470,11 @@ async fn warmup(
     a_events: &mut Receiver<SessionEvent>,
     b_events: &mut Receiver<SessionEvent>,
     run: &str,
-    budget: Duration,
+    deadline: Instant,
 ) -> Result<u64> {
     let body = format!("performance:{run}:warmup");
     let echo = format!("echo:{body}");
     let start = Instant::now();
-    let deadline = start + budget;
     send(&a.session, b_in_a, body.clone(), deadline).await?;
     loop {
         tokio::select! {
@@ -468,6 +518,7 @@ async fn measure(
     a_in_b: i64,
     a_events: &mut Receiver<SessionEvent>,
     b_events: &mut Receiver<SessionEvent>,
+    deadline: Instant,
 ) -> Result<()> {
     let mut data = file_transfer::payload(config.file_bytes);
     data[..nonce.len()].copy_from_slice(&nonce);
@@ -475,9 +526,13 @@ async fn measure(
     let file_body = format!("performance:{}:file", report.run_id);
     let prefix = format!("performance:{}:probe:", report.run_id);
     let echo_prefix = format!("echo:{prefix}");
+    ensure!(
+        Instant::now() < deadline,
+        "performance deadline reached before file enqueue"
+    );
     report.measurement_started = true;
+    write_report(&config.report_path, config, report)?;
     let start = Instant::now();
-    let deadline = start + Duration::from_secs(config.timeout_secs);
     let probe_timeout = Duration::from_secs(config.probe_timeout_secs);
     let mut probes = Probes::new(start, probe_timeout, config.max_in_flight);
     let mut sender = Worker::new(a.session.clone(), b_in_a, config.max_in_flight);
@@ -486,6 +541,7 @@ async fn measure(
     let mut verifying: Option<tokio::task::JoinHandle<Result<FileReport>>> = None;
     let mut file_identity = None;
     let result = async {
+        ensure!(Instant::now() < deadline, "performance phase deadline reached before file enqueue");
         tokio::time::timeout_at(deadline.into(), a.session.send_message(b_in_a, file_body.clone(),
             vec![("performance.bin".into(), data.as_ref().clone())], None, None, None))
             .await.context("file enqueue timed out")?.context("file enqueue failed")?;
@@ -583,74 +639,4 @@ async fn measure(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsafe_or_conflicting_environment_is_rejected_even_when_set_to_zero() {
-        for forbidden in FORBIDDEN_ENV
-            .iter()
-            .copied()
-            .chain(["E2E_AGENT_BIN", "E2E_BIG_FILE_RESTART"])
-        {
-            assert!(
-                validate_environment(|name| name == forbidden).is_err(),
-                "{forbidden}"
-            );
-        }
-        assert!(validate_environment(|_| false).is_ok());
-    }
-
-    #[test]
-    fn limits_reject_invalid_values_instead_of_mislabeling_an_experiment() {
-        for raw in ["0", "17", "-1", "word"] {
-            assert!(bounded(Some(raw), 4, 1, 16, "inflight").is_err());
-        }
-        assert_eq!(bounded(None, 4, 1, 16, "inflight").unwrap(), 4);
-        assert!(bounded(Some("249"), 2000, 250, 60_000, "interval").is_err());
-    }
-
-    #[test]
-    fn relay_manifest_must_bind_the_actual_destination_and_both_hop_counts() {
-        let valid = br#"{"destination":"test-destination","inbound_hops":3,"outbound_hops":3}"#;
-        assert!(validate_relay_policy(valid, "test-destination").is_ok());
-        assert!(validate_relay_policy(valid, "another-destination").is_err());
-        assert!(validate_relay_policy(
-            br#"{"destination":"test-destination","inbound_hops":2,"outbound_hops":3}"#,
-            "test-destination"
-        )
-        .is_err());
-        assert!(validate_relay_policy(
-            br#"{"destination":"test-destination","inbound_hops":3}"#,
-            "test-destination"
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn only_a_complete_matching_file_contributes_unique_goodput_once() {
-        let mut report = FileReport {
-            requested_bytes: 4,
-            ..Default::default()
-        };
-        assert!(report
-            .verify(b"abcd", b"abc", || Duration::from_secs(2))
-            .is_err());
-        assert!(report
-            .verify(b"abcd", b"abce", || Duration::from_secs(2))
-            .is_err());
-        assert_eq!(report.verified_unique_bytes, 0);
-        assert_eq!(report.goodput_bytes_per_sec, None);
-        assert!(report.verify(b"abcd", b"abcd", || Duration::ZERO).is_err());
-        report
-            .verify(b"abcd", b"abcd", || Duration::from_secs(2))
-            .unwrap();
-        report
-            .verify(b"abcd", b"abcd", || Duration::from_secs(3))
-            .unwrap();
-        assert_eq!(report.verified_unique_bytes, 4);
-        assert_eq!(report.elapsed_ms, Some(2000));
-        assert_eq!(report.goodput_bytes_per_sec, Some(2.0));
-        assert_eq!(report.duplicate_completion_events, 1);
-    }
-}
+mod tests;

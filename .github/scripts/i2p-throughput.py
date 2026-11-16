@@ -97,6 +97,26 @@ def report_outcome(result, returncode, lanes, size):
     return "measurement" if measured else "setup"
 
 
+def interrupted_phase(result, lanes, size, application_sha):
+    """A checkpoint proves phase/policy, never a final delivery outcome."""
+    if (not isinstance(result, dict) or result.get("schema_version") != 1
+            or result.get("configured_file_lanes") != lanes
+            or result.get("source_sha") != application_sha
+            or result.get("status") not in ("running", "passed", "failed")
+            or not isinstance(result.get("config"), dict)
+            or result["config"].get("file_bytes") != size):
+        raise ValueError("interrupted harness has no matching checkpoint")
+    if result.get("measurement_started") is not True:
+        return "setup"
+    if (result.get("participant_hops") != [3, 3, 3, 3]
+            or result.get("padded") is not True
+            or result.get("phase") not in ("measurement", "complete")
+            or not isinstance(result.get("setup_elapsed_ms"), int)
+            or not isinstance(result.get("warmup_rtt_ms"), int)):
+        raise ValueError("interrupted measurement lacks a protected warmup checkpoint")
+    return "measurement"
+
+
 def stop(process):
     if process.poll() is not None:
         return
@@ -134,6 +154,7 @@ def run_point(index, lanes, size, binaries, reports, state_root, build):
         "schema_version": 1, "status": "failed", "index": index,
         "file_lanes": lanes, "file_bytes": size, "errors": [],
         "failure_kind": "setup",
+        "report_state": "missing",
         "application_sha": build["application_sha"], "router_sha": build["router_sha"],
         "point_timeout_seconds": POINT_TIMEOUT,
         "topology": "two client Destinations on one router; two external relay processes",
@@ -142,6 +163,7 @@ def run_point(index, lanes, size, binaries, reports, state_root, build):
         "bandwidth_note": "Router bandwidth classification is not a local streaming hard cap.",
     }
     processes, handles = [], []
+    harness_process = None
     state = Path(tempfile.mkdtemp(prefix=f"{index:02d}-lanes-{lanes}-", dir=state_root))
     try:
         environment = runtime_environment()
@@ -187,19 +209,28 @@ def run_point(index, lanes, size, binaries, reports, state_root, build):
                                     str(binaries / "e2e-harness")], env=harness_env,
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         processes.append(process)
+        harness_process = process
         while process.poll() is None:
             if any(relay.poll() is not None for relay in relays):
+                point["report_state"] = "incomplete"
                 raise RuntimeError("a relay exited during measurement")
             if time.monotonic() >= deadline:
                 raise TimeoutError("measurement exceeded its 20-minute total budget")
             time.sleep(1)
         point["harness_exit_code"] = process.returncode
         result = json.loads((report_dir / "performance.json").read_text())
+        if isinstance(result, dict) and result.get("status") == "running":
+            point["report_state"] = "incomplete"
+            raise RuntimeError("harness exited without a final report")
         point["failure_kind"] = report_outcome(result, process.returncode, lanes, size)
+        point["report_state"] = "complete"
         if point["failure_kind"] is None:
             point["status"] = "passed"
         else:
             point["errors"].extend(result.get("errors") or ["harness reported failure"])
+    except TimeoutError as error:
+        point["report_state"] = "incomplete"
+        point["errors"].append(str(error))
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         point["errors"].append(str(error))
     finally:
@@ -212,6 +243,18 @@ def run_point(index, lanes, size, binaries, reports, state_root, build):
                 point["errors"].append(f"process cleanup: {error}")
         for handle in handles:
             handle.close()
+        # Read only after the writer was stopped. A valid checkpoint can prove
+        # that protected measurement began, but its initial counters are not a
+        # final result. Keep the point red and never present them as zero rates.
+        if point["report_state"] == "incomplete" and point["failure_kind"] != "cleanup":
+            if harness_process is not None:
+                point["harness_exit_code"] = harness_process.returncode
+            try:
+                result = json.loads((report_dir / "performance.json").read_text())
+                point["failure_kind"] = interrupted_phase(
+                    result, lanes, size, build["application_sha"])
+            except (OSError, ValueError, KeyError) as error:
+                point["errors"].append(f"incomplete checkpoint: {error}")
         # Upload only test diagnostics, never the router identities or databases.
         try:
             for number, path in enumerate(sorted(state.rglob("i2pd.log"))):
@@ -239,7 +282,8 @@ def summary(reports, points):
             result = json.loads(path.read_text())
         except (OSError, ValueError):
             result = {}
-        if not isinstance(result, dict):
+        if (not isinstance(result, dict) or result.get("status") not in ("passed", "failed")
+                or point.get("report_state") not in (None, "complete")):
             result = {}
         file = result.get("file") or {}
         probes = (result.get("probes") or {}).get("rtt_ms") or {}
