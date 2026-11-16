@@ -358,7 +358,7 @@ impl Core {
             }
             return Err(CoreError::State);
         }
-        let pt = pack_payload(&raw, self.lane.lock().await.padded());
+        let pt = pad_payload(&raw);
         let (header, ct) = {
             let mut sess = self.sessions.lock().await;
             let state = sess.get_mut(&contact.id).ok_or(CoreError::State)?;

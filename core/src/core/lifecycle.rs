@@ -61,7 +61,6 @@ impl Core {
             dht: dht_client::new_node(node.clone(), db.clone()),
             dht_addr_asked: Arc::new(Mutex::new(HashMap::new())),
             rtt: Arc::new(Mutex::new(HashMap::new())),
-            lane: Arc::new(Mutex::new(Lane::Normal)),
         });
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();

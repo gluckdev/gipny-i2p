@@ -113,23 +113,13 @@ pub fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
     (failures < PEER_RELAY_REDIALS).then(|| peer_relay_backoff(failures))
 }
 
-/// Parts in flight one lane carries well; a window of more spreads over more.
-/// Each i2p stream is held back by its own window, so a stream with a long
-/// queue is slow while another could take more: at 8 (2 MiB a stream) run
-/// 36056012101 held one extra lane and ~130 KiB/s.
-const PARTS_PER_LANE: u32 = 4;
+/// Desired application streams for a contact's flight window.
+/// The common policy also supports bounded, fixed-concurrency measurements.
+pub use crate::files::lanes::desired as lanes_for;
 
-/// Lanes to a contact's relay for a window of `window` parts: one stream
-/// until it would hold more than [`PARTS_PER_LANE`], at most `FILE_LANES`.
-pub fn lanes_for(window: u32) -> usize {
-    (window.div_ceil(PARTS_PER_LANE) as usize).clamp(1, FILE_LANES)
-}
-
-/// Whether to open one more connection to our own relay for file parts:
-/// it is elsewhere, parts came lately, and fewer than `FILE_LANES - 1` extra
-/// are open.
+/// Open one more receive stream only for an active, external relay.
 pub fn collect_lane_wanted(external: bool, part_seen_ms: i64, now_ms: i64, open: usize) -> bool {
-    external && open + 1 < FILE_LANES && collect_lane_holds(part_seen_ms, now_ms)
+    external && open + 1 < crate::files::lanes::limit() && collect_lane_holds(part_seen_ms, now_ms)
 }
 
 /// Whether extra connections for parts are still worth holding.
@@ -163,9 +153,6 @@ const KEEPALIVE_INCOMING_THRESHOLD: u32 = 100;
 /// so anything past the 4 MiB bucket never arrived (it was 14 MiB, and was
 /// dropped at the relay). Large files go in parts; see `files`.
 const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
-/// Streams to a recipient's relay carrying parts at once (the usual one
-/// included).
-const FILE_LANES: usize = 4;
 /// Extra connections to our own relay, when it is not in this process, are
 /// held while parts keep coming and closed this long after the last one. A
 /// minute closed and reopened them every two or three while a slow path
@@ -310,6 +297,7 @@ pub struct SessionManager {
     /// destination). One i2p stream carries at most its window per round
     /// trip; parts spread over several go that many times faster.
     file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
+    file_metrics: crate::files::metrics::FileMetrics,
     /// Relays a lane is being dialled to, so one is dialled at a time.
     file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// When the last file part came (ms), and how many extra connections to
@@ -359,6 +347,7 @@ impl SessionManager {
             inbox_busy: Arc::default(),
             heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
+            file_metrics: Default::default(),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             flows: Arc::new(std::sync::Mutex::new(HashMap::new())),

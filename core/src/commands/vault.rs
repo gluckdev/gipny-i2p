@@ -1,22 +1,7 @@
-use gipny_libcore::security::{DuressMode, UnlockOutcome};
+use gipny_libcore::security::DuressMode;
 use tauri::State;
 
 use crate::{err, AppCtx};
-
-/// Verify using the real vault: attempt limits and duress behavior must apply.
-#[tauri::command]
-pub(crate) async fn verify_passphrase(
-    pass: String,
-    ctx: State<'_, AppCtx>,
-) -> Result<String, String> {
-    let vault = ctx.vault.lock().await.clone().ok_or("no profile open")?;
-    match vault.unlock(&pass).map_err(err)? {
-        UnlockOutcome::Primary(_) => Ok("ok".into()),
-        // A decoy cannot hide a profile that is already open on screen.
-        UnlockOutcome::Decoy(_) => Err("invalid passphrase".into()),
-        UnlockOutcome::Wiped => Ok("wiped".into()),
-    }
-}
 
 #[tauri::command]
 pub(crate) async fn vault_lock(ctx: State<'_, AppCtx>) -> Result<(), String> {

@@ -176,26 +176,20 @@ fn an_unreachable_relay_is_dialled_again_for_a_few_minutes_then_left() {
 }
 
 #[test]
-fn lanes_follow_the_window() {
-    assert_eq!(lanes_for(1), 1);
-    assert_eq!(lanes_for(4), 1, "a starting window is one stream");
-    assert_eq!(lanes_for(PARTS_PER_LANE), 1);
-    assert_eq!(lanes_for(PARTS_PER_LANE + 1), 2);
-    assert_eq!(lanes_for(crate::files::WINDOW), FILE_LANES);
-}
-
-#[test]
 fn extra_connections_to_our_relay_only_while_parts_come_to_one_elsewhere() {
     let now = 1_000_000;
+    let limit = crate::files::lanes::limit();
     assert!(!collect_lane_wanted(true, 0, now, 0), "no part yet");
-    assert!(collect_lane_wanted(true, now - 1_000, now, 0));
+    assert_eq!(collect_lane_wanted(true, now - 1_000, now, 0), limit > 1);
     assert!(
         !collect_lane_wanted(false, now - 1_000, now, 0),
         "a relay in this process is a pipe"
     );
-    assert!(collect_lane_wanted(true, now - 1_000, now, FILE_LANES - 2));
+    if limit > 1 {
+        assert!(collect_lane_wanted(true, now - 1_000, now, limit - 2));
+    }
     assert!(
-        !collect_lane_wanted(true, now - 1_000, now, FILE_LANES - 1),
+        !collect_lane_wanted(true, now - 1_000, now, limit - 1),
         "no more than the sender's lanes"
     );
     assert!(collect_lane_holds(now - COLLECT_LANE_IDLE_MS + 1, now));
@@ -213,15 +207,14 @@ fn unknown_console_kind_still_decodes() {
     assert_eq!(back.console.map(|c| c.kind), Some(200));
 }
 
-/// The fast lanes stop padding, and nobody is told. This is what makes
-/// that safe: both shapes come back through the same unpack, so a peer on
-/// an older build reads an unpadded message without knowing there was
-/// anything to know.
+/// Older clients could omit the padding bytes. Incoming messages must remain
+/// readable after outgoing messages always use the standard size buckets.
 #[test]
 fn an_unpadded_payload_unpacks_like_a_padded_one() {
     let body = b"who is going to be at the thing on friday";
-    let padded = pack_payload(body, true);
-    let bare = pack_payload(body, false);
+    let padded = pad_payload(body);
+    let mut bare = (body.len() as u32).to_be_bytes().to_vec();
+    bare.extend_from_slice(body);
 
     assert_eq!(unpad_payload(&padded).as_deref(), Some(&body[..]));
     assert_eq!(unpad_payload(&bare).as_deref(), Some(&body[..]));
@@ -237,15 +230,12 @@ fn an_unpadded_payload_unpacks_like_a_padded_one() {
     );
 }
 
-/// The whole reason for dropping padding: the buckets step by fours, so a
-/// payload just over one becomes three times the bytes on the wire, and on
-/// a narrow tunnel that is three times the wait.
+/// Small text and voice payloads both use the next standard size bucket.
 #[test]
-fn padding_is_cheap_for_text_and_expensive_for_voice() {
+fn text_and_voice_payloads_use_standard_padding_buckets() {
     let text = vec![0u8; 40];
-    assert_eq!(pack_payload(&text, true).len(), 256);
+    assert_eq!(pad_payload(&text).len(), 256);
 
     let voice = vec![0u8; 5 * 1024];
-    assert_eq!(pack_payload(&voice, true).len(), 16_384);
-    assert_eq!(pack_payload(&voice, false).len(), 4 + voice.len());
+    assert_eq!(pad_payload(&voice).len(), 16_384);
 }

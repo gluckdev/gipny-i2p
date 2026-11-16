@@ -247,7 +247,7 @@ impl Core {
     }
 
     /// The usual connection to this contact's relay and up to
-    /// `FILE_LANES - 1` more, dialled in the background as needed: parts
+    /// `files::lanes::limit() - 1` more, dialled in the background as needed: parts
     /// spread over several i2p streams go that many times faster.
     async fn file_lanes(
         self: &Arc<Self>,
@@ -265,20 +265,22 @@ impl Core {
             return out;
         };
         let relay = relay.to_string();
-        let live = {
+        let (live, dial) = {
             let mut lanes = self.file_lanes.lock().await;
             let v = lanes.entry(relay.clone()).or_default();
             v.retain(|tx| !tx.is_closed());
-            v.clone()
+            // Count and reserve together: a completed dial cannot make this
+            // snapshot stale before we claim the next one.
+            let dial = v.len() + 1 < want.min(gipny_libcore::files::lanes::limit())
+                && self
+                    .file_lanes_dialling
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(relay.clone());
+            (v.clone(), dial)
         };
-        let want_more = live.len() + 1 < want.min(FILE_LANES);
         out.extend(live.into_iter().take(want.saturating_sub(1)));
-        let dialling = !self
-            .file_lanes_dialling
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(relay.clone());
-        if want_more && !dialling {
+        if dial {
             let this = self.clone();
             let handle = tokio::spawn(async move {
                 let dial = tokio::time::timeout(
@@ -286,10 +288,6 @@ impl Core {
                     relay::connect_peer(&this.node, &relay, &this.identity),
                 )
                 .await;
-                this.file_lanes_dialling
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .remove(&relay);
                 if let Ok(Ok(client)) = dial {
                     gipny_libcore::debug_trace!(
                         "[files] another lane to relay {}",
@@ -301,16 +299,20 @@ impl Core {
                         .entry(relay.clone())
                         .or_default()
                         .push(client.out_tx.clone());
+                    this.file_lanes_dialling
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&relay);
                     this.send_kick.notify_one();
                     this.clone().run_recv_loop(client, None, None).await;
+                } else {
+                    this.file_lanes_dialling
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .remove(&relay);
                 }
             });
             self.tasks.lock().unwrap().push(handle);
-        } else if !want_more && !dialling {
-            self.file_lanes_dialling
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&relay);
         }
         out
     }
@@ -334,7 +336,6 @@ impl Core {
             .or_default()
             .window();
         let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
-        let mut lane = 0usize;
         let heard = self
             .heard
             .lock()
@@ -398,8 +399,14 @@ impl Core {
                 if let Ok(reference) = self.db.dm_reference(file.message_id) {
                     payload.dm = Some(gipny_libcore::session::WireDm { kind: 0, reference });
                 }
-                let via = Route::Relay(lanes[lane % lanes.len()].clone());
-                lane += 1;
+                let lane = self
+                    .flows
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(contact.id)
+                    .or_default()
+                    .next_lane(lanes.len());
+                let via = Route::Relay(lanes[lane].clone());
                 if let Err(e) = self
                     .send_payload_via_relay(contact, &mut payload, &via)
                     .await

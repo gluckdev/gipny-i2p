@@ -779,23 +779,8 @@ pub fn pad_payload(pt: &[u8]) -> Vec<u8> {
     }
     out
 }
-/// As [`pad_payload`], but the padding is optional.
-///
-/// The length prefix is written either way, so the receiver does not care and
-/// does not need to be told: an unpadded payload is simply one whose bucket
-/// happened to equal its length, and `unpad_payload` reads it unchanged. That
-/// is what lets the fast lanes drop padding without a protocol change and
-/// without breaking anyone running an older build.
-pub fn pack_payload(pt: &[u8], padded: bool) -> Vec<u8> {
-    if padded {
-        return pad_payload(pt);
-    }
-    let mut out = Vec::with_capacity(4 + pt.len());
-    out.extend_from_slice(&(pt.len() as u32).to_be_bytes());
-    out.extend_from_slice(pt);
-    out
-}
-
+/// Read the length-prefixed payload, including messages from older clients
+/// that sent the prefix and body without filling a padding bucket.
 pub fn unpad_payload(padded: &[u8]) -> Option<Vec<u8>> {
     if padded.len() < 4 { return None; }
     let len = u32::from_be_bytes(padded[0..4].try_into().ok()?) as usize;

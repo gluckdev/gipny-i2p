@@ -160,8 +160,6 @@ fn wipe_key(contact_id: i64) -> String {
 /// As in libcore's session.rs: 45 s, not 90 — a hung dial is retried in
 /// 5–10 s instead of holding a letter a minute and a half.
 const PEER_RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
-/// Streams to a recipient's relay carrying parts at once (the usual one included).
-const FILE_LANES: usize = 4;
 /// Unfinished incoming transfers are dropped after the relay's letter TTL.
 const FILE_IN_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 
@@ -215,7 +213,7 @@ pub use agent_loop::AgentMaster;
 pub use events::CoreEvent;
 pub use files::PendingAttachment;
 pub use hosted_relay::{DialState, HostedRelayState, RelayInfo, RelayMode};
-pub use network::{Lane, LinkRoute, LinkStats, Rtt};
+pub use network::{LinkRoute, LinkStats, Rtt};
 
 fn hex_bytes(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len() * 2);
@@ -226,8 +224,8 @@ fn hex_bytes(b: &[u8]) -> String {
 }
 use gipny_libcore::session::{
     collect_lane_holds, collect_lane_wanted, decode_payload, encode_payload, lanes_for,
-    ours_stands, pack_payload, pad_payload, peer_relay_backoff, peer_relay_redial_after,
-    unpad_payload, WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply,
+    ours_stands, pad_payload, peer_relay_backoff, peer_relay_redial_after, unpad_payload,
+    WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply,
 };
 
 fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, bincode::Error> {
@@ -320,10 +318,6 @@ pub struct Core {
     /// on purpose — it describes this link right now, and a number from last
     /// week would only mislead.
     rtt: Arc<Mutex<HashMap<i64, Rtt>>>,
-    /// The speed/anonymity trade currently in force. Global, not per contact:
-    /// tunnel length belongs to the session, and one set of tunnels carries
-    /// everything.
-    lane: Arc<Mutex<Lane>>,
 }
 
 fn build_ad(a: &[u8], b: &[u8]) -> Vec<u8> {

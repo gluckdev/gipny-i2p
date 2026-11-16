@@ -1,44 +1,6 @@
-//! Link measurements, reachability, and anonymity settings.
+//! Link measurements and reachability.
 
 use super::*;
-
-/// How much anonymity the user has agreed to trade for speed.
-///
-/// Named for what each one does, not for what its button says: the interface
-/// calls these «кокаин» and «нитро», and a button can be renamed without
-/// anybody having to work out what the code meant. Nothing moves between them
-/// without somebody pressing something and being told the price.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Lane {
-    /// Three hops, padded to size buckets. What i2p recommends and what every
-    /// conversation uses until somebody says otherwise.
-    #[default]
-    Normal,
-    /// Two hops and no padding. One less stranger between us and the network,
-    /// and messages sent at their true size.
-    Fast,
-}
-
-impl Lane {
-    pub fn hops(self) -> u8 {
-        match self {
-            Self::Normal => gipny_libcore::net::DEFAULT_HOPS,
-            Self::Fast => gipny_libcore::net::MIN_HOPS,
-        }
-    }
-
-    /// Whether messages are still padded to fixed size buckets.
-    ///
-    /// Padding costs nothing on a short message and a great deal on a long
-    /// one: the buckets step 4 KiB → 16 KiB → 64 KiB, so five kilobytes of
-    /// voice travels as sixteen. That is three times the bytes down a narrow
-    /// tunnel, which is three times the wait — so the fast lanes drop it, and
-    /// an observer gets to see exactly how much was said.
-    pub fn padded(self) -> bool {
-        matches!(self, Self::Normal)
-    }
-}
 
 /// How a letter to this contact leaves right now.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -56,8 +18,6 @@ pub enum LinkRoute {
 /// The channel to one contact, as the readout above the chat shows it.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LinkStats {
-    /// Which trade is in force right now.
-    pub lane: Lane,
     /// Hops on our outbound tunnel — our leg, our exposure.
     pub our_hops: u8,
     /// Hops on the inbound tunnel of the relay they collect from — their leg.
@@ -117,13 +77,11 @@ impl Core {
             },
             None => LinkRoute::None,
         };
-        let lane = *self.lane.lock().await;
         let their_hops = self.node.hops();
         LinkStats {
             our_hops: their_hops,
             their_hops: self.hosted_hops().unwrap_or(their_hops),
-            padded: lane.padded(),
-            lane,
+            padded: true,
             route,
             rtt_ms: self
                 .rtt
@@ -140,46 +98,6 @@ impl Core {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(|r| r.hops())
-    }
-
-    /// Move to a different speed/anonymity trade.
-    ///
-    /// Both legs are ours, which is why nothing is negotiated with the other
-    /// side: our outbound tunnels carry what we send, and our own relay's
-    /// inbound tunnels carry what we receive. Shortening either exposes us and
-    /// nobody else, so consent is ours to give and the contact simply gets a
-    /// faster correspondent.
-    ///
-    /// The client session is rebuilt first and awaited, because until it is up
-    /// nothing can be sent at all. The relay is told afterwards and not waited
-    /// for: a published destination needs its LeaseSet found again, which takes
-    /// a minute or two, and blocking the caller on that would freeze the
-    /// interface for no reason — mail keeps arriving at the old tunnels until
-    /// the new ones take over.
-    pub async fn set_lane(self: &Arc<Self>, lane: Lane) -> Result<()> {
-        {
-            let mut current = self.lane.lock().await;
-            if *current == lane {
-                return Ok(());
-            }
-            *current = lane;
-        }
-        gipny_libcore::debug_trace!(
-            "[lane] switching to {lane:?} ({} hops, padding {})",
-            lane.hops(),
-            if lane.padded() { "on" } else { "off" }
-        );
-        let outcome = self.node.set_hops(lane.hops()).await;
-        if let Some(relay) = self
-            .hosted_relay
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-        {
-            relay.set_hops(lane.hops());
-        }
-        let _ = self.events.try_send(CoreEvent::LaneChanged { lane });
-        outcome.map_err(CoreError::Net)
     }
 
     /// Reports a contact whose relay has been silent for a while with mail

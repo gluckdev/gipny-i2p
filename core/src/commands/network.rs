@@ -37,17 +37,6 @@ pub(crate) async fn link_stats(
     Ok(core_of(&ctx).await?.link_stats(contact_id).await)
 }
 
-/// Trade anonymity for speed, or give it back. Rebuilding tunnels takes time.
-#[tauri::command]
-pub(crate) async fn set_lane(lane: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    let lane = match lane.as_str() {
-        "normal" => crate::core::Lane::Normal,
-        "fast" => crate::core::Lane::Fast,
-        other => return Err(format!("unknown lane {other}")),
-    };
-    core_of(&ctx).await?.set_lane(lane).await.map_err(err)
-}
-
 #[tauri::command]
 pub(crate) async fn set_relay_mode(mode: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
     let mode = crate::core::RelayMode::parse(&mode).ok_or("bad relay mode")?;

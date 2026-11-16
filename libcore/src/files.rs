@@ -19,6 +19,9 @@ use crate::crypto::AttachmentCipher;
 use crate::db::{Db, IncomingCommit, NewAttachment, NewGroupAttachment, NewOutgoingDm, NewOutgoingGroup};
 use crate::session::{WireFileAck, WireFileOffer, WirePayload};
 
+pub mod lanes;
+pub mod metrics;
+
 /// Attachments up to this size still ride inside their letter.
 pub const INLINE_MAX: usize = 128 * 1024;
 pub const INLINE_MESSAGE_MAX: usize = 1024 * 1024;
@@ -27,7 +30,7 @@ pub const INLINE_MESSAGE_MAX: usize = 1024 * 1024;
 /// relay network alike.
 pub const CHUNK_SIZE: u32 = 192 * 1024;
 /// Most parts in flight to one recipient, across files, resends included: what
-/// can wait on their relay at once — ~8 MiB, a third of the built-in relay's
+/// can wait on their relay at once — ~4 MiB padded, a sixth of the built-in relay's
 /// per-recipient limit, so nobody else's mail is pushed out. [`Flow`] keeps
 /// the window under it, as large as the path carries.
 pub const WINDOW: u32 = 16;
@@ -550,6 +553,7 @@ const OUTLIER: f64 = 4.0;
 /// on a server each get the window their path carries.
 #[derive(Clone, Debug)]
 pub struct Flow {
+    lane_cursor: lanes::Cursor,
     cwnd: f64,
     ssthresh: f64,
     srtt: Option<f64>,
@@ -575,6 +579,7 @@ pub struct Flow {
 impl Default for Flow {
     fn default() -> Self {
         Self {
+            lane_cursor: Default::default(),
             cwnd: FLOW_START,
             ssthresh: WINDOW as f64,
             srtt: None,
@@ -590,6 +595,11 @@ impl Default for Flow {
 }
 
 impl Flow {
+    /// Select a stream without restarting round-robin at every ACK-driven batch.
+    pub fn next_lane(&mut self, count: usize) -> usize {
+        self.lane_cursor.next(count)
+    }
+
     /// Parts that may be in flight now.
     pub fn window(&self) -> u32 {
         (self.cwnd.floor() as u32).clamp(1, WINDOW)

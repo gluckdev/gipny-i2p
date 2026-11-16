@@ -94,10 +94,6 @@ pub enum CoreEvent {
         contact_id: i64,
         ms: u32,
     },
-    /// The speed/anonymity trade changed, and the tunnels with it.
-    LaneChanged {
-        lane: Lane,
-    },
     Typing {
         contact_id: Option<i64>,
         group_id: Option<String>,

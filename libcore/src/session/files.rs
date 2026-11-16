@@ -3,6 +3,11 @@
 use super::*;
 
 impl SessionManager {
+    /// Transfer counters for this session only; no identifiers or payload data.
+    pub fn file_metrics(&self) -> crate::files::metrics::FileMetricsSnapshot {
+        self.file_metrics.snapshot()
+    }
+
     /// Just started: tell everyone sending us a file what we hold of it, so
     /// what was in flight when we stopped goes again at once instead of at
     /// its timeout. Tried every 10 s for five minutes, until each went.
@@ -84,6 +89,7 @@ impl SessionManager {
                 .await;
                 let Ok(Ok(client)) = dial else { continue };
                 let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
+                this.file_metrics.receiving_lanes(n + 1);
                 crate::debug_trace!(
                     "[files] another connection to our relay for parts ({n} extra)"
                 );
@@ -232,6 +238,7 @@ impl SessionManager {
             })?;
             return Ok(());
         }
+        self.file_metrics.received(update.fresh, chunk.data.len());
         if let Some(attachment_id) = update.attachment_id {
             self.db.if_message_live(update.message_id, || {
                 let _ = self.events.try_send(SessionEvent::FileReceived {
@@ -389,7 +396,7 @@ impl SessionManager {
     }
 
     /// Connections to carry parts to this contact's relay: the usual one and
-    /// up to `FILE_LANES - 1` more, dialled in the background as needed.
+    /// up to `files::lanes::limit() - 1` more, dialled in the background as needed.
     pub(super) async fn file_lanes(
         self: &Arc<Self>,
         contact: &Contact,
@@ -406,20 +413,22 @@ impl SessionManager {
             return out;
         };
         let relay = relay.to_string();
-        let live = {
+        let (live, dial) = {
             let mut lanes = self.file_lanes.lock().await;
             let v = lanes.entry(relay.clone()).or_default();
             v.retain(|tx| !tx.is_closed());
-            v.clone()
+            // Count and reserve together: a completed dial cannot make this
+            // snapshot stale before we claim the next one.
+            let dial = v.len() + 1 < want.min(crate::files::lanes::limit())
+                && self
+                    .file_lanes_dialling
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(relay.clone());
+            (v.clone(), dial)
         };
-        let want_more = live.len() + 1 < want.min(FILE_LANES);
         out.extend(live.into_iter().take(want.saturating_sub(1)));
-        let dialling = !self
-            .file_lanes_dialling
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(relay.clone());
-        if want_more && !dialling {
+        if dial {
             let this = self.clone();
             let handle = tokio::spawn(async move {
                 let dial = tokio::time::timeout(
@@ -453,11 +462,6 @@ impl SessionManager {
                 }
             });
             self.tasks.lock().unwrap().push(handle);
-        } else if !want_more && !dialling {
-            self.file_lanes_dialling
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&relay);
         }
         out
     }
@@ -480,7 +484,6 @@ impl SessionManager {
             .or_default()
             .window();
         let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
-        let mut lane = 0usize;
         let heard = self
             .heard
             .lock()
@@ -546,8 +549,14 @@ impl SessionManager {
                     payload.dm = Some(WireDm { kind: 0, reference });
                 }
                 // Round the lanes: each is its own i2p stream.
-                let via = Route::Relay(lanes[lane % lanes.len()].clone());
-                lane += 1;
+                let lane = self
+                    .flows
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(contact.id)
+                    .or_default()
+                    .next_lane(lanes.len());
+                let via = Route::Relay(lanes[lane].clone());
                 if let Err(e) = self
                     .send_payload_via_relay(contact, &mut payload, &via)
                     .await
@@ -565,6 +574,7 @@ impl SessionManager {
                         .retry_file_parts(&file.file_id, contact.id, &retry, flow)?;
                     break;
                 }
+                self.file_metrics.queued(*index < next_before, lanes.len());
             }
         }
         Ok(())

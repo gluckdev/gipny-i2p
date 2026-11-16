@@ -33,7 +33,8 @@ pub enum TransitProfile {
 }
 
 impl TransitProfile {
-    /// i2pd's `bandwidth`: a letter (L=32, O=256, P=2048 KB/s) or a number.
+    /// i2pd's advertised bandwidth class. Class thresholds follow the pinned
+    /// router; this is not a hard rate limit on application streams.
     pub fn bandwidth(self) -> &'static str {
         match self {
             Self::Zero => "L",
