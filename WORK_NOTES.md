@@ -685,3 +685,11 @@ focus. Только переполненная карточка принимае
 Все настройки и ограничения: docs/startup-performance.md и
 docs/performance-anonymity.md. Известные DHT/backup вопросы остаются отдельными
 задачами; общие зелёные тесты не закрывают их автоматически.
+
+Clean GitHub gate candidate b232875 выявил пропущенные ambient WASM exports;
+локальный generated pkg скрывал TS2614. После исправления проверен отдельный
+git archive без pkg: native tsc/Vite и весь npm test прошли. В unit startup
+точечно заменяется лишь module URL уже существующего WorkerFixture; настоящий
+Worker остаётся в отдельном Chromium smoke. Из browser test entry удалён
+неиспользуемый export preparation, без подмены криптографии. Старые CI runs
+отменены до публикации, новые должны проверять исправленный общий SHA.

@@ -91,6 +91,15 @@ pointer events, слишком длинный текст прокручивае�
 Эти изменения ещё не опубликованы и не проверены на самих телефонах.
 Детали: docs/startup-performance.md, docs/browser-network-deployment.md.
 
+Общий candidate `b232875` отправлен в GitHub, но clean native frontend gate
+выявил TS2614: ambient wasm.d.ts не содержал двух новых exports. Прогоны
+остановлены до публикации; installer checks2/2 успели пройти. Исправлены types
+и две test-only границы: unit Worker не требует generated pkg, неиспользуемый
+preparation re-export удалён. Полный npm run build + npm test прошёл из git
+archive без browser-router/pkg; runtime/crypto не подменялись. Нужен повтор
+всех финальных gates на следующем SHA. Run IDs хранятся также во временном
+/tmp/gipny-alpha2-candidate-ci.json; старые runs не считать финальными.
+
 ## Как продолжить
 
 1. Прочитать этот файл и [TASKS.md](TASKS.md), проверить `git status --short`.

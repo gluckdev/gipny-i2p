@@ -21,7 +21,6 @@ export { AuthBooting } from '../src/features/authorization/boot';
 export { AuthCreate } from '../src/features/profiles/create';
 export { AuthUnlock } from '../src/features/authorization/unlock';
 export * from '../src/browser-core/files/history';
-export * from '../src/browser-core/files/preparation';
 export * from '../src/browser-core/files/storage';
 export * from '../src/browser-core/files/transfers';
 export { loadState as loadBrowserState } from '../src/browser-core/profiles/model';

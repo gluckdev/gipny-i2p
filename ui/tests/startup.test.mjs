@@ -8,7 +8,18 @@ import { build } from 'vite';
 import { Window } from 'happy-dom';
 
 const dir = await mkdtemp(join(tmpdir(), 'gipny-startup-'));
-await build({ configFile: false, logLevel: 'silent', worker: { format: 'es' }, build: {
+await build({ configFile: false, logLevel: 'silent', plugins: [{
+  name: 'unit-worker-boundary', enforce: 'pre',
+  transform(source, id) {
+    if (!id.replaceAll('\\', '/').endsWith('/src/browser-core/client.ts')) return;
+    // WorkerFixture owns this unit-test boundary. Do not bundle the real WASM
+    // worker on native CI, where no generated pkg exists. Production worker
+    // emission and initialization are covered by worker-startup.test.mjs.
+    const workerUrl = "new URL('./worker.ts', import.meta.url)";
+    assert.equal(source.split(workerUrl).length - 1, 1, 'the worker fixture must replace exactly one module URL');
+    return source.replace(workerUrl, "'fixture:worker'");
+  },
+}], build: {
   outDir: dir, emptyOutDir: false,
   lib: { entry: 'tests/startup-entry.ts', formats: ['es'], fileName: () => 'entry.mjs' },
 } });
