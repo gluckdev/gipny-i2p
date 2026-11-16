@@ -20,7 +20,7 @@ use gipny_libcore::db::{
     Attachment, Db, Direction, GroupMember, NewOutgoingDm, NewOutgoingGroup, PreKeyKind,
     RequestState, TrustLevel,
 };
-use gipny_libcore::net::{NetError, TorNode};
+use gipny_libcore::net::{NetError, I2pNode};
 use gipny_libcore::relay::{
     self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY,
 };
@@ -65,7 +65,7 @@ impl From<bincode::Error> for CoreError {
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
-const SETTING_RELAY_ONION: &str = "relay_onion";
+const SETTING_RELAY_ADDRESS: &str = "relay_address";
 const SETTING_RELAY_MODE: &str = "relay_mode";
 /// A contact's relay that has not answered for this long, while mail for them
 /// is queued, is reported to the user: with built-in relays it most likely
@@ -241,7 +241,7 @@ type BundleWaiter = tokio::sync::oneshot::Sender<Option<Vec<u8>>>;
 
 pub struct Core {
     db: Arc<Db>,
-    node: Arc<TorNode>,
+    node: Arc<I2pNode>,
     identity: Arc<Identity>,
     sessions: Arc<Mutex<HashMap<i64, RatchetState>>>,
     events: mpsc::Sender<CoreEvent>,

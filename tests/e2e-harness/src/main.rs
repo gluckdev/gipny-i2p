@@ -60,7 +60,7 @@ use anyhow::{bail, Context, Result};
 use gipny_libcore::agent::BODY_OFF;
 use gipny_libcore::relay_server::{EphemeralRelay, MemStoreLimits};
 use gipny_libcore::{
-    ContactCard, Db, IdentityCard, SessionEvent, SessionManager, TorNode, WireConsole,
+    ContactCard, Db, IdentityCard, SessionEvent, SessionManager, I2pNode, WireConsole,
     CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OFF, CONSOLE_OUTPUT, CONSOLE_REVOKE,
 };
 use tokio::sync::{Mutex, Notify};
@@ -103,8 +103,8 @@ fn hex8(b: &[u8]) -> String {
 struct BotHandle {
     session: Arc<SessionManager>,
     card: IdentityCard,
-    onion: String,
-    /// Wall-clock milliseconds from the `TorNode::start` call to its tunnels.
+    i2p_address: String,
+    /// Wall-clock milliseconds from the `I2pNode::start` call to its tunnels.
     router_ready_ms: u64,
 }
 
@@ -123,15 +123,15 @@ async fn start_bot(
     // Bounded: a reseed server that never answers left a run waiting on
     // the router for 36 minutes without a word (the laptop, 2026-09-25).
     let node = Arc::new(
-        tokio::time::timeout(ROUTER_START, TorNode::start(&data_dir, Default::default()))
+        tokio::time::timeout(ROUTER_START, I2pNode::start(&data_dir, Default::default()))
             .await
             .map_err(|_| anyhow::anyhow!("{name}: the router was not ready in {ROUTER_START:?}"))?
-            .with_context(|| format!("{name}: TorNode::start failed"))?,
+            .with_context(|| format!("{name}: I2pNode::start failed"))?,
     );
     let router_ready_ms = t0.elapsed().as_millis() as u64;
     eprintln!("[e2e] {name}: router ready in {router_ready_ms} ms");
 
-    let onion = node.onion_address().to_string();
+    let i2p_address = node.i2p_address().to_string();
     let db_path = data_dir.join("bot.db");
     let db = Arc::new(
         Db::open_plain(&db_path)
@@ -147,8 +147,8 @@ async fn start_bot(
 
     // Persist relay destination before the relay loop first wakes up.
     session
-        .set_relay_onion(relay_dest)
-        .with_context(|| format!("{name}: set_relay_onion"))?;
+        .set_relay_address(relay_dest)
+        .with_context(|| format!("{name}: set_relay_address"))?;
     session
         .set_display_name(name)
         .with_context(|| format!("{name}: set_display_name"))?;
@@ -156,7 +156,7 @@ async fn start_bot(
     let card = session.my_card();
     eprintln!("[e2e] {name}: identity sign_pk={}", hex8(&card.sign_pk));
 
-    Ok((BotHandle { session, card, onion, router_ready_ms }, events))
+    Ok((BotHandle { session, card, i2p_address, router_ready_ms }, events))
 }
 
 /// Start one in-process relay per bot on the shared router.
@@ -197,7 +197,7 @@ const GREETING: &str = "hello from bot-b";
 /// The text of the letter carrying E2E_BIG_FILE; not echoed.
 const BIG_FILE_BODY: &str = "big file";
 
-async fn start_in_process_relays(node: &TorNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
+async fn start_in_process_relays(node: &I2pNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
     let _ = node; // up already: the relays share its router
     eprintln!("[e2e] starting two in-process relays on the in-process router...");
     let t0 = Instant::now();
@@ -355,7 +355,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
 
     let (a, mut a_events) = start_bot("bot-a", &work_dir, &relay_dest, &[]).await.context("bot-a start")?;
     let master_card = ContactCard {
-        onion: a.onion.clone(),
+        i2p_address: a.i2p_address.clone(),
         sign_pk: a.card.sign_pk,
         dh_pk: a.card.dh_pk,
         relay: Some(relay_dest.clone()),
@@ -617,7 +617,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
 struct LiveBot {
     session: Arc<SessionManager>,
     card: IdentityCard,
-    onion: String,
+    i2p_address: String,
     relay_address: String,
     events: tokio::sync::mpsc::Receiver<SessionEvent>,
     _relay: EphemeralRelay,
@@ -638,7 +638,7 @@ impl LiveBot {
         .with_context(|| format!("{name}: relay did not come up in 300s"))?
         .with_context(|| format!("{name}: relay"))?;
         let relay_address = relay.address().to_string();
-        bot.session.set_relay_onion(&relay_address).with_context(|| format!("{name}: set_relay_onion"))?;
+        bot.session.set_relay_address(&relay_address).with_context(|| format!("{name}: set_relay_address"))?;
         eprintln!("[e2e] {name}: relay {}...", &relay_address[..20.min(relay_address.len())]);
 
         // join_dht bootstraps, announces us, publishes our bundle and
@@ -660,7 +660,7 @@ impl LiveBot {
         .await
         .with_context(|| format!("{name}: the seed never answered"))?;
         eprintln!("[e2e] {name}: in the relay network ({} nodes)", bot.session.dht_peer_count());
-        Ok(Self { session: bot.session, card: bot.card, onion: bot.onion, relay_address, events, _relay: relay })
+        Ok(Self { session: bot.session, card: bot.card, i2p_address: bot.i2p_address, relay_address, events, _relay: relay })
     }
 
     /// Gone completely: tasks, relay and destination, as a closed app.
@@ -773,10 +773,10 @@ async fn run_dht_offline_mode() -> Result<()> {
     eprintln!("[e2e] bot-b: prekey bundle is in the network");
 
     phase("2. contacts, then B goes away");
-    let a_in_b = b.session.add_contact_via(&a.card, &a.onion, "bot-a", Some(&a.relay_address)).await.context("bot-b: add bot-a")?;
-    let (b_card, b_onion, b_relay_before) = (b.card.clone(), b.onion.clone(), b.relay_address.clone());
+    let a_in_b = b.session.add_contact_via(&a.card, &a.i2p_address, "bot-a", Some(&a.relay_address)).await.context("bot-b: add bot-a")?;
+    let (b_card, b_i2p_address, b_relay_before) = (b.card.clone(), b.i2p_address.clone(), b.relay_address.clone());
     b.stop("bot-b");
-    let b_in_a = a.session.add_contact_via(&b_card, &b_onion, "bot-b", Some(&b_relay_before)).await.context("bot-a: add bot-b")?;
+    let b_in_a = a.session.add_contact_via(&b_card, &b_i2p_address, "bot-b", Some(&b_relay_before)).await.context("bot-a: add bot-b")?;
 
     phase("3. A writes to an absent B, then goes away");
     for i in 1..=n {
@@ -855,10 +855,10 @@ async fn run_update_check_mode() -> Result<()> {
     std::fs::create_dir_all(&data_dir)?;
     let t0 = Instant::now();
     let node = Arc::new(
-        tokio::time::timeout(ROUTER_START, TorNode::start(&data_dir, Default::default()))
+        tokio::time::timeout(ROUTER_START, I2pNode::start(&data_dir, Default::default()))
             .await
             .map_err(|_| anyhow::anyhow!("the router was not ready in {ROUTER_START:?}"))?
-            .context("TorNode::start")?,
+            .context("I2pNode::start")?,
     );
     eprintln!("[e2e] router ready in {} ms", t0.elapsed().as_millis());
     no_local_ports("harness", "self")?;
@@ -987,8 +987,8 @@ async fn run() -> Result<()> {
         None => {
             let (ra, rb) = start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk).await?;
             let (dest_a, dest_b) = (ra.address().to_string(), rb.address().to_string());
-            a.session.set_relay_onion(&dest_a).context("bot-a: set_relay_onion")?;
-            b.session.set_relay_onion(&dest_b).context("bot-b: set_relay_onion")?;
+            a.session.set_relay_address(&dest_a).context("bot-a: set_relay_address")?;
+            b.session.set_relay_address(&dest_b).context("bot-b: set_relay_address")?;
             eprintln!("[e2e] personal relays: each holds mail for its own bot and refuses anyone else's");
             (dest_a, dest_b, Some((ra, rb)))
         }
@@ -1019,12 +1019,12 @@ async fn run() -> Result<()> {
     // card carries in the app.
     let contact_b_in_a = a
         .session
-        .add_contact_via(&b.card, &b.onion, "bot-b", Some(&relay_b))
+        .add_contact_via(&b.card, &b.i2p_address, "bot-b", Some(&relay_b))
         .await
         .context("bot-a: add_contact(bot-b)")?;
     let contact_a_in_b = b
         .session
-        .add_contact_via(&a.card, &a.onion, "bot-a", Some(&relay_a))
+        .add_contact_via(&a.card, &a.i2p_address, "bot-a", Some(&relay_a))
         .await
         .context("bot-b: add_contact(bot-a)")?;
     eprintln!(

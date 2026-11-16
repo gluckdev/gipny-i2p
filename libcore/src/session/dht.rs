@@ -36,7 +36,7 @@ impl SessionManager {
                 &this.dht,
                 &this.db,
                 &this.identity,
-                nonempty(this.relay_onion()).as_deref(),
+                nonempty(this.relay_address()).as_deref(),
             )
             .await;
             this.publish_bundle_to_dht().await;
@@ -52,7 +52,7 @@ impl SessionManager {
             loop {
                 tokio::select! {
                     _ = this.dht_kick.notified() => {
-                        let address = nonempty(this.relay_onion());
+                        let address = nonempty(this.relay_address());
                         dht_client::maintain(
                             &this.dht,
                             &this.db,
@@ -64,7 +64,7 @@ impl SessionManager {
                         this.send_kick.notify_one();
                     }
                     _ = maintain.tick() => {
-                        let address = nonempty(this.relay_onion());
+                        let address = nonempty(this.relay_address());
                         dht_client::maintain(
                             &this.dht,
                             &this.db,

@@ -362,7 +362,7 @@ export class Sidebar extends View {
     const bugtrackerAddress = 'gipny:v3:AwZjN5KVFwO5s40WLLm0s2oP_EIukjZzOOlIz8lAScK21YYs7ixctfKjqWFxAsdOIaq_9Q_Zc5GpVE8MSIOZ_EeaH5UOGjm1rmMpfJD1hbL23gpP4T4TA4f0ApRPcwyKwHxuqW8jiMRP5wHiHVdZ4ilL5JrP8-DbmINqZgICOKrPBUdMdWNrBLbJJQ';
     // Проверяем, есть ли уже контакт багтрекера
     const contacts = this.store.contacts.get();
-    const bugtracker = contacts.find((c) => c.onion === bugtrackerAddress);
+    const bugtracker = contacts.find((c) => c.i2p_address === bugtrackerAddress);
     
     if (bugtracker) {
       // Открываем чат с существующим контактом

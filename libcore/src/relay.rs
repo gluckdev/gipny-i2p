@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::crypto::Identity;
-use crate::net::{NetError, TorNode};
+use crate::net::{NetError, I2pNode};
 
 include!("relay_wire.rs");
 
@@ -31,18 +31,18 @@ pub struct RelayClient {
 
 /// Connect to our own relay. Failures count toward SAM session health.
 pub async fn connect(
-    node: &Arc<TorNode>,
-    onion: &str,
+    node: &Arc<I2pNode>,
+    i2p_address: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
-    let Some(hash) = destination_hash(onion) else {
-        let stream = node.connect_relay(onion, RELAY_PORT).await?;
+    let Some(hash) = destination_hash(i2p_address) else {
+        let stream = node.connect_relay(i2p_address, RELAY_PORT).await?;
         return handshake(stream.into_inner(), identity, None).await;
     };
-    let stream = node.connect_relay(onion, RELAY_PORT).await?;
+    let stream = node.connect_relay(i2p_address, RELAY_PORT).await?;
     match handshake(stream.into_inner(), identity, Some(&hash)).await {
         Err(e) if predates_auth_v2(&e) => {
-            let stream = node.connect_relay(onion, RELAY_PORT).await?;
+            let stream = node.connect_relay(i2p_address, RELAY_PORT).await?;
             handshake(stream.into_inner(), identity, None).await
         }
         r => r,
@@ -70,18 +70,18 @@ pub async fn connect_local(
 /// relays tear down a session that was carrying our own traffic fine, and do it
 /// again every cooldown.
 pub async fn connect_peer(
-    node: &Arc<TorNode>,
-    onion: &str,
+    node: &Arc<I2pNode>,
+    i2p_address: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
-    let Some(hash) = destination_hash(onion) else {
-        let stream = node.connect_service(onion, RELAY_PORT).await?;
+    let Some(hash) = destination_hash(i2p_address) else {
+        let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
         return handshake(stream.into_inner(), identity, None).await;
     };
-    let stream = node.connect_service(onion, RELAY_PORT).await?;
+    let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
     match handshake(stream.into_inner(), identity, Some(&hash)).await {
         Err(e) if predates_auth_v2(&e) => {
-            let stream = node.connect_service(onion, RELAY_PORT).await?;
+            let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
             handshake(stream.into_inner(), identity, None).await
         }
         r => r,
@@ -92,8 +92,8 @@ pub async fn connect_peer(
 /// its — and hang up at its first frame. Says whether the relay can be reached
 /// from the network, which reading our own relay over a pipe no longer shows.
 /// Never logs in: an owner login would take over the relay's live push.
-pub async fn probe(node: &Arc<TorNode>, onion: &str) -> Result<()> {
-    let stream = node.connect_service(onion, RELAY_PORT).await?;
+pub async fn probe(node: &Arc<I2pNode>, i2p_address: &str) -> Result<()> {
+    let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
     let mut stream = stream.into_inner();
     match recv::<_, RelayToClient>(&mut stream).await? {
         RelayToClient::Challenge(_) => Ok(()),

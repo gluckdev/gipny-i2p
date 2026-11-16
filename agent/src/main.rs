@@ -271,7 +271,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
     let node = Arc::new(
         I2pNode::start(&data_dir, RouterSettings::default()).await.context("start i2p node")?,
     );
-    gipny_libcore::debug_trace!("[agent] i2p address: {}", node.b32_address().unwrap_or_else(|| node.onion_address().to_string()));
+    gipny_libcore::debug_trace!("[agent] i2p address: {}", node.b32_address().unwrap_or_else(|| node.i2p_address().to_string()));
 
     let display_name = persistent_agent_name(&db, args.name.as_deref())?;
     let (session, mut events) = SessionManager::start(data_dir.clone(), db.clone(), node.clone())
@@ -285,9 +285,9 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
     // external one if `--relay` names it — the escape hatch for an offline
     // mailbox. Kept alive for the life of the process; dropping it releases
     // the destination.
-    let (relay_onion, _hosted_relay) = match relay_override {
+    let (relay_address, _hosted_relay) = match relay_override {
         Some(r) => {
-            session.set_relay_onion(&r)?;
+            session.set_relay_address(&r)?;
             (r, None)
         }
         None => {
@@ -303,7 +303,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
             gipny_libcore::debug_trace!("[agent] built-in relay ready");
             // Collect from it over a pipe, not out through i2p and back.
             session.set_local_relay(relay.clone());
-            session.set_relay_onion(&address)?;
+            session.set_relay_address(&address)?;
             let dht_session = session.clone();
             let dht_address = address.clone();
             tokio::spawn(async move {
@@ -315,10 +315,10 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
 
     // Our own card, for the record and for anyone reading the log.
     let own_card = ContactCard {
-        onion: node.onion_address().to_string(),
+        i2p_address: node.i2p_address().to_string(),
         sign_pk: me.sign_pk,
         dh_pk: me.dh_pk,
-        relay: Some(relay_onion.clone()),
+        relay: Some(relay_address.clone()),
         name: Some(display_name.clone()),
     }.encode()?;
     write_private(&data_dir.join(OWN_CARD_FILE), &own_card)?;
@@ -330,7 +330,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
     let master_id = session
         .add_contact_via(
             &master_card.identity(),
-            &master_card.onion,
+            &master_card.i2p_address,
             master_card.name.as_deref().unwrap_or("master"),
             master_card.relay.as_deref(),
         )

@@ -64,15 +64,15 @@ impl SessionManager {
             loop {
                 let _ = tokio::time::timeout(Duration::from_secs(5), this.collect_kick.notified())
                     .await;
-                let onion = this.relay_onion();
-                let external = !onion.is_empty()
+                let i2p_address = this.relay_address();
+                let external = !i2p_address.is_empty()
                     && this.relay_out.read().await.is_some()
                     && !this
                         .local_relay
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
-                        .is_some_and(|r| relay::same_destination(r.address(), &onion));
+                        .is_some_and(|r| relay::same_destination(r.address(), &i2p_address));
                 if !collect_lane_wanted(
                     external,
                     this.part_seen.load(Relaxed),
@@ -84,7 +84,7 @@ impl SessionManager {
                 // One dial at a time; the next tick dials the next.
                 let dial = tokio::time::timeout(
                     PEER_RELAY_CONNECT_TIMEOUT,
-                    relay::connect(&this.node, &onion, &this.identity),
+                    relay::connect(&this.node, &i2p_address, &this.identity),
                 )
                 .await;
                 let Ok(Ok(client)) = dial else { continue };
@@ -103,14 +103,14 @@ impl SessionManager {
                     // given and did not ack the relay deals to the others.
                     let quiet = {
                         let lane = lane.clone();
-                        let onion = onion.clone();
+                        let i2p_address = i2p_address.clone();
                         move || {
                             !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms())
-                                || !relay::same_destination(&lane.relay_onion(), &onion)
+                                || !relay::same_destination(&lane.relay_address(), &i2p_address)
                         }
                     };
                     lane.clone()
-                        .run_recv_loop(client, Some(onion.clone()), Some(&quiet))
+                        .run_recv_loop(client, Some(i2p_address.clone()), Some(&quiet))
                         .await;
                     lane.collect_lanes.fetch_sub(1, Relaxed);
                 });

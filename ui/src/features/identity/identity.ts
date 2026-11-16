@@ -73,7 +73,7 @@ export class IdentityModal {
       }
       let card = '';
       try {
-        if (id) card = encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay);
+        if (id) card = encodeCard(id.i2p_address, id.card.sign_pk, id.card.dh_pk, name || undefined, myRelay);
       } catch {
         sharedCard = '';
         copyBtn.disabled = true;
@@ -145,7 +145,7 @@ export class IdentityModal {
           h('div', { class: 'hint' }, tr('identity.included_in_your_card_and_every_message')),
         ),
         h('div', { class: 'card-label', style: { marginTop: '14px' } }, tr('identity.i2p_address_full')),
-        h('div', { class: 'card-block' }, id?.onion ?? ''),
+        h('div', { class: 'card-block' }, id?.i2p_address ?? ''),
         h('div', { class: 'card-label', style: { marginTop: '14px' } }, tr('identity.i2p_address_b32')),
         b32Slot,
         h('div', { class: 'card-label', style: { marginTop: '14px' } }, tr('contact.key_fingerprint')),

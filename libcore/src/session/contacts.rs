@@ -6,10 +6,10 @@ impl SessionManager {
     pub async fn add_contact(
         self: &Arc<Self>,
         card: &crate::crypto::IdentityCard,
-        onion: &str,
+        i2p_address: &str,
         name: &str,
     ) -> Result<i64> {
-        self.add_contact_via(card, onion, name, None).await
+        self.add_contact_via(card, i2p_address, name, None).await
     }
 
     /// Add a contact, recording the relay their card named.
@@ -20,13 +20,13 @@ impl SessionManager {
     pub async fn add_contact_via(
         self: &Arc<Self>,
         card: &crate::crypto::IdentityCard,
-        onion: &str,
+        i2p_address: &str,
         name: &str,
         relay: Option<&str>,
     ) -> Result<i64> {
         let id = self
             .db
-            .add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
+            .add_contact(&card.sign_pk, &card.dh_pk, i2p_address, name, relay)?;
         let _ = self
             .events
             .send(SessionEvent::ContactAdded { contact_id: id })

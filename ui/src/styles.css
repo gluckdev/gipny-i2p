@@ -531,7 +531,7 @@ a:hover { text-decoration: underline; }
   padding: 10px 16px;
   display: flex; gap: 8px; align-items: center;
 }
-.sidebar-footer .onion {
+.sidebar-footer .i2p-address {
   flex: 1;
   font-size: 10px;
   color: var(--text-faint);
@@ -1607,7 +1607,7 @@ body::before {
   border-bottom: 1px solid var(--border);
 }
 .divider-text { color: var(--phosphor-dim); letter-spacing: .12em; text-transform: uppercase; font-size: 10px; }
-.sidebar-footer .onion { color: var(--text-dim); }
+.sidebar-footer .i2p-address { color: var(--text-dim); }
 
 /* --- Auth / landing: a subtle nexus ring behind the logo ------------------- */
 .auth { position: relative; }

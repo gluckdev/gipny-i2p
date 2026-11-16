@@ -200,8 +200,8 @@ test('Worker RTC adapter applies credits, rejects overflow and closes its port o
 });
 
 const aliceSign = '01'.repeat(32), bobSign = '02'.repeat(32);
-const aliceIdentity = { sign_pk: aliceSign, dh_pk: '03'.repeat(32), onion: 'alice', destination: 'alice', card: '', fingerprint: '' };
-const bobIdentity = { ...aliceIdentity, sign_pk: bobSign, onion: 'bob' };
+const aliceIdentity = { sign_pk: aliceSign, dh_pk: '03'.repeat(32), i2p_address: 'alice', destination: 'alice', card: '', fingerprint: '' };
+const bobIdentity = { ...aliceIdentity, sign_pk: bobSign, i2p_address: 'bob' };
 function deletionFixture() {
   const alice = ui.newBrowserState('Alice'), bob = ui.newBrowserState('Bob');
   alice.contacts = [{ id: 1, sign_pk: bobSign }]; bob.contacts = [{ id: 7, sign_pk: aliceSign }];
@@ -318,9 +318,9 @@ test('profile selection and boot retain accessible hooks in the shared console d
 });
 
 function fileFixture(size = 2 * 196608 + 17) {
-  const own = { sign_pk: '01'.repeat(32), dh_pk: '03'.repeat(32), onion: 'own.i2p' };
+  const own = { sign_pk: '01'.repeat(32), dh_pk: '03'.repeat(32), i2p_address: 'own.i2p' };
   const peer = '02'.repeat(32), state = ui.newBrowserState('Alice');
-  state.contacts.push({ id: 1, sign_pk: peer, trust: 1 });
+  state.contacts.push({ id: 1, sign_pk: peer, i2p_address: 'peer.i2p', trust: 1 });
   state.messages.push({ id: 10, contact_id: 1, group_id: null, outgoing: false, author: peer, origin: 10, sent_at: 1, expires_at: null, deleted_at: null, body: '' });
   state.nextId = 11;
   const data = Buffer.alloc(size, 73);
@@ -510,15 +510,15 @@ test('persisted network configuration is revalidated, including transport policy
 // ---- Large-file delivery, replay records and automatic letters ----
 
 function outgoingFixture(parts = 20, peers = ['02'.repeat(32)]) {
-  const own = { sign_pk: '01'.repeat(32), dh_pk: '03'.repeat(32), onion: 'own.i2p' };
+  const own = { sign_pk: '01'.repeat(32), dh_pk: '03'.repeat(32), i2p_address: 'own.i2p' };
   const state = ui.newBrowserState('Alice');
-  peers.forEach((peer, i) => state.contacts.push({ id: i + 1, sign_pk: peer, trust: 1, request: 'none' }));
+  peers.forEach((peer, i) => state.contacts.push({ id: i + 1, sign_pk: peer, i2p_address: 'peer.i2p', trust: 1, request: 'none' }));
   state.messages.push({ id: 10, contact_id: 1, group_id: null, outgoing: true, author: own.sign_pk, origin: 10, sent_at: 1, expires_at: null, deleted_at: null, body: '' });
   state.attachments.push({ id: 11, message_id: 10, name: 'big.bin', size: parts * 196608, storage: { id: 'a'.repeat(64), key: 'k', size: parts * 196608, chunk_size: 196608 } });
   const offer = { file_id: Array(16).fill(7), name: 'big.bin', size: parts * 196608, sha256: Array(32).fill(1), chunk_size: 196608 };
   for (const peer of peers) ui.offerOutgoingFile(state, 10, peer, offer, 11, 1000);
   state.nextId = 12;
-  const receipt = (fields) => ({ ...ui.payload({ onion: 'peer.i2p' }, 'Bob'), file_ack: { file_id: offer.file_id, received_up_to: 0, seen_to: 0, missing: [], resumed: false, echo_index: 0, echo_sent_at: 0, ...fields } });
+  const receipt = (fields) => ({ ...ui.payload({ i2p_address: 'peer.i2p' }, 'Bob'), file_ack: { file_id: offer.file_id, received_up_to: 0, seen_to: 0, missing: [], resumed: false, echo_index: 0, echo_sent_at: 0, ...fields } });
   const sealAndStore = (item, at) => { item.blob = ui.base64([9, 9, 9]); item.attempts = 1; item.at = at; return ui.settleDeposit(state, item.key, at); };
   return { own, state, offer, peers, peer: peers[0], receipt, sealAndStore };
 }
@@ -695,10 +695,10 @@ test('clearing a long chat queues a bounded number of deletion requests per cont
   state.contacts = [{ id: 1, sign_pk: peers[0], trust: 1, request: 'none' }, { id: 2, sign_pk: peers[1], trust: 2, request: 'none' }, { id: 3, sign_pk: peers[2], trust: 0, request: 'incoming' }];
   for (let i = 0; i < 300; i++) state.messages.push({ id: 100 + i, contact_id: 1 + (i % 3), group_id: null, author: peers[i % 3], origin: i + 1, outgoing: false, sent_at: i, body: 'x', deleted_at: null, expires_at: null });
   ui.clearHistory(state);
-  ui.queueDeletionControls(state, { sign_pk: '01'.repeat(32), onion: 'own' });
+  ui.queueDeletionControls(state, { sign_pk: '01'.repeat(32), i2p_address: 'own' });
   assert.equal(state.outbox.filter(item => item.peer === peers[0]).length, ui.DELETION_WINDOW);
   assert.equal(state.outbox.filter(item => item.peer !== peers[0]).length, 0, 'no controls to blocked or pending contacts');
-  ui.queueDeletionControls(state, { sign_pk: '01'.repeat(32), onion: 'own' });
+  ui.queueDeletionControls(state, { sign_pk: '01'.repeat(32), i2p_address: 'own' });
   assert.equal(state.outbox.length, ui.DELETION_WINDOW, 'idempotent');
 });
 
@@ -757,28 +757,20 @@ test('finished transfers are pruned into compact closed ids; capacity refuses a 
   assert.ok(g.state.outbox.some(item => item.payload?.file_cancel));
 });
 
-test('rc2 snapshots load: number-array ciphertext, boolean progress and plaintext parts are converted', () => {
-  const f = fileFixture(3 * 196608);
-  const old = JSON.parse(JSON.stringify(f.state));
-  old.transfers = [
-    { ...f.offer, peer: f.peer, message_id: 10, incoming: true, status: 'receiving', parts: [true, false, true], acked: [], attachment_id: null, storage: null, final_index: 0, final_sent_at: 0 },
-    { ...f.offer, file_id: Array(16).fill(6), peer: f.peer, message_id: 10, incoming: false, status: 'sending', parts: [], acked: [0, 2], attachment_id: 1, storage: null, final_index: 0, final_sent_at: 0 },
-  ];
-  old.outbox = [
-    { key: 'cipher', peer: f.peer, row: 10, payload: { body: 'x' }, blob: [1, 2, 3], at: 0, attempts: 1, deposited: false },
-    { key: 'stored-part', peer: f.peer, row: null, payload: null, blob: [4], at: 0, attempts: 1, deposited: true, file: { id: '06'.repeat(16), index: 1, message_id: 10 } },
-    { key: 'plain-part', peer: f.peer, row: null, payload: f.chunk(1), blob: null, at: 0, attempts: 0, deposited: false, file: { id: '06'.repeat(16), index: 1, message_id: 10 } },
-  ];
-  old.seen = Array.from({ length: 5000 }, (_, i) => ({ hash: String(i), peer: f.peer, ack: null }));
-  delete old.closedFiles; delete old.initials;
-  const state = ui.loadBrowserState(JSON.stringify(old));
-  assert.deepEqual([0, 1, 2].map(i => ui.partHeld(state.transfers[0], i)), [true, false, true]);
-  assert.deepEqual([0, 1, 2].map(i => ui.partHeld(state.transfers[1], i)), [true, false, true]);
-  assert.deepEqual([...ui.fromBase64(state.outbox[0].blob)], [1, 2, 3]);
-  assert.deepEqual(state.outbox.map(item => item.key), ['cipher', 'plain-part']);
-  assert.equal(state.outbox[1].payload, null, 'no plaintext part survives in the snapshot');
-  assert.equal(state.seen.length, ui.RECENT_ENVELOPES);
-  assert.deepEqual(state.closedFiles, []); assert.deepEqual(state.initials, {});
+test('unsupported browser metadata is rejected unchanged; current snapshots still round-trip', () => {
+  const state = ui.newBrowserState('Alice');
+  assert.equal(state.version, 2);
+  assert.deepEqual(ui.loadBrowserState(JSON.stringify(state)), state);
+  for (const version of [1, 0, 3, undefined]) {
+    const snapshot = { ...state, version, contacts: [{ saved_address: 'must remain untouched' }] };
+    const bytes = JSON.stringify(snapshot);
+    assert.throws(() => ui.loadBrowserState(bytes), /Unsupported browser profile format.*not changed/);
+    assert.equal(JSON.stringify(snapshot), bytes);
+  }
+  for (const json of ['null', '{}', '{bad', JSON.stringify({ ...state, contacts: [{}] }),
+    JSON.stringify({ ...state, outbox: [{ blob: [1, 2, 3] }] }), JSON.stringify({ ...state, transfers: [{}] })]) {
+    assert.throws(() => ui.loadBrowserState(json), /Unsupported browser profile format/);
+  }
 });
 
 /** In-memory OPFS directory whose next handle open can be made to hang. */

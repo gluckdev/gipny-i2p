@@ -132,7 +132,7 @@ def main():
         log('phone card ok; address', p_addr[:12] + '…', 'relay', (p_relay or '')[:12] + '…')
 
         # browser -> phone: contact request + first message
-        b_contact = H.rpc(cdp, 'add_contact', onion=p_addr, signPk=p_card['sign_pk'], dhPk=p_card['dh_pk'], name='Honor', relay=p_relay)
+        b_contact = H.rpc(cdp, 'add_contact', i2pAddress=p_addr, signPk=p_card['sign_pk'], dhPk=p_card['dh_pk'], name='Honor', relay=p_relay)
         first = H.rpc(cdp, 'send_message', contactId=b_contact, body='hello from the browser', attachments=[], ttlSecs=None, replyTo=None)
         t1 = time.monotonic()
         H.wait_for(lambda: any(c['sign_pk'] == b_card['sign_pk'] for c in phone.invoke('list_contacts')), 300, 'phone sees the browser contact request')

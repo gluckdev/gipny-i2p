@@ -36,7 +36,7 @@ export const de = {
   "app.network_offline": "Nicht verbunden. Der Chatverlauf ist verfügbar.",
   "app.network_unconfigured": "Kein Netzwerkdienst auf diesem Hosting. Nachrichten können weder gesendet noch empfangen werden; gespeicherte Chats sind verfügbar.",
 
-  "browser.about.transport": "Schlüssel, Verschlüsselung und der I2P-Router laufen in Ihrem Browser. Ein WSS-Weiterleitungsdienst überträgt den verschlüsselten NTCP2-Datenverkehr; er sieht Ihre IP-Adresse, Verbindungszeiten und das Datenvolumen.",
+  "browser.about.transport": "Schlüssel, Verschlüsselung und der I2P-Router laufen mit JavaScript und WebAssembly in Ihrem Browser. I2P verwendet Garlic-Routing. Ein Weiterleitungsdienst überträgt verschlüsselten NTCP2-Verkehr über WSS oder WebRTC; er sieht Ihre IP-Adresse, Verbindungszeiten und das Datenvolumen.",
   "browser.about.storage": "Ihr Profil wird in verschlüsselten OPFS-Dateien dieser Website gespeichert. Für das Passwort wird Argon2id (64 MiB) verwendet; Passkeys erfordern WebAuthn PRF. Beim Löschen der Websitedaten wird das Profil entfernt. Bewahren Sie Ihr Passwort zur Wiederherstellung auf.",
   "browser.about.memory": "Beim Sperren oder Verlassen der Seite wird der Worker beendet und das Profil geschlossen. Browser bieten keinen nativen mlock/mprotect-Schutz und garantieren keine vollständige physische Löschung des Arbeitsspeichers. Der App-Host und Browser-Erweiterungen müssen vertrauenswürdig sein: Sie können auf entsperrte Daten zugreifen.",
   "browser.about.contacts": "Tauschen Sie Kontaktkarten aus und prüfen Sie die Schlüssel-Fingerabdrücke über einen vertrauenswürdigen Kanal. Ihre Identität und I2P-Adresse bleiben beim erneuten Öffnen des Profils erhalten.",
@@ -303,7 +303,7 @@ export const de = {
   "about.database": "Datenbank",
   "about.sqlcipher_4_with_fts5_search_inside_the_encrypted": "SQLCipher 4 mit FTS5-Suche innerhalb der verschlüsselten Datenbank",
   "about.transport": "Transport",
-  "about.i2p_with_i2pd_embedded_in_the_same_process": "I2P (Tor 2.0 Garlic-Routing), quelloffenes C++ i2pd im selben Prozess eingebettet (Upstream-Quellcode: third_party/i2pd)",
+  "about.i2p_with_i2pd_embedded_in_the_same_process": "I2P-Garlic-Routing; der quelloffene C++-Router i2pd ist in den Prozess der nativen App eingebettet.",
   "about.kademlia_with_encrypted_and_signed_records": "Kademlia mit verschlüsselten und signierten Einträgen",
   "about.language": "Sprache",
   "about.avatars": "Profilbilder",

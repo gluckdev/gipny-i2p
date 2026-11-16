@@ -34,17 +34,17 @@ def address_hash(address):
     return hashlib.sha256(base64.b64decode(address.replace('-', '+').replace('~', '/'))).digest()
 
 
-def vector(identifier, onion, relay=None, name=None):
+def vector(identifier, i2p_address, relay=None, name=None):
     sign, dh = bytes(range(32)), bytes(range(32, 64))
-    body = bytes([int(relay is not None) | (int(bool(name)) << 1)]) + sign + dh + address_hash(onion)
+    body = bytes([int(relay is not None) | (int(bool(name)) << 1)]) + sign + dh + address_hash(i2p_address)
     if relay is not None:
         body += address_hash(relay)
     if name:
         encoded = name.encode('utf-8')
         assert 0 < len(encoded) <= 96
         body += bytes([len(encoded)]) + encoded
-    source = dict(onion=onion, sign_pk=sign.hex(), dh_pk=dh.hex())
-    decoded = dict(onion=b32(address_hash(onion)), sign_pk=sign.hex(), dh_pk=dh.hex())
+    source = dict(i2p_address=i2p_address, sign_pk=sign.hex(), dh_pk=dh.hex())
+    decoded = dict(i2p_address=b32(address_hash(i2p_address)), sign_pk=sign.hex(), dh_pk=dh.hex())
     if relay is not None:
         source['relay'], decoded['relay'] = relay, b32(address_hash(relay))
     if name:

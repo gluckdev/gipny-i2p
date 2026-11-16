@@ -17,7 +17,7 @@ pub(crate) struct ContactDto {
     pub(crate) id: i64,
     pub(crate) sign_pk: String,
     pub(crate) dh_pk: String,
-    pub(crate) onion: String,
+    pub(crate) i2p_address: String,
     pub(crate) name: String,
     pub(crate) trust: u8,
     pub(crate) created_at: i64,
@@ -41,7 +41,7 @@ impl From<Contact> for ContactDto {
             id: c.id,
             sign_pk: hex(&c.identity_sign),
             dh_pk: hex(&c.identity_dh),
-            onion: c.onion_address,
+            i2p_address: c.i2p_address,
             name: c.display_name,
             trust: match c.trust {
                 TrustLevel::Unverified => 0,
@@ -200,7 +200,7 @@ impl From<Group> for GroupDto {
 pub(crate) struct GroupMemberDto {
     pub(crate) sign_pk: String,
     pub(crate) dh_pk: String,
-    pub(crate) onion: String,
+    pub(crate) i2p_address: String,
     pub(crate) name: String,
     pub(crate) is_self: bool,
 }
@@ -210,7 +210,7 @@ impl From<GroupMember> for GroupMemberDto {
         Self {
             sign_pk: hex(&m.sign_pk),
             dh_pk: hex(&m.dh_pk),
-            onion: m.onion,
+            i2p_address: m.i2p_address,
             name: m.display_name,
             is_self: m.is_self,
         }

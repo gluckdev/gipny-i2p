@@ -56,39 +56,39 @@ const min = 60_000;
 
 const contacts: Contact[] = [
   {
-    id: 1, sign_pk: hex('a1'), dh_pk: hex('b2'), onion: DEST,
+    id: 1, sign_pk: hex('a1'), dh_pk: hex('b2'), i2p_address: DEST,
     name: 'gpu-worker-17.eu-central-1.compute.internal.example-company.net',
     trust: 1, created_at: now - 900 * min, last_seen: now - 2 * min, is_bot: false,
     pinned_at: now - 800 * min, last_message_at: now - 3 * min, relay: RELAY, agent_granted: true,
     request: 'none',
   },
   {
-    id: 2, sign_pk: hex('c3'), dh_pk: hex('d4'), onion: B32, name: 'Анна',
+    id: 2, sign_pk: hex('c3'), dh_pk: hex('d4'), i2p_address: B32, name: 'Анна',
     trust: 1, created_at: now - 700 * min, last_seen: now - 1 * min, is_bot: false,
     pinned_at: null, last_message_at: now - 1 * min, relay: null, agent_granted: false,
     request: 'none',
   },
   {
-    id: 3, sign_pk: hex('e5'), dh_pk: hex('f6'), onion: DEST,
+    id: 3, sign_pk: hex('e5'), dh_pk: hex('f6'), i2p_address: DEST,
     name: 'a_single_token_name_without_spaces_or_any_other_break_opportunity_0123456789abcdef',
     trust: 0, created_at: now - 600 * min, last_seen: null, is_bot: false,
     pinned_at: null, last_message_at: now - 90 * min, relay: null, agent_granted: false,
     request: 'outgoing',
   },
   {
-    id: 4, sign_pk: hex('07'), dh_pk: hex('18'), onion: B32, name: 'deploy-bot',
+    id: 4, sign_pk: hex('07'), dh_pk: hex('18'), i2p_address: B32, name: 'deploy-bot',
     trust: 1, created_at: now - 500 * min, last_seen: now - 30 * min, is_bot: true,
     pinned_at: null, last_message_at: now - 240 * min, relay: null, agent_granted: false,
     request: 'none',
   },
   {
-    id: 5, sign_pk: hex('29'), dh_pk: hex('3a'), onion: B32, name: 'backup-nas.home.arpa',
+    id: 5, sign_pk: hex('29'), dh_pk: hex('3a'), i2p_address: B32, name: 'backup-nas.home.arpa',
     trust: 2, created_at: now - 400 * min, last_seen: null, is_bot: false,
     pinned_at: null, last_message_at: null, relay: null, agent_granted: false,
     request: 'none',
   },
   {
-    id: 6, sign_pk: hex('4b'), dh_pk: hex('5c'), onion: '', name: 'Stranger with a rather long display name',
+    id: 6, sign_pk: hex('4b'), dh_pk: hex('5c'), i2p_address: '', name: 'Stranger with a rather long display name',
     trust: 0, created_at: now - 5 * min, last_seen: null, is_bot: false,
     pinned_at: null, last_message_at: now - 4 * min, relay: RELAY, agent_granted: false,
     request: 'incoming',
@@ -103,8 +103,8 @@ const groups: Group[] = [
 ];
 
 const members: GroupMember[] = [
-  { sign_pk: hex('00'), dh_pk: hex('01'), onion: DEST, name: 'я', is_self: true },
-  ...contacts.slice(0, 3).map((c) => ({ sign_pk: c.sign_pk, dh_pk: c.dh_pk, onion: c.onion, name: c.name, is_self: false })),
+  { sign_pk: hex('00'), dh_pk: hex('01'), i2p_address: DEST, name: 'я', is_self: true },
+  ...contacts.slice(0, 3).map((c) => ({ sign_pk: c.sign_pk, dh_pk: c.dh_pk, i2p_address: c.i2p_address, name: c.name, is_self: false })),
 ];
 
 let nextId = 1000;
@@ -198,7 +198,7 @@ mockIPC(async (cmd, payload) => {
     case 'vault_status': return { exists: true, unlocked: false };
     case 'vault_unlock': return scene === 'boot' ? new Promise(() => {}) : null;
     case 'my_card': return { sign_pk: hex('00'), dh_pk: hex('01') };
-    case 'my_onion': return DEST;
+    case 'my_i2p_address': return DEST;
     case 'my_fingerprint': return hex('5e');
     case 'my_bundle': return { sign_pk: hex('00'), dh_pk: hex('01'), signed_prekey: hex('aa'), signed_prekey_sig: hex('bb') + hex('cc'), one_time_prekey: null, one_time_id: null };
     case 'get_display_name': return displayName;

@@ -1,9 +1,8 @@
 //! Network transport over i2p, on the router inside this process.
 //!
-//! The public surface is deliberately unchanged from the old `TorNode`: the
-//! rest of the app (session, relay client, update client, bot-sdk) treats a
-//! node's address as an opaque `String` (historically an `.onion`, now an i2p
-//! destination) and operates over an abstract [`DuplexStream`].
+//! The session, relay client, update client and bot SDK use [`I2pNode`].
+//! A node's address is an opaque I2P destination; connections expose an
+//! abstract [`DuplexStream`].
 //!
 //! The router is libi2pd compiled in ([`crate::embedded`], `i2p-embed`): no
 //! SAM, no router process, no local proxy listener. A node is one destination of ours
@@ -97,7 +96,7 @@ pub fn start_hops() -> u8 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
-    Hello { identity: IdentityCard, onion: String },
+    Hello { identity: IdentityCard, i2p_address: String },
     BundleRequest,
     Bundle(PreKeyBundle),
     X3dhInit(X3dhInitial),
@@ -112,7 +111,7 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> DuplexStream for T {}
 
 pub struct Connection {
     stream: Pin<Box<dyn DuplexStream>>,
-    pub peer_onion: Option<String>,
+    pub peer_i2p_address: Option<String>,
 }
 
 pub struct RelayStream {
@@ -156,7 +155,7 @@ impl Connection {
 pub struct I2pNode {
     /// Our destination. Replaced whole by `recreate` (same keys, new tunnels).
     dest: Mutex<Arc<i2p_embed::Destination>>,
-    /// Shareable public destination (opaque address; the old code's "onion").
+    /// Shareable public I2P destination.
     address: String,
     /// Private keys are ciphertext between synchronous destination FFI calls.
     privkey: crate::memory::SealedBlob,
@@ -309,8 +308,8 @@ impl I2pNode {
 
     pub async fn shutdown(&self) {}
 
-    /// Our current (ephemeral) i2p address (kept named `onion_address` for API parity).
-    pub fn onion_address(&self) -> &str { &self.address }
+    /// Our current ephemeral I2P destination address.
+    pub fn i2p_address(&self) -> &str { &self.address }
 
     /// Short `.b32.i2p` address derived from the destination.
     ///
@@ -325,17 +324,17 @@ impl I2pNode {
         Some(format!("{}.b32.i2p", base32_encode_nopad(&hash)))
     }
 
-    pub async fn connect(&self, onion: &str) -> Result<Connection> {
-        let dest = onion.trim().to_string();
+    pub async fn connect(&self, i2p_address: &str) -> Result<Connection> {
+        let dest = i2p_address.trim().to_string();
         let stream = self.dial(&dest, 0).await?;
-        Ok(Connection { stream: stream.inner, peer_onion: Some(dest) })
+        Ok(Connection { stream: stream.inner, peer_i2p_address: Some(dest) })
     }
 
-    pub async fn connect_retry(&self, onion: &str, attempts: u32) -> Result<Connection> {
+    pub async fn connect_retry(&self, i2p_address: &str, attempts: u32) -> Result<Connection> {
         let mut delay_ms = 300u64;
         let mut last = NetError::Closed;
         for i in 0..attempts {
-            match self.connect(onion).await {
+            match self.connect(i2p_address).await {
                 Ok(c) => return Ok(c),
                 Err(e) => {
                     last = e;
@@ -354,8 +353,8 @@ impl I2pNode {
     /// Only the relay loop should use this. Repeated failures to reach the relay
     /// are evidence our tunnels have gone bad, which is what
     /// [`Self::maybe_recreate`] acts on.
-    pub async fn connect_relay(&self, onion: &str, port: u16) -> Result<RelayStream> {
-        match self.dial(onion, port).await {
+    pub async fn connect_relay(&self, i2p_address: &str, port: u16) -> Result<RelayStream> {
+        match self.dial(i2p_address, port).await {
             Ok(stream) => {
                 self.relay_fail_count.store(0, Ordering::Relaxed);
                 Ok(stream)
@@ -379,9 +378,9 @@ impl I2pNode {
         self.dial(dest, port).await
     }
 
-    async fn dial(&self, onion: &str, port: u16) -> Result<RelayStream> {
+    async fn dial(&self, i2p_address: &str, port: u16) -> Result<RelayStream> {
         let dest = self.destination().await;
-        match dest.connect(onion.trim(), port).await {
+        match dest.connect(i2p_address.trim(), port).await {
             Ok(stream) => Ok(RelayStream { inner: Box::pin(stream) }),
             Err(e) => Err(NetError::I2p(e.to_string())),
         }
@@ -510,10 +509,6 @@ fn base32_encode_nopad(input: &[u8]) -> String {
     }
     out
 }
-
-/// Backwards-compatible alias: the transport is now i2p, but the rest of the
-/// codebase still refers to the node type by its historical name.
-pub type TorNode = I2pNode;
 
 #[cfg(test)]
 mod hop_tests {

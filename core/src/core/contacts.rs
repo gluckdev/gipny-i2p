@@ -220,14 +220,14 @@ impl Core {
     pub async fn add_contact_via(
         self: &Arc<Self>,
         card: &gipny_libcore::crypto::IdentityCard,
-        onion: &str,
+        i2p_address: &str,
         name: &str,
         relay: Option<&str>,
     ) -> Result<i64> {
         let known = self.db.find_contact_by_sign_pk(&card.sign_pk)?;
         let id = self
             .db
-            .add_contact(&card.sign_pk, &card.dh_pk, onion, name, relay)?;
+            .add_contact(&card.sign_pk, &card.dh_pk, i2p_address, name, relay)?;
         match known.map(|c| c.request_state) {
             // A fresh card: introduce ourselves right away, so they see us
             // without waiting for a first message.

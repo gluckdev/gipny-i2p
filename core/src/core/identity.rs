@@ -37,8 +37,8 @@ impl Core {
         self.identity.fingerprint()
     }
 
-    pub fn my_onion(&self) -> &str {
-        self.node.onion_address()
+    pub fn my_i2p_address(&self) -> &str {
+        self.node.i2p_address()
     }
 
     pub fn my_b32(&self) -> String {

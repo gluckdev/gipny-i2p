@@ -23,7 +23,7 @@ use gipny_dht::store::{admit, Storage, StoreError, StoreLimits, StoreStats};
 
 use crate::crypto::Identity;
 use crate::db::{Db, RequestState, TrustLevel};
-use crate::net::{DuplexStream, TorNode};
+use crate::net::{DuplexStream, I2pNode};
 use crate::relay::{recv, send, ClientToRelay, RelayToClient, RELAY_PORT};
 use crate::relay_server::DhtHandler;
 
@@ -52,7 +52,7 @@ pub fn stores_here() -> bool {
     !cfg!(target_os = "android")
 }
 
-pub fn new_node(net: Arc<TorNode>, db: Arc<Db>) -> Arc<Node> {
+pub fn new_node(net: Arc<I2pNode>, db: Arc<Db>) -> Arc<Node> {
     Arc::new(DhtNode::new(
         Arc::new(I2pTransport { net }),
         Arc::new(DbStorage::new(db)),
@@ -497,7 +497,7 @@ impl Storage for DbStorage {
 // ── transport ────────────────────────────────────────────────────────────
 
 pub struct I2pTransport {
-    net: Arc<TorNode>,
+    net: Arc<I2pNode>,
 }
 
 pub struct I2pConn {

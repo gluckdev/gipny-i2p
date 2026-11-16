@@ -8,8 +8,8 @@ export function ingestGroup(state: BrowserState, identity: PublicIdentity, wire:
   if (wire.id.length !== 32 || wire.name.length > 128 || wire.members.length > 64 || wire.members.length < 2) throw new Error('Invalid group');
   const id = hex(wire.id);
   const members: GroupMember[] = wire.members.map(member => {
-    if (member.sign_pk.length !== 32 || member.dh_pk.length !== 32 || !isValidI2pAddress(member.onion) || member.name.length > 96) throw new Error('Invalid group member');
-    return { sign_pk: hex(member.sign_pk), dh_pk: hex(member.dh_pk), onion: member.onion, name: member.name, is_self: hex(member.sign_pk) === identity.sign_pk };
+    if (member.sign_pk.length !== 32 || member.dh_pk.length !== 32 || !isValidI2pAddress(member.i2p_address) || member.name.length > 96) throw new Error('Invalid group member');
+    return { sign_pk: hex(member.sign_pk), dh_pk: hex(member.dh_pk), i2p_address: member.i2p_address, name: member.name, is_self: hex(member.sign_pk) === identity.sign_pk };
   });
   for (const member of members) {
     const pinned = member.is_self ? identity : state.contacts.find(value => value.sign_pk === member.sign_pk);
@@ -31,5 +31,5 @@ export function ingestGroup(state: BrowserState, identity: PublicIdentity, wire:
 
 export function groupWire(state: BrowserState, id: string): WireGroup {
   const group = state.groups.find(value => value.id === id); if (!group) throw new Error('Group not found');
-  return { id: unhex(id), name: group.name, members: group.members.map(member => ({ sign_pk: unhex(member.sign_pk), dh_pk: unhex(member.dh_pk), onion: member.onion, name: member.name })) };
+  return { id: unhex(id), name: group.name, members: group.members.map(member => ({ sign_pk: unhex(member.sign_pk), dh_pk: unhex(member.dh_pk), i2p_address: member.i2p_address, name: member.name })) };
 }

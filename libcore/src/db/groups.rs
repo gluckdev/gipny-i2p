@@ -71,14 +71,14 @@ impl Db {
         group_id: &[u8],
         sign_pk: &[u8],
         dh_pk: &[u8],
-        onion: &str,
+        i2p_address: &str,
         name: &str,
         is_self: bool,
     ) -> Result<()> {
         self.with_conn(|c| { c.execute(
-            "INSERT OR REPLACE INTO group_members (group_id, sign_pk, dh_pk, onion, display_name, is_self)
+            "INSERT OR REPLACE INTO group_members (group_id, sign_pk, dh_pk, i2p_address, display_name, is_self)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![group_id, sign_pk, dh_pk, onion, name, is_self as i64])?; Ok(()) })
+            params![group_id, sign_pk, dh_pk, i2p_address, name, is_self as i64])?; Ok(()) })
     }
 
     pub fn update_group_member_name(
@@ -106,7 +106,7 @@ impl Db {
 
     pub fn list_group_members(&self, group_id: &[u8]) -> Result<Vec<GroupMember>> {
         self.with_conn(|c| c.prepare_cached(
-            "SELECT group_id, sign_pk, dh_pk, onion, display_name, is_self FROM group_members WHERE group_id = ?1 ORDER BY display_name")?
+            "SELECT group_id, sign_pk, dh_pk, i2p_address, display_name, is_self FROM group_members WHERE group_id = ?1 ORDER BY display_name")?
             .query_map(params![group_id], map_group_member)?.collect_rows())
     }
 }

@@ -36,7 +36,7 @@ export class ContactModal {
         h('label', { class: 'cb-row' }, botCb, h('span', null, tr('contact.this_is_a_bot'))),
         h('label', { class: 'cb-row' }, muteCb, h('span', null, tr('contact.mute_notifications'))),
         h('div', { class: 'card-label', style: { marginTop: '10px' } }, tr('contact.i2p_address')),
-        h('div', { class: 'card-block' }, c.onion),
+        h('div', { class: 'card-block' }, c.i2p_address),
         h('div', { class: 'card-label', style: { marginTop: '10px' } }, tr('contact.key_fingerprint')),
         h('div', { class: 'card-block fp' }, fmtFp(c.dh_pk)),
         h('div', { class: 'hint', style: { marginTop: '8px' } }, tr('contact.compare_this_fingerprint_with_your_contact_in_person')),

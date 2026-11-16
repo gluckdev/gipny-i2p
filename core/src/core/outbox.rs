@@ -178,7 +178,7 @@ impl Core {
                     let gname = groups_by_id.get(gid).cloned().unwrap_or_default();
                     let gref_members: Vec<WireMember> = members_by_group.get(gid).map(|v| v.iter().map(|m| WireMember {
                         sign_pk: m.sign_pk.clone(), dh_pk: m.dh_pk.clone(),
-                        onion: m.onion.clone(), name: m.display_name.clone(),
+                        i2p_address: m.i2p_address.clone(), name: m.display_name.clone(),
                     }).collect()).unwrap_or_default();
                     payload.group = Some(WireGroupRef { id: gid.clone(), name: gname, members: gref_members });
                 }
@@ -311,7 +311,7 @@ impl Core {
         empty_payload.sender_name = self.outgoing_sender_name();
         // A contact created from this init would otherwise have no relay to
         // answer to until a later message brings one.
-        let relay = self.relay_onion();
+        let relay = self.relay_address();
         if !relay.is_empty() {
             empty_payload.relay_address = Some(relay);
         }
@@ -343,7 +343,7 @@ impl Core {
         // not on typing notices: they are the most frequent payload by far and
         // a full destination is ~520 bytes of padding-bucket every keystroke.
         if payload.relay_address.is_none() && payload.typing.is_none() {
-            let r = self.relay_onion();
+            let r = self.relay_address();
             if !r.is_empty() {
                 payload.relay_address = Some(r);
             }

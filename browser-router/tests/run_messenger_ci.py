@@ -348,7 +348,7 @@ def main():
             print('MESSENGER_PROGRESS live destinations ready', flush=True)
             alice_card, bob_card = rpc(alice, 'my_card'), rpc(bob, 'my_card')
             alice_address, bob_address = rpc(alice, 'my_b32'), rpc(bob, 'my_b32')
-            alice_contact = rpc(alice, 'add_contact', onion=bob_address, signPk=bob_card['sign_pk'], dhPk=bob_card['dh_pk'], name='Bob', relay=bob_address)
+            alice_contact = rpc(alice, 'add_contact', i2pAddress=bob_address, signPk=bob_card['sign_pk'], dhPk=bob_card['dh_pk'], name='Bob', relay=bob_address)
             # A file-only introduction must retain its offer before Bob accepts,
             # without downloading the file or prematurely reporting delivery.
             introduction = evaluate(alice, '(async()=>{const data=new Uint8Array(262151).fill(73);return __coreCall("send_message",{contactId:' + str(alice_contact) + ',body:"",browserFiles:[new File([data],"introduction.bin")],ttlSecs:null,replyTo:null})})()')

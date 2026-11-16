@@ -94,7 +94,7 @@ impl Core {
     /// The relay named in Settings, used in external mode.
     pub(super) fn external_relay(&self) -> String {
         self.db
-            .get_setting(SETTING_RELAY_ONION)
+            .get_setting(SETTING_RELAY_ADDRESS)
             .ok()
             .flatten()
             .and_then(|v| String::from_utf8(v).ok())
@@ -116,7 +116,7 @@ impl Core {
     /// built-in mode this is the address of this launch and lives in memory
     /// only — it is never written into the settings, which is how 0.4.0 left
     /// clients listening on a relay that no longer existed.
-    pub(super) fn relay_onion(&self) -> String {
+    pub(super) fn relay_address(&self) -> String {
         match self.relay_mode() {
             RelayMode::External => self.external_relay(),
             RelayMode::Builtin => {
@@ -437,12 +437,12 @@ impl Core {
     }
 
     pub fn get_relay_address(&self) -> String {
-        self.relay_onion()
+        self.relay_address()
     }
 
     pub fn set_relay_address(&self, addr: &str) -> Result<()> {
         self.db
-            .set_setting(SETTING_RELAY_ONION, addr.trim().as_bytes())?;
+            .set_setting(SETTING_RELAY_ADDRESS, addr.trim().as_bytes())?;
         Ok(())
     }
 }

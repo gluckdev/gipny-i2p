@@ -7,15 +7,15 @@ impl Db {
         &self,
         sign: &[u8],
         dh: &[u8],
-        onion: &str,
+        i2p_address: &str,
         name: &str,
         relay: Option<&str>,
     ) -> Result<i64> {
         let relay = relay.map(str::trim).filter(|r| !r.is_empty());
         self.with_conn(|conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, onion_address, display_name, trust, created_at, relay_address) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
-                params![sign, dh, onion, name, now_ms(), relay],
+                "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, i2p_address, display_name, trust, created_at, relay_address) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+                params![sign, dh, i2p_address, name, now_ms(), relay],
             )?;
             // A card seen again may carry a relay the stored contact predates, or
             // a new one after they moved. Adopt it; never overwrite with nothing.
@@ -177,7 +177,7 @@ impl Db {
             id: r.get(0)?,
             identity_sign: r.get(1)?,
             identity_dh: r.get(2)?,
-            onion_address: r.get(3)?,
+            i2p_address: r.get(3)?,
             display_name: r.get(4)?,
             trust: TrustLevel::from_i64(r.get(5)?),
             created_at: r.get(6)?,

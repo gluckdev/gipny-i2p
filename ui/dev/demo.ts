@@ -40,7 +40,7 @@ export function demoFixtures(lang: Lang, now: number, hex: (seed: string) => str
   const c = copy[lang];
   const min = 60_000;
   const contact = (id: number, seed: string, name: string, extra: Partial<Contact> = {}): Contact => ({
-    id, sign_pk: hex(seed), dh_pk: hex(seed + '0'), onion: address, name, trust: 1,
+    id, sign_pk: hex(seed), dh_pk: hex(seed + '0'), i2p_address: address, name, trust: 1,
     created_at: now - 9000 * min, last_seen: now - 2 * min, is_bot: false, pinned_at: null,
     last_message_at: now - 30 * min, relay: null, agent_granted: false, request: 'none', ...extra,
   });
@@ -53,8 +53,8 @@ export function demoFixtures(lang: Lang, now: number, hex: (seed: string) => str
   ];
   const groups: Group[] = [{ id: hex('9f'), name: c.group, created_at: now - 3000 * min, pinned_at: null, last_message_at: now - 12 * min }];
   const members: GroupMember[] = [
-    { sign_pk: hex('00'), dh_pk: hex('01'), onion: address, name: c.me, is_self: true },
-    ...contacts.slice(1, 4).map((x) => ({ sign_pk: x.sign_pk, dh_pk: x.dh_pk, onion: x.onion, name: x.name, is_self: false })),
+    { sign_pk: hex('00'), dh_pk: hex('01'), i2p_address: address, name: c.me, is_self: true },
+    ...contacts.slice(1, 4).map((x) => ({ sign_pk: x.sign_pk, dh_pk: x.dh_pk, i2p_address: x.i2p_address, name: x.name, is_self: false })),
   ];
   const photo = msg({ contact_id: 2, outgoing: true, body: c.a2, sent_at: now - 44 * min, dm_seq: 2 });
   const byContact: Record<number, Message[]> = {

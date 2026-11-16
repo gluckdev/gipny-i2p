@@ -175,7 +175,7 @@ pub struct Contact {
     pub id: i64,
     pub identity_sign: Vec<u8>,
     pub identity_dh: Vec<u8>,
-    pub onion_address: String,
+    pub i2p_address: String,
     pub display_name: String,
     pub trust: TrustLevel,
     pub created_at: i64,
@@ -346,12 +346,12 @@ pub struct GroupMember {
     pub group_id: Vec<u8>,
     pub sign_pk: Vec<u8>,
     pub dh_pk: Vec<u8>,
-    pub onion: String,
+    pub i2p_address: String,
     pub display_name: String,
     pub is_self: bool,
 }
 
-macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, onion_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0), COALESCE(request_state, 0) FROM contacts" }; }
+macro_rules! select_contact { () => { "SELECT id, identity_sign, identity_dh, i2p_address, display_name, trust, created_at, last_seen, COALESCE(is_bot, 0), pinned_at, last_message_at, relay_address, COALESCE(agent_granted, 0), COALESCE(request_state, 0) FROM contacts" }; }
 macro_rules! select_group {
     () => {
         "SELECT id, name, created_at, pinned_at, last_message_at FROM groups"
@@ -487,7 +487,7 @@ fn map_group_member(r: &Row<'_>) -> rusqlite::Result<GroupMember> {
         group_id: r.get(0)?,
         sign_pk: r.get(1)?,
         dh_pk: r.get(2)?,
-        onion: r.get(3)?,
+        i2p_address: r.get(3)?,
         display_name: r.get(4)?,
         is_self: r.get::<_, i64>(5)? != 0,
     })

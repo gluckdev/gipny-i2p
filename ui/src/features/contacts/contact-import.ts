@@ -5,13 +5,13 @@ import { decodeCard, encodeCard, isValidI2pAddress, type DecodedCard } from './c
 
 /** Parsing proves a complete card, not the identity of the person sharing it. */
 export function validateContact(card: DecodedCard): string | null {
-  if (!isValidI2pAddress(card.onion)) return t('contact.enter_a_b32_i2p_address_52_characters_or');
+  if (!isValidI2pAddress(card.i2p_address)) return t('contact.enter_a_b32_i2p_address_52_characters_or');
   if (!/^[0-9a-f]{64}$/.test(card.signPk)) return t('contact.sign_pk_must_contain_64_hexadecimal_characters');
   if (!/^[0-9a-f]{64}$/.test(card.dhPk)) return t('contact.dh_pk_must_contain_64_hexadecimal_characters');
   if (card.relay && !isValidI2pAddress(card.relay)) return t('contact.the_relay_must_be_a_b32_i2p_address');
   // The canonical encoder also checks destination length/certificate, base32
   // trailing bits and UTF-8 name bounds, including for legacy v1/v2 imports.
-  try { encodeCard(card.onion, card.signPk, card.dhPk, card.name, card.relay || undefined); }
+  try { encodeCard(card.i2p_address, card.signPk, card.dhPk, card.name, card.relay || undefined); }
   catch { return t('contact.this_code_is_not_a_gipny_card'); }
   return null;
 }
@@ -67,7 +67,7 @@ export class ContactImport {
         if (existing.dh_pk.toLowerCase() !== card.dhPk) throw new Error(t('contact.identity_conflict'));
         return 'existing';
       }
-      await Api.addContact(card.onion, card.signPk, card.dhPk, card.name?.trim() || card.signPk.slice(0, 16), card.relay || undefined);
+      await Api.addContact(card.i2p_address, card.signPk, card.dhPk, card.name?.trim() || card.signPk.slice(0, 16), card.relay || undefined);
       if (this.closed) return 'ignored';
       await this.store.refreshContacts();
       return this.closed ? 'ignored' : 'added';

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gipny_libcore::{
-    Db, DuressMode, SessionEvent, TorNode, UnlockOutcome, Vault, WireButton,
+    Db, DuressMode, SessionEvent, I2pNode, UnlockOutcome, Vault, WireButton,
 };
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -196,7 +196,7 @@ fn open_bot_db(data_dir: &std::path::Path, db_path: &std::path::Path, passphrase
 
 pub struct Bot {
     data_dir: PathBuf,
-    relay_onion: Option<String>,
+    relay_address: Option<String>,
     display_name: Option<String>,
     vault_passphrase: Option<String>,
     on_message: Option<MessageHandler>,
@@ -208,7 +208,7 @@ impl Bot {
     pub fn builder() -> BotBuilder {
         BotBuilder {
             data_dir: None,
-            relay_onion: None,
+            relay_address: None,
             display_name: None,
             vault_passphrase: None,
             on_message: None,
@@ -228,11 +228,11 @@ impl Bot {
         let db_path = self.data_dir.join("bot.db");
         let db = Arc::new(open_bot_db(&self.data_dir, &db_path, self.vault_passphrase.as_deref())?);
         // Ephemeral per-session i2p address (relay routes by key, not address).
-        let node = Arc::new(TorNode::start(&self.data_dir, Default::default()).await?);
+        let node = Arc::new(I2pNode::start(&self.data_dir, Default::default()).await?);
         let (session, mut events) = SessionManager::start(self.data_dir.clone(), db, node).await?;
 
-        if let Some(onion) = &self.relay_onion {
-            session.set_relay_onion(onion)?;
+        if let Some(i2p_address) = &self.relay_address {
+            session.set_relay_address(i2p_address)?;
         }
         if let Some(name) = &self.display_name {
             session.set_display_name(name)?;
@@ -543,7 +543,7 @@ pub struct RunningBot {
 
 pub struct BotBuilder {
     data_dir: Option<PathBuf>,
-    relay_onion: Option<String>,
+    relay_address: Option<String>,
     display_name: Option<String>,
     vault_passphrase: Option<String>,
     on_message: Option<MessageHandler>,
@@ -555,8 +555,8 @@ impl BotBuilder {
     pub fn data_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_dir = Some(path.into()); self
     }
-    pub fn relay(mut self, onion: impl Into<String>) -> Self {
-        self.relay_onion = Some(onion.into()); self
+    pub fn relay(mut self, i2p_address: impl Into<String>) -> Self {
+        self.relay_address = Some(i2p_address.into()); self
     }
     pub fn display_name(mut self, name: impl Into<String>) -> Self {
         self.display_name = Some(name.into()); self
@@ -594,7 +594,7 @@ impl BotBuilder {
     pub fn build(self) -> anyhow::Result<Bot> {
         Ok(Bot {
             data_dir: self.data_dir.ok_or_else(|| anyhow::anyhow!("data_dir required"))?,
-            relay_onion: self.relay_onion,
+            relay_address: self.relay_address,
             display_name: self.display_name,
             vault_passphrase: self.vault_passphrase,
             on_message: self.on_message,

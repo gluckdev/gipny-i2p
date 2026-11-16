@@ -2,6 +2,7 @@ import { BrowserEngine, PublicBootstrap, application_tunnel_hops, AttachmentHash
 import type { BootStatus, CoreEvent, GroupMember, PendingAttachment, RelayInfo } from '../app/api';
 import { isValidI2pAddress } from '../features/contacts/contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './profiles/storage';
+import { publicIdentity } from './profiles/public-identity';
 import { BrowserRelay } from './networking/relay';
 import { PublicPrewarm, StartupTimings } from './networking/startup';
 import { acknowledgeBrowserDeletion, deletionEvent, forgetRequestObligations, queuePeerReport, queueDeletionControls, receiveDeletionControl } from './messaging/deletion';
@@ -323,8 +324,9 @@ export class BrowserBackend {
       else if (passkey) engine = BrowserEngine.open_passkey(profile, new Uint8Array(args.credentialId as number[]), new Uint8Array(args.prf as number[]), a, b);
       else engine = BrowserEngine.open_password(profile, text(args, 'pass'), a, b);
       const state = create ? newState(text(args, 'displayName')) : loadState(engine.take_metadata());
+      const identity = publicIdentity(engine.public_info());
       this.engine = engine; this.storage = storage; this.state = state;
-      this.identity = JSON.parse(engine.public_info()) as PublicIdentity;
+      this.identity = identity;
       this.files = await FileStorage.open(storage.directory, engine);
       if (this.engine !== engine || this.closing) throw new Error('Profile opening was cancelled');
       // No transfer or upload is running during open. Remove only unreferenced
@@ -386,7 +388,7 @@ export class BrowserBackend {
       this.startup.mark('application_destination_ready');
       this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error));
       this.relay.start();
-      this.hosted = { state: 'ready', address: this.identity!.onion };
+      this.hosted = { state: 'ready', address: this.identity!.i2p_address };
       this.boot('core', 'done', 'In-process client destination is ready');
       this.boot('relay', 'done', 'Encrypted owner-only mailbox is accepting I2P streams');
       this.event('RelayConnected');
@@ -406,7 +408,7 @@ export class BrowserBackend {
     // Establish outbound streams so peers learn its current signed LeaseSet
     // without waiting for their cached pre-restart address to expire.
     const peers = this.state?.contacts.filter(peer => peer.trust !== 2 && peer.request !== 'incoming')
-      .map(peer => ({ key: peer.sign_pk, address: peer.relay || peer.onion })) || [];
+      .map(peer => ({ key: peer.sign_pk, address: peer.relay || peer.i2p_address })) || [];
     this.relayProbes = { attempted: 0, completed: 0, failed: 0 };
     let next = 0;
     const active = (): boolean => attempt === this.generation && !this.closing && this.relay !== null;
@@ -417,7 +419,7 @@ export class BrowserBackend {
           if (!this.state?.contacts.some(contact => contact.sign_pk === peer.key && contact.trust !== 2 && contact.request !== 'incoming')) break;
           this.relayProbes.attempted++;
           try {
-            this.log.debug('relay_probe', `${this.who(peer.key)}${peer.address === this.state?.contacts.find(contact => contact.sign_pk === peer.key)?.onion ? '' : ' via its relay'} · try ${retry + 1}/3`);
+            this.log.debug('relay_probe', `${this.who(peer.key)}${peer.address === this.state?.contacts.find(contact => contact.sign_pk === peer.key)?.i2p_address ? '' : ' via its relay'} · try ${retry + 1}/3`);
             await this.relay!.ping(peer.address);
             if (active()) {
               this.relayProbes.completed++;
@@ -511,7 +513,7 @@ export class BrowserBackend {
     if (attempt !== this.generation || !this.relay || !this.state) return;
     const contact = this.state.contacts.find(value => value.sign_pk === item.peer);
     if (!contact || !canSendControls(this.state, item.peer)) return;
-    const address = contact.relay || contact.onion;
+    const address = contact.relay || contact.i2p_address;
     const step = (stage: string): void => { if (this.sending.has(item.key)) this.sending.set(item.key, { stage, at: Date.now() }); };
     let part: Uint8Array | null = null;
     try {
@@ -631,7 +633,7 @@ export class BrowserBackend {
       validatePayload(incoming);
       if (!contact) {
         if (!incoming.relay_address || !isValidI2pAddress(incoming.relay_address)) throw new Error('New contact has no valid reply address');
-        contact = addContact(state, this.identity!, this.log, { signPk: peer, dhPk: decoded.dh_pk, onion: incoming.relay_address, relay: incoming.relay_address, name: incoming.sender_name || peer.slice(0, 12) }, 'incoming');
+        contact = addContact(state, this.identity!, this.log, { signPk: peer, dhPk: decoded.dh_pk, i2pAddress: incoming.relay_address, relay: incoming.relay_address, name: incoming.sender_name || peer.slice(0, 12) }, 'incoming');
         events.push({ ContactRequest: { contact_id: contact.id } });
       }
       if (incoming.relay_address && isValidI2pAddress(incoming.relay_address)) contact.relay = incoming.relay_address;
@@ -746,7 +748,7 @@ export class BrowserBackend {
     }
     const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(member => !member.is_self).map(member => {
       let recipient = state.contacts.find(value => value.sign_pk === member.sign_pk);
-      if (!recipient) recipient = addContact(state, this.identity!, this.log, { signPk: member.sign_pk, dhPk: member.dh_pk, onion: member.onion, name: member.name }, 'none');
+      if (!recipient) recipient = addContact(state, this.identity!, this.log, { signPk: member.sign_pk, dhPk: member.dh_pk, i2pAddress: member.i2p_address, name: member.name }, 'none');
       return recipient;
     }) : [contact!];
     const recipients = peers.filter(peer => peer.trust !== 2);
@@ -803,7 +805,7 @@ export class BrowserBackend {
     if (command === 'check_update' || command === 'get_agent_mode') return null;
     if (command === 'browser_diagnostics') return { ...JSON.parse(public_network_metrics()), relay_probes: { ...this.relayProbes }, public_bootstrap: this.prewarm.diagnostics(), profile_startup_ms: this.startup.snapshot(), wasm_initialization_ms: this.wasmMs };
     if (command === 'get_relay_info') return this.info();
-    if (command === 'get_relay_address') return this.identity?.onion || '';
+    if (command === 'get_relay_address') return this.identity?.i2p_address || '';
     if (command === 'get_router_settings') return { transit: 'frugal', upnp: 'off' };
     if (command === 'get_dht_status') return { peers: 0, items: 0, bytes: 0, joined: false, stores: false, seeds: 0 };
     if (command === 'list_unreachable_contacts') return [];
@@ -817,8 +819,8 @@ export class BrowserBackend {
     if (command === 'my_card') return { sign_pk: identity.sign_pk, dh_pk: identity.dh_pk };
     if (command === 'my_bundle') return JSON.parse(engine.bundle_info());
     if (command === 'qr_svg') return contact_qr_svg(text(args, 'text'));
-    if (command === 'my_onion') return identity.destination;
-    if (command === 'my_b32') return identity.onion;
+    if (command === 'my_i2p_address') return identity.destination;
+    if (command === 'my_b32') return identity.i2p_address;
     if (command === 'my_fingerprint') return identity.fingerprint;
     if (command === 'get_display_name') return state.displayName;
     if (command === 'link_stats') {
@@ -973,15 +975,15 @@ export class BrowserBackend {
     if (command === 'create_group') {
       const ids = args.memberContactIds as number[];
       if (!Array.isArray(ids) || ids.length < 1 || ids.length > 63 || new Set(ids).size !== ids.length) throw new Error('Invalid group members');
-      const members: GroupMember[] = ids.map(id => { const contact = getContact(state, id); return { sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }; });
-      members.push({ sign_pk: this.identity!.sign_pk, dh_pk: this.identity!.dh_pk, onion: this.identity!.onion, name: state.displayName, is_self: true });
+      const members: GroupMember[] = ids.map(id => { const contact = getContact(state, id); return { sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, i2p_address: contact.i2p_address, name: contact.name, is_self: false }; });
+      members.push({ sign_pk: this.identity!.sign_pk, dh_pk: this.identity!.dh_pk, i2p_address: this.identity!.i2p_address, name: state.displayName, is_self: true });
       const id = hex(crypto.getRandomValues(new Uint8Array(32))); state.groups.push({ id, name: text(args, 'name').slice(0, 128), members, created_at: Date.now(), pinned_at: null, last_message_at: null }); return id;
     }
     if (command === 'add_group_member') {
       const group = state.groups.find(value => value.id === args.groupId); if (!group) throw new Error('Group not found');
       const contact = getContact(state, number(args, 'contactId'));
       if (group.members.length >= 64 || group.members.some(value => value.sign_pk === contact.sign_pk)) throw new Error('Group member already exists or group is full');
-      group.members.push({ sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, onion: contact.onion, name: contact.name, is_self: false }); return null;
+      group.members.push({ sign_pk: contact.sign_pk, dh_pk: contact.dh_pk, i2p_address: contact.i2p_address, name: contact.name, is_self: false }); return null;
     }
     if (['pin_contact_message', 'unpin_contact_message', 'pin_group_message', 'unpin_group_message'].includes(command)) {
       const groupId = typeof args.groupId === 'string' ? args.groupId : null;

@@ -69,34 +69,34 @@ test('the profile name is derived from the display name, unique on this device',
 test('v3 cards match Rust and Python vectors and reject malformed canonical encodings', () => {
   for (const vector of cardFixtures.valid) {
     const source = vector.input;
-    const encoded = ui.encodeCard(source.onion, source.sign_pk, source.dh_pk, source.name, source.relay);
+    const encoded = ui.encodeCard(source.i2p_address, source.sign_pk, source.dh_pk, source.name, source.relay);
     assert.equal(encoded, vector.encoded, vector.id);
     const decoded = ui.decodeCard(encoded);
     assert.deepEqual(decoded, {
-      onion: vector.decoded.onion, signPk: source.sign_pk, dhPk: source.dh_pk,
+      i2p_address: vector.decoded.i2p_address, signPk: source.sign_pk, dhPk: source.dh_pk,
       ...(source.relay ? { relay: vector.decoded.relay } : {}),
       ...(source.name ? { name: source.name } : {}),
     }, vector.id);
-    assert.equal(ui.encodeCard(decoded.onion, decoded.signPk, decoded.dhPk, decoded.name, decoded.relay), encoded);
+    assert.equal(ui.encodeCard(decoded.i2p_address, decoded.signPk, decoded.dhPk, decoded.name, decoded.relay), encoded);
   }
   for (const vector of cardFixtures.invalid) assert.equal(ui.decodeCard(vector.encoded), null, vector.id);
   const sample = cardFixtures.valid[0].input;
-  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk, 'я'.repeat(49), sample.relay));
-  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk, '\ud800', sample.relay));
-  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk, undefined, ''));
-  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk.slice(1), sample.dh_pk));
-  assert.throws(() => ui.encodeCard(sample.onion, sample.sign_pk, sample.dh_pk + '00'));
+  assert.throws(() => ui.encodeCard(sample.i2p_address, sample.sign_pk, sample.dh_pk, 'я'.repeat(49), sample.relay));
+  assert.throws(() => ui.encodeCard(sample.i2p_address, sample.sign_pk, sample.dh_pk, '\ud800', sample.relay));
+  assert.throws(() => ui.encodeCard(sample.i2p_address, sample.sign_pk, sample.dh_pk, undefined, ''));
+  assert.throws(() => ui.encodeCard(sample.i2p_address, sample.sign_pk.slice(1), sample.dh_pk));
+  assert.throws(() => ui.encodeCard(sample.i2p_address, sample.sign_pk, sample.dh_pk + '00'));
   assert.throws(() => ui.encodeCard('a'.repeat(51) + 'b.b32.i2p', sample.sign_pk, sample.dh_pk));
 });
 
 test('valid legacy v1/v2 cards still import and exports migrate to v3', () => {
   const input = cardFixtures.valid[0].input;
-  const v1 = `gipny:v1:${input.onion}:${input.sign_pk}:${input.dh_pk}:Мурка`;
-  const v2 = `gipny:v2:${input.onion}:${input.sign_pk}:${input.dh_pk}:${input.relay}:${encodeURIComponent('Мурка:1')}`;
+  const v1 = `gipny:v1:${input.i2p_address}:${input.sign_pk}:${input.dh_pk}:Мурка`;
+  const v2 = `gipny:v2:${input.i2p_address}:${input.sign_pk}:${input.dh_pk}:${input.relay}:${encodeURIComponent('Мурка:1')}`;
   assert.equal(ui.decodeCard(v1).name, 'Мурка');
   const decoded = ui.decodeCard(v2);
   assert.equal(decoded.name, 'Мурка:1');
-  assert.match(ui.encodeCard(decoded.onion, decoded.signPk, decoded.dhPk, decoded.name, decoded.relay), /^gipny:v3:/);
+  assert.match(ui.encodeCard(decoded.i2p_address, decoded.signPk, decoded.dhPk, decoded.name, decoded.relay), /^gipny:v3:/);
   assert.equal(ui.decodeCard(v2.replace(encodeURIComponent('Мурка:1'), '%FF')), null);
 });
 
@@ -115,7 +115,7 @@ test('card export keeps copying disabled until ready and never copies an encodin
       Api.getRelayAddress = () => relay.promise;
       Api.getRelayInfo = async () => null;
       const store = new Store();
-      store.identity.set({ onion: source.onion, card: { sign_pk: source.sign_pk, dh_pk: source.dh_pk }, fingerprint: 'a'.repeat(64) });
+      store.identity.set({ i2p_address: source.i2p_address, card: { sign_pk: source.sign_pk, dh_pk: source.dh_pk }, fingerprint: 'a'.repeat(64) });
       store.displayName.set('я'.repeat(49));
       const modal = new ui.IdentityModal(store, () => {});
       document.body.append(modal.el);
@@ -675,13 +675,13 @@ test('unlock options are optional, failed capability checks retry, and competing
 });
 
 test('resumed startup hides step rows and waits for profile data before reporting ready', async () => {
-  const original = { boot: Api.onBootStatus, card: Api.myCard, onion: Api.myOnion, fingerprint: Api.myFingerprint, name: Api.getDisplayName, events: Api.onEvent,
+  const original = { boot: Api.onBootStatus, card: Api.myCard, i2p_address: Api.myI2pAddress, fingerprint: Api.myFingerprint, name: Api.getDisplayName, events: Api.onEvent,
     relayInfo: Api.getRelayInfo, relayAddress: Api.getRelayAddress,
     hidden: Object.getOwnPropertyDescriptor(document, 'hidden'), focus: document.hasFocus };
   const views = [], stores = [];
   let boot;
   Api.onBootStatus = async (handler) => { boot = handler; return () => {}; };
-  Api.myCard = async () => ({ sign_pk: 'a', dh_pk: 'b' }); Api.myOnion = async () => 'address';
+  Api.myCard = async () => ({ sign_pk: 'a', dh_pk: 'b' }); Api.myI2pAddress = async () => 'address';
   Api.myFingerprint = async () => 'fingerprint'; Api.getDisplayName = async () => 'Alice';
   Api.onEvent = async () => () => {};
   let hidden = false;
@@ -729,7 +729,7 @@ test('resumed startup hides step rows and waits for profile data before reportin
     }
   } finally {
     for (const view of views) view.destroy(); for (const store of stores) store.endBoot();
-    Api.onBootStatus = original.boot; Api.myCard = original.card; Api.myOnion = original.onion; Api.myFingerprint = original.fingerprint; Api.getDisplayName = original.name; Api.onEvent = original.events;
+    Api.onBootStatus = original.boot; Api.myCard = original.card; Api.myI2pAddress = original.i2p_address; Api.myFingerprint = original.fingerprint; Api.getDisplayName = original.name; Api.onEvent = original.events;
     Api.getRelayInfo = original.relayInfo; Api.getRelayAddress = original.relayAddress;
     if (original.hidden) Object.defineProperty(document, 'hidden', original.hidden); else delete document.hidden;
     document.hasFocus = original.focus;
@@ -791,7 +791,7 @@ test('a rejected TOTP code never loads the profile and reports a localized retry
 function chatStore() {
   const store = new Store();
   store.currentProfile.set('alice');
-  store.contacts.set([{ id: 1, name: 'Alice <script>', sign_pk: 'a'.repeat(64), dh_pk: 'b'.repeat(64), onion: 'example.b32.i2p', trust: 1, request: 'none', created_at: Date.now(), last_seen: null, last_message_at: null, agent_granted: true }]);
+  store.contacts.set([{ id: 1, name: 'Alice <script>', sign_pk: 'a'.repeat(64), dh_pk: 'b'.repeat(64), i2p_address: 'example.b32.i2p', trust: 1, request: 'none', created_at: Date.now(), last_seen: null, last_message_at: null, agent_granted: true }]);
   store.groups.set([{ id: 'team', name: 'Team', created_at: Date.now() }]);
   store.groupMembers.set(new Map([['team', []]]));
   store.selectedChat.set({ kind: 'contact', id: 1 });

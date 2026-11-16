@@ -20,10 +20,52 @@ const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
 ui.configureBrowserBackend({ invoke: async () => null, listen: async () => () => {} });
 ui.setLang('en');
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
-const card = { onion: 'a'.repeat(52) + '.b32.i2p', signPk: '12'.repeat(32), dhPk: '34'.repeat(32), name: 'Alice' };
-const uri = ui.encodeCard(card.onion, card.signPk, card.dhPk, card.name);
+const card = { i2p_address: 'a'.repeat(52) + '.b32.i2p', signPk: '12'.repeat(32), dhPk: '34'.repeat(32), name: 'Alice' };
+const uri = ui.encodeCard(card.i2p_address, card.signPk, card.dhPk, card.name);
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
+
+test('UI IPC arguments reach browser admission and produce the shared I2P DTO/wire shape', async () => {
+  const state = ui.newState('Owner'), own = { sign_pk: '56'.repeat(32), dh_pk: '78'.repeat(32), i2p_address: card.i2p_address };
+  const calls = [];
+  ui.configureBrowserBackend({ listen: async () => () => {}, invoke: async (command, args) => {
+    calls.push({ command, args });
+    if (command === 'my_i2p_address') return card.i2p_address;
+    if (command === 'add_contact') return ui.addBrowserContact(state, own, { info() {} }, args).id;
+    throw new Error(`Unexpected test command ${command}`);
+  } });
+  try {
+    assert.equal(await ui.Api.myI2pAddress(), card.i2p_address);
+    await ui.Api.addContact(card.i2p_address, card.signPk, card.dhPk, card.name);
+    assert.deepEqual(calls[1].args, { i2pAddress: card.i2p_address, signPk: card.signPk, dhPk: card.dhPk, name: card.name, relay: null });
+    const contact = state.contacts[0];
+    assert.equal(contact.i2p_address, card.i2p_address); assert.equal(contact.trust, 0);
+    const bytes = hex => Array.from(hex.match(/../g), pair => parseInt(pair, 16));
+    const wire = { id: Array(32).fill(1), name: 'Group', members: [
+      { sign_pk: bytes(own.sign_pk), dh_pk: bytes(own.dh_pk), i2p_address: own.i2p_address, name: 'Owner' },
+      { sign_pk: bytes(card.signPk), dh_pk: bytes(card.dhPk), i2p_address: card.i2p_address, name: card.name },
+    ] };
+    const id = ui.ingestGroup(state, own, wire, card.signPk);
+    assert.deepEqual(ui.groupWire(state, id), wire, 'group JSON survives admission/export without a field alias');
+    assert.equal(JSON.parse(JSON.stringify(state)).contacts[0].i2p_address, card.i2p_address);
+  } finally { ui.configureBrowserBackend({ invoke: async () => null, listen: async () => () => {} }); }
+});
+
+test('all eight About views distinguish browser JS/WASM from native C++ transport', () => {
+  try {
+    for (const { id } of ui.LANGS) {
+      ui.setLang(id);
+      ui.configureBrowserBackend({ invoke: async () => null, listen: async () => () => {} });
+      const browser = new ui.AboutModal(() => {}).el.textContent;
+      assert.match(browser, /JavaScript/); assert.match(browser, /WebAssembly/); assert.match(browser, /I2P/);
+      assert.doesNotMatch(browser, /C\+\+/);
+      ui.configureBrowserBackend(null);
+      const native = new ui.AboutModal(() => {}).el.textContent;
+      assert.match(native, /C\+\+/); assert.match(native, /i2pd/); assert.match(native, /I2P/);
+    }
+  } finally { ui.setLang('en'); ui.configureBrowserBackend({ invoke: async () => null, listen: async () => () => {} }); }
+});
+
 function fixture() {
   const store = new ui.Store(); store.currentProfile.set('owner'); store.view.set('main');
   let saved = [], calls = [], refreshes = 0, closes = 0;
@@ -43,10 +85,10 @@ function fixture() {
 
 test('only a complete valid contact URI is parsed, including strict legacy destination validation', () => {
   assert.deepEqual(ui.parseContactImport(uri), card);
-  assert.equal(ui.parseContactImport(`gipny:v1:${card.onion}:${card.signPk}:${card.dhPk}:Alice`).name, 'Alice');
+  assert.equal(ui.parseContactImport(`gipny:v1:${card.i2p_address}:${card.signPk}:${card.dhPk}:Alice`).name, 'Alice');
   for (const text of ['', 'Alice', uri.slice(0, -1), uri + 'x', 'https://example.invalid/?card=' + uri,
     `gipny:v1:wrong:${card.signPk}:${card.dhPk}`, `gipny:v1:${'b'.repeat(52)}.b32.i2p:${card.signPk}:${card.dhPk}`,
-    `gipny:v2:${card.onion}:${card.signPk}:${card.dhPk}:wrong`, uri.replace(/.$/, '!')]) {
+    `gipny:v2:${card.i2p_address}:${card.signPk}:${card.dhPk}:wrong`, uri.replace(/.$/, '!')]) {
     assert.equal(ui.parseContactImport(text), null, text.slice(0, 40));
   }
 });
@@ -54,10 +96,10 @@ test('only a complete valid contact URI is parsed, including strict legacy desti
 test('paste auto-adds once as unverified; arbitrary input and a typed legacy URI do not submit', async () => {
   const h = fixture();
   for (const text of ['not a card', uri.slice(0, -1)]) h.paste(text);
-  h.paste(`gipny:v1:${card.onion}:${card.signPk}:${card.dhPk}`, 'insertText');
+  h.paste(`gipny:v1:${card.i2p_address}:${card.signPk}:${card.dhPk}`, 'insertText');
   await tick(); assert.equal(h.calls.length, 0);
   h.paste(uri); h.paste(uri); await tick();
-  assert.equal(h.calls.length, 1); assert.deepEqual(h.calls[0], [card.onion, card.signPk, card.dhPk, card.name, undefined]);
+  assert.equal(h.calls.length, 1); assert.deepEqual(h.calls[0], [card.i2p_address, card.signPk, card.dhPk, card.name, undefined]);
   assert.equal(h.saved[0].trust, 0); assert.equal(h.closes(), 1);
   h.close();
 });
@@ -65,7 +107,7 @@ test('paste auto-adds once as unverified; arbitrary input and a typed legacy URI
 test('manual fields require Add and use the same validation', async () => {
   const h = fixture();
   const fields = h.modal.el.querySelectorAll('input.input');
-  for (const [index, value] of [card.onion, '', card.signPk, card.dhPk].entries()) fields[index].value = value;
+  for (const [index, value] of [card.i2p_address, '', card.signPk, card.dhPk].entries()) fields[index].value = value;
   await tick(); assert.equal(h.calls.length, 0);
   h.modal.el.querySelector('.modal-footer .btn:last-child').click(); await tick();
   assert.equal(h.calls.length, 1); h.close();

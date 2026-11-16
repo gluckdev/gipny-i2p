@@ -21,7 +21,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::net::TorNode;
+use crate::net::I2pNode;
 
 /// owner/repo on GitHub whose releases are checked.
 pub const GITHUB_REPO: &str = "gluckdev/gipny-i2p";
@@ -184,7 +184,7 @@ fn ensure_crypto_provider() {
 /// How the updater reaches GitHub: our own i2p stream to the outproxy, then
 /// TLS to GitHub inside it (`i2p_http`). No proxy, no port.
 struct Transport {
-    node: Arc<TorNode>,
+    node: Arc<I2pNode>,
     tls: Arc<rustls::ClientConfig>,
 }
 
@@ -244,7 +244,7 @@ pub enum CheckOutcome {
 }
 
 impl Updater {
-    pub fn new(node: Arc<TorNode>, component: Component) -> Self {
+    pub fn new(node: Arc<I2pNode>, component: Component) -> Self {
         ensure_crypto_provider();
         let client = Some(Transport { node, tls: Arc::new(webpki_tls()) });
         Self { client, component }

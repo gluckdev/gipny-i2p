@@ -172,7 +172,7 @@ impl SessionManager {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();
@@ -262,7 +262,7 @@ impl SessionManager {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();

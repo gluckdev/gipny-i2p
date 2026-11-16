@@ -5,8 +5,8 @@
 //! imports and their own exports. Both codecs share golden fixtures.
 //!
 //! * v3: `gipny:v3:<canonical unpadded Base64URL payload>`
-//! * v1: `gipny:v1:<onion>:<sign_pk hex>:<dh_pk hex>[:<name>]`
-//! * v2: `gipny:v2:<onion>:<sign_pk hex>:<dh_pk hex>:<relay>[:<name>]`
+//! * v1: `gipny:v1:<i2p_address>:<sign_pk hex>:<dh_pk hex>[:<name>]`
+//! * v2: `gipny:v2:<i2p_address>:<sign_pk hex>:<dh_pk hex>:<relay>[:<name>]`
 //!
 //! Legacy `<name>` is percent-encoded the way `encodeURIComponent` does it.
 //! v3 carries bounded UTF-8 bytes inside its payload.
@@ -25,7 +25,7 @@ const MAX_V3_CHARS: usize = 316;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContactCard {
-    pub onion: String,
+    pub i2p_address: String,
     pub sign_pk: [u8; 32],
     pub dh_pk: [u8; 32],
     /// Relay the holder collects from. `None` on v1 or a relay-free v3 card.
@@ -54,19 +54,19 @@ impl ContactCard {
         if raw.len() > 16_384 { return Err(CardError::Malformed); }
         if let Some(rest) = raw.strip_prefix("gipny:v2:") {
             let mut it = rest.splitn(5, ':');
-            let onion = it.next().ok_or(CardError::Malformed)?;
+            let i2p_address = it.next().ok_or(CardError::Malformed)?;
             let sign = it.next().ok_or(CardError::Malformed)?;
             let dh = it.next().ok_or(CardError::Malformed)?;
             let relay = it.next().ok_or(CardError::Malformed)?;
             let name = it.next();
-            if onion.is_empty() || relay.is_empty() {
+            if i2p_address.is_empty() || relay.is_empty() {
                 return Err(CardError::Malformed);
             }
             if !is_valid_i2p_address(relay) {
                 return Err(CardError::BadAddress(relay.to_string()));
             }
             return Ok(Self {
-                onion: onion.to_string(),
+                i2p_address: i2p_address.to_string(),
                 sign_pk: hex32(sign)?,
                 dh_pk: hex32(dh)?,
                 relay: Some(relay.to_string()),
@@ -75,15 +75,15 @@ impl ContactCard {
         }
         if let Some(rest) = raw.strip_prefix("gipny:v1:") {
             let mut it = rest.splitn(4, ':');
-            let onion = it.next().ok_or(CardError::Malformed)?;
+            let i2p_address = it.next().ok_or(CardError::Malformed)?;
             let sign = it.next().ok_or(CardError::Malformed)?;
             let dh = it.next().ok_or(CardError::Malformed)?;
             let name = it.next();
-            if onion.is_empty() {
+            if i2p_address.is_empty() {
                 return Err(CardError::Malformed);
             }
             return Ok(Self {
-                onion: onion.to_string(),
+                i2p_address: i2p_address.to_string(),
                 sign_pk: hex32(sign)?,
                 dh_pk: hex32(dh)?,
                 relay: None,
@@ -96,7 +96,7 @@ impl ContactCard {
     /// Canonical v3: intact public keys and I2P destination hashes. The
     /// checksum detects copying errors, not identity substitution.
     pub fn encode(&self) -> Result<String, CardError> {
-        let onion = address_hash(&self.onion)?;
+        let i2p_address = address_hash(&self.i2p_address)?;
         let relay = self.relay.as_deref().map(address_hash).transpose()?;
         let name = self.name.as_deref().filter(|name| !name.is_empty());
         if name.is_some_and(|name| name.len() > MAX_NAME_BYTES) { return Err(CardError::Malformed); }
@@ -104,7 +104,7 @@ impl ContactCard {
         body.push(u8::from(relay.is_some()) | (u8::from(name.is_some()) << 1));
         body.extend_from_slice(&self.sign_pk);
         body.extend_from_slice(&self.dh_pk);
-        body.extend_from_slice(&onion);
+        body.extend_from_slice(&i2p_address);
         if let Some(relay) = relay { body.extend_from_slice(&relay); }
         if let Some(name) = name {
             body.push(name.len() as u8);
@@ -155,7 +155,7 @@ fn parse_v3(payload: &str) -> Result<ContactCard, CardError> {
     if offset != body.len() { return Err(CardError::Malformed); }
     Ok(ContactCard { sign_pk: body[1..33].try_into().map_err(|_| CardError::Malformed)?,
         dh_pk: body[33..65].try_into().map_err(|_| CardError::Malformed)?,
-        onion: b32_address(body[65..97].try_into().map_err(|_| CardError::Malformed)?), relay, name })
+        i2p_address: b32_address(body[65..97].try_into().map_err(|_| CardError::Malformed)?), relay, name })
 }
 
 pub(crate) fn address_hash(address: &str) -> Result<[u8; 32], CardError> {
@@ -285,7 +285,7 @@ mod tests {
         let (sign, dh) = (key_hex("56b3e2253770a160", "aa"), key_hex("8003b0d82a1d64c7", "bb"));
         let s = format!("gipny:v2:{B32}:{sign}:{dh}:{d}:my%20laptop%3A1");
         let c = ContactCard::parse(&s).unwrap();
-        assert_eq!(c.onion, B32);
+        assert_eq!(c.i2p_address, B32);
         assert_eq!(c.relay.as_deref(), Some(d.as_str()));
         assert_eq!(c.name.as_deref(), Some("my laptop:1"));
         assert_eq!(c.sign_pk[0], 0x56);
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn name_roundtrips_through_compact_utf8() {
         let c = ContactCard {
-            onion: B32.into(), sign_pk: [1; 32], dh_pk: [2; 32],
+            i2p_address: B32.into(), sign_pk: [1; 32], dh_pk: [2; 32],
             relay: Some(dest()), name: Some("сервер #1 (prod)".into()),
         };
         let encoded = c.encode().unwrap();
@@ -344,7 +344,7 @@ mod tests {
         for vector in fixtures["valid"].as_array().unwrap() {
             let input = &vector["input"];
             let card = ContactCard {
-                onion: input["onion"].as_str().unwrap().into(),
+                i2p_address: input["i2p_address"].as_str().unwrap().into(),
                 sign_pk: hex32(input["sign_pk"].as_str().unwrap()).unwrap(),
                 dh_pk: hex32(input["dh_pk"].as_str().unwrap()).unwrap(),
                 relay: input["relay"].as_str().map(str::to_string),
@@ -354,11 +354,11 @@ mod tests {
             assert_eq!(encoded, vector["encoded"].as_str().unwrap(), "{}", vector["id"]);
             let parsed = ContactCard::parse(&encoded).unwrap();
             assert_eq!(parsed.identity(), card.identity());
-            assert_eq!(parsed.onion, vector["decoded"]["onion"].as_str().unwrap());
+            assert_eq!(parsed.i2p_address, vector["decoded"]["i2p_address"].as_str().unwrap());
             assert_eq!(parsed.relay.as_deref(), vector["decoded"]["relay"].as_str());
             assert_eq!(parsed.name.as_deref(), vector["decoded"]["name"].as_str());
             assert_eq!(parsed.encode().unwrap(), encoded);
-            assert!(crate::relay::same_destination(&card.onion, &parsed.onion));
+            assert!(crate::relay::same_destination(&card.i2p_address, &parsed.i2p_address));
             if let (Some(original), Some(compact)) = (card.relay.as_deref(), parsed.relay.as_deref()) {
                 assert!(crate::relay::same_destination(original, compact));
                 assert_eq!(crate::relay::destination_hash(original), crate::relay::destination_hash(compact));
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn export_rejects_bad_addresses_and_names_without_lossy_fallback() {
-        let mut card = ContactCard { onion: B32.into(), sign_pk: [1; 32], dh_pk: [2; 32],
+        let mut card = ContactCard { i2p_address: B32.into(), sign_pk: [1; 32], dh_pk: [2; 32],
             relay: Some(B32.into()), name: None };
         assert_eq!(card.encode().unwrap().len(), 187);
         card.name = Some("я".repeat(49));
@@ -380,12 +380,12 @@ mod tests {
         card.relay = Some(String::new());
         assert!(card.encode().is_err());
         card.relay = None;
-        card.onion = "a".repeat(52) + ".b32.i2p";
+        card.i2p_address = "a".repeat(52) + ".b32.i2p";
         assert!(card.encode().is_ok());
-        card.onion = "a".repeat(51) + "b.b32.i2p"; // Nonzero base32 padding bits.
+        card.i2p_address = "a".repeat(51) + "b.b32.i2p"; // Nonzero base32 padding bits.
         assert!(card.encode().is_err());
-        card.onion = dest();
-        card.onion.pop();
+        card.i2p_address = dest();
+        card.i2p_address.pop();
         assert!(card.encode().is_err());
     }
 }

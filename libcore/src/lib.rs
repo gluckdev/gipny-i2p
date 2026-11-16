@@ -53,7 +53,7 @@ pub use crypto::{Identity, IdentityCard, PreKeyBundle, PreKeyPair, RatchetState,
 #[cfg(not(target_arch = "wasm32"))]
 pub use db::{Db, DbError, Contact, Message, NewAttachment, Direction, TrustLevel, PreKeyKind};
 #[cfg(not(target_arch = "wasm32"))]
-pub use net::{I2pNode, TorNode, NetError};
+pub use net::{I2pNode, NetError};
 #[cfg(not(target_arch = "wasm32"))]
 pub use embedded::fast_on;
 pub use relay::{ClientToRelay, RelayToClient, EnvelopeBlob, DEFAULT_RELAY};

@@ -623,7 +623,7 @@ function remoteAgentModal(store: Store, close: () => void): HTMLElement {
     let cardError = false;
     if (id && currentRelay) {
       try {
-      const card = encodeCard(id.onion, id.card.sign_pk, id.card.dh_pk,
+      const card = encodeCard(id.i2p_address, id.card.sign_pk, id.card.dh_pk,
         store.displayName.get() || undefined, currentRelay);
       if (selected === 'windows') {
         // Escape PowerShell interpolation in a double-quoted string.

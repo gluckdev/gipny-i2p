@@ -107,7 +107,7 @@ pub fn run() {
             commands::vault::set_duress,
             commands::vault::set_max_attempts,
             commands::identity::my_card,
-            commands::identity::my_onion,
+            commands::identity::my_i2p_address,
             commands::identity::my_b32,
             commands::identity::my_fingerprint,
             commands::identity::my_bundle,

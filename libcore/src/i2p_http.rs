@@ -13,7 +13,7 @@ use http_body_util::BodyExt;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::net::TorNode;
+use crate::net::I2pNode;
 
 /// `exit.stormycloud.i2p`, the outproxy i2p ships as its default. There is no
 /// address book in the in-process router, so its b32 address is written out;
@@ -79,7 +79,7 @@ impl Body {
 }
 
 /// GET `url` (https only), following redirects. Non-2xx is an error.
-pub async fn get(node: &Arc<TorNode>, tls: &Arc<rustls::ClientConfig>, url: &str, accept: Option<&str>) -> Result<Body, HttpError> {
+pub async fn get(node: &Arc<I2pNode>, tls: &Arc<rustls::ClientConfig>, url: &str, accept: Option<&str>) -> Result<Body, HttpError> {
     let mut url = url::Url::parse(url).map_err(|e| HttpError::Url(e.to_string()))?;
     for _ in 0..=MAX_REDIRECTS {
         let resp = get_once(node, tls, &url, accept).await?;
@@ -100,7 +100,7 @@ pub async fn get(node: &Arc<TorNode>, tls: &Arc<rustls::ClientConfig>, url: &str
 }
 
 async fn get_once(
-    node: &Arc<TorNode>,
+    node: &Arc<I2pNode>,
     tls: &Arc<rustls::ClientConfig>,
     url: &url::Url,
     accept: Option<&str>,

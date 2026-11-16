@@ -287,7 +287,7 @@ pub struct WireButton { pub text: String, pub callback_data: String }
 pub struct WireGroupRef { pub id: Vec<u8>, pub name: String, pub members: Vec<WireMember> }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct WireMember { pub sign_pk: Vec<u8>, pub dh_pk: Vec<u8>, pub onion: String, pub name: String }
+pub struct WireMember { pub sign_pk: Vec<u8>, pub dh_pk: Vec<u8>, pub i2p_address: String, pub name: String }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct WirePin {

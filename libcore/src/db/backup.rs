@@ -114,7 +114,7 @@ impl Db {
     pub fn list_all_group_members(&self) -> Result<HashMap<Vec<u8>, Vec<GroupMember>>> {
         self.with_conn(|c| {
             let mut s = c.prepare_cached(
-                "SELECT group_id, sign_pk, dh_pk, onion, display_name, is_self FROM group_members ORDER BY group_id, display_name")?;
+                "SELECT group_id, sign_pk, dh_pk, i2p_address, display_name, is_self FROM group_members ORDER BY group_id, display_name")?;
             let mut out: HashMap<Vec<u8>, Vec<GroupMember>> = HashMap::new();
             for row in s.query_map([], map_group_member)? {
                 let m = row?;
@@ -127,10 +127,10 @@ impl Db {
     pub fn bulk_add_group_members(&self, members: &[GroupMember]) -> Result<()> {
         self.with_tx(|tx| {
             let mut s = tx.prepare_cached(
-                "INSERT OR REPLACE INTO group_members (group_id, sign_pk, dh_pk, onion, display_name, is_self)
+                "INSERT OR REPLACE INTO group_members (group_id, sign_pk, dh_pk, i2p_address, display_name, is_self)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
             for m in members {
-                s.execute(params![m.group_id, m.sign_pk, m.dh_pk, m.onion, m.display_name, m.is_self as i64])?;
+                s.execute(params![m.group_id, m.sign_pk, m.dh_pk, m.i2p_address, m.display_name, m.is_self as i64])?;
             }
             Ok(())
         })

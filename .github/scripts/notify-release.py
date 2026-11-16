@@ -141,7 +141,7 @@ def main():
         
         recipients.append({
             'name': contact.get('name', 'Unknown'),
-            'address': contact.get('onion', contact.get('sign_pk', ''))
+            'address': contact.get('i2p_address', contact.get('sign_pk', ''))
         })
     
     if not recipients:

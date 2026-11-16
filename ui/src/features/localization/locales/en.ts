@@ -36,7 +36,7 @@ export const en = {
   "app.network_offline": "Not connected. Chat history is available.",
   "app.network_unconfigured": "No network service on this hosting. Messages cannot be sent or received; saved chats are available.",
 
-  "browser.about.transport": "Keys, encryption and the I2P router run in your browser. A WSS forwarder is required to carry encrypted NTCP2 traffic; it sees your IP address, connection timing and traffic volume.",
+  "browser.about.transport": "Keys, encryption and the I2P router run in your browser using JavaScript and WebAssembly. I2P uses garlic routing. A network forwarder carries encrypted NTCP2 traffic over WSS or WebRTC; it sees your IP address, connection timing and traffic volume.",
   "browser.about.storage": "Your profile is stored in encrypted OPFS files for this site. The password uses Argon2id (64 MiB); passkeys require WebAuthn PRF support. Clearing site data removes the profile. Keep your password as a recovery method.",
   "browser.about.memory": "Locking or leaving the page terminates the worker and closes the profile. Browsers do not provide native mlock/mprotect protection or guarantee physical erasure of all RAM. Trust the app host and browser extensions: they can access unlocked data.",
   "browser.about.contacts": "Exchange contact cards and verify key fingerprints over a trusted channel. Your identity and I2P address persist when you reopen the profile.",
@@ -303,7 +303,7 @@ export const en = {
   "about.database": "Database",
   "about.sqlcipher_4_with_fts5_search_inside_the_encrypted": "SQLCipher 4 with FTS5 search inside the encrypted database",
   "about.transport": "Transport",
-  "about.i2p_with_i2pd_embedded_in_the_same_process": "i2p (Tor 2.0 garlic routing), open-source C++ i2pd embedded in the same process (upstream source: third_party/i2pd)",
+  "about.i2p_with_i2pd_embedded_in_the_same_process": "I2P garlic routing; the open-source C++ i2pd router is embedded in the native app process.",
   "about.kademlia_with_encrypted_and_signed_records": "Kademlia, with encrypted and signed records",
   "about.language": "Language",
   "about.avatars": "Avatars",

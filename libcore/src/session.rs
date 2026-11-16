@@ -34,7 +34,7 @@ use crate::db::{
     NewOutgoingGroup, PreKeyKind, TrustLevel,
 };
 use crate::dht_client;
-use crate::net::{NetError, TorNode};
+use crate::net::{NetError, I2pNode};
 use crate::relay::{
     self, ClientToRelay, EnvelopeBlob, RelayClient, RelayError, RelayToClient, DEFAULT_RELAY,
 };
@@ -130,7 +130,7 @@ pub fn collect_lane_holds(part_seen_ms: i64, now_ms: i64) -> bool {
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
-const SETTING_RELAY_ONION: &str = "relay_onion";
+const SETTING_RELAY_ADDRESS: &str = "relay_address";
 const SETTING_DISPLAY_NAME: &str = "display_name";
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;
@@ -267,7 +267,7 @@ pub enum SessionEvent {
 
 pub struct SessionManager {
     pub db: Arc<Db>,
-    pub node: Arc<TorNode>,
+    pub node: Arc<I2pNode>,
     pub identity: Arc<Identity>,
     data_dir: PathBuf,
     sessions: Arc<Mutex<HashMap<i64, RatchetState>>>,
@@ -324,7 +324,7 @@ impl SessionManager {
     pub async fn start(
         data_dir: PathBuf,
         db: Arc<Db>,
-        node: Arc<TorNode>,
+        node: Arc<I2pNode>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<SessionEvent>)> {
         std::fs::create_dir_all(data_dir.join(ATTACHMENTS_DIR))?;
         let identity = Arc::new(load_or_create_identity(&db)?);

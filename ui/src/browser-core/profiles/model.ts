@@ -1,7 +1,7 @@
 import type { Attachment, Contact, Group, GroupMember, Message } from '../../app/api';
 
-export type PublicIdentity = { card: string; sign_pk: string; dh_pk: string; destination: string; onion: string; fingerprint: string };
-export type WireMember = { sign_pk: number[]; dh_pk: number[]; onion: string; name: string };
+export type PublicIdentity = { card: string; sign_pk: string; dh_pk: string; destination: string; i2p_address: string; fingerprint: string };
+export type WireMember = { sign_pk: number[]; dh_pk: number[]; i2p_address: string; name: string };
 export type WireGroup = { id: number[]; name: string; members: WireMember[] };
 export type WireFileOffer = { file_id: number[]; name: string; size: number; sha256: number[]; chunk_size: number };
 export type WireFileChunk = { file_id: number[]; index: number; data: number[] };
@@ -61,7 +61,7 @@ export type Outbox = {
 };
 export type SeenEnvelope = { hash: string; peer: string; ack: WirePayload | null; group?: string; file?: { id: string; index: number; sent_at: number } };
 export type BrowserState = {
-  version: 1; nextId: number; displayName: string; contacts: Contact[];
+  version: 2; nextId: number; displayName: string; contacts: Contact[];
   messages: StoredMessage[]; attachments: StoredAttachment[];
   groups: (Group & { members: GroupMember[] })[];
   /** `seen`: recent envelopes only (duplicate deliveries get their receipt
@@ -72,48 +72,9 @@ export type BrowserState = {
   ui: Record<string, string>; muted: string[]; pinnedMessages: number[];
 };
 export function newState(displayName: string): BrowserState {
-  return { version: 1, nextId: 1, displayName, contacts: [], messages: [], attachments: [], groups: [], outbox: [], seen: [], initials: {}, tombstones: [], transfers: [], closedFiles: [], earlyParts: [], ui: {}, muted: [], pinnedMessages: [] };
+  return { version: 2, nextId: 1, displayName, contacts: [], messages: [], attachments: [], groups: [], outbox: [], seen: [], initials: {}, tombstones: [], transfers: [], closedFiles: [], earlyParts: [], ui: {}, muted: [], pinnedMessages: [] };
 }
-export function loadState(json: string): BrowserState {
-  const value = JSON.parse(json) as BrowserState;
-  if (value.version !== 1 || !Number.isSafeInteger(value.nextId) || value.nextId < 1 || !Array.isArray(value.contacts) || !Array.isArray(value.messages) || !Array.isArray(value.outbox) || !Array.isArray(value.seen) || !Array.isArray(value.groups) || !Array.isArray(value.attachments) || !Array.isArray(value.tombstones)) throw new Error('Unsupported browser profile state');
-  value.transfers ??= []; value.closedFiles ??= []; value.initials ??= {};
-  // An earlier build kept copied-text fragments here; peer events replaced it.
-  delete value.ui.exfiltration_receipts;
-  coerceEarlierSnapshot(value);
-  return value;
-}
-
-/** rc1/rc2 profiles: number-array ciphertext, boolean/index arrays for file
- * progress, plaintext chunk letters and an unbounded replay list. Converted in
- * place; no further migration is kept for older shapes. */
-function coerceEarlierSnapshot(state: BrowserState): void {
-  type Old = { parts?: unknown; acked?: unknown };
-  for (const file of state.transfers as (FileTransfer & Old)[]) {
-    const total = Math.max(1, Math.ceil(file.size / file.chunk_size));
-    if (Array.isArray(file.parts) || Array.isArray(file.acked)) {
-      const bits = new Uint8Array(Math.ceil(total / 8));
-      if (Array.isArray(file.parts)) file.parts.forEach((held, i) => { if (held === true && i < total) setBit(bits, i); });
-      if (Array.isArray(file.acked)) for (const i of file.acked) if (Number.isSafeInteger(i) && i >= 0 && i < total) setBit(bits, i as number);
-      file.held = file.parts !== undefined && !(file.parts as unknown[]).length && !Array.isArray(file.acked) ? '' : base64(bits);
-      delete file.parts; delete file.acked;
-    }
-    file.held ??= '';
-    if (!file.incoming && file.status === 'sending') { file.flight ??= {}; file.progress_at ??= Date.now(); file.deposited_at ??= 0; }
-  }
-  state.outbox = state.outbox.filter(item => {
-    const old = item as Outbox & { blob: unknown };
-    if (Array.isArray(old.blob)) item.blob = base64(old.blob as number[]);
-    // A deposited ciphertext is never sent again; a deposited part is
-    // treated as lost and encrypted afresh.
-    if (item.deposited && item.file) return false;
-    if (item.deposited) item.blob = null;
-    if (item.file && item.blob === null) item.payload = null;
-    return true;
-  });
-  state.earlyParts = (state.earlyParts ?? []).filter(part => typeof (part as EarlyPart).data === 'string');
-  if (state.seen.length > RECENT_ENVELOPES) state.seen.splice(0, state.seen.length - RECENT_ENVELOPES);
-}
+export { loadState } from './state-format';
 
 // ---- Compact byte encodings kept inside the JSON snapshot ----
 
@@ -313,7 +274,7 @@ export function unbase64(value: string, limit = 1024 * 1024): number[] {
   return Array.from(raw, ch => ch.charCodeAt(0));
 }
 export function payload(identity: PublicIdentity, name: string): WirePayload {
-  return { origin_msg_id: 0, body: '', attachments: [], sent_at: Date.now(), ttl_ms: null, group: null, buttons: null, callback_data: null, edit_of: null, pin: null, ack_for: null, sender_name: name, reply_to: null, typing: null, notify_sound: null, console: null, relay_address: identity.onion, wipe: null, files: [], file_chunk: null, file_ack: null, file_cancel: null, dm: null };
+  return { origin_msg_id: 0, body: '', attachments: [], sent_at: Date.now(), ttl_ms: null, group: null, buttons: null, callback_data: null, edit_of: null, pin: null, ack_for: null, sender_name: name, reply_to: null, typing: null, notify_sound: null, console: null, relay_address: identity.i2p_address, wipe: null, files: [], file_chunk: null, file_ack: null, file_cancel: null, dm: null };
 }
 export function sameScope(message: StoredMessage, contactId: number | null, groupId: string | null): boolean { return message.contact_id === contactId && message.group_id === groupId; }
 export function visible(message: StoredMessage): boolean { return message.deleted_at == null && (message.expires_at == null || message.expires_at > Date.now()); }

@@ -538,7 +538,7 @@ mod implementation {
         sign_pk: String,
         dh_pk: String,
         destination: String,
-        onion: String,
+        i2p_address: String,
         fingerprint: String,
     }
 
@@ -768,7 +768,7 @@ mod implementation {
         }
 
         /// Returns public information from COMMITTED state as JSON:
-        /// `{ "card": string, "sign_pk": hex, "dh_pk": hex, "destination": base64, "onion": "....b32.i2p", "fingerprint": hex }`
+        /// `{ "card": string, "sign_pk": hex, "dh_pk": hex, "destination": base64, "i2p_address": "....b32.i2p", "fingerprint": hex }`
         pub fn public_info(&self) -> Result<String, JsValue> {
             let inner = self.inner.borrow();
             let state = inner.committed_state()?;
@@ -778,7 +778,7 @@ mod implementation {
             let dest_bytes = client_identity.destination().serialize();
             let destination = emissary_core::crypto::base64_encode(&dest_bytes);
             let dest_hash: [u8; 32] = Sha256::digest(&dest_bytes).into();
-            let onion = format!(
+            let i2p_address = format!(
                 "{}.b32.i2p",
                 emissary_core::crypto::base32_encode(&dest_hash).to_ascii_lowercase()
             );
@@ -787,7 +787,7 @@ mod implementation {
             let dh_pk = state.identity.card().dh_pk;
 
             let card_obj = ContactCard {
-                onion: onion.clone(),
+                i2p_address: i2p_address.clone(),
                 sign_pk,
                 dh_pk,
                 relay: None,
@@ -801,7 +801,7 @@ mod implementation {
                 sign_pk: to_hex(&sign_pk),
                 dh_pk: to_hex(&dh_pk),
                 destination,
-                onion,
+                i2p_address,
                 fingerprint,
             };
 

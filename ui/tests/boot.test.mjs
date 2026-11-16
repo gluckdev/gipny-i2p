@@ -36,17 +36,17 @@ const step = (id, state, detail = '') => ({ id, state, startedAt: 0, ms: 0, deta
 
 /** Stub what onUnlocked needs, with the core answering `info` about its relay. */
 function bootHarness(info) {
-  const original = { boot: Api.onBootStatus, card: Api.myCard, onion: Api.myOnion, fingerprint: Api.myFingerprint, name: Api.getDisplayName,
+  const original = { boot: Api.onBootStatus, card: Api.myCard, i2p_address: Api.myI2pAddress, fingerprint: Api.myFingerprint, name: Api.getDisplayName,
     events: Api.onEvent, relayInfo: Api.getRelayInfo, relayAddress: Api.getRelayAddress, unreachable: Api.listUnreachableContacts, timeout: Store.BOOT_RELAY_TIMEOUT_MS };
   let boot = () => {};
   Api.onBootStatus = async (handler) => { boot = handler; return () => {}; };
-  Api.myCard = async () => ({ sign_pk: 'a', dh_pk: 'b' }); Api.myOnion = async () => 'address';
+  Api.myCard = async () => ({ sign_pk: 'a', dh_pk: 'b' }); Api.myI2pAddress = async () => 'address';
   Api.myFingerprint = async () => 'fingerprint'; Api.getDisplayName = async () => 'Alice';
   Api.onEvent = async () => () => {};
   Api.getRelayInfo = async () => info; Api.getRelayAddress = async () => ''; Api.listUnreachableContacts = async () => [];
   const store = new Store();
   store.refreshAll = async () => {}; store.ensureNotifyPermission = async () => {}; store.startWatchdog = () => {};
-  const restore = () => { store.endBoot(); Object.assign(Api, { onBootStatus: original.boot, myCard: original.card, myOnion: original.onion, myFingerprint: original.fingerprint,
+  const restore = () => { store.endBoot(); Object.assign(Api, { onBootStatus: original.boot, myCard: original.card, myI2pAddress: original.i2p_address, myFingerprint: original.fingerprint,
     getDisplayName: original.name, onEvent: original.events, getRelayInfo: original.relayInfo, getRelayAddress: original.relayAddress, listUnreachableContacts: original.unreachable });
     Store.BOOT_RELAY_TIMEOUT_MS = original.timeout; };
   return { store, boot: (...args) => boot(...args), restore };

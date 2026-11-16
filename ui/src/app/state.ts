@@ -92,7 +92,7 @@ export function targetKey(t: ChatTarget): string {
 
 export interface Identity {
   card: IdentityCard;
-  onion: string;
+  i2p_address: string;
   fingerprint: string;
 }
 
@@ -659,11 +659,11 @@ export class Store {
     this.currentProfile.set(profile);
     this.bootStage.set('i2p');
     this.relayConnected.set(false);
-    const [card, onion, fingerprint, displayName] = await Promise.all([
-      Api.myCard(), Api.myOnion(), Api.myFingerprint(), Api.getDisplayName(),
+    const [card, i2p_address, fingerprint, displayName] = await Promise.all([
+      Api.myCard(), Api.myI2pAddress(), Api.myFingerprint(), Api.getDisplayName(),
     ]);
     if (!active()) return;
-    this.identity.set({ card, onion, fingerprint });
+    this.identity.set({ card, i2p_address, fingerprint });
     this.displayName.set(displayName);
     await this.refreshAll();
     if (!active()) return;

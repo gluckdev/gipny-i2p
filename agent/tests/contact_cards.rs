@@ -13,7 +13,7 @@ fn validation_is_quiet_checks_checksum_and_relay_and_never_creates_data() {
     std::fs::create_dir(&root.0).unwrap();
     let data = root.0.join("must-not-exist");
     let address = "ibaueq2eivdeoscjjjfuytkoj5ifcustkrkvmv2ylfnfwxc5lzpq.b32.i2p";
-    let mut card = ContactCard { onion: address.into(), sign_pk: [1; 32], dh_pk: [2; 32],
+    let mut card = ContactCard { i2p_address: address.into(), sign_pk: [1; 32], dh_pk: [2; 32],
         relay: Some(address.into()), name: None };
     let encoded = card.encode().unwrap();
     let invoke = |card: &str| {

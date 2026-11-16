@@ -63,7 +63,7 @@ export class BrowserRelay {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     await this.writeRelay(stream, { Challenge: [...challenge] });
     const auth = await this.readClient(stream);
-    if (typeof auth !== 'object' || !('AuthV2' in auth) || !BrowserEngine.verify_auth(hex(auth.AuthV2.sign_pk), this.identity.onion, challenge, new Uint8Array(auth.AuthV2.signature))) {
+    if (typeof auth !== 'object' || !('AuthV2' in auth) || !BrowserEngine.verify_auth(hex(auth.AuthV2.sign_pk), this.identity.i2p_address, challenge, new Uint8Array(auth.AuthV2.signature))) {
       await this.writeRelay(stream, 'AuthFail');
       return;
     }

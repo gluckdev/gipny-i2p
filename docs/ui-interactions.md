@@ -48,6 +48,12 @@ release the guard for a retry. Camera tracks are stopped when the modal closes.
 
 ## Evidence and limits
 
+Browser metadata uses format 2 with the shared `i2p_address` field. Earlier or
+unknown metadata formats are rejected before file collection or snapshot writes,
+with an explicit message that the saved profile was not changed. This is a clean
+format break: no alias, automatic migration or profile deletion is performed.
+The encrypted vault container format is a separate layer and remains unchanged.
+
 - `node tests/contacts.test.mjs`: complete/invalid cards, actual input event path,
   manual submission, camera callback boundary, duplicate/conflicting/own identity,
   in-flight guards, close/lock/profile-switch races and retry; optional effect hints.
@@ -57,6 +63,10 @@ release the guard for a retry. Camera tracks are stopped when the modal closes.
   `GIPNY_UI_ENGINE=webkit` or `firefox`; Chromium is the default.
 - `npm run test:layout` includes the existing size/language/keyboard matrix and
   this interaction smoke. `npm test` includes contact regressions.
+- `node tests/profile-state.test.mjs` exercises the real backend open path with
+  storage/crypto observers: old/future metadata, password/passkey, no writes or
+  file collection, and engine/storage cleanup. Real WASM/OPFS smoke remains
+  separate from this fault-injection boundary test.
 
 Playwright WebKit is not physical Safari or native WKWebView evidence. Firefox
 has not been exercised by this change's local run. Existing browser WASM/OPFS,

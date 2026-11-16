@@ -72,7 +72,7 @@ export interface Contact {
   id: number;
   sign_pk: string;
   dh_pk: string;
-  onion: string;
+  i2p_address: string;
   name: string;
   trust: number;
   created_at: number;
@@ -210,7 +210,7 @@ export interface GroupMember {
   language?: string | string[];
   sign_pk: string;
   dh_pk: string;
-  onion: string;
+  i2p_address: string;
   name: string;
   is_self: boolean;
 }
@@ -369,8 +369,8 @@ export class Api {
   static myCard(): Promise<IdentityCard> {
     return invoke('my_card');
   }
-  static myOnion(): Promise<string> {
-    return invoke('my_onion');
+  static myI2pAddress(): Promise<string> {
+    return invoke('my_i2p_address');
   }
   static myB32(): Promise<string> {
     return invoke('my_b32');
@@ -415,9 +415,9 @@ export class Api {
     return invoke('set_attachment_privacy', { enabled });
   }
   static addContact(
-    onion: string, signPk: string, dhPk: string, name: string, relay?: string,
+    i2pAddress: string, signPk: string, dhPk: string, name: string, relay?: string,
   ): Promise<number> {
-    return invoke('add_contact', { onion, signPk, dhPk, name, relay: relay ?? null });
+    return invoke('add_contact', { i2pAddress, signPk, dhPk, name, relay: relay ?? null });
   }
   static listContacts(): Promise<Contact[]> {
     return invoke('list_contacts');

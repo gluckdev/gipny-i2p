@@ -14,8 +14,8 @@ pub(crate) async fn my_card(ctx: State<'_, AppCtx>) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-pub(crate) async fn my_onion(ctx: State<'_, AppCtx>) -> Result<String, String> {
-    Ok(core_of(&ctx).await?.my_onion().to_string())
+pub(crate) async fn my_i2p_address(ctx: State<'_, AppCtx>) -> Result<String, String> {
+    Ok(core_of(&ctx).await?.my_i2p_address().to_string())
 }
 
 #[tauri::command]

@@ -21,7 +21,7 @@ struct BackupV2<A = BackupAttachment> {
 struct BackupContact {
     sign_pk: Vec<u8>,
     dh_pk: Vec<u8>,
-    onion: String,
+    i2p_address: String,
     name: String,
     trust: i32,
     is_bot: bool,
@@ -38,7 +38,7 @@ struct BackupGroup {
 struct BackupMember {
     sign_pk: Vec<u8>,
     dh_pk: Vec<u8>,
-    onion: String,
+    i2p_address: String,
     name: String,
 }
 
@@ -149,7 +149,7 @@ pub(crate) fn export_raw_backup_data(db: &gipny_libcore::db::Db) -> Result<Vec<u
         .map(|c| BackupContact {
             sign_pk: c.identity_sign,
             dh_pk: c.identity_dh,
-            onion: c.onion_address,
+            i2p_address: c.i2p_address,
             name: c.display_name,
             trust: match c.trust {
                 gipny_libcore::db::TrustLevel::Unverified => 0,
@@ -172,7 +172,7 @@ pub(crate) fn export_raw_backup_data(db: &gipny_libcore::db::Db) -> Result<Vec<u
                 .map(|m| BackupMember {
                     sign_pk: m.sign_pk,
                     dh_pk: m.dh_pk,
-                    onion: m.onion,
+                    i2p_address: m.i2p_address,
                     name: m.display_name,
                 })
                 .collect();
@@ -287,7 +287,7 @@ pub(crate) async fn restore_raw_backup_data(
     let mut contact_updates = Vec::with_capacity(backup.contacts.len());
     for c in &backup.contacts {
         let cid = db
-            .add_contact(&c.sign_pk, &c.dh_pk, &c.onion, &c.name, None)
+            .add_contact(&c.sign_pk, &c.dh_pk, &c.i2p_address, &c.name, None)
             .map_err(err)?;
         let trust = match c.trust {
             1 => gipny_libcore::db::TrustLevel::Verified,
@@ -325,7 +325,7 @@ pub(crate) async fn restore_raw_backup_data(
                 group_id: g.id.clone(),
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 display_name: m.name.clone(),
                 is_self: m.sign_pk.as_slice() == identity_sign.as_slice(),
             });

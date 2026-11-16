@@ -4,23 +4,23 @@ use super::inbox::is_transient;
 use super::*;
 
 impl SessionManager {
-    /// The relay this process hosts for us. While `relay_onion` names it, we
+    /// The relay this process hosts for us. While `relay_address` names it, we
     /// collect from it over a pipe instead of out through i2p and back.
     pub fn set_local_relay(&self, relay: Arc<crate::EphemeralRelay>) {
         *self.local_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(relay);
     }
 
-    pub(super) fn relay_onion(&self) -> String {
+    pub(super) fn relay_address(&self) -> String {
         self.db
-            .get_setting(SETTING_RELAY_ONION)
+            .get_setting(SETTING_RELAY_ADDRESS)
             .ok()
             .flatten()
             .and_then(|v| String::from_utf8(v).ok())
             .unwrap_or_else(|| DEFAULT_RELAY.to_string())
     }
 
-    pub fn set_relay_onion(&self, onion: &str) -> Result<()> {
-        self.db.set_setting(SETTING_RELAY_ONION, onion.as_bytes())?;
+    pub fn set_relay_address(&self, i2p_address: &str) -> Result<()> {
+        self.db.set_setting(SETTING_RELAY_ADDRESS, i2p_address.as_bytes())?;
         self.dht_kick.notify_one();
         Ok(())
     }
@@ -80,10 +80,10 @@ impl SessionManager {
         let handle = tokio::spawn(async move {
             let mut backoff = RECONNECT_INITIAL_MS;
             loop {
-                let onion = this.relay_onion();
-                if onion.is_empty() {
+                let i2p_address = this.relay_address();
+                if i2p_address.is_empty() {
                     // No relay address yet: nothing saved in Settings
-                    // (SETTING_RELAY_ONION) and DEFAULT_RELAY is empty.
+                    // (SETTING_RELAY_ADDRESS) and DEFAULT_RELAY is empty.
                     // Look again soon; the backoff is for
                     // failed dials, and growing it here made the first real one
                     // start late and its retry wait the full 15 s (e2e run
@@ -91,13 +91,13 @@ impl SessionManager {
                     tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
-                crate::debug_trace!("[session] relay connect {}", &onion[..16.min(onion.len())]);
+                crate::debug_trace!("[session] relay connect {}", &i2p_address[..16.min(i2p_address.len())]);
                 let local = this
                     .local_relay
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
-                    .filter(|r| relay::same_destination(r.address(), &onion))
+                    .filter(|r| relay::same_destination(r.address(), &i2p_address))
                     .map(|r| r.connect_local());
                 // Bounded: nothing below has a timeout of its own, and a dial
                 // i2p leaves hanging would otherwise keep us off our own mail
@@ -105,8 +105,8 @@ impl SessionManager {
                 // agent's GRANT).
                 let connected = match tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, async {
                     match local {
-                        Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
-                        None => relay::connect(&this.node, &onion, &this.identity).await,
+                        Some(stream) => relay::connect_local(stream, &i2p_address, &this.identity).await,
+                        None => relay::connect(&this.node, &i2p_address, &this.identity).await,
                     }
                 })
                 .await
@@ -132,7 +132,7 @@ impl SessionManager {
                         }
                         this.send_kick.notify_one();
                         this.clone()
-                            .run_recv_loop(client, Some(onion.clone()), None)
+                            .run_recv_loop(client, Some(i2p_address.clone()), None)
                             .await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.send(SessionEvent::Disconnected).await;
@@ -164,7 +164,7 @@ impl SessionManager {
             let Some(theirs) = theirs else {
                 return self.relay_out.read().await.clone();
             };
-            if relay::same_destination(theirs, &self.relay_onion()) {
+            if relay::same_destination(theirs, &self.relay_address()) {
                 return self.relay_out.read().await.clone();
             }
             // Never dial on this path — see Core::relay_for. It runs inside the
@@ -346,7 +346,7 @@ impl SessionManager {
                     // half-handled when the connection went could have moved the
                     // ratchet on and not be saved.
                     if done.is_some_and(|d| d()) { break; }
-                    if collecting_from.as_deref().is_some_and(|o| !relay::same_destination(o, &self.relay_onion())) {
+                    if collecting_from.as_deref().is_some_and(|o| !relay::same_destination(o, &self.relay_address())) {
                         crate::debug_trace!("[session] our relay changed, reconnecting to the new one");
                         break;
                     }

@@ -29,7 +29,7 @@ impl Core {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();
@@ -103,7 +103,7 @@ impl Core {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();
@@ -206,7 +206,7 @@ impl Core {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();
@@ -274,7 +274,7 @@ impl Core {
             &gid,
             &self.identity.card().sign_pk,
             &self.identity.card().dh_pk,
-            self.node.onion_address(),
+            self.node.i2p_address(),
             &self.display_name().unwrap_or_default(),
             true,
         )?;
@@ -282,7 +282,7 @@ impl Core {
         members_wire.push(WireMember {
             sign_pk: self.identity.card().sign_pk.to_vec(),
             dh_pk: self.identity.card().dh_pk.to_vec(),
-            onion: self.node.onion_address().to_string(),
+            i2p_address: self.node.i2p_address().to_string(),
             name: self.display_name().unwrap_or_default(),
         });
         for cid in member_contact_ids {
@@ -291,14 +291,14 @@ impl Core {
                 &gid,
                 &c.identity_sign,
                 &c.identity_dh,
-                &c.onion_address,
+                &c.i2p_address,
                 &c.display_name,
                 false,
             )?;
             members_wire.push(WireMember {
                 sign_pk: c.identity_sign.clone(),
                 dh_pk: c.identity_dh.clone(),
-                onion: c.onion_address.clone(),
+                i2p_address: c.i2p_address.clone(),
                 name: c.display_name.clone(),
             });
         }
@@ -339,7 +339,7 @@ impl Core {
             group_id,
             &contact.identity_sign,
             &contact.identity_dh,
-            &contact.onion_address,
+            &contact.i2p_address,
             &contact.display_name,
             false,
         )?;
@@ -349,7 +349,7 @@ impl Core {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();
@@ -430,7 +430,7 @@ impl Core {
             .map(|m| WireMember {
                 sign_pk: m.sign_pk.clone(),
                 dh_pk: m.dh_pk.clone(),
-                onion: m.onion.clone(),
+                i2p_address: m.i2p_address.clone(),
                 name: m.display_name.clone(),
             })
             .collect();
@@ -500,7 +500,7 @@ impl Core {
                 .map(|m| WireMember {
                     sign_pk: m.sign_pk.clone(),
                     dh_pk: m.dh_pk.clone(),
-                    onion: m.onion.clone(),
+                    i2p_address: m.i2p_address.clone(),
                     name: m.display_name.clone(),
                 })
                 .collect(),

@@ -58,7 +58,7 @@ export class GroupModal {
           h('div', { class: 'contact-status' + (isOnline(m) ? ' online' : '') }),
           h('div', { class: 'contact-info' },
             h('div', { class: 'contact-name' }, m.name, m.is_self ? tr('group.you') : ''),
-            h('div', { class: 'contact-sub' }, short(m.onion)),
+            h('div', { class: 'contact-sub' }, short(m.i2p_address)),
           ),
         ));
       }
@@ -159,7 +159,7 @@ export class CreateGroupModal {
       });
       list.appendChild(h('label', { class: 'chk' },
         cb, h('span', { class: 'box' }),
-        h('span', null, `${c.name}  `, h('span', { class: 'hint', style: { display: 'inline' } }, short(c.onion, 18))),
+        h('span', null, `${c.name}  `, h('span', { class: 'hint', style: { display: 'inline' } }, short(c.i2p_address, 18))),
       ));
     }
 

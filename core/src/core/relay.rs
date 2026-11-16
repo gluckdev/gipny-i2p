@@ -57,15 +57,15 @@ impl Core {
             loop {
                 let _ = tokio::time::timeout(Duration::from_secs(5), this.collect_kick.notified())
                     .await;
-                let onion = this.relay_onion();
-                let external = !onion.is_empty()
+                let i2p_address = this.relay_address();
+                let external = !i2p_address.is_empty()
                     && this.relay_out.read().await.is_some()
                     && !this
                         .hosted_relay
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
-                        .is_some_and(|r| relay::same_destination(r.address(), &onion));
+                        .is_some_and(|r| relay::same_destination(r.address(), &i2p_address));
                 if !collect_lane_wanted(
                     external,
                     this.part_seen.load(Relaxed),
@@ -76,7 +76,7 @@ impl Core {
                 }
                 let dial = tokio::time::timeout(
                     PEER_RELAY_CONNECT_TIMEOUT,
-                    relay::connect(&this.node, &onion, &this.identity),
+                    relay::connect(&this.node, &i2p_address, &this.identity),
                 )
                 .await;
                 let Ok(Ok(client)) = dial else { continue };
@@ -94,14 +94,14 @@ impl Core {
                     // given and did not ack the relay deals to the others.
                     let quiet = {
                         let lane = lane.clone();
-                        let onion = onion.clone();
+                        let i2p_address = i2p_address.clone();
                         move || {
                             !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms())
-                                || !relay::same_destination(&lane.relay_onion(), &onion)
+                                || !relay::same_destination(&lane.relay_address(), &i2p_address)
                         }
                     };
                     lane.clone()
-                        .run_recv_loop(client, Some(onion.clone()), Some(&quiet))
+                        .run_recv_loop(client, Some(i2p_address.clone()), Some(&quiet))
                         .await;
                     lane.collect_lanes.fetch_sub(1, Relaxed);
                 });
@@ -116,10 +116,10 @@ impl Core {
         let handle = tokio::spawn(async move {
             let mut backoff = RECONNECT_INITIAL_MS;
             loop {
-                let onion = this.relay_onion();
-                if onion.is_empty() {
+                let i2p_address = this.relay_address();
+                if i2p_address.is_empty() {
                     // No relay address yet: the built-in relay has not published one,
-                    // or external mode has none saved in Settings (SETTING_RELAY_ONION).
+                    // or external mode has none saved in Settings (SETTING_RELAY_ADDRESS).
                     // Look again soon; the backoff is for
                     // failed dials, and growing it here made the first real one
                     // start late and its retry wait the full 15 s (e2e run
@@ -129,7 +129,7 @@ impl Core {
                 }
                 gipny_libcore::debug_trace!(
                     "[relay-client] connecting to {}",
-                    &onion[..16.min(onion.len())]
+                    &i2p_address[..16.min(i2p_address.len())]
                 );
                 // Our own built-in relay is in this process: talk to it over a
                 // pipe, not out through i2p and back in.
@@ -138,7 +138,7 @@ impl Core {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
-                    .filter(|r| relay::same_destination(r.address(), &onion))
+                    .filter(|r| relay::same_destination(r.address(), &i2p_address))
                     .map(|r| r.connect_local());
                 // Bounded: nothing below has a timeout of its own, and a dial
                 // i2p leaves hanging would otherwise keep us off our own mail
@@ -146,8 +146,8 @@ impl Core {
                 // agent's GRANT).
                 let connected = match tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, async {
                     match local {
-                        Some(stream) => relay::connect_local(stream, &onion, &this.identity).await,
-                        None => relay::connect(&this.node, &onion, &this.identity).await,
+                        Some(stream) => relay::connect_local(stream, &i2p_address, &this.identity).await,
+                        None => relay::connect(&this.node, &i2p_address, &this.identity).await,
                     }
                 })
                 .await
@@ -175,7 +175,7 @@ impl Core {
                         }
                         this.send_kick.notify_one();
                         this.clone()
-                            .run_recv_loop(client, Some(onion.clone()), None)
+                            .run_recv_loop(client, Some(i2p_address.clone()), None)
                             .await;
                         *this.relay_out.write().await = None;
                         let _ = this.events.try_send(CoreEvent::RelayDisconnected);
@@ -301,7 +301,7 @@ impl Core {
             let Some(theirs) = theirs else {
                 return self.relay_out.read().await.clone();
             };
-            if relay::same_destination(theirs, &self.relay_onion()) {
+            if relay::same_destination(theirs, &self.relay_address()) {
                 return self.relay_out.read().await.clone();
             }
 
@@ -438,7 +438,7 @@ impl Core {
                     // half-handled when the connection went could have moved the
                     // ratchet on and not be saved.
                     if done.is_some_and(|d| d()) { break; }
-                    if own.as_deref().is_some_and(|o| !relay::same_destination(o, &self.relay_onion())) {
+                    if own.as_deref().is_some_and(|o| !relay::same_destination(o, &self.relay_address())) {
                         gipny_libcore::debug_trace!("[relay-client] our relay changed, reconnecting");
                         break;
                     }

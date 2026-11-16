@@ -345,8 +345,8 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
                 ra.hops() == 3 && rb.hops() == 3,
                 "personal relays must have three-hop tunnels"
             );
-            a.session.set_relay_onion(ra.address())?;
-            b.session.set_relay_onion(rb.address())?;
+            a.session.set_relay_address(ra.address())?;
+            b.session.set_relay_address(rb.address())?;
             Some((ra, rb))
         } else {
             None
@@ -366,13 +366,13 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
             .unwrap_or(&relay_b);
         let b_in_a = within(deadline, "bot-a contact setup", async {
             Ok(a.session
-                .add_contact_via(&b.card, &b.onion, "bot-b", Some(relay_b))
+                .add_contact_via(&b.card, &b.i2p_address, "bot-b", Some(relay_b))
                 .await?)
         })
         .await?;
         let a_in_b = within(deadline, "bot-b contact setup", async {
             Ok(b.session
-                .add_contact_via(&a.card, &a.onion, "bot-a", Some(relay_a))
+                .add_contact_via(&a.card, &a.i2p_address, "bot-a", Some(relay_a))
                 .await?)
         })
         .await?;

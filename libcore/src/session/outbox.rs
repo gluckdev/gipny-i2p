@@ -191,7 +191,7 @@ impl SessionManager {
                                 .map(|member| WireMember {
                                     sign_pk: member.sign_pk.clone(),
                                     dh_pk: member.dh_pk.clone(),
-                                    onion: member.onion.clone(),
+                                    i2p_address: member.i2p_address.clone(),
                                     name: member.display_name.clone(),
                                 })
                                 .collect()
@@ -288,7 +288,7 @@ impl SessionManager {
         empty.sender_name = self.outgoing_sender_name();
         // A contact created from this init would otherwise have no relay to
         // answer to until a later message brings one.
-        let relay = self.relay_onion();
+        let relay = self.relay_address();
         if !relay.is_empty() {
             empty.relay_address = Some(relay);
         }
@@ -323,7 +323,7 @@ impl SessionManager {
         // Every payload tells the contact where we collect, except typing
         // notices: the most frequent payload, and ~520 bytes of address each.
         if payload.relay_address.is_none() && payload.typing.is_none() {
-            let r = self.relay_onion();
+            let r = self.relay_address();
             if !r.is_empty() {
                 payload.relay_address = Some(r);
             }

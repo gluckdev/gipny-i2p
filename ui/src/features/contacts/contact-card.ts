@@ -7,7 +7,7 @@ const MAX_CARD_CHARS = 316;
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
 export interface DecodedCard {
-  onion: string;
+  i2p_address: string;
   signPk: string;
   dhPk: string;
   name?: string;
@@ -68,8 +68,8 @@ function addressHash(input: string): Uint8Array {
 }
 
 /** Export canonical v3. Invalid input fails; a long name is never truncated. */
-export function encodeCard(onion: string, signPk: string, dhPk: string, name?: string, relay?: string): string {
-  const outbound = addressHash(onion);
+export function encodeCard(i2p_address: string, signPk: string, dhPk: string, name?: string, relay?: string): string {
+  const outbound = addressHash(i2p_address);
   const relayHash = relay === undefined ? undefined : addressHash(relay);
   if (name && name.length > MAX_NAME_BYTES) return invalid();
   const label = name ? new TextEncoder().encode(name) : undefined;
@@ -92,7 +92,7 @@ function decodeV3(payload: string): DecodedCard | null {
   const body = bytes.subarray(0, -4);
   if ((body[0]! & ~3) !== 0 || !checksum(body).every((byte, i) => byte === bytes[body.length + i])) return null;
   let offset = 97;
-  const card: DecodedCard = { signPk: hex(body.subarray(1, 33)), dhPk: hex(body.subarray(33, 65)), onion: b32Address(body.subarray(65, 97)) };
+  const card: DecodedCard = { signPk: hex(body.subarray(1, 33)), dhPk: hex(body.subarray(33, 65)), i2p_address: b32Address(body.subarray(65, 97)) };
   if (body[0]! & 1) {
     if (body.length < offset + 32) return null;
     card.relay = b32Address(body.subarray(offset, offset + 32)); offset += 32;
@@ -114,10 +114,10 @@ export function decodeCard(input: string): DecodedCard | null {
     const v2 = /^gipny:v2:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64}):([^:]+)(?::(.*))?$/.exec(raw);
     if (v2) {
       if (!isValidI2pAddress(v2[4]!)) return null;
-      return { onion: v2[1]!, signPk: v2[2]!.toLowerCase(), dhPk: v2[3]!.toLowerCase(), relay: v2[4]!, name: v2[5] ? decodeURIComponent(v2[5]) : undefined };
+      return { i2p_address: v2[1]!, signPk: v2[2]!.toLowerCase(), dhPk: v2[3]!.toLowerCase(), relay: v2[4]!, name: v2[5] ? decodeURIComponent(v2[5]) : undefined };
     }
     const v1 = /^gipny:v1:([^:]+):([0-9a-fA-F]{64}):([0-9a-fA-F]{64})(?::(.*))?$/.exec(raw);
-    return v1 ? { onion: v1[1]!, signPk: v1[2]!.toLowerCase(), dhPk: v1[3]!.toLowerCase(), name: v1[4] ? decodeURIComponent(v1[4]) : undefined } : null;
+    return v1 ? { i2p_address: v1[1]!, signPk: v1[2]!.toLowerCase(), dhPk: v1[3]!.toLowerCase(), name: v1[4] ? decodeURIComponent(v1[4]) : undefined } : null;
   } catch { return null; }
 }
 

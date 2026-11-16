@@ -16,7 +16,7 @@ export class AddContactModal {
       rows: '4',
     }) as HTMLTextAreaElement;
     const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
-    const onionI = h('input', { class: 'input', placeholder: tr('contact.destination_base64_or_abc_xyz_b32_i2p') });
+    const i2pAddressI = h('input', { class: 'input', placeholder: tr('contact.destination_base64_or_abc_xyz_b32_i2p') });
     const relayI = h('input', {
       class: 'input',
       placeholder: tr('contact.leave_empty_to_use_yours'),
@@ -30,10 +30,10 @@ export class AddContactModal {
     const importer = new ContactImport(store, (busy) => {
       addBtn.disabled = scanBtn.disabled = fileBtn.disabled = busy;
       pasteI.readOnly = busy;
-      for (const input of [onionI, relayI, signI, dhI]) input.readOnly = busy;
+      for (const input of [i2pAddressI, relayI, signI, dhI]) input.readOnly = busy;
       this.el?.setAttribute('aria-busy', String(busy));
     });
-    const fields = (): DecodedCard => ({ onion: onionI.value.trim(), signPk: signI.value.trim().toLowerCase(),
+    const fields = (): DecodedCard => ({ i2p_address: i2pAddressI.value.trim(), signPk: signI.value.trim().toLowerCase(),
       dhPk: dhI.value.trim().toLowerCase(), name: cardName, relay: relayI.value.trim() || undefined });
     const submit = async (card: DecodedCard): Promise<void> => {
       if (closed) return;
@@ -53,7 +53,7 @@ export class AddContactModal {
     const applyCard = (text: string, autoAdd: boolean): boolean => {
       const parsed = parseContactImport(text);
       if (!parsed) return false;
-      onionI.value = parsed.onion;
+      i2pAddressI.value = parsed.i2p_address;
       signI.value = parsed.signPk;
       dhI.value = parsed.dhPk;
       relayI.value = parsed.relay ?? '';
@@ -138,7 +138,7 @@ export class AddContactModal {
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           tr('contact.a_contact_s_name_comes_from_their_card')),
         h('div', { class: 'divider-text' }, tr('contact.enter_manually')),
-        h('div', { class: 'field' }, h('label', null, tr('contact.i2p_address')), onionI),
+        h('div', { class: 'field' }, h('label', null, tr('contact.i2p_address')), i2pAddressI),
         h('div', { class: 'field' }, h('label', null, tr('contact.contact_s_relay')), relayI),
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           tr('contact.the_relay_is_where_this_contact_collects_mail')),

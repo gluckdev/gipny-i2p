@@ -6,7 +6,7 @@ impl Core {
     pub async fn start(
         data_dir: PathBuf,
         db: Arc<Db>,
-        node: Arc<TorNode>,
+        node: Arc<I2pNode>,
         prebuilt_relay: Option<PrebuiltRelay>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<CoreEvent>)> {
         // A staged Windows update is applied earlier than this, in `lib.rs`'s

@@ -32,7 +32,7 @@ impl Db {
         for m in &gref.members {
             if m.sign_pk.len() != 32 || m.dh_pk.len() != 32
                 || m.name.chars().count() > MAX_MEMBER_NAME_CHARS
-                || m.onion.len() > MAX_MEMBER_ADDRESS_BYTES
+                || m.i2p_address.len() > MAX_MEMBER_ADDRESS_BYTES
                 || !seen.insert(m.sign_pk.as_slice())
             {
                 return Err(DbError::State);
@@ -82,13 +82,13 @@ impl Db {
                 count += 1;
                 let is_self = m.sign_pk.as_slice() == my_sign;
                 let name = if m.name.is_empty() { short_hex(&m.sign_pk) } else { m.name.clone() };
-                tx.execute("INSERT INTO group_members (group_id, sign_pk, dh_pk, onion, display_name, is_self)
+                tx.execute("INSERT INTO group_members (group_id, sign_pk, dh_pk, i2p_address, display_name, is_self)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![gref.id, m.sign_pk, m.dh_pk, m.onion, name, is_self as i64])?;
+                    params![gref.id, m.sign_pk, m.dh_pk, m.i2p_address, name, is_self as i64])?;
                 if !is_self {
-                    tx.execute("INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, onion_address, display_name, trust, created_at)
+                    tx.execute("INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, i2p_address, display_name, trust, created_at)
                         VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-                        params![m.sign_pk, m.dh_pk, m.onion, name, now_ms()])?;
+                        params![m.sign_pk, m.dh_pk, m.i2p_address, name, now_ms()])?;
                 }
             }
             Ok(())
@@ -106,7 +106,7 @@ mod tests {
     use crate::session::WireMember;
 
     fn member(sign: u8, dh: u8) -> WireMember {
-        WireMember { sign_pk: vec![sign; 32], dh_pk: vec![dh; 32], onion: String::new(), name: format!("m{sign}") }
+        WireMember { sign_pk: vec![sign; 32], dh_pk: vec![dh; 32], i2p_address: String::new(), name: format!("m{sign}") }
     }
 
     fn group(members: Vec<WireMember>) -> WireGroupRef {

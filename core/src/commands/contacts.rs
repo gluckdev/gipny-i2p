@@ -7,7 +7,7 @@ use crate::{core_of, err, parse_hex32, AppCtx};
 
 #[tauri::command]
 pub(crate) async fn add_contact(
-    onion: String,
+    i2p_address: String,
     sign_pk: String,
     dh_pk: String,
     name: String,
@@ -23,7 +23,7 @@ pub(crate) async fn add_contact(
     let relay = relay.as_deref().map(str::trim).filter(|r| !r.is_empty());
     core_of(&ctx)
         .await?
-        .add_contact_via(&card, &onion, &name, relay)
+        .add_contact_via(&card, &i2p_address, &name, relay)
         .await
         .map_err(err)
 }

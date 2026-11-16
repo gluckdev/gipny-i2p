@@ -20,9 +20,9 @@ export function addContact(state: BrowserState, identity: PublicIdentity, log: C
     return existing;
   }
   if (state.contacts.length >= 512) throw new Error('Contact limit reached');
-  const onion = text(args, 'onion'); const relay = typeof args.relay === 'string' ? args.relay : null;
-  if (!isValidI2pAddress(onion) || (relay !== null && !isValidI2pAddress(relay))) throw new Error('Invalid I2P destination');
-  const contact: Contact = { id: allocate(state), sign_pk: sign, dh_pk: dh, onion, relay, name: text(args, 'name').slice(0, 96), trust: 0, created_at: Date.now(), last_seen: null, is_bot: false, pinned_at: null, last_message_at: null, agent_granted: false, request };
+  const i2p_address = text(args, 'i2pAddress'); const relay = typeof args.relay === 'string' ? args.relay : null;
+  if (!isValidI2pAddress(i2p_address) || (relay !== null && !isValidI2pAddress(relay))) throw new Error('Invalid I2P destination');
+  const contact: Contact = { id: allocate(state), sign_pk: sign, dh_pk: dh, i2p_address, relay, name: text(args, 'name').slice(0, 96), trust: 0, created_at: Date.now(), last_seen: null, is_bot: false, pinned_at: null, last_message_at: null, agent_granted: false, request };
   state.contacts.push(contact);
   log.info('contact_add', `contact ${contact.id} (${request})`);
   return contact;

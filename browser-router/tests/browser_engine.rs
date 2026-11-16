@@ -20,10 +20,10 @@ fn transaction_persist_and_reload_with_metadata() {
     let pub_info: Value = serde_json::from_str(&pub_info_raw).expect("parse public info");
     let alice_sign = pub_info["sign_pk"].as_str().expect("sign_pk");
     let alice_dh = pub_info["dh_pk"].as_str().expect("dh_pk");
-    let alice_onion = pub_info["onion"].as_str().expect("onion");
+    let alice_i2p_address = pub_info["i2p_address"].as_str().expect("i2p_address");
     assert_eq!(alice_sign.len(), 64);
     assert_eq!(alice_dh.len(), 64);
-    assert!(alice_onion.ends_with(".b32.i2p"));
+    assert!(alice_i2p_address.ends_with(".b32.i2p"));
 
     // Begin transaction
     alice.begin().expect("begin transaction");
@@ -54,7 +54,7 @@ fn transaction_persist_and_reload_with_metadata() {
     assert_eq!(reloaded_info["sign_pk"], pub_info["sign_pk"]);
     assert_eq!(reloaded_info["dh_pk"], pub_info["dh_pk"]);
     assert_eq!(reloaded_info["destination"], pub_info["destination"]);
-    assert_eq!(reloaded_info["onion"], pub_info["onion"]);
+    assert_eq!(reloaded_info["i2p_address"], pub_info["i2p_address"]);
 
     // Opening with wrong password must fail
     assert!(
