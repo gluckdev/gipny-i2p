@@ -93,6 +93,10 @@ NSIS. Ошибка запуска возвращает файл в pending; ст
 
 Linux GNU использует `gipny-agent_<version>_linux-amd64.tar.gz` или
 `_linux-arm64.tar.gz`, macOS — `_darwin-amd64.tar.gz` или `_darwin-arm64.tar.gz`.
+Первичный shell installer определяет Apple Silicon также из Rosetta через
+`sysctl.proc_translated` / `hw.optional.arm64`, выбирая native ARM64 пакет.
+Он требует точное наличие asset в выбранном релизе и единственный checksum
+manifest; при отсутствии пакета архитектуры установка прекращается.
 Обновлятор извлекает один обычный `gipny-agent`, отклоняет дубликаты, ссылки,
 небезопасные пути и превышение лимитов. Уникальный временный executable в каталоге
 текущего binary публикуется атомарно после sync. Текущая сессия продолжает работать;
@@ -111,7 +115,17 @@ GNU fallback для musl отсутствует. Этот список не оз
 MIPS и ARMv6 в этот контракт не входят. Наличие selector не заменяет успешную
 сборку и проверку конкретного release asset.
 
-Windows использует `gipny-agent_<version>_windows-amd64.tar.gz`. Установщик должен
+Windows shipping пока использует только
+`gipny-agent_<version>_windows-amd64.tar.gz`. Первичный PowerShell installer
+определяет native architecture ОС через `IsWow64Process2`, с
+`GetNativeSystemInfo` только при отсутствии этой API; environment variables
+и архитектура самого PowerShell не подменяют результат. Он выберет ARM64
+только при наличии точного `gipny-agent_<version>_windows-arm64.tar.gz`;
+сейчас такого shipping target нет, поэтому ARM64 получает явную ошибку до
+загрузки и установки, без x64 fallback. Unix fixtures нового выбора проходят;
+новые PowerShell fixtures ещё должны пройти Windows CI.
+
+Установщик должен
 настроить Scheduled Task через `start-agent.ps1`; существующая старая установка
 требует повторного запуска `install-agent.ps1`, чтобы сменить action задачи.
 Отсутствующий bootstrap — ошибка с инструкцией переустановки, пакет сохраняется.

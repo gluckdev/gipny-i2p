@@ -2,12 +2,12 @@
 
 ## Русский
 
-Срез рабочей копии на **2026-11-06**. Обновление источников не подтверждает,
+Срез закреплённых release sources на **2026-11-16**. Обновление источников не подтверждает,
 что новая сборка прошла CI или доставила сообщения на реальных устройствах.
 
 | Компонент | Закреплённая ревизия / источник |
 |---|---|
-| i2pd desktop и Android library | `2ad5c1a537193064070a63fc7ef8fe897663f364` |
+| i2pd desktop и Android library | `3835d09efc722c92fa86c8c31930477315c1abb2` |
 | Android upstream build/dependencies | `df7e2420b6a5108caa7463bde420d3ab48ff2888` |
 | emissary для WASM | `620fb9debb0cbfd41de664ca5297c1deab8bd40b`, `browser-router/emissary-source.json` |
 | miniupnpc | 2.3.3/API 21, `2cb87d04034587bdb0f51549b3936e0d9e143bcb`, `i2p-embed/miniupnpc-source.json` |
@@ -36,9 +36,17 @@ TURN relay. Очереди и входящие кадры ограничены, 
 зафиксируйте изменения API/MSRV/лицензий и результаты всех платформ в CI.
 Репозиторий не должен собирать движущуюся ветку upstream вместо выбранного SHA.
 
+Публичные параметры предзапуска и guard/cancellation описаны в
+[startup](startup-performance.md); фактические lanes, window и измерения —
+[performance](performance-anonymity.md), будущая адаптация —
+[network adaptation](network-adaptation.md). Менять upstream defaults ради
+этих параметров не требуется. Application tunnels сохраняют3/3 и padding.
+Локальные dirty submodule checkouts не являются release pin: сборка проверяет
+закреплённую ревизию и хеши собственных patch files.
+
 ## English
 
-Working-tree snapshot: **2026-11-06**. The table above records desktop/Android
+Pinned release source snapshot: **2026-11-16**. The table above records desktop/Android
 i2pd, Android upstream, browser emissary and miniupnpc pins. Source updates do
 not prove successful builds or real-device delivery. Retain the public i2pd
 secret-buffer cleanup patch, emissary's client-only patch and miniupnpc's bounded

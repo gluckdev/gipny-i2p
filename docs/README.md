@@ -3,8 +3,8 @@
 ## Русский
 
 Основной язык — русский; английское описание следует вторым в каждом текущем
-руководстве. Срез исходников: **2026-11-06**, базовый `a6e41ca`; изменения
-транспорта и документации в рабочей копии требуют собственной проверки CI.
+руководстве. Обновление: **2026-11-16**, ветка `release/0.5.0-beta.1`.
+CI baseline `589ad57` проверен; новые beta-изменения требуют своей матрицы.
 Номер версии не означает опубликованный релиз.
 
 Начните с [README](../README.md), [состояния функций](current-state.md) и
@@ -15,6 +15,11 @@
 
 | Задача | Руководство |
 |---|---|
+| Условия beta и новые форматы без поддержки старых данных | [План beta](plans/2026-11-16-beta.md) |
+| Переместить единственный активный профиль между устройствами | [Дизайн переноса через I2P](profile-transfer.md) — реализация ещё не готова |
+| Проверенные ОС/архитектуры и ограничения установщиков | [Матрица платформ](platform-support.md) |
+| Измеренные lanes, адаптация и предзапуск | [Производительность](performance-anonymity.md), [startup](startup-performance.md), [сетевая адаптация](network-adaptation.md) |
+| Контакт по QR, эффекты и доступность UI | [Взаимодействие](ui-interactions.md) |
 | Пользоваться WASM-клиентом, хранить профиль, настроить сеть | [Браузер](browser-messenger.md) |
 | Разместить WSS/WebRTC транспорт | [Rust-форвардер](../browser-router/forwarder/README.md) |
 | Понять текущее состояние и планы | [Матрица функций](current-state.md), [планы](roadmap.md) |
@@ -28,7 +33,7 @@
 | Что нового в версии | [0.5.0-rc3](releases/0.5.0-rc3.md), [передача контекста](handoff-brief.md) |
 | Android и переводы | [JNI](android-jni-build.md), [локализация](localization.md) |
 | Карта исходников | [Core](../core/README.md), [libcore](../libcore/README.md), [UI](../ui/README.md), [DHT](../dht/README.md), [agent](../agent/README.md), [bot SDK](../bot-sdk/README.md) |
-| Сайт проекта и его независимость от переписки | [Site](../site/README.md), [план зеркал Tor/I2P](site-mirrors.md) |
+| Сайт проекта и его независимость от переписки | [Site](../site/README.md), [план зеркал I2P](site-mirrors.md) |
 
 Native — Rust/Tauri → i2p-embed → C++ libi2pd. Web — WASM/Worker/OPFS →
 WSS или WebRTC → Rust-форвардер → I2P. Отдельный локальный `gipny-web`
@@ -47,8 +52,8 @@ WSS или WebRTC → Rust-форвардер → I2P. Отдельный лок
 ## English
 
 Russian is primary; English follows in current guides. Source snapshot:
-2026-11-06, baseline `a6e41ca`. Working-tree transport/documentation changes need
-new CI evidence. A source version is not a published release.
+2026-11-16, branch `release/0.5.0-beta.1`. Baseline `589ad57` passed CI;
+new beta changes need their own evidence. A source version is not a published release.
 
 Start with the [English README](../README.en.md), [feature status](current-state.md)
 and [security model](../SECURITY.md). The table above links browser setup,

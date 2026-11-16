@@ -1,10 +1,12 @@
 # Браузерный мессенджер / Browser messenger
 
-Состояние / Status: 2026-11-08. Публичный клиент на Pages работает только offline:
-переменная `GIPNY_BROWSER_CONFIG_JSON` не задана, мост не развёрнут; новые
-транспортные проверки CI ожидаются / The public Pages client is offline-only: the
-`GIPNY_BROWSER_CONFIG_JSON` variable is unset and no bridge is deployed; new
-transport CI pending.
+Сверка / Reviewed: 2026-11-16. Public Pages `browser-config.json` по последней
+проверке отвечает404; публичный bridge не подтверждён. На baseline `589ad57`
+[CI WSS и WebRTC](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781)
+прошёл по11 acceptance checks, включая файл и восстановление после reload/остановки
+хостинга. Это fixture, не физический телефон или TURN. Новые beta изменения
+требуют своей проверки. / Baseline transport CI passed; public deployment,
+physical phones, TURN and the final beta matrix remain separate gates.
 
 ## Русский
 
@@ -20,10 +22,17 @@ Pages workflow собирает этот WASM-клиент; факт публи�
 WebAuthn PRF можно добавить passkey; пароль сохраняйте как способ восстановления.
 Добавление PWA на главный экран зависит от браузера. После первого кэширования
 оболочки сохранённая история доступна без сети. Очистка данных сайта и квоты
-браузера могут удалить профиль. Экспорт/импорт браузерного профиля пока не
-реализованы; нативная функция экспорта не означает её наличие в WASM-клиенте.
+браузера могут удалить профиль. Для beta проектируется [перенос профиля через I2P](profile-transfer.md)
+с финальным ОК/Отмена на источнике. Он пока не готов; прежний native export
+не является полным переносом и не означает его наличие в WASM-клиенте.
 
 ### Требования к браузеру
+
+Cromite153.0.8010.37 отдельно проверен на Linux: при штатной политике JIT WASM
+недоступен в Window и Worker; с разрешением для origin минимальная compile
+и загрузка клиента проходят. Это не Android-тест и не установленная причина
+регрессии Honor. [Точные результаты](startup-performance.md). Удалять данные
+сайта/OPFS ради диагностики нельзя. Проверка возможностей выполняется в Worker.
 
 Нужны актуальные Chrome или Firefox либо Safari/iOS 16.4. Клиент проверяет
 совместимость при загрузке и называет причину отказа. В Lockdown Mode WebAssembly
@@ -234,7 +243,7 @@ cards. Compare fingerprints through a trusted channel. Enroll a passkey only
 when WebAuthn provides an actual PRF secret; retain the password for recovery.
 PWA installation depends on the browser. After shell caching, saved history is
 available offline. Clearing site data or storage eviction can remove the profile;
-browser profile export/import is not implemented yet. Native export support
+the [I2P-only profile move](profile-transfer.md) is not implemented yet. Native export support
 does not imply that this capability exists in the WASM client.
 
 ### Browser requirements
@@ -350,7 +359,7 @@ Relay-only ICE does not hide signaling metadata from the WSS endpoint/CDN.
 TURN observes client IP, timing and volume. NTCP2 remains encrypted end to end
 between the browser router and I2P peer; traffic indistinguishability is unproven.
 
-Build only in GitHub Actions: generate WASM with `wasm-pack build --target web
+Local builds/tests are authorized; final verification runs in GitHub Actions: generate WASM with `wasm-pack build --target web
 --release --locked`, then `npm ci --prefix ui` and `npm run build:browser --prefix ui`.
 Set `VITE_BASE` for a subpath. Serve `ui/browser-dist/` over HTTPS with the
 provided CSP and WASM MIME type; start at `browser.html`.

@@ -1,7 +1,7 @@
 # Производительность без ослабления защитных настроек
 
 Дата исследования: 2026-11-16. Это разбор источников, текущего кода, методика
-и результаты первого native sweep 1…8. Все восемь файлов доставлены, но три
+и результаты native sweep 1…8 и прерванного повтора 6,4,6,4. Все восемь файлов первого sweep доставлены, но три
 точки нарушили deadline интерактивных probes. Универсальное оптимальное число
 соединений не установлено; production default не увеличен.
 
@@ -404,8 +404,61 @@ Cap 8 оказался худшим по goodput и не уложил ни од�
 не перемешивался, повторного baseline не было, identities/маршруты менялись,
 оба клиента разделяли один router. Уже до нагрузки warmup RTT различался
 примерно от 4.3 до 49.9 с; условия разных точек явно не были одинаковыми.
-Следующая запланированная серия — `6,4,6,4`, при прежних
-3 hops/padding/quantity/bandwidth; она ещё не выполнена. Затем нужны соседние
+Повторная серия — `6,4,6,4`, при прежних
+3 hops/padding/quantity/bandwidth — прервана, результаты ниже. Затем нужны соседние
 значения, независимые устройства и отдельный media-like transport test.
 Новый production default, отсутствие потери анонимности и пригодность к
 звонкам этим sweep не установлены. Измерений cold/warm startup prewarm пока нет.
+
+## Повтор 6,4,6,4: неполная серия
+
+[Run43891707369](https://github.com/gluckdev/gipny-i2p/actions/runs/43891707369),
+SHA`589ad57`, завершился failure. Санитизированные агрегаты и SHA256 исходных
+файлов сохранены в [JSON повтора](benchmarks/2026-11-16-native-lanes-repeat.json).
+Архив [artifact14241830678](https://github.com/gluckdev/gipny-i2p/actions/runs/43891707369/artifacts/14241830678)
+имеет SHA256 `0d14b7c7a4da4fd073e57b59c2c4a919da2b849221c4e19dc97c28e3c1dce306`.
+
+| Точка / cap | Проверено байтов | Goodput B/s | Файл, с | Echo p95, с | В срок / отправлено | Результат |
+|---|---|---|---|---|---|---|
+| 1 / 6 | 33554432 | 68861 | 487.280 | 59.053 | 5/8 | Файл цел, quality failed |
+| 2 / 4 | 33554432 | 80773 | 415.416 | 47.168 | 10/14 | Файл цел, quality failed |
+| 3 / 6 | Неизвестно | — | — | — | — | Внешний timeout, итог не записан |
+| 4 / 4 | — | — | — | — | — | Не запускалась |
+
+В первых двух точках hops3/3 у всех участников и padding подтверждены.
+Setup94140/108772ms и warmup22737/18008ms не включены в file goodput.
+Queued retransmissions31/10, received duplicates8/10; эти счётчики измеряют
+разные стадии доставки. CPU user+system11.69/11.83s, peakRSS111460/100948KiB
+относятся к процессу harness за всю жизнь, не ко всем relay процессам.
+
+В третьей точке лог показывает завершённый защищённый warmup, но JSON остался
+стартовым. `verified_unique_bytes=0` в нём — начальное значение, **не измеренный
+ноль**. Final bytes/probes/lanes неизвестны. Внешний1200s watchdog учитывал setup,
+а harness начинал новый полный deadline для каждой фазы. Он был остановлен до
+своего финального отчёта; ошибочная классификация setup остановила четвёртую
+точку. Логи I2P сами по себе не устанавливают причину долгой передачи.
+
+Коммит`f73fd42` вводит общий абсолютный deadline и атомарный защищённый
+measurement checkpoint перед file enqueue. Runner различает complete,
+incomplete и missing; не выводит стартовые нули как результат. Python20/20,
+Rust performance15/15 и all-targets harness check прошли. Новый live повтор
+ещё требуется. Ни эта неполная серия, ни первая не обосновывают увеличение
+production cap или готовность к звонкам.
+
+## Следующий этап beta
+
+[Исследование адаптации и resume](network-adaptation.md) связывает реальные
+transport capabilities, queue head-of-line blocking, сохранение проверенных
+частей и сравнение первоисточников. Сначала измеряется reservation существующего
+main stream при неизменном total cap; затем оценивается bounded controller с
+лимитами CPU/памяти и hysteresis. Это план, текущий default остаётся4.
+
+## English: repeat status
+
+The6,4,6,4 repeat is incomplete. Its first two32MiB files were fully verified
+at68861 and80773B/s, but both points missed interactive probe deadlines. Point3
+reached protected measurement and was interrupted before final metrics were
+persisted; its initial zero counters are not an outcome. Point4 never ran.
+The shared-deadline/checkpoint defect is fixed in`f73fd42` and unit-tested;
+post-fix live evidence is pending. Neither series establishes a universal lane
+optimum, unchanged anonymity or readiness for real-time calls.

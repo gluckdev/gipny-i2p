@@ -2,8 +2,8 @@
 
 ## Русский
 
-Состояние на 2026-11-06 (0.5.0-rc3): реализация и модульные тесты; CI и реальные
-домашние роутеры ещё не проверены. Сам флаг `upnp.enabled` UPnP не запускает:
+Состояние на 2026-11-16: реализация, unit/fixture и native baseline CI
+на589ad57 прошли; реальные домашние роутеры ещё не проверены. Сам флаг `upnp.enabled` UPnP не запускает:
 приложение использует API libi2pd без daemon-компонента i2pd, поэтому порты
 открывает собственный менеджер `i2p-embed`.
 
@@ -57,17 +57,17 @@ hidden/proxy-профиль обычный публичный маппинг н�
 При аварийном завершении или потере питания постоянное правило может остаться до
 следующего запуска в той же сети. В релизных сборках UPnP ничего не пишет в журнал.
 
-Исходники: `i2p-embed/src/upnp.rs`, C-граница в `i2p-embed/shim/`, закреплённый
+Исходники: `i2p-embed/src/upnp.rs` и доменные модули `upnp/`, C-граница в `i2p-embed/shim/`, закреплённый
 импорт `i2p-embed/vendor/miniupnpc` с хешами `miniupnpc-source.json`
-(`python3 -I i2p-embed/check-source.py`). Тесты: 16 в `upnp.rs` (шлюз в памяти) и
+(`python3 -I i2p-embed/check-source.py`). Тесты: 16 в `upnp/tests/` (шлюз в памяти) и
 3 в `upnp_fixture.rs` (настоящая miniupnpc против локального IGD); в CI для
 Linux/macOS/Windows и проверка экспортов Android. Физические NAT, переключение
 Wi-Fi/mobile и перезапуск IGD проверяются отдельно.
 
 ## English
 
-Status on 2026-11-06 (0.5.0-rc3): implemented with unit tests; CI and physical
-home routers are pending. `upnp.enabled` alone does nothing: the app embeds the
+Status on2026-11-16: implemented; unit/fixture and native baseline CI at589ad57
+passed. Physical home routers remain untested. `upnp.enabled` alone does nothing: the app embeds the
 libi2pd API without i2pd's daemon, so `i2p-embed` runs its own manager.
 
 **Switch.** Settings → i2p router → "Open the router port automatically (UPnP)".
@@ -107,8 +107,8 @@ rules. Provider CGNAT or a second NAT is not solved by a home-gateway rule. A
 crash or power loss can leave a permanent rule until the next start on the same
 network. Release builds log nothing about UPnP.
 
-Sources: `i2p-embed/src/upnp.rs`, the C boundary in `i2p-embed/shim/`, pinned
-`i2p-embed/vendor/miniupnpc` with `miniupnpc-source.json`. Tests: 16 in `upnp.rs`
+Sources: `i2p-embed/src/upnp.rs` and domain modules in `upnp/`, the C boundary in `i2p-embed/shim/`, pinned
+`i2p-embed/vendor/miniupnpc` with `miniupnpc-source.json`. Tests: 16 in `upnp/tests/`
 (in-memory gateway), 3 in `upnp_fixture.rs` (real miniupnpc against a local IGD),
 run in CI on Linux/macOS/Windows, plus Android export checks. Physical NAT,
 Wi-Fi/mobile transitions and IGD restarts need separate evidence.

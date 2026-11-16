@@ -61,7 +61,7 @@ Legacy `.device`/vault v1 и legacy plaintext headless DB отклоняются
 
 | Платформа | Реализация | Что защищает | Ограничение |
 |---|---|---|---|
-| Android | Неэкспортируемый AES-GCM key в Android Keystore, TEE/StrongBox обязателен; 12-byte IV + 48-byte ciphertext для 32-byte secret, ID как AAD | Копия файлов профиля и software storage без аппаратного wrapping key не открывается | Software-only Keystore отклоняется. Clear data/uninstall/reset Keystore может навсегда лишить доступа без явного экспорта |
+| Android | Неэкспортируемый AES-GCM key в Android Keystore, TEE/StrongBox обязателен; 12-byte IV + 48-byte ciphertext для 32-byte secret, ID как AAD | Копия файлов профиля и software storage без аппаратного wrapping key не открывается | Software-only Keystore отклоняется. Clear data/uninstall/reset Keystore может навсегда лишить доступа; перенос beta ещё не готов |
 | Windows | Native DPAPI: внутренняя user-scope обёртка, затем внешняя `LOCAL_MACHINE`, обе без UI | Копия профиля на другой OS account/машину не получает необходимых DPAPI secrets | Это не TPM. Полный клон ОС, её secrets и привилегии администратора — другая угроза |
 | macOS | Native Security.framework, file-based системный Keychain вне профиля; явный `macos-local-keychain-v2`, без Data Protection/iCloud sync | Копия только app profile и пароль vault не содержат отдельный OS credential | Software tier, доступный бесплатной ad-hoc сборке. Полный перенос Keychain/ОС не покрывается гарантией; возможен системный запрос доступа после обновления, SEP/ThisDeviceOnly не заявлены |
 | Linux desktop | OS Secret Service через `/usr/bin/secret-tool`, секрет по stdin, не argv; credential вне профиля | Копия только каталога профиля не содержит credential | **Не защищает от клона всей ОС/keyring вместе с учётными данными. Не TPM и не hardware binding** |
@@ -124,14 +124,18 @@ credential, новая привязка автоматически не созд
 заранее provisioned OS credential; копия plaintext SQLite не мигрирует молча.
 Нет `--unbound-storage` и переменной с переносимым raw DB key.
 
-Разрешённый перенос — только явный зашифрованный export после unlock и import
-с паролем backup. Существующий export содержит логические данные и секреты
-профиля под AEAD backup encryption; OS wrapping key и `.device-binding-v2.json`
-не экспортируются. Import создаёт новый vault/OS binding на целевом устройстве
-и восстанавливает данные, включая DM sidecar. Это сознательно переносимый
-зашифрованный файл: имеющий его и пароль может выполнить import. Его нужно
-защищать и удалять по выбранной пользователем политике. Сырые `vault.bin`, DB
-и metadata этим capability не обладают.
+Для beta разрешённый пользовательский путь заменяется
+[переносом через I2P](profile-transfer.md): пароль с обеих сторон, полностью
+проверенный карантин получателя, финальные ОК/Отмена на источнике и активация
+только после удаления источника. Реализация пока не завершена. OS wrapping key
+и `.device-binding-v2.json` не переносятся: получатель создаёт своё binding.
+Старые профили/backup форматы и миграции поддерживать не требуется.
+
+Существующий native export/import ещё есть в коде, но **не удовлетворяет**
+новому переносу: экспорт не содержит полного session/ratchet состояния, а
+read failure вложения может скрываться пустыми байтами. Его нельзя объявлять
+готовым переносом или использовать без исправления как основу beta процесса.
+Сырые `vault.bin`, DB и metadata по-прежнему привязаны к устройству.
 
 `backup_open` и `backup_open_3factor` возвращают `Zeroizing<Vec<u8>>` сразу на
 границе дешифрования: выходной plaintext очищается также при ошибке import или

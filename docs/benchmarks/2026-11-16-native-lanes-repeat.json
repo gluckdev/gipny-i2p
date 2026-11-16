@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-16",
+  "source_sha": "589ad57fdbf4d8f6759ce4c698e4b189ea6e5b48",
+  "run_url": "https://github.com/gluckdev/gipny-i2p/actions/runs/43891707369",
+  "artifact_id": 14241830678,
+  "artifact_sha256": "0d14b7c7a4da4fd073e57b59c2c4a919da2b849221c4e19dc97c28e3c1dce306",
+  "plan": [
+    6,
+    4,
+    6,
+    4
+  ],
+  "status": "incomplete_failed",
+  "topology": "shared_client_router_external_relays",
+  "points": [
+    {
+      "index": 1,
+      "lanes": 6,
+      "requested_bytes": 33554432,
+      "raw_sha256": {
+        "performance.json": "d10e231c44e80b4e1e69c5d0d886f03fe9cd2f51a1be078717697dae17226f7a",
+        "point.json": "b7e43f5645a839aeb9d994b694700a31b661f139a002f809559058c8561be1a6",
+        "resources.txt": "bd7957a935c399238c9d6c9dbe4a8fedb0fe11c68b1d9960191f050310960c7f",
+        "harness.log": "d8530588d3f0efb26201aedeabb8967b49901482abd1b9a7785f0c4d0596e005"
+      },
+      "status": "completed_measurement_failed_quality",
+      "configured_hops": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "padded": true,
+      "file": {
+        "duplicate_completion_events": 0,
+        "elapsed_ms": 487280,
+        "goodput_bytes_per_sec": 68860.61029769247,
+        "requested_bytes": 33554432,
+        "verified_unique_bytes": 33554432
+      },
+      "setup_elapsed_ms": 94140,
+      "warmup_rtt_ms": 22737,
+      "transport": {
+        "receiver": {
+          "duplicate_parts_received": 8,
+          "peak_receive_lanes": 6,
+          "peak_send_lanes": 0,
+          "queued_parts": 0,
+          "queued_retransmissions": 0,
+          "unique_bytes_received": 33554432
+        },
+        "sender": {
+          "duplicate_parts_received": 0,
+          "peak_receive_lanes": 0,
+          "peak_send_lanes": 6,
+          "queued_parts": 202,
+          "queued_retransmissions": 31,
+          "unique_bytes_received": 0
+        }
+      },
+      "probes": {
+        "attempted": 8,
+        "budget_exhausted": false,
+        "duplicates": 0,
+        "enqueue_outcome_unknown": 0,
+        "interrupted": 0,
+        "jitter_ms": 5045.75,
+        "late": 3,
+        "lost": 3,
+        "received": 5,
+        "rtt_ms": {
+          "p50": 48321,
+          "p95": 59053,
+          "p99": 59053
+        },
+        "send_errors": 0,
+        "sent": 8,
+        "skipped_in_flight_limit": 42,
+        "stopped_on_timeout": true,
+        "timed_out": 3,
+        "total_budget": 1024,
+        "unexpected_echoes": 0
+      },
+      "process_resources": {
+        "user_cpu_seconds": 8.68,
+        "system_cpu_seconds": 3.01,
+        "peak_rss_kib": 111460
+      }
+    },
+    {
+      "index": 2,
+      "lanes": 4,
+      "requested_bytes": 33554432,
+      "raw_sha256": {
+        "performance.json": "af058c43242c7263972e859541ee347c3fd8b29c179c73e60720c3f068bdf9e9",
+        "point.json": "9ae8b23fc011ca04135f2ec20848efbe127c360ae09f8ceb0890e61d2f42fb85",
+        "resources.txt": "c0d6ac9e0fa2a82167d6721dd5ab4215d79e52facdff0e3936d347245800632f",
+        "harness.log": "dc650ef6926629245ca56d1ca84893b11b9d5efd75ca721e9eef3b3bfc12be53"
+      },
+      "status": "completed_measurement_failed_quality",
+      "configured_hops": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "padded": true,
+      "file": {
+        "duplicate_completion_events": 0,
+        "elapsed_ms": 415416,
+        "goodput_bytes_per_sec": 80772.9166075842,
+        "requested_bytes": 33554432,
+        "verified_unique_bytes": 33554432
+      },
+      "setup_elapsed_ms": 108772,
+      "warmup_rtt_ms": 18008,
+      "transport": {
+        "receiver": {
+          "duplicate_parts_received": 10,
+          "peak_receive_lanes": 4,
+          "peak_send_lanes": 0,
+          "queued_parts": 0,
+          "queued_retransmissions": 0,
+          "unique_bytes_received": 33554432
+        },
+        "sender": {
+          "duplicate_parts_received": 0,
+          "peak_receive_lanes": 0,
+          "peak_send_lanes": 4,
+          "queued_parts": 181,
+          "queued_retransmissions": 10,
+          "unique_bytes_received": 0
+        }
+      },
+      "probes": {
+        "attempted": 14,
+        "budget_exhausted": false,
+        "duplicates": 0,
+        "enqueue_outcome_unknown": 0,
+        "interrupted": 0,
+        "jitter_ms": 9136.888888888889,
+        "late": 4,
+        "lost": 4,
+        "received": 10,
+        "rtt_ms": {
+          "p50": 27173,
+          "p95": 47168,
+          "p99": 47168
+        },
+        "send_errors": 0,
+        "sent": 14,
+        "skipped_in_flight_limit": 55,
+        "stopped_on_timeout": true,
+        "timed_out": 4,
+        "total_budget": 1024,
+        "unexpected_echoes": 0
+      },
+      "process_resources": {
+        "user_cpu_seconds": 8.85,
+        "system_cpu_seconds": 2.98,
+        "peak_rss_kib": 100948
+      }
+    },
+    {
+      "index": 3,
+      "lanes": 6,
+      "requested_bytes": 33554432,
+      "raw_sha256": {
+        "performance.json": "fb98a91823032bb07b547888a888c33c6221f993826e8709059778e4df258246",
+        "point.json": "823a5df463d525d6a4635b94eabaaafb08ff818d2bd4b0f5482e87f7d8c67b0f",
+        "resources.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "harness.log": "0811ed911be227ac022f61c02705f532f13cf16aacfd8a8d834374f35b218121"
+      },
+      "status": "interrupted_final_outcome_unknown",
+      "file": null,
+      "probes": null,
+      "transport": null,
+      "process_resources": null,
+      "evidence": {
+        "measurement_boundary_reached": "harness.log phase marker after protected warmup",
+        "outer_timeout_ms": 1200243,
+        "initial_json_not_final": true
+      }
+    },
+    {
+      "index": 4,
+      "lanes": 4,
+      "requested_bytes": 33554432,
+      "status": "not_started",
+      "file": null,
+      "probes": null
+    }
+  ],
+  "limitations": [
+    "No causal cap comparison: sequential points used different routes and conditions.",
+    "Completed points failed interactive probe deadlines.",
+    "Point 3 contains only an initial JSON snapshot; its zero counters are not measured outcomes.",
+    "The phase log proves warmup completed, not final file delivery.",
+    "Point 4 was not started.",
+    "Harness deadline/checkpoint corrected in f73fd42; no post-fix live results yet."
+  ]
+}

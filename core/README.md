@@ -108,7 +108,7 @@ prerelease всегда пишет его; пользовательского п
 
 ## Как проверить
 
-Сборки и выполнение тестов этой работы проводятся только в GitHub Actions:
+Локальные сборки и тесты разрешены; финальные проверки общего SHA выполняются в GitHub Actions:
 [build.yml](../.github/workflows/build.yml),
 [security-fast.yml](../.github/workflows/security-fast.yml),
 [e2e-i2pd.yml](../.github/workflows/e2e-i2pd.yml).
@@ -141,5 +141,5 @@ prerelease/developer/test builds always capture them without a runtime toggle.
 Native storage, memory protection, sanitizer, OS updates and notifications keep
 platform-specific implementations. JPEG/PNG/WebP cleaning is shared with WASM;
 PDF cleaning is native-only. GUI, agent and browser changes require their own CI
-and real-device evidence. Builds/executable tests run in GitHub Actions only;
+and real-device evidence. Local builds/tests are authorized; final checks run in GitHub Actions;
 source implementation alone is not deployment or a successful compatibility test.

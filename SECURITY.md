@@ -53,6 +53,14 @@ WSS может проходить через совместимый CDN. WebRTC 
 Проблемы upstream i2pd направляйте также в
 [PurpleI2P/i2pd](https://github.com/PurpleI2P/i2pd).
 
+Для beta проектируется [перенос профиля через I2P](docs/profile-transfer.md):
+пароль на обоих устройствах, полный проверенный карантин получателя и финальные
+ОК/Отмена на источнике; активация разрешается лишь после его удаления. Реализация
+ещё не готова. При неопределённом исходе commit требуется блокировка до сверки
+журналов, а не две активные личности. Старый backup codec и best-effort wipe
+не доказывают выполнение этого протокола. Проверка storage/network adapters,
+fault injection и независимый review обязательны перед выпуском.
+
 Стабильные native releases должны иметь `Null` diagnostics. В RC разрешён
 явный developer log; он не должен содержать секреты. Browser diagnostics
 имеют отдельный lifecycle и не наследуют автоматически native гарантии.
@@ -102,3 +110,10 @@ Mandatory update hashes and provenance do not replace independent publisher
 signatures. Stable native releases require Null diagnostics; RC builds may
 explicitly enable developer logs without secrets. Browser logging has separate
 storage and lifecycle. See the linked detailed guides above.
+
+Beta requires an [I2P-only profile move](docs/profile-transfer.md), not yet a
+shipped capability: both passwords, a complete durable receiver quarantine,
+explicit source OK/Cancel, and activation only after source deletion. Ambiguous
+commit outcomes block until journal reconciliation. The old backup/wipe path
+does not establish these guarantees; adapter validation, fault injection and
+independent review are required before release.

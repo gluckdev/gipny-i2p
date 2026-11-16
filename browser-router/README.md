@@ -48,7 +48,7 @@ PDF metadata sanitizer в WASM недоступен: отправка без о�
 
 ### Проверка
 
-Сборка и исполняемые тесты — **только GitHub Actions**,
+Локальные сборки и тесты разрешены. Финальная матрица — **GitHub Actions**,
 [Browser router WASM](../.github/workflows/browser-router.yml):
 
 1. `forwarder`: Rust format, unit/integration tests, release binary.
@@ -103,7 +103,7 @@ available OPFS quota, reserving 64 MiB. Previews/cleaning use at most 32 MiB.
 Native DHT, agent commands, duress and OS keychain guarantees are unavailable. PDF cleaning is unavailable in WASM; unfiltered sending requires
 an explicit choice. Passkey PRF support varies.
 
-Builds and executable tests run only in GitHub Actions: Rust forwarder checks,
+Local builds/tests are authorized; final checks run in GitHub Actions: Rust forwarder checks,
 locked WASM/UI builds and Chrome tests, the built client in Playwright WebKit
 (`ui/tests/webkit-smoke.mjs`: a profile without network configuration, chats open
 offline, the profile survives a reload), native NTCP2/cold bootstrap, and two

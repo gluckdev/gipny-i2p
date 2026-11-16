@@ -51,7 +51,7 @@
   статический шелл приложения (HTML, JS, CSS, WASM). Отдельные кэши приложения
   хранят публичную конфигурацию и проверенный netDb для запуска при отказе хостинга.
   Подписи/свежесть узлов перепроверяются; профили и переписка не кэшируются там.
-- **Неподдерживаемые функции в браузере:** Консоль выполнения команд агента, экспорт/импорт профиля,
+- **Неподдерживаемые функции в браузере:** Консоль выполнения команд агента, [перенос профиля](../docs/profile-transfer.md) (проектируется для beta),
   нативный узел DHT, транзитные туннели и duress-пароли требуют будущей реализации.
 
 Подробное руководство по развёртыванию веб-версии: [docs/browser-messenger.md](../docs/browser-messenger.md).
@@ -228,7 +228,8 @@ The shell cache contains public app assets. Separate bounded caches hold public
 transport settings and revalidated netDb, never conversation/profile data. The
 bridge, I2P and fresh peer records are still needed for online use. Locking,
 pagehide and freeze terminate the Worker; browser memory does not offer native
-mlock/mprotect or guaranteed physical erasure. Browser profile export, native
+mlock/mprotect or guaranteed physical erasure. The I2P-only profile move is a beta
+requirement, not yet a working feature. Native
 agent commands, DHT and duress are not implemented.
 
 Keep all 8 dictionaries (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`), DTOs, events, Store handlers and mocks consistent across

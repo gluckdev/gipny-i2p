@@ -91,7 +91,7 @@ events для уже удалённой строки. Обычные событ�
 При удалении очищаются относящиеся к представлению previews, image URLs и
 модальные копии; активные draft/pending/console history сбрасываются, чтобы
 сохранявшаяся копия не осталась в редакторе. Граница WebView и отсутствие
-гарантии GC-стирания описаны в [memory-security.md](memory-security.md).
+гарантии GC-стирания описаны в [memory-security.md](../memory-security.md).
 
 ## Совместимость и backup
 
@@ -153,5 +153,5 @@ TypeScript/Vite и 18/18 UI tests, включая DM/WebView cases, прошли
 
 Это локальные DB/channel/DOM fixtures без живой I2P и без реального устройства.
 Команды CI и происхождение сборок описаны в
-[build-release.md](build-release.md); итоговый run должен быть привязан к
+[build-release.md](../build-release.md); итоговый run должен быть привязан к
 конечному SHA объединённой ветки.

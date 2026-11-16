@@ -1,5 +1,9 @@
 # Направления развития / Development roadmap
 
+Обновлено: 2026-11-16. Текущий приоритет — [условия beta](plans/2026-11-16-beta.md),
+[перенос профиля](profile-transfer.md), [адаптация сети](network-adaptation.md) и
+[проверенные платформы](platform-support.md). Alpha2 не публикуется.
+
 ## Русский
 
 Сначала — сохранность текущих сообщений, отзыв полномочий, границы хранения,
@@ -39,7 +43,7 @@ TURN — отдельная услуга. Нераспознаваемость �
   Переписка не использует GitHub как сервер сообщений. Проверить холодный запуск
   ранее установленного приложения без GitHub, включая публичную сетевую
   конфигурацию и bootstrap; не обещать независимость до этой проверки.
-- Подготовить зеркала **страницы проекта** в Tor `.onion` и I2P. Подбирать
+- Подготовить зеркала **страницы проекта** в I2P. Подбирать
   криптографические адреса с префиксом **`gipny`**; для I2P также подготовить
   читаемое имя через адресную книгу. Подробный план — [зеркала](site-mirrors.md).
   Действующих адресов пока нет; они публикуются после развёртывания и проверки.
@@ -54,7 +58,11 @@ TURN — отдельная услуга. Нераспознаваемость �
 в группах, исследование групповых ключей, паритет браузера, документация —
 [план групповых чатов](plans/2026-11-08-group-chats.md).
 
-### Загрузка профиля и сбор сообщений — запись 2026-11-08
+### Загрузка профиля и сбор сообщений — исходный план 2026-11-08
+
+Обновление 2026-11-16: параллельный native запуск и безопасная отмена prewarm уже
+реализованы; [текущее поведение и измерения](startup-performance.md). Описание
+ниже относится к исходной проблеме. Progressive tunnel shortening не принят: 3/3 сохраняются.
 
 Туннели релея строятся после туннелей узла, письма из DHT забираются только
 после релея, адрес ящика новый при каждом запуске, и отправителю нужно узнать
@@ -64,14 +72,13 @@ TURN — отдельная услуга. Нераспознаваемость �
 по требованию, измерения по шагам —
 [план](plans/2026-11-08-boot-and-inbox-latency.md).
 
-### Экспорт и импорт браузерного профиля — запись 2026-11-08
+### Перенос профиля — решение 2026-11-16
 
-Сейчас браузерный профиль не экспортируется, очистка данных сайта его уничтожает.
-План: схема нативного бэкапа переезжает в `libcore`, браузер делает переносимый
-бэкап того же формата (миграция браузер ↔ натив, сессии заново) и снимок
-профиля «как было» для восстановления; потоковый экспорт через download-SW,
-импорт только в новый профиль, проверки WASM/e2e/WebKit —
-[план](plans/2026-11-08-browser-profile-export-import.md).
+Файловый backup/import план отменён. Вместо него нужен перенос только через I2P:
+пароль с обеих сторон, полный долговечный карантин получателя, затем source
+ОК/Отмена, удаление исходника и разрешение активации. Старые данные и миграции
+не нужны. Схема, отказы и security gates — [перенос профиля](profile-transfer.md).
+Реализация ещё не готова; существующий native backup не является заменой.
 
 ## English
 
@@ -107,7 +114,7 @@ off the main download surface. Present WASM as an application running locally:
 GitHub supplies code/updates, while local code owns profiles, crypto and I2P
 routing; GitHub is not a messaging server. Verify a cold launch of an installed
 client with GitHub unavailable, including configuration/bootstrap, before claiming
-that property. Plan Tor `.onion` and I2P mirrors of the project page, with `gipny`
+that property. Plan I2P mirrors of the project page, with `gipny`
 vanity prefixes and an additional I2P address-book name. See the [mirror plan](site-mirrors.md);
 no live mirror addresses are claimed yet.
 
@@ -121,7 +128,11 @@ roles, invitation with consent, lifetime and per-member delivery status, files i
 groups, a group-key study, browser parity, documentation —
 [group chats plan](plans/2026-11-08-group-chats.md) (Russian).
 
-### Profile boot and inbox latency — 2026-11-08 entry
+### Profile boot and inbox latency — original 2026-11-08 plan
+
+Update 2026-11-16: parallel native startup and owned prewarm cancellation are implemented;
+see [current startup behavior](startup-performance.md). The following describes the
+original problem. Progressive tunnel shortening is not adopted: application 3/3 remains.
 
 The relay's tunnels are built after the node's, letters left in the DHT are
 collected only after the relay is up, the mailbox address is new on every
@@ -131,11 +142,11 @@ build the relay in parallel and collect from the DHT early (branch
 stable mailbox address and progressive tunnel length, address lookup on demand,
 per-step measurements — [plan](plans/2026-11-08-boot-and-inbox-latency.md) (Russian).
 
-### Browser profile export and import — 2026-11-08 entry
+### Profile transfer — 2026-11-16 decision
 
-The browser profile cannot be exported today; clearing site data destroys it.
-Plan: the native backup schema moves into `libcore`, the browser produces a
-portable backup of the same format (browser ↔ native migration, sessions are
-re-established) and a byte-exact profile snapshot for recovery; streamed export
-through the download service worker, import only into a new profile, WASM/e2e/
-WebKit checks — [plan](plans/2026-11-08-browser-profile-export-import.md) (Russian).
+The file backup/import plan is superseded. Beta requires an I2P-only move:
+both devices authenticate with the password, the receiver stores a complete
+durable quarantine, the source asks for OK/Cancel, and only source deletion
+authorizes activation. Old-data compatibility and migrations are not required.
+See the [protocol design and failure gates](profile-transfer.md). Implementation
+is not ready; the current native backup is not an equivalent move.

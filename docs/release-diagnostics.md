@@ -67,7 +67,7 @@ USB-отладке страница приложения видна в `chrome:/
 
 ### Проверка
 
-Сборки и исполняемые проверки выполняются **в GitHub Actions**. Основные
+Локальные сборки и тесты разрешены; финальные проверки выполняются **в GitHub Actions**. Основные
 сценарии: `scripts/check-release-diagnostics.sh`, policy unit tests,
 `i2p-embed/tests/diagnostics_probe.rs`, UI-тесты отсутствия переключателя и
 проверки provenance/ELF. Они проверяют stable без trace-строки и без вычисления

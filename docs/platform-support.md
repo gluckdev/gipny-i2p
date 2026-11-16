@@ -124,8 +124,20 @@ Framework default10.13 — лишь значение Tauri config, не дока
 может выбирать существующий проверенный пакет по OS/arch, сохраняя ручной
 выбор. Сайт не должен угадывать Apple Silicon по одному macOS user-agent:
 при неопределённости предложить universal или выбор Intel/Apple Silicon.
-Shell installer под Rosetta должен учитывать `sysctl.proc_translated` и
-`hw.optional.arm64`; сейчас он использует только `uname -m`.
+Shell installer теперь учитывает `sysctl.proc_translated` и
+`hw.optional.arm64`: на Apple Silicon даже из x86_64 shell под Rosetta он
+выбирает ARM64 agent. Оба установщика требуют точное имя существующего asset
+и единственный `SHA256SUMS`; отсутствие ARM64 файла не вызывает перехода на
+x64 пакет. Unix fixture checks с Intel, native ARM64 и Rosetta проходят.
+Это проверка выбора пакета, а не запуск на физическом Mac под Rosetta.
+
+Windows installer определяет архитектуру самой ОС через `IsWow64Process2`
+(на старой системе без этой API — `GetNativeSystemInfo`), независимо от
+разрядности PowerShell и переменных окружения. Если релиз не содержит
+`windows-arm64.tar.gz`, он сообщает об отсутствии нативного пакета до
+загрузки и установки. Windows ARM64 shipping target ещё не добавлен.
+Новые PowerShell fixtures включены в существующий installer test script;
+их выполнение на Windows CI после этого изменения ещё требуется.
 
 ## Windows и Linux: границы зависимостей
 
@@ -212,9 +224,10 @@ provider. Новый installer не должен мигрировать ключ
    его основе валидировать `.github/scripts/release-notes.sh`, `site/build.mjs`,
    installer selectors и release provenance. Сейчас там несколько жёстких
    списков: новый ARM64 Windows файл иначе останется неизвестным сайту.
-3. Windows installer selector уже распознаёт ARM64, но выбирает
-   `windows-arm64.tar.gz`, которого pipeline не выпускает. До нового target
-   нужен точный unsupported-asset ответ; затем genuine ARM64 build/test.
+3. Native architecture detection и точный unsupported-asset ответ реализованы
+   в установщиках (371c5f0). Для Windows ARM64 остаются genuine ARM64 build,
+   security/runtime tests и shipping inventory; исправленный selector сам
+   по себе не добавляет отсутствующий пакет.
 4. `scripts/install-agent.ps1` использует только `/releases/latest`; Unix
    installer имеет `--version`. Для beta нужен явный version/channel selector
    с проверкой exact tag и manifest; не менять stable default молча. Сайт и
@@ -242,7 +255,11 @@ provider. Новый installer не должен мигрировать ключ
 
 `43891757344` (589ad57, publish=false): Windows/Linux/Android/OpenWrt/source
 jobs PASS; macOS ARM отменён системой до выделения runner по подтверждённой
-capacity; macOS Intel на момент этой записи ещё собирается. Повтор старого ARM job не запускался: для beta понадобится новый общий SHA. `43891745805` agent installer regressions PASS.
+capacity; macOS Intel завершился PASS. Итог run — failure, aggregate release
+manifest и checksums не созданы; 17 из 19 shipping files доступны, отсутствуют
+ARM Mac DMG и agent. Повтор старого ARM job не запускался: для beta понадобится
+новый общий SHA. `43891745805` agent installer regressions PASS на старом SHA;
+это не CI-проверка последующего изменения detection в 371c5f0.
 Это baseline, не разрешение публикации и не доказательство всех runtime rows.
 
 Публичные certificate digests обоих APK совпали с опубликованными rc3:

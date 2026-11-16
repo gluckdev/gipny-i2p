@@ -14,11 +14,14 @@ of gipny; the [migration history](MIGRATION-i2p.md) is retained separately.
 
 ## Status
 
-The source version is **0.5.0-rc3**. A source version, a passing build,
+Development targets **beta** on `release/0.5.0-beta.1`; alpha2 will not be
+published. Package metadata still says `0.5.0-alpha.2`. A source version, a passing build,
 a published package and a deployed service are different things.
-See [current capabilities](docs/current-state.md). The rc3 changes (durable
-receive, WSS/WebRTC bridge, UPnP, browser files) require their own CI results. Backwards compatibility
-with old experimental profiles is not currently required.
+See [current capabilities](docs/current-state.md). Native and browser WSS/WebRTC
+CI passed at baseline `589ad57`; new beta changes need their own evidence.
+[Release gates](docs/plans/2026-11-16-beta.md) include profile transfer over I2P,
+network adaptation and platform coverage. Old-data compatibility and migrations
+are not planned.
 
 ## Get started
 
@@ -41,8 +44,9 @@ so a profile and saved chats open while sending and receiving stay unavailable
 until an operator deploys a bridge. It needs HTTPS and current Chrome or Firefox,
 or Safari/iOS 16.4; Lockdown Mode and private browsing do not work.
 See [PWA use and hosting](docs/browser-messenger.md).
-Clearing site data can remove the profile. Browser profile export is not implemented
-yet. GitHub serves code and updates; the local WASM core handles conversations,
+Clearing site data can remove the profile. A [profile move](docs/profile-transfer.md)
+with explicit source confirmation is being designed for beta; browser/native
+transfer is not ready yet. GitHub serves code and updates; the local WASM core handles conversations,
 and I2P delivers them through a separate transport bridge.
 
 ## Capabilities and boundaries
@@ -85,7 +89,8 @@ and [storage guide](docs/device-bound-storage.md). Pre-releases may include
 
 ## Development
 
-Application builds and executable tests run in **GitHub Actions**. Local source
+Local builds and tests are authorized. The final platform matrix and package
+checks run in **GitHub Actions** at the integrated source SHA. Local source
 review, edits and documentation/data validation are allowed.
 [Build and release guide](docs/build-release.md), [workflows](.github/workflows/README.md),
 [upstreams and settings](docs/upstreams-and-settings.md).

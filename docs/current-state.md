@@ -1,77 +1,81 @@
 # Текущее состояние / Current state
 
-Сверка: 2026-11-06, исходный HEAD `a6e41caa07ffff94a834f72a4c13acd73f188224`
-и изменения ревью к `0.5.0-rc3`. Версия исходников не подтверждает публикацию
-всех перечисленных функций; локальные unit-тесты пройдены, CI и устройства —
-отдельно. / Reviewed against that baseline and the rc3 review changes; local unit
-tests pass, while CI and device validation are separate evidence.
+Сверка: **2026-11-16**. Ветка `release/0.5.0-beta.1`; alpha2 не публикуется.
+Метаданные пока `0.5.0-alpha.2`. [Условия beta](plans/2026-11-16-beta.md)
+обязательны до выпуска. Ни версия исходников, ни старый успешный CI сами по
+себе не означают готовую бету или развёрнутый публичный сервис.
 
-## Русский
+## Реализовано и проверено
 
-| Возможность | Состояние |
+| Возможность | Реализация и границы доказательства |
 |---|---|
-| Native I2P, личные сообщения, группы, файлы | Реализация в main; безопасность и отказоустойчивость проверяются отдельно |
-| WASM / Worker / OPFS, пароль и WebAuthn PRF | В дереве; прежние результаты CI привязаны к своим SHA |
-| Файлы до 2 ГиБ в браузере | Потоковое зашифрованное OPFS-хранилище, SHA-256 и финальные ACK; повтор части — новым шифрованием, ограниченная история повторов, окно на контакт. CI и проверка телефон ↔ ПК ожидаются |
-| Сообщения с файлами и запросы контактов | Общая атомарная запись metadata для Core/SessionManager; browser policy согласована, новые проверки подготовлены |
-| Надёжный приём (durable inbox) | Ratchet, расход OPK и письмо фиксируются одной синхронной транзакцией до ACK релею; сбои хранилища повторяются. Core и SessionManager, unit-тесты; crash-injection на устройстве не выполнялся |
-| Проверка X3DH, групп, длины ключей | Init проверяется до изменения состояния; состав группы меняет только участник; неверная длина ключа — ошибка, не panic |
-| Локальный gipny-web | Удалён по решению владельца; веб-клиент — WASM |
-| WSS / WebRTC Rust-мост | Только NTCP2-цели на допустимых портах, keepalive для прокси, TCP после DataChannel; unit/e2e-тесты моста пройдены локально, живые TURN/NAT — нет |
-| Pages /app/browser.html | Опубликован, работает только offline (2026-11-08): `browser-config.json` отвечает 404, переменная `GIPNY_BROWSER_CONFIG_JSON` не задана, мост не развёрнут; профиль и сохранённые чаты открываются, сеть недоступна |
-| Онлайн веб-сервис | Не развёрнут: нужны хост с публичным IP и доменом, TLS, мост, свежий netDb, TURN для WebRTC и переменная конфигурации; [чек-лист](browser-messenger.md#hosting-status) |
-| Повторный запуск без GitHub/хостинга | Код, публичные настройки и проверенный снапшот netDb кэшируются; браузер также сохраняет свой живой netDb (каждые 15 мин работы) и стартует с него, если снапшот недоступен. Записи старше 36 часов отвергаются, поэтому тёплый старт держится, пока клиент регулярно работает; первый запуск требует bootstrap. Сценарий CI с остановленным хостингом подготовлен |
-| WebRTC через TURN | Настройка предусмотрена; отдельные NAT/TURN, CDN и мобильные проверки обязательны |
-| Маскировка native NTCP2/SSU2 | В нативный транспорт ещё не интегрирована |
-| UPnP в desktop/Android | Включён по умолчанию с переключателем; нейтральные описание и User-Agent, метка своя для каждого шлюза, IP публикуется после проброса. Unit/fixture-тесты есть; реальные роутеры не проверены |
-| Yggdrasil | Удалён по решению владельца: только I2P |
-| Сайт RU/EN, безопасность и загрузки | Расширено описание, одна основная загрузка по системе/архитектуре и ссылка на все релизы; локальная data-проверка 18/18 |
-| Зеркала `.onion` / `.i2p` с `gipny` | Записан план, адреса и развёртывание ещё не подготовлены |
-| История по выбору, таймеры, запросы контактов | Локальные механизмы присутствуют; независимые копии не контролируются |
-| DHT-имена | Не завершена интеграция в клиент и модель владения; используйте карточки |
-| Android биометрия / входящие Share intents | Есть заготовки; завершённый пользовательский путь не подтверждён |
-| Аватар | Локальный выбор; синхронизация с контактом не подтверждена |
-| Уведомления о копировании/сохранении/снимке | Автор сообщения видит, что собеседник скопировал текст, сохранил вложение или нажал сочетание клавиш снимка; без содержимого, удаляются вместе с сообщением. Native и браузер; сочетание клавиш не доказывает снимок |
-| Звонки, XMR, SMS/PSTN, почта, MIPS | Направления развития, не заявленные рабочие функции |
-| Независимая подпись релизов | План; checksum с того же сервера не заменяет подпись издателя |
+| Native I2P, сообщения, группы, файлы | Собственный Core/Session поверх встроенного C++i2pd. Native external/embedded/agent/offline CI на `589ad57` PASS; новые beta изменения требуют повторения |
+| Браузерная самостоятельная сеть | JavaScript/Worker управляет локальным WASM router/криптографией и OPFS. WSS/WebRTC bridge переносит NTCP2-байты; сервер не хранит профиль и не заменяет browser Core |
+| Browser WSS и WebRTC | [Baseline CI](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781): по11 assertions, 5MiB файл, переписка, receipts, reload и работа после остановки app host. Физические телефоны/TURN не проверены |
+| Защитная политика | Application Destination:3 hops inbound/3 outbound, padding включён; caffeine/cocaine режимы удалены. Exploratory pool — отдельная политика; не приравнивать hops, tunnels, streams и router sessions |
+| Файловые lanes | Default до4, measurement override1…8; окно16. Первый sweep1…8 доставил все файлы, но нарушил probes deadline на1/3/8. Автоматический throughput controller пока не реализован |
+| Предзапуск | Native единый router, параллельные client/relay и owned cancellation; browser public bootstrap/cache/preload до unlock, generation guards. Измеренный выигрыш cold/warm ещё не установлен |
+| Durable inbox | Ratchet, расход OPK и ciphertext inbox фиксируются синхронно до relay ACK. Unit и live delivery есть; устойчивость к реальной потере питания проверяется отдельно |
+| Native storage | SQLCipher и OS credential provider; изоляция копий/удаление проверяются отдельными платформенными jobs. OpenWrt и iOS не объявлены работающими без provider |
+| Browser storage | Два AEAD-слота OPFS, пароль/WebAuthn PRF; зашифрованные вложения отдельно. Очистка сайта/eviction могут уничтожить профиль |
+| Файлы в браузере | Multipart до2GiB, ограничение metadata16MiB и quota reserve, проверка полного SHA-256. Малый live файл не подтверждает2GiB на каждом телефоне |
+| UPnP | Собственный native IPv4 IGD manager, контроль владения mappings и отмены; браузер не управляет IGD. Физические NAT/маршрутизаторы требуют отдельной проверки |
+| Уведомления | Полный текст в центральной полупрозрачной карточке; обычное уведомление не перехватывает клики, длинное можно прокручивать. Layout/keyboard/modal tests есть |
+| Новые взаимодействия | Auto-add полной валидной вставленной/сканированной карточки без повышения trust, QR возле имени, лёгкие hover/focus/blur, reduced-effects, camera cancellation. [Описание](ui-interactions.md); после naming нужна финальная матрица |
+| Android16KiB | Linker flags и verifier ELF/APK сохранены,15 unit tests PASS. Старый native router ELF не соответствовал16KiB. Новый APK и runtime ещё ожидаются |
 
-Старые данные и протоколы можно менять без миграций. Это не разрешает потерю
-новых сообщений, частичное сохранение ratchet или ложное подтверждение доставки.
-Исполняемые компоненты разрабатываются на Rust/C; существующий native i2pd —
-C++ upstream. Python и другие языки разрешены в CI и служебных инструментах.
+## Не готово или требует отдельной среды
+
+| Область | Что остаётся |
+|---|---|
+| Публичный web | По последней проверке известного Pages URL `browser-config.json`404 и нет подтверждённого публичного endpoint. Нужен [deployment](browser-network-deployment.md); пользовательский URL ещё не известен |
+| Honor Cromite153.0.8010.37 | Точная Linux-версия с site JIT permission запускает WASM; это не Android и не диагноз старого профиля Honor. Не очищать OPFS. [Результаты](startup-performance.md) |
+| realme Chrome / все актуальные браузеры | Реальные устройства, Firefox/WebKit/Chrome/Cromite capability matrix, ограничения политик WASM/OPFS/WebAuthn; нельзя обещать обход блокировки движка |
+| Автовыбор транспорта | Native NTCP2/TCP + SSU2/UDP есть; browser WSS/WebRTC выбор пока явный. Automatic fallback, TURN UDP/TCP/TLS и IPv6-only требуют реализации/проверки |
+| QUIC, WebTransport, ICMP | Не реализованы как новые I2P transports; не включать в список готовых fallback |
+| Адаптивные lanes и resume | [Исследование/план](network-adaptation.md): сначала корректные measurement и fault tests, потом bounded adaptation; received-byte durability зависит от ACK/AEAD/storage boundaries |
+| Перенос профиля | [Проект](profile-transfer.md): толькоI2P, оба пароля, полный карантин, sourceОК/Отмена, delete-before-activate. Старый backup не является готовой заменой |
+| Установщики/OS/ABI | [Матрица](platform-support.md): universal packaging, расширенные targets и нижние OS floors требуют настоящих зависимостей и runtime checks |
+| Звонки/экран | Будущее направление; WebRTC byte transport не реализует звонки, file goodput не доказывает media readiness |
+| Другие незавершённые функции | DHT-имена/владение, Android biometric/share flow, синхронизация аватаров, расширенные group roles, независимая подпись издателя |
+| ЗеркалаI2P | [План](site-mirrors.md); адресов и работающего deployment пока нет |
+
+История/TTL/удаление и уведомления о копировании не контролируют внешние копии,
+скриншоты или вредоносный клиент. Передача релею не равна получению собеседником.
+Никакой benchmark не доказывает абсолютную анонимность или неотличимость трафика.
+
+## Доказательства и следующая проверка
+
+Baseline `589ad57` прошёл build, security, native e2e, browser, CodeQL,
+installer checks. Release preview был неполным (macOS runner capacity); он не
+публиковался. Новый benchmark harness `f73fd42` исправляет deadline/checkpoint:
+предыдущий повтор6,4,6,4 имеет две завершённые точки, третью с неизвестным
+результатом и незапущенную четвёртую. [Измерения](performance-anonymity.md).
+Новые тесты, provenance и установка финальных beta artifacts нужны на одном SHA.
+
+Старые данные/форматы/API можно менять без aliases и миграций. Это прямое
+решение владельца; реальные пользовательские файлы не удаляются автоматически.
+Целостность новых данных, atomic ratchet commit, replay-защита и честные статусы
+доставки обязательны. Чужой upstream/generated-код не рефакторится ради naming.
 
 ## English
 
-| Capability | Status |
-|---|---|
-| Native I2P, direct/group messages and files | Implemented in main; security and recovery require separate validation |
-| WASM / Worker / OPFS, password and WebAuthn PRF | Present; historical CI results apply only to their recorded commits |
-| Browser files up to 2 GiB | Streamed encrypted OPFS storage, SHA-256 and final receipts; lost parts are re-encrypted, replay history is bounded, windows are per contact. CI and physical phone/PC checks pending |
-| File messages and contact requests | Shared atomic metadata publication in Core/SessionManager; browser policy aligned and new scenarios prepared |
-| Durable inbox | Ratchet state, OPK use and the letter commit in one synced transaction before the relay ACK; storage failures retry. Core and SessionManager, unit-tested; no on-device crash injection yet |
-| X3DH, group and key-length checks | Inits are authenticated before state changes; only members change a group; bad key lengths are errors, not panics |
-| Local gipny-web | Removed by owner decision; WASM is the web client |
-| Rust WSS / WebRTC bridge | NTCP2 targets on allowed ports only, proxy keepalive, TCP after the DataChannel opens; bridge tests pass locally, live TURN/NAT pending |
-| Pages /app/browser.html | Published, offline-only (2026-11-08): `browser-config.json` returns 404, the `GIPNY_BROWSER_CONFIG_JSON` variable is unset, no bridge is deployed; a profile and saved chats open, the network does not |
-| Online browser service | Not deployed: needs a host with a public IP and domain, TLS, the bridge, fresh netDb, TURN for WebRTC and the configuration variable; [checklist](browser-messenger.md#hosting-status) |
-| Restart without GitHub/hosting | Code, public settings and the validated netDb snapshot are cached; the browser also keeps its live netDb (every 15 minutes of uptime) and starts from it when the snapshot is unavailable. Records older than 36 hours are rejected, so warm restarts last while the client runs regularly; a first start needs bootstrap. Host-stopped CI scenario prepared |
-| TURN WebRTC | Configurable; NAT/TURN, CDN and physical mobile checks remain separate |
-| Native NTCP2/SSU2 camouflage | Not integrated into the native transport |
-| Desktop/Android UPnP | On by default with a switch; neutral description and User-Agent, per-gateway tags, IP published after a confirmed mapping. Unit/fixture tests exist; physical routers untested |
-| Yggdrasil | Removed by owner decision: I2P only |
-| RU/EN site, security and downloads | Expanded copy, one primary OS/architecture download and all-releases link; local data checks 18/18 |
-| `.onion` / `.i2p` mirrors with `gipny` | Planned; addresses and deployment are not prepared yet |
-| History choice, timers and contact requests | Local mechanisms exist; independent copies remain outside their control |
-| DHT names | Client integration and ownership design are unfinished; use contact cards |
-| Android biometrics / incoming Share intents | Partial implementation; a complete user flow is unverified |
-| Avatars | Local selection; peer synchronization unverified |
-| Copy/save/screenshot notices | Authors see when the contact copied their text, saved their attachment or pressed a screenshot shortcut; no content, deleted with the message. Native and browser; a shortcut does not prove a screenshot |
-| Calls, XMR, SMS/PSTN, mail and MIPS | Development directions, not released capabilities |
-| Independent release signing | Planned; a same-server checksum is not a publisher signature |
+Development targets beta; alpha2 is not being published. Baseline `589ad57`
+passed native delivery, browser WSS/WebRTC, build/security and CodeQL checks.
+Those results do not validate subsequent beta code, public hosting, physical
+phones or TURN. The web client owns its I2P router and keys locally; the byte
+forwarder does not replace it with a server-owned messenger.
 
-Old data/protocol compatibility and migrations are not required. New-data
-integrity, ratchet atomicity and accurate delivery states remain requirements.
-Runtime components use Rust/C; the existing native i2pd upstream is C++.
-Python and other languages are permitted in tests, CI and tooling.
+Application tunnels retain3/3 hops and padding. Default file lanes remain4;
+the first1…8 sweep delivered every file but missed interactive deadlines.
+Automatic lane adaptation, stronger resume verification, wider platform
+coverage and the I2P-only profile move remain beta gates. UI improvements and
+Android16KiB structural fixes are implemented; final integration and runtime
+checks are still required. No calls, arbitrary QUIC/ICMP fallback, universal
+traffic camouflage or guaranteed immunity to device/storage failure is claimed.
 
-[Документация / Documentation](README.md) · [Планы / Roadmap](roadmap.md)
+Old-data/API compatibility and migrations are explicitly unnecessary. New-data
+integrity, cryptographic atomicity and truthful receipt states remain mandatory.
+Existing user files must not be silently deleted. See the [beta gates](plans/2026-11-16-beta.md),
+[transfer design](profile-transfer.md), [network plan](network-adaptation.md) and
+[platform matrix](platform-support.md).

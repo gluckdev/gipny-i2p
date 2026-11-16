@@ -13,10 +13,10 @@
 | `crypto.rs`, `card.rs` | Личность, X3DH, Double Ratchet, шифрование вложений, карточки контактов |
 | `message_wire.rs`, `relay_wire.rs`, `dm_reference.rs` | Общие форматы сообщений, релея и ссылок на исходное личное сообщение |
 | `security.rs`, `memory.rs`, `device_binding.rs` | Vault, KDF, защита ключей в памяти и привязка к OS credential store |
-| `db.rs`, `db/message_commit.rs` | SQLCipher, контакты, история, очереди; совместная публикация сообщения, файлов и управляющих metadata |
+| `db.rs`, `db/`, `db/message_commit.rs` | SQLCipher, контакты, история, очереди; совместная публикация сообщения, файлов и управляющих metadata |
 | `db/dm.rs`, `db/deletion_notice.rs` | Tombstones, удаление и отдельное подтверждение пользователя «ОК» |
-| `files.rs`, `db/file_transfer.rs` | Подготовка зашифрованных файлов, части, окно отправки и устойчивые ACK |
-| `session.rs` | Доставка для агента и ботов, повторы, группы, контакты и файлы |
+| `files.rs`, `files/received.rs`, `db/file_transfer.rs` | Подготовка зашифрованных файлов, части, окно отправки и устойчивые ACK |
+| `session.rs`, `session/` | Доставка для агента и ботов, повторы, группы, контакты и файлы |
 | `relay.rs`, `relay_server.rs`, `dht_client.rs` | Клиент релея, встроенный релей и участие в сети доставки |
 | `embedded.rs`, `net.rs`, `router.rs` | i2pd внутри процесса, I2P destinations, транспорт и настройки роутера |
 | `i2p_http.rs`, `update.rs` | HTTPS через I2P outproxy и проверяемая подготовка обновлений |
@@ -72,7 +72,7 @@ SAM, локальные HTTP/SOCKS-прокси и веб-консоль вык�
 
 Обновление требует корректный SHA-256; checksum с того же сервера не заменяет
 независимую подпись издателя. См. [проверку обновлений](../docs/update-verification.md).
-Сборки и исполняемые тесты запускаются только в GitHub Actions:
+Локальные сборки и тесты разрешены; финальная матрица выполняется в GitHub Actions:
 `security-fast.yml`, `build.yml`, `i2p-embed.yml`, `e2e-i2pd.yml`,
 `browser-router.yml`. Синтаксическая проверка, stub, native fixture и доставка
 через живую I2P подтверждают разные свойства. Новые изменения этого прохода
@@ -89,10 +89,10 @@ storage and asynchronous delivery have separate implementations.
 | `crypto.rs`, `card.rs` | Identity, X3DH, Double Ratchet, attachment encryption and contact cards |
 | `message_wire.rs`, `relay_wire.rs`, `dm_reference.rs` | Shared message, relay and original-DM reference formats |
 | `security.rs`, `memory.rs`, `device_binding.rs` | Vault/KDF, memory protection and OS credential custody |
-| `db.rs`, `db/message_commit.rs` | SQLCipher and atomic message/file/control metadata publication |
+| `db.rs`, `db/`, `db/message_commit.rs` | SQLCipher and atomic message/file/control metadata publication |
 | `db/dm.rs`, `db/deletion_notice.rs` | Tombstones, deletion and explicit human OK receipts |
-| `files.rs`, `db/file_transfer.rs` | Encrypted file staging, parts, sending windows and durable ACKs |
-| `session.rs` | Agent/bot delivery, retry, groups, contacts and files |
+| `files.rs`, `files/received.rs`, `db/file_transfer.rs` | Encrypted file staging, parts, sending windows and durable ACKs |
+| `session.rs`, `session/` | Agent/bot delivery, retry, groups, contacts and files |
 | `relay.rs`, `relay_server.rs`, `dht_client.rs` | Relay client, built-in relay and delivery network |
 | `embedded.rs`, `net.rs`, `router.rs` | In-process i2pd, I2P destinations and router configuration |
 | `i2p_http.rs`, `update.rs` | HTTPS over an I2P outproxy and verified update preparation |
@@ -133,7 +133,7 @@ fixed build policy. Platform limits are in [logging](../docs/release-diagnostics
 Updates require a valid SHA-256; a same-host checksum is not independent publisher
 signing. See [update verification](../docs/update-verification.md).
 
-Application builds and executable checks belong in GitHub Actions: security-fast,
+Local builds/tests are authorized; final platform checks run in GitHub Actions: security-fast,
 build, i2p-embed, e2e-i2pd and browser-router workflows. Syntax checking, stubs,
 native fixtures and live I2P delivery prove different properties. New changes
 still need CI and phone/PC validation; see [current state](../docs/current-state.md).
