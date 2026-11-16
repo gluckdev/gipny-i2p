@@ -7,8 +7,12 @@ use gipny_libcore::security::{UnlockOutcome, Vault};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::core::{self, Core};
-use crate::diagnostics::scrub_debug_log;
 use crate::{core_of, err, profile_dir, AppCtx};
+
+mod profile_operations;
+pub(crate) use profile_operations::{
+    cancel_pending_prewarm, delete_profile_data, unlock_profile_vault,
+};
 
 #[cfg(test)]
 mod prewarm_tests;
@@ -197,16 +201,23 @@ pub(crate) async fn prewarm_network(
     app: AppHandle,
 ) -> Result<(), String> {
     let dir = profile_dir(&ctx, &profile)?;
-    if !Vault::exists(&dir) {
-        return Err("no such profile".into());
+    let mut slot = ctx.prewarm.lock().await;
+    // Background preparation never holds the foreground-operation guard:
+    // unlock can claim it immediately, then wait for this slot's cleanup.
+    // Once boot has taken its resources, this gate suppresses stale UI work.
+    if !ctx.prewarm_may_start() {
+        return Ok(());
     }
-    // A profile is already open: it owns the router, leave it alone.
+    // A profile is already open and owns its destinations.
     if ctx.core.lock().await.is_some() {
         return Ok(());
     }
+    // Recheck while holding the same locks as deletion/wipe. A prewarm request
+    // that arrived before deletion must never recreate the deleted directory.
+    if !Vault::exists(&dir) {
+        return Err("no such profile".into());
+    }
     let settings = read_router_hint(&dir);
-
-    let mut slot = ctx.prewarm.lock().await;
     if let Some(p) = slot.as_ref() {
         if p.profile() == profile && router_settings_match(p.settings(), settings) {
             return Ok(());
@@ -216,6 +227,11 @@ pub(crate) async fn prewarm_network(
     // are built on the same router.
     if let Some(old) = slot.take() {
         drop_prewarm(old).await;
+    }
+    // Unlock/delete/lock may have claimed the foreground operation while the
+    // previous preparation was joining. Yield the empty slot to that action.
+    if !ctx.prewarm_may_start() {
+        return Ok(());
     }
     resolve_bundled_router(&app);
     let app2 = app.clone();
@@ -278,20 +294,52 @@ pub(crate) async fn prewarm_status(ctx: State<'_, AppCtx>) -> Result<&'static st
 
 /// Stop and join the relay builder before dropping the client destination.
 /// Dropping a running JoinHandle alone would detach its relay construction.
-async fn drop_prepared<Node, Relay>(node: Node, relay: tokio::task::JoinHandle<Relay>) {
+async fn drop_prepared<Node, Relay, Cleanup: std::future::Future<Output = ()>>(
+    node: Node,
+    relay: tokio::task::JoinHandle<Relay>,
+    cleanup: impl FnOnce(Relay) -> Cleanup,
+) {
     relay.abort();
-    let _ = relay.await;
+    if let Ok(output) = relay.await {
+        cleanup(output).await;
+    }
     drop(node);
+}
+
+async fn close_prepared_relay(
+    output: Result<gipny_libcore::EphemeralRelay, gipny_libcore::net::NetError>,
+) {
+    if let Ok(relay) = output {
+        relay.shutdown().await;
+    }
+}
+
+/// A historical "ready" state is insufficient after sleep or a network
+/// change. Reject the whole prepared pair unless the live destination still
+/// has both directions and its lease/outbound readiness.
+async fn reuse_ready_destination<Node, Relay, Cleanup: std::future::Future<Output = ()>>(
+    prepared: (Node, tokio::task::JoinHandle<Relay>),
+    directions: (bool, bool),
+    is_ready: bool,
+    cleanup: impl FnOnce(Relay) -> Cleanup,
+) -> Option<(Node, tokio::task::JoinHandle<Relay>)> {
+    if directions.0 && directions.1 && is_ready {
+        Some(prepared)
+    } else {
+        drop_prepared(prepared.0, prepared.1, cleanup).await;
+        None
+    }
 }
 
 /// Abort also races with a completed outer task. Its output owns the child
 /// relay builder, which must be explicitly joined even when abort was too late.
-async fn abort_prewarm_build<Node, Relay, Error>(
+async fn abort_prewarm_build<Node, Relay, Error, Cleanup: std::future::Future<Output = ()>>(
     task: tokio::task::JoinHandle<Result<(Node, tokio::task::JoinHandle<Relay>), Error>>,
+    cleanup: impl FnOnce(Relay) -> Cleanup,
 ) {
     task.abort();
     if let Ok(Ok((node, relay))) = task.await {
-        drop_prepared(node, relay).await;
+        drop_prepared(node, relay, cleanup).await;
     }
 }
 
@@ -301,10 +349,10 @@ async fn abort_prewarm_build<Node, Relay, Error>(
 async fn drop_prewarm(p: Prewarm) {
     match p {
         Prewarm::Building { task, .. } => {
-            abort_prewarm_build(task).await;
+            abort_prewarm_build(task, close_prepared_relay).await;
         }
         Prewarm::Ready { node, relay, .. } => {
-            drop_prepared(node, relay).await;
+            drop_prepared(node, relay, close_prepared_relay).await;
         }
     }
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -347,7 +395,26 @@ async fn take_prewarmed(
             }
         }
     };
+    let (directions, is_ready) = {
+        let destination = ready.0.destination().await;
+        (
+            destination.tunnel_directions_ready(),
+            destination.is_ready(),
+        )
+    };
+    let Some(ready) =
+        reuse_ready_destination(ready, directions, is_ready, close_prepared_relay).await
+    else {
+        boot_status(
+            app,
+            "tunnels",
+            "active",
+            "prepared destination is no longer ready; rebuilding destinations",
+        );
+        return None;
+    };
     // The screen's own listener may have attached after these stages went by.
+    // Replay success only after checking the current destination, not its age.
     boot_status(
         app,
         "router",
@@ -355,19 +422,19 @@ async fn take_prewarmed(
         "router ready (started before unlocking)",
     );
     boot_status(app, "session", "done", "address ready");
-    boot_status(
-        app,
-        "inbound",
-        "done",
-        "inbound tunnels ready before unlocking",
-    );
+    boot_status(app, "inbound", "done", "prepared inbound tunnels are ready");
     boot_status(
         app,
         "outbound",
         "done",
-        "outbound tunnels ready before unlocking",
+        "prepared outbound tunnels are ready",
     );
-    boot_status(app, "tunnels", "done", "tunnels built before unlocking");
+    boot_status(
+        app,
+        "tunnels",
+        "done",
+        "prepared destination readiness rechecked",
+    );
     Some(ready)
 }
 
@@ -400,10 +467,12 @@ pub(crate) async fn boot(
     boot_status(&app, "vault", "active", "unlocking the vault (argon2id)");
     // Argon2id with 256 MiB takes a second or three on a desktop and longer on
     // a tired laptop, at 100% of a core. Saying so beats a frozen button.
-    let outcome = vault.unlock(pass).map_err(|e| {
-        boot_status(&app, "vault", "failed", format!("{e}"));
-        err(e)
-    })?;
+    let outcome = unlock_profile_vault(ctx, profile, dir, &vault, pass)
+        .await
+        .map_err(|e| {
+            boot_status(&app, "vault", "failed", format!("{e}"));
+            e
+        })?;
     // The decoy key is freshly random and unrelated to the primary master key,
     // so it cannot open data.db — SQLCipher rejects it and the unlock screen
     // showed a "bad key" error, in front of whoever was applying the coercion.
@@ -414,9 +483,6 @@ pub(crate) async fn boot(
         UnlockOutcome::Primary(k) => (k, "data.db"),
         UnlockOutcome::Decoy(k) => (k, "decoy.db"),
         UnlockOutcome::Wiped => {
-            // Duress / attempt-limit wipe: also scrub the app-global debug.log,
-            // which lives outside the per-profile dir that was just wiped.
-            scrub_debug_log(&ctx.base_dir);
             return Err("wiped".into());
         }
     };

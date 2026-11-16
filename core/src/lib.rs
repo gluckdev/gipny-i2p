@@ -35,6 +35,9 @@ use gipny_libcore::security::Vault;
 
 pub struct AppCtx {
     pub base_dir: PathBuf,
+    /// Serializes opening, locking and deleting a profile, including the time
+    /// before boot has transferred its destinations into `core`.
+    pub(crate) profile_operation: std::sync::atomic::AtomicBool,
     pub profile: Mutex<Option<String>>,
     pub vault: Mutex<Option<Arc<Vault>>>,
     pub core: Mutex<Option<Arc<Core>>>,
@@ -50,6 +53,7 @@ impl AppCtx {
     pub fn new(base_dir: PathBuf) -> Self {
         Self {
             base_dir,
+            profile_operation: std::sync::atomic::AtomicBool::new(false),
             profile: Mutex::new(None),
             vault: Mutex::new(None),
             core: Mutex::new(None),
@@ -72,13 +76,7 @@ pub fn run() {
     if log_enabled(&base_dir) {
         install_log_capture(&base_dir);
     }
-    let ctx = AppCtx {
-        base_dir,
-        profile: Mutex::new(None),
-        vault: Mutex::new(None),
-        core: Mutex::new(None),
-        prewarm: Mutex::new(None),
-    };
+    let ctx = AppCtx::new(base_dir);
     let builder = tauri::Builder::default();
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

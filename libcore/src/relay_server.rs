@@ -863,6 +863,18 @@ pub struct EphemeralRelay {
 }
 
 impl EphemeralRelay {
+    /// Stop and join the owned accept/GC tasks before releasing this relay.
+    /// The accept task drops its destination and aborts its nested client
+    /// JoinSet. This does not join those client tasks or stop the global router.
+    pub async fn shutdown(mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        for task in self.tasks.drain(..) {
+            let _ = task.await;
+        }
+    }
+
     /// Hand a relay from [`Self::start_unclaimed`] to its owner.
     pub fn claim(&self, owner: [u8; 32], dht: Option<DhtHandler>) {
         self.store.claim(owner);
@@ -1049,6 +1061,38 @@ mod tests {
 
     const A: [u8; 32] = [0xA; 32];
     const B: [u8; 32] = [0xB; 32];
+
+    #[tokio::test]
+    async fn explicit_relay_shutdown_joins_its_owned_tasks() {
+        struct Owned(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for Owned {
+            fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+        }
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..2 {
+            let owned = Owned(dropped.clone());
+            let (started, running) = tokio::sync::oneshot::channel();
+            tasks.push(tokio::spawn(async move {
+                let _owned = owned;
+                started.send(()).unwrap();
+                std::future::pending::<()>().await;
+            }));
+            running.await.unwrap();
+        }
+        let relay = EphemeralRelay {
+            address: String::new(),
+            store: Arc::new(MemStore::unclaimed(MemStoreLimits::default())),
+            tasks,
+            hops: Arc::new(AtomicU8::new(3)),
+            rebuild: Arc::new(tokio::sync::Notify::new()),
+            connections: Arc::default(),
+            destination_hash: [0; 32],
+            dht: Arc::new(std::sync::RwLock::new(None)),
+        };
+        relay.shutdown().await;
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn ids_increase_and_pending_is_ordered_above_the_cursor() {

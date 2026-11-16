@@ -6,7 +6,7 @@ use tauri::{AppHandle, State};
 #[cfg(target_os = "android")]
 use crate::android_keystore;
 use crate::dto::VaultStatus;
-use crate::lifecycle::boot;
+use crate::lifecycle::{boot, delete_profile_data, unlock_profile_vault};
 use crate::{err, profile_dir, AppCtx};
 
 #[tauri::command]
@@ -31,15 +31,7 @@ pub(crate) async fn list_profiles(ctx: State<'_, AppCtx>) -> Result<Vec<String>,
 
 #[tauri::command]
 pub(crate) async fn delete_profile(profile: String, ctx: State<'_, AppCtx>) -> Result<(), String> {
-    let dir = profile_dir(&ctx, &profile)?;
-    if ctx.profile.lock().await.as_deref() == Some(profile.as_str()) {
-        return Err("profile is active, lock first".into());
-    }
-    if dir.exists() {
-        gipny_libcore::security::secure_wipe_dir(&dir).map_err(err)?;
-        let _ = std::fs::remove_dir(&dir);
-    }
-    Ok(())
+    delete_profile_data(&ctx, &profile).await
 }
 
 #[tauri::command]
@@ -67,6 +59,7 @@ pub(crate) async fn vault_create(
     ctx: State<'_, AppCtx>,
     app: AppHandle,
 ) -> Result<(), String> {
+    let _operation = ctx.begin_profile_operation()?;
     #[cfg(target_os = "android")]
     android_keystore::wait_ready().await?;
     let display = display_name.trim();
@@ -80,8 +73,9 @@ pub(crate) async fn vault_create(
     if Vault::exists(&dir) {
         // Resume a first run interrupted before boot wrote the display name.
         let vault = Arc::new(Vault::open(&dir).map_err(err)?);
-        let mk = match vault.unlock(&pass) {
+        let mk = match unlock_profile_vault(&ctx, &profile, &dir, &vault, &pass).await {
             Ok(UnlockOutcome::Primary(k)) => k,
+            Ok(UnlockOutcome::Wiped) => return Err("wiped".into()),
             _ => return Err("profile already exists".into()),
         };
         {
@@ -120,6 +114,7 @@ pub(crate) async fn vault_unlock(
     ctx: State<'_, AppCtx>,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
+    let _operation = ctx.begin_profile_operation()?;
     #[cfg(target_os = "android")]
     android_keystore::wait_ready().await?;
     let dir = profile_dir(&ctx, &profile)?;

@@ -5,6 +5,7 @@ use crate::{err, AppCtx};
 
 #[tauri::command]
 pub(crate) async fn vault_lock(ctx: State<'_, AppCtx>) -> Result<(), String> {
+    let _operation = ctx.begin_profile_operation()?;
     let core = ctx.core.lock().await.take();
     if let Some(c) = core {
         c.shutdown();
@@ -12,6 +13,7 @@ pub(crate) async fn vault_lock(ctx: State<'_, AppCtx>) -> Result<(), String> {
     }
     ctx.vault.lock().await.take();
     ctx.profile.lock().await.take();
+    crate::lifecycle::cancel_pending_prewarm(&ctx).await;
     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
     Ok(())
 }
