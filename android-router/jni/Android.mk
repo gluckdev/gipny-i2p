@@ -20,6 +20,10 @@ LOCAL_STATIC_LIBRARIES := \
 # symbols, so ordinary static-library linking would silently omit the library.
 LOCAL_WHOLE_STATIC_LIBRARIES := miniupnpc
 LOCAL_LDLIBS := -lz
+# NDK r27 does not align shared objects for Android's 16 KiB page mode by
+# default. Both flags are needed for LOAD and RELRO boundaries; static
+# dependencies become part of this final shared object. Still runs on 4 KiB.
+LOCAL_LDFLAGS += -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
 
 LOCAL_SRC_FILES := \
 	gipny_i2pd_jni.cpp \

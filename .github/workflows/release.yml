@@ -67,6 +67,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Release eligibility and draft integrity regressions
         run: python3 .github/scripts/test-release-guard.py
+      - name: Android ELF and APK page alignment regressions
+        run: python3 scripts/tests/test_verify_android_pages.py
       - name: compare
         id: compare
         env:
@@ -656,8 +658,16 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
             --strip-unneeded "$LIB"
           mkdir -p staged && cp "$LIB" staged/libi2pd.so
+          python3 scripts/verify-android-pages.py --library staged/libi2pd.so --abi '${{ matrix.abi }}' \
+            --report android-router-pages.json
           ls -lh staged/libi2pd.so
 
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-router-pages-${{ matrix.abi }}
+          path: android-router-pages.json
+          retention-days: 5
+          if-no-files-found: error
       - name: record the router built from source in this job
         run: python3 .github/scripts/build-provenance.py record staged/build-manifest-router-${{ matrix.abi }}.json '${{ matrix.abi }}' --artifact 'staged/libi2pd.so'
       - uses: actions/upload-artifact@v7
@@ -804,6 +814,8 @@ jobs:
           # apksigner is not on PATH — pick the newest build-tools copy.
           APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -1)"
           test -n "$APKSIGNER"
+          ZIPALIGN="$(dirname "$APKSIGNER")/zipalign"
+          test -x "$ZIPALIGN"
           VERSION="$(jq -r .version core/tauri.conf.json)"
           out=core/gen/android/app/build/outputs/apk
           mkdir -p dist
@@ -813,6 +825,8 @@ jobs:
             apk="$(find "$out/$1" -type f -name '*.apk' -print -quit)"
             test -n "$apk" || { echo "no APK for $2"; exit 1; }
             "$APKSIGNER" verify --verbose "$apk"
+            python3 scripts/verify-android-pages.py --apk "$apk" --abi "$2" --zipalign "$ZIPALIGN" \
+              --report "android-apk-pages-$3.json"
             # The router has to actually be in there. A release APK without
             # libi2pd.so installs, starts, and never connects — the exact
             # failure the i2pd migration exists to end, and one nothing
@@ -837,6 +851,12 @@ jobs:
             cp "$apk" "dist/gipny-i2p_${VERSION}_android-$3.apk"
           done
           ls -lh dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-apk-pages-${{ matrix.suffix }}
+          path: android-apk-pages-${{ matrix.suffix }}.json
+          retention-days: 5
+          if-no-files-found: error
       - name: record APK with the exact native router provenance
         run: |
           python3 .github/scripts/build-provenance.py record build-manifest-android-${{ matrix.suffix }}.json '${{ matrix.rust }}' \
