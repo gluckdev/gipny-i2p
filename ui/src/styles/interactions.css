@@ -1,0 +1,31 @@
+/* Interaction effects share the existing palette and do not animate geometry. */
+:root { --interaction-time: 160ms; --modal-blur: 2px; }
+.btn, .icon-btn, .sidebar-me, .sidebar-link, .salon-profile, .contact,
+.ctx-menu-item, .input, .textarea, .sidebar-search, .chat-input textarea, .chat-send {
+  transition: background-color var(--interaction-time) ease, color var(--interaction-time) ease,
+    border-color var(--interaction-time) ease, box-shadow var(--interaction-time) ease;
+}
+.btn:not(.btn-ghost):not(.btn-danger):focus-visible { background-color: var(--btn-bg-hover); }
+.btn-ghost:focus-visible, .icon-btn:not(.icon-btn-accent):focus-visible,
+.sidebar-me:focus-visible, .sidebar-link:focus-visible, .salon-profile:focus-visible,
+.ctx-menu-item:focus-visible { background-color: var(--bg-hover); }
+.contact:focus-visible { background-color: var(--surface-2); border-color: var(--border-bright); }
+.input:focus-visible, .textarea:focus-visible, .sidebar-search:focus-visible,
+.chat-input textarea:focus-visible { border-color: var(--accent); }
+.btn, .btn:active, .media-tile:hover { transform: none; }
+.sidebar-me-qr { flex: 0 0 auto; display: inline-flex; color: var(--fg-dim); }
+.sidebar-me:hover .sidebar-me-qr, .sidebar-me:focus-visible .sidebar-me-qr { color: var(--accent); }
+.sidebar-me-qr { transition: color var(--interaction-time) ease; }
+
+/* Unsupported filters retain the existing opaque-enough backdrop. No costly
+   filter animation; the modal and its controls remain sharp. */
+.modal-backdrop {
+  -webkit-backdrop-filter: blur(var(--modal-blur));
+  backdrop-filter: blur(var(--modal-blur));
+}
+.reduced-effects { --interaction-time: 0s; --modal-blur: 0px; }
+.reduced-effects .modal-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+@media (prefers-reduced-motion: reduce), (prefers-reduced-transparency: reduce), (update: slow) {
+  :root { --interaction-time: 0s; --modal-blur: 0px; }
+  .modal-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}

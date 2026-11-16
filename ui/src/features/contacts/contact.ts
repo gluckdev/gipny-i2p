@@ -1,13 +1,12 @@
 import { errorText } from '../../app/error-text';
 import { t as tr } from '../localization/i18n';
-import { Api, decodeCard, isValidI2pAddress } from '../../app/api';
+import { Api } from '../../app/api';
 import type { Store } from '../../app/state';
 import { targetKey } from '../../app/state';
 import { h, fmtFp } from '../../app/view';
 import type { App } from '../../app/app';
 
 import { avatarPicker } from '../identity/avatar-picker';
-import { QrScanner, scanQrInFile } from '../identity/qr-scan';
 import { icon } from '../../app/icons';
 export class ContactModal {
   el: HTMLElement;
@@ -107,157 +106,4 @@ export class ContactModal {
   }
 }
 
-export class AddContactModal {
-  el: HTMLElement;
-  constructor(store: Store, close: () => void) {
-    const pasteI = h('textarea', {
-      class: 'textarea',
-      placeholder: tr('contact.paste_a_contact_card_gipny_v2'),
-      rows: '4',
-    }) as HTMLTextAreaElement;
-    const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
-    const onionI = h('input', { class: 'input', placeholder: tr('contact.destination_base64_or_abc_xyz_b32_i2p') });
-    const relayI = h('input', {
-      class: 'input',
-      placeholder: tr('contact.leave_empty_to_use_yours'),
-      'aria-label': tr('contact.contact_relay_destination'),
-    }) as HTMLInputElement;
-    const signI = h('input', { class: 'input', placeholder: 'sign_pk (64 hex)' });
-    const dhI = h('input', { class: 'input', placeholder: 'dh_pk (64 hex)' });
-    let cardName = '';
-
-    const applyCard = (text: string): boolean => {
-      const parsed = decodeCard(text);
-      if (!parsed) return false;
-      onionI.value = parsed.onion;
-      signI.value = parsed.signPk;
-      dhI.value = parsed.dhPk;
-      relayI.value = parsed.relay ?? '';
-      cardName = parsed.name?.trim() ?? '';
-      err.textContent = '';
-      return true;
-    };
-
-    // Reading a card off someone's screen instead of copying 600 characters.
-    const scanSlot = h('div', { class: 'qr-slot hidden' });
-    let scanner: QrScanner | null = null;
-    const stopScan = (): void => {
-      scanner?.stop();
-      scanner = null;
-      scanSlot.replaceChildren();
-      scanSlot.classList.add('hidden');
-      scanBtn.textContent = tr('contact.scan_qr');
-    };
-    // A scanned card lands here whatever it was read from — camera or file — so
-    // there is one place that fills the fields and one place that complains.
-    const acceptScan = (text: string): void => {
-      const ok = applyCard(text);
-      pasteI.value = text;
-      stopScan();
-      if (ok) store.showToast(tr('contact.card_recognized_review_it_and_select_add'));
-      else err.textContent = tr('contact.this_code_is_not_a_gipny_card');
-    };
-    const failScan = (message: string): void => { err.textContent = message; stopScan(); };
-    const startScan = (): void => {
-      err.textContent = '';
-      scanner = new QrScanner(acceptScan, failScan);
-      scanSlot.replaceChildren(scanner.el);
-      scanSlot.classList.remove('hidden');
-      scanBtn.textContent = tr('contact.stop');
-      void scanner.start();
-    };
-    const scanBtn = h('button', {
-      class: 'btn btn-ghost',
-      onClick: () => (scanner ? stopScan() : startScan()),
-    }, tr('contact.scan_qr'));
-
-    // A photo or a screenshot of the code, for when the camera is refused, is
-    // missing, or is simply not being pointed well enough. Usable whether or
-    // not the scanner is running, which is why it is a button of its own rather
-    // than part of the camera view.
-    const fileI = h('input', {
-      type: 'file',
-      accept: 'image/*',
-      class: 'qr-file',
-      onChange: () => {
-        const file = fileI.files?.[0];
-        // Clear it either way: picking the same screenshot twice in a row has to
-        // fire `change` again, and a filled input does not.
-        fileI.value = '';
-        if (!file) return;
-        err.textContent = '';
-        stopScan();
-        scanQrInFile(file, acceptScan, (message) => { err.textContent = message; });
-      },
-    }) as HTMLInputElement;
-    const fileBtn = h('button', {
-      class: 'btn btn-ghost',
-      onClick: () => fileI.click(),
-    }, tr('qr.load_file'));
-
-    pasteI.addEventListener('input', () => {
-      const parsed = decodeCard(pasteI.value);
-      if (parsed) {
-        onionI.value = parsed.onion;
-        signI.value = parsed.signPk;
-        dhI.value = parsed.dhPk;
-        // v1 cards carry no relay; leaving the field alone then means "use ours",
-        // which is exactly the old behaviour.
-        relayI.value = parsed.relay ?? '';
-        cardName = parsed.name?.trim() ?? '';
-        err.textContent = '';
-      }
-    });
-
-    this.el = h('div', { class: 'modal' },
-      h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, tr('contact.add_contact')),
-        h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
-      ),
-      h('div', { class: 'modal-body' },
-        h('div', { class: 'field' }, h('label', null, tr('contact.contact_card')), pasteI),
-        h('div', { class: 'row', style: { marginBottom: '8px' } }, scanBtn, fileBtn, fileI),
-        scanSlot,
-        h('div', { class: 'hint', style: { marginBottom: '8px' } },
-          tr('contact.a_contact_s_name_comes_from_their_card')),
-        h('div', { class: 'divider-text' }, tr('contact.enter_manually')),
-        h('div', { class: 'field' }, h('label', null, tr('contact.i2p_address')), onionI),
-        h('div', { class: 'field' }, h('label', null, tr('contact.contact_s_relay')), relayI),
-        h('div', { class: 'hint', style: { marginBottom: '8px' } },
-          tr('contact.the_relay_is_where_this_contact_collects_mail')),
-        h('div', { class: 'field' }, h('label', null, 'sign_pk'), signI),
-        h('div', { class: 'field' }, h('label', null, 'dh_pk'), dhI),
-        err,
-      ),
-      h('div', { class: 'modal-footer' },
-        h('button', { class: 'btn btn-ghost', onClick: close }, tr('common.cancel')),
-        h('button', {
-          class: 'btn',
-          onClick: async () => {
-            const onion = onionI.value.trim();
-            const sign = signI.value.trim().toLowerCase();
-            const dh = dhI.value.trim().toLowerCase();
-            const name = cardName || `${sign.slice(0, 16)}`;
-            if (!isValidI2pAddress(onion)) {
-              err.textContent = tr('contact.enter_a_b32_i2p_address_52_characters_or');
-              return;
-            }
-            if (!/^[0-9a-f]{64}$/.test(sign)) { err.textContent = tr('contact.sign_pk_must_contain_64_hexadecimal_characters'); return; }
-            if (!/^[0-9a-f]{64}$/.test(dh)) { err.textContent = tr('contact.dh_pk_must_contain_64_hexadecimal_characters'); return; }
-            const relay = relayI.value.trim();
-            if (relay && !isValidI2pAddress(relay)) {
-              err.textContent = tr('contact.the_relay_must_be_a_b32_i2p_address');
-              return;
-            }
-            try {
-              await Api.addContact(onion, sign, dh, name, relay || undefined);
-              await store.refreshContacts();
-              store.showToast(tr('contact.contact_added'));
-              close();
-            } catch (e) { err.textContent = tr('contact.could_not_add') + errorText(e); }
-          },
-        }, tr('contact.add')),
-      ),
-    );
-  }
-}
+export { AddContactModal } from './add-contact';

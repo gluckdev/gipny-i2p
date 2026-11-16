@@ -2480,8 +2480,8 @@ select.input { width: 100%; text-overflow: ellipsis; }
 
 @media (hover: none) and (pointer: coarse), (max-width: 600px) {
   body::before, body::after { display: none !important; }
-  * { backdrop-filter: none !important; }
-  .modal-backdrop { backdrop-filter: none !important; }
+  /* Modal effects use the accessibility/resource policy in interactions.css. */
+  *:not(.modal-backdrop) { backdrop-filter: none !important; }
 }
 
 @media (hover: none) and (pointer: coarse) {

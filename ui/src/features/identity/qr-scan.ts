@@ -119,6 +119,7 @@ export class QrScanner {
   }
 
   async start(): Promise<void> {
+    if (this.stopped) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       this.onError(tr('qr_scan.camera_is_unavailable_in_this_window'));
       return;
@@ -140,16 +141,21 @@ export class QrScanner {
       // webcam — still starts.
       this.stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
     } catch (e) {
+      if (this.stopped) return;
       const name = (e as { name?: string }).name ?? '';
       this.onError(name === 'NotAllowedError'
         ? tr('qr_scan.camera_permission_denied')
         : name === 'NotFoundError' ? tr('qr_scan.camera_not_found') : tr('qr_scan.camera', { p0: (errorText(e)) }));
       return;
     }
+    // The permission prompt can outlive the modal. Release a late stream
+    // before attaching it or starting any decoder work.
+    if (this.stopped) { this.stop(); return; }
     this.video.srcObject = this.stream;
     try {
       await this.video.play();
     } catch { /* autoplay policies; the frame loop still reads it */ }
+    if (this.stopped) { this.stop(); return; }
     // Decoding takes a few hundred milliseconds a pass on a phone, so it runs
     // on a worker when the engine can hand it frames (ImageBitmap +
     // OffscreenCanvas, Chromium 69+); the main thread keeps the preview and

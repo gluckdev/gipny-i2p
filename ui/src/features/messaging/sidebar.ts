@@ -56,6 +56,7 @@ export class Sidebar extends View {
       me.replaceChildren(
         avatar(name, store.identity.get()?.card.sign_pk ?? name, 'avatar-sm'),
         h('span', { class: 'sidebar-me-name' }, name),
+        h('span', { class: 'sidebar-me-qr', 'aria-hidden': 'true' }, icon('qr', 18)),
       );
     };
     renderMe();

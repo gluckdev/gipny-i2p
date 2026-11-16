@@ -12,6 +12,7 @@ import { AuthBooting } from '../features/authorization/boot';
 import { Sidebar } from '../features/messaging/sidebar';
 import { ChatView } from '../features/messaging/chat';
 import { ToastLayer } from '../features/notifications/toast';
+import { installEffects } from './effects';
 
 export class App extends View {
   el: HTMLElement;
@@ -28,6 +29,7 @@ export class App extends View {
 
   constructor(private store: Store) {
     super();
+    this.subs.push(installEffects());
     this.el = h('div', { class: 'stack app-root', style: { height: '100%' } }, this.updateBanner);
     this.sub(store.view, (v) => this.render(v));
     this.sub(store.selectedChat, () => this.closeModals(), false);
