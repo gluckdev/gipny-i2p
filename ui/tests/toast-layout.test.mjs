@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
+import { join, parse } from 'node:path';
 
 const server = await createServer({ logLevel: 'error', server: { host: '127.0.0.1', port: 0 } });
 await server.listen();
@@ -42,6 +43,38 @@ try {
   assert.match(measured.background, /rgba\(.+, 0\.88\)/); assert.equal(measured.focus, 'TEXTAREA');
   const screenshot = process.env.GIPNY_TOAST_SCREENSHOT || '/tmp/gipny-toast-android-keyboard.png';
   await page.screenshot({ path: screenshot });
+  const longText = 'WASM_INIT_FAILED: unsupported instruction and detailed error. '.repeat(20) + '\nПоследняя строка длинной ошибки.';
+  await page.evaluate(text => {
+    window.testToastHeight = document.body.style.getPropertyValue('--app-height');
+    document.body.style.setProperty('--app-height', '430px');
+    window.testToast.show({ text, err: true });
+  }, longText);
+  await page.waitForSelector('.toast-scrollable');
+  await page.waitForTimeout(250);
+  const longState = await page.locator('.toast').evaluate(el => {
+    const r = el.getBoundingClientRect();
+    return { text: el.textContent, top: r.top, bottom: r.bottom, height: r.height,
+      scrollHeight: el.scrollHeight, pointer: getComputedStyle(el).pointerEvents, focused: document.activeElement.tagName };
+  });
+  assert.equal(longState.text, longText); assert.equal(longState.pointer, 'auto');
+  assert.ok(longState.top >= 32 && longState.bottom <= 406 && longState.scrollHeight > longState.height, JSON.stringify(longState));
+  assert.equal(longState.focused, 'TEXTAREA', 'long notice must not steal focus');
+  await page.locator('.toast').hover(); await page.mouse.wheel(0, 10000);
+  await page.waitForFunction(() => { const el = document.querySelector('.toast'); return el.scrollTop + el.clientHeight >= el.scrollHeight - 2; });
+  assert.ok(await page.locator('.toast').evaluate(el => {
+    const node = el.firstChild, length = node.textContent.length;
+    const range = document.createRange(); range.setStart(node, length - 'Последняя строка длинной ошибки.'.length); range.setEnd(node, length);
+    const end = range.getBoundingClientRect(), card = el.getBoundingClientRect();
+    return end.top >= card.top && end.bottom <= card.bottom;
+  }), 'the final line must be reachable and visible by ordinary scrolling');
+  const screenshotPath = parse(screenshot);
+  const longScreenshot = join(screenshotPath.dir, `${screenshotPath.name}-long${screenshotPath.ext || '.png'}`);
+  await page.screenshot({ path: longScreenshot });
+  await page.evaluate(text => {
+    document.body.style.setProperty('--app-height', window.testToastHeight);
+    window.testToast.show({ text, err: true });
+  }, text);
+  await page.waitForFunction(() => !document.querySelector('.toast').classList.contains('toast-scrollable'));
   await page.evaluate(() => {
     const target = document.createElement('button'); target.id = 'under-toast'; target.textContent = 'click through';
     const rect = document.querySelector('.toast').getBoundingClientRect();
@@ -61,5 +94,5 @@ try {
       Number(getComputedStyle(document.getElementById('confirmation')).zIndex) > Number(getComputedStyle(document.querySelector('.toast-layer')).zIndex);
   }));
   await page.locator('#confirm-choice').click(); assert.equal(await page.locator('#confirm-choice').getAttribute('data-clicked'), 'yes');
-  console.log(`PASS centered multiline toast, keyboard/safe area, click-through, modal controls: ${screenshot}`);
+  console.log(`PASS centered multiline/1000+ character toast, keyboard/safe area, overflow scroll, ordinary click-through, modal controls: ${screenshot}`);
 } finally { await browser?.close(); await server.close(); }
