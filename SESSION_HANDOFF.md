@@ -2,18 +2,47 @@
 
 Обновлено: 2026-11-16. Проект: `/home/artamonov/projects/gipny-i2pd`.
 Интеграционная ветка `release/0.5.0-alpha.2`, создана от `feat/own-keyboard`.
-Собственные изменения сохраняются тематическими коммитами перед merge всех веток.
+Собственные изменения сохранены тематическими коммитами; все 16 локальных и
+remote refs объединены в HEAD `54ddcb3` (до последующих performance-правок).
 
 ## Текущий запрос владельца
 
 - Разрешены тесты, коммиты, push, GitHub Actions и релиз `0.5.0-alpha.2`.
-- До новых сборок свести все локальные и удалённые ветки в одну.
-- Browser-ветки и старые fix-ветки уже ancestors main. Требуются merge свежего
-  main (router pin) и трёх Dependabot PR; локальные зависимости уже новее.
+- До новых сборок свести все локальные и удалённые ветки в одну — выполнено.
+  Main и три Dependabot PR объединены; сохранены более новые зависимости.
+  Остальные ветки уже были ancestors. Коммитирован router pin `3835d09…`.
 - Исследовать увеличение параллельных соединений по первичным форумам I2P,
   оценивать полезную скорость и потери, hops не менять.
+- Последнее уточнение: добиться максимальной полезной пропускной способности
+  для будущих голосовых звонков и трансляций экрана без ослабления анонимности.
+  Режимы кофеин/кокаин удаляются полностью. Alpha2 ждёт performance-проверок.
+- Готовится последовательный live sweep 1..8 потоков с 3-hop Destination,
+  padding и прежним WINDOW=16: файл + одновременные короткие echo probes.
+  Измерять RTT под нагрузкой, уникальные байты, повторы; не выдавать RTT jitter
+  за RTP jitter или скорость файла за доказательство пригодности к звонкам.
+- `GIPNY_FILE_LANES=1..8` — ограниченный измерительный override; без него
+  остаётся прежняя политика до 4 потоков. Исправлен сброс cursor на каждом
+  batch. Измеренного выигрыша пока нет; GitHub benchmark ещё не запускался.
 - Автоматическая релизная рассылка отключена: sender вызывает отсутствующий
   CLI агента. Исправление и явные получатели требуют отдельной реализации.
+
+### Подготовлен baseline для GitHub
+
+Изменения: UI modes удалены (`6be4761`), padding/lanes/metrics (`2306baf`),
+native protected throughput benchmark (`940a932`), alpha2 metadata (`a46a01b`),
+отмена owned prewarm builders (`f4747ed`). Новые startup improvements идут
+отдельным шагом, не выдавать их за проверенные live benchmark.
+
+Проверено после изменений: core 30, libcore 210, DHT lib 27; дополнительно
+8-stream collect regression, performance harness 12, workflow helper 16,
+prewarm cancellation 3, release guard 9, provenance regressions 10.
+Rust проверки здесь с I2P_EMBED_STUB=1, shipping native CI ещё требуется.
+UI: обе сборки, полный npm test и layout 316/316; site 26/26 + build.
+
+Browser audit: реальные application tunnels 2/2, pinned Emissary typed API не
+позволяет изменить длину. Не приписывать browser нативные 3/3. Первый safe
+startup шаг — parallel UI/config/WASM, verified local netDb прежде сетевого
+snapshot и отменяемый public-bootstrap prewarm; upstream не редактировать.
 
 ## Как продолжить
 
