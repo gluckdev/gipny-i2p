@@ -30,6 +30,18 @@ on:
         description: 'Probe upstream instead of the committed pin; allow a bump only after all four live scenarios pass'
         type: boolean
         default: false
+      throughput:
+        description: 'Run only the protected throughput sweep using the committed pin; skips ordinary delivery jobs and ignores test_upstream'
+        type: boolean
+        default: false
+      streams:
+        description: 'Throughput only: sequential lane counts 1..8, at most 12 points'
+        type: string
+        default: '1,2,3,4,5,6,7,8'
+      file_bytes:
+        description: 'Throughput only: verified bytes per point, 1 MiB..128 MiB'
+        type: string
+        default: '33554432'
   # Any change to the vendored router — dependabot's weekly submodule bump, or
   # ours — has to prove it still delivers before it can be merged. Compiling is
   # not the bar; carrying messages over live i2p is.
@@ -44,16 +56,25 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-i2pd-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: e2e-i2pd-${{ github.head_ref || github.ref_name }}${{ github.event_name == 'workflow_dispatch' && inputs.throughput == true && '-throughput' || '' }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
 
 jobs:
+  throughput:
+    name: Explicit protected throughput sweep
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.throughput == true }}
+    uses: ./.github/workflows/i2p-throughput.yml
+    with:
+      streams: ${{ inputs.streams }}
+      file_bytes: ${{ inputs.file_bytes }}
+
   # ------------------------------------------------------------------
   # Resolve one immutable SHA for every job: the committed pin by default,
   # or the tracked upstream head only for schedule/explicit manual probes.
   # ------------------------------------------------------------------
   head:
     name: i2pd revision under test
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -100,6 +121,7 @@ jobs:
 
   e2e:
     name: e2e (relay + two bots)
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
     needs: head
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -249,6 +271,7 @@ jobs:
   # probe before its router revision can be recorded.
   # ------------------------------------------------------------------
   e2e-in-process:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
     name: e2e (relays inside the bots)
     needs: head
     runs-on: ubuntu-latest
@@ -295,6 +318,7 @@ jobs:
   # an upstream probe may record a new router pin.
   # ------------------------------------------------------------------
   e2e-dht:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
     name: e2e (relay network, each side away in turn)
     needs: head
     runs-on: ubuntu-latest
@@ -368,6 +392,7 @@ jobs:
   # upstream probe may record a new router pin.
   # ------------------------------------------------------------------
   e2e-agent:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
     name: e2e (agent binary)
     needs: head
     runs-on: ubuntu-latest
@@ -424,6 +449,7 @@ jobs:
     name: record the proven revision
     needs: [head, e2e, e2e-in-process, e2e-dht, e2e-agent]
     if: >-
+      !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) &&
       github.repository == 'gluckdev/gipny-i2p' &&
       github.ref_type == 'branch' &&
       needs.head.outputs.mode == 'upstream' &&

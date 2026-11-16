@@ -1,6 +1,18 @@
 name: I2P throughput exploration
 
 on:
+  # Reusable entry for an explicit manual dispatch of the existing e2e workflow
+  # while this new workflow has not yet reached the default branch.
+  workflow_call:
+    inputs:
+      streams:
+        description: 'Sequential file-lane counts, 1..8; at most 12 points'
+        type: string
+        default: '1,2,3,4,5,6,7,8'
+      file_bytes:
+        description: 'Verified bytes per point, 1 MiB..128 MiB'
+        type: string
+        default: '33554432'
   workflow_dispatch:
     inputs:
       streams:
