@@ -12,6 +12,9 @@
  * indicator behave exactly as with a system keyboard. Its height is published
  * together with visualViewport geometry as the available app height.
  *
+ * Contract: the OSK palette is always dark across all themes; W/A/S/D gaming
+ * keys are light only in English letters mode (`osk-wasd`).
+ *
  * Plan and the slices still to come: docs/plans/2026-11-08-own-keyboard.md.
  */
 import { h } from '../../app/view';
@@ -22,6 +25,7 @@ import type { LayoutId } from './osk-layouts';
 import { insertText, replaceBeforeCaret, deleteBackward } from './osk-edit';
 import type { TextState } from './osk-edit';
 import { telexCompose } from './osk-telex';
+import { numberRow } from './osk-number-row';
 
 type Page = 'letters' | 'symbols' | 'symbols2' | 'emoji' | 'digits';
 type Shift = 'off' | 'once' | 'caps';
@@ -414,12 +418,20 @@ export class Osk {
     const layout = LAYOUTS[this.layout];
     const fn = (label: string, k: string, cls: string, aria: string, extra?: Record<string, unknown>): HTMLElement =>
       h('button', { type: 'button', class: 'osk-key osk-fn ' + cls, 'data-k': k, 'aria-label': aria, ...extra }, label);
-    const ch = (c: string): HTMLElement => h('button', { type: 'button', class: 'osk-key', 'data-c': c }, c);
+    // Contract: OSK is always dark; W/A/S/D are light only in English letters mode.
+    const ch = (c: string): HTMLElement => {
+      const isWasd = this.layout === 'en' && this.page === 'letters' &&
+        (c === 'w' || c === 'a' || c === 's' || c === 'd' || c === 'W' || c === 'A' || c === 'S' || c === 'D');
+      return h('button', { type: 'button', class: 'osk-key' + (isWasd ? ' osk-wasd' : ''), 'data-c': c }, c);
+    };
     const row = (...keys: HTMLElement[]): HTMLElement => h('div', { class: 'osk-row' }, ...keys);
     const backspace = (): HTMLElement => fn('⌫', 'backspace', 'osk-wide', tr('osk.backspace'));
     const rows: HTMLElement[] = [];
 
     if (this.page === 'letters') {
+      const numbers = row(...numberRow(this.layout, this.shift === 'once').map(ch));
+      numbers.classList.add('osk-number-row');
+      rows.push(numbers);
       layout.rows.forEach((letters, i) => {
         const keys = letters.map((c) => ch(up ? shifted(layout, c) : c));
         if (i === layout.rows.length - 1) {

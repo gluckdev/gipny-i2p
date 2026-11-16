@@ -1,6 +1,6 @@
 /**
  * Key tables for the on-screen keyboard. A layout is three rows of letters;
- * the component adds shift, backspace and the bottom row itself. Shift is
+ * the component adds the number row, shift, backspace and bottom row. Shift is
  * `toUpperCase()` unless `shift` says otherwise (ß stays ß: 'SS' is a word,
  * not a key). Vietnamese uses Telex composition on its Latin keys; Khmer's
  * shift level uses explicit NiDA assignments.
@@ -62,8 +62,8 @@ export const LAYOUTS: Readonly<Record<LayoutId, Layout>> = {
     // NiDA in Q/A/Z order (ANSI backslash at the end of the Q row), from
     // xkeyboard-config kh(basic). Four keys emit two code points on a level
     // (A: ាំ, semicolon: ោះ, V: េះ, comma: ុំ/ុះ); a key is any string, so
-    // they stay where a Khmer typist expects them. The number row (ឥ ឲ) and
-    // the AltGr level are not on this page yet — see the plan.
+    // they stay where a Khmer typist expects them. The separate number row
+    // provides Latin digits/NiDA Shift; AltGr and extra ឥ ឲ keys remain absent.
     rows: [
       split('ឆឹេរតយុិោផៀឪឮ'),
       ['ា', 'ស', 'ដ', 'ថ', 'ង', 'ហ', '្', 'ក', 'ល', 'ើ', '់'],

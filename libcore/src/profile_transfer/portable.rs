@@ -5,8 +5,11 @@
 //! durability, AEAD validity or full-profile semantic completeness.
 
 mod bounded;
+pub mod contacts;
 pub mod crypto;
+pub mod groups;
 pub mod manifest;
+pub mod text;
 
 pub use bounded::List;
 
@@ -30,6 +33,10 @@ pub enum Error {
     InvalidRatchet,
     Duplicate,
     InvalidManifest,
+    InvalidContact,
+    InvalidGroup,
+    InvalidReference,
+    InvalidText,
     MissingSection,
     Overflow,
 }
@@ -63,5 +70,7 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], limit: u64) -> Result<T, Error> {
     options(limit).deserialize(bytes).map_err(|_| Error::Codec)
 }
 
+#[cfg(test)]
+mod domain_tests;
 #[cfg(test)]
 mod tests;

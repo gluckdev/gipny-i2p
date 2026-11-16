@@ -2281,13 +2281,32 @@ a { color: var(--phosphor); }
    On a phone the system keyboard never appears (inputmode="none" on every
    text field); this panel types instead. Fixed to the bottom; the page above
    shrinks by --kbd-offset, which osk.ts sets to the panel's height. Margins,
-   not flex gap: Chromium 83 (Huawei WebView 11) has no gap in flexbox. */
+   not flex gap: Chromium 83 (Huawei WebView 11) has no gap in flexbox.
+   Contract: OSK is always dark regardless of theme; W/A/S/D keys are light
+   only in English letters mode. */
 .osk {
+  --osk-bg: #141a23;
+  --osk-border: #2a3748;
+  --osk-key-bg: #19222e;
+  --osk-key-fg: #f0f4f9;
+  --osk-key-border: #334458;
+  --osk-key-active-bg: #213c5b;
+  --osk-key-active-border: #83b9ff;
+  --osk-fn-bg: #253140;
+  --osk-fn-fg: #b1bfd1;
+  --osk-fn-border: #38495e;
+  --osk-wasd-bg: #f3f5f8;
+  --osk-wasd-fg: #121924;
+  --osk-wasd-border: #cbd5e1;
+  --osk-wasd-active-bg: #cce0ff;
+  --osk-wasd-active-border: #175fbd;
+  --osk-accent: #83b9ff;
+  --osk-accent-dim: #213c5b;
   position: fixed; left: 0; right: 0; bottom: var(--viewport-bottom, 0px); z-index: 1200;
   padding: 6px 3px calc(6px + var(--safe-bottom, 0px));
-  background: var(--surface-2);
-  border-top: 1px solid var(--border-bright);
-  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.12);
+  background: var(--osk-bg);
+  border-top: 1px solid var(--osk-border);
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.28);
   font-family: var(--mono);
   -webkit-user-select: none; user-select: none;
   touch-action: manipulation;
@@ -2298,20 +2317,56 @@ a { color: var(--phosphor); }
 .osk-row:first-child { margin-top: 0; }
 .osk-key {
   flex: 1 1 0; min-width: 0; margin: 0 2px; height: 42px; padding: 0;
-  border: 1px solid var(--border); border-radius: var(--xbox-radius-sm);
-  background: var(--surface); color: var(--text);
+  border: 1px solid var(--osk-key-border); border-radius: var(--radius-sm);
+  background: var(--osk-key-bg); color: var(--osk-key-fg);
   font: inherit; font-size: 18px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
 .osk[data-layout="km"] .osk-key { font-size: 20px; }
-.osk-key:active { background: var(--phosphor-faint); border-color: var(--phosphor); }
-.osk-fn { background: var(--surface-3); color: var(--text-dim); font-size: 14px; }
+.osk-key:focus-visible {
+  outline: 2px solid var(--osk-accent);
+  outline-offset: -2px;
+}
+.osk-key:active {
+  background: var(--osk-key-active-bg);
+  border-color: var(--osk-key-active-border);
+  color: #ffffff;
+}
+/* Contract: in English layout letters page, only WASD gaming keys have inverted styling: light keys with dark text. In all other layouts or non-letter pages, keys remain dark. */
+.osk[data-layout="en"][data-page="letters"] .osk-key.osk-wasd {
+  background: var(--osk-wasd-bg);
+  color: var(--osk-wasd-fg);
+  border-color: var(--osk-wasd-border);
+  font-weight: 600;
+}
+.osk[data-layout="en"][data-page="letters"] .osk-key.osk-wasd:focus-visible {
+  outline: 2px solid var(--osk-wasd-active-border);
+  outline-offset: -2px;
+}
+.osk[data-layout="en"][data-page="letters"] .osk-key.osk-wasd:active {
+  background: var(--osk-wasd-active-bg);
+  border-color: var(--osk-wasd-active-border);
+  color: var(--osk-wasd-fg);
+}
+.osk:not([data-layout="en"]) .osk-key.osk-wasd,
+.osk:not([data-page="letters"]) .osk-key.osk-wasd {
+  background: var(--osk-key-bg);
+  color: var(--osk-key-fg);
+  border-color: var(--osk-key-border);
+  font-weight: inherit;
+}
+.osk-fn {
+  background: var(--osk-fn-bg);
+  color: var(--osk-fn-fg);
+  border-color: var(--osk-fn-border);
+  font-size: 14px;
+}
 .osk-wide { flex-grow: 1.5; }
 .osk-space { flex-grow: 4; }
 .osk-layout { flex-grow: 1.2; font-size: 12px; letter-spacing: 0.08em; }
-.osk-shift.osk-on, .osk-shift.osk-caps { color: var(--phosphor); border-color: var(--phosphor); }
-.osk-shift.osk-caps { background: var(--phosphor-faint); }
+.osk-shift.osk-on, .osk-shift.osk-caps { color: var(--osk-accent); border-color: var(--osk-accent); }
+.osk-shift.osk-caps { background: var(--osk-accent-dim); }
 .osk-blank { visibility: hidden; }
 .osk-emoji { flex-wrap: wrap; max-height: 150px; overflow-y: auto; }
 .osk-emoji .osk-key { flex: 0 0 calc(12.5% - 4px); height: 44px; margin-bottom: 4px; font-size: 22px; }
@@ -2718,9 +2773,6 @@ button { overflow-wrap: anywhere; }
 .about-chip { font-family: var(--mono); color: var(--fg-dim); }
 .about-card-title { font-size: 15px; }
 .about-card-icon { border-radius: var(--radius-sm); }
-.osk { background: var(--bg-panel); box-shadow: none; }
-.osk-key { background: var(--bg-input); border-color: var(--border); border-radius: var(--radius-sm); }
-.osk-fn { background: var(--bg-hover); }
 
 /* Existing salon/cyber class hooks now share the same card and window bar. */
 .auth { isolation: isolate; padding: 20px; align-items: flex-start; }

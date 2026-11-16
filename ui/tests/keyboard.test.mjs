@@ -21,6 +21,10 @@ for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'E
   if (win[key] !== undefined) Object.defineProperty(globalThis, key, { value: key === 'window' ? win : win[key], configurable: true });
 }
 win.__TAURI_INTERNALS__ = {};
+const cssText = await readFile(new URL('../src/styles.css', import.meta.url), 'utf-8');
+const styleEl = win.document.createElement('style');
+styleEl.textContent = cssText;
+win.document.head.append(styleEl);
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
 const { telexCompose } = await import(pathToFileURL(join(dir, 'telex.mjs')).href);
 const { LAYOUTS, LAYOUT_IDS, SYMBOL_PAGES, DIGIT_ROWS, EMOJI, shifted, isLayoutId,
@@ -184,6 +188,226 @@ test('insert, backspace and caret moves respect graphemes and selections', () =>
   assert.deepEqual(moveCaret({ value: 'a😀b', start: 1, end: 1 }, 1), { value: 'a😀b', start: 3, end: 3 });
   assert.deepEqual(moveCaret({ value: 'abc', start: 1, end: 2 }, 1), { value: 'abc', start: 2, end: 2 }, 'a selection collapses to its edge');
   assert.deepEqual(moveCaret({ value: 'abc', start: 3, end: 3 }, 1), { value: 'abc', start: 3, end: 3 });
+});
+
+test('number row is always above letters; Shift follows the layout and Caps keeps digits', () => {
+  const previousLayouts = localStorage.getItem('gipny.osk.base-layouts');
+  setOskMode('on'); resetOskActive();
+  for (const id of LAYOUT_IDS) {
+    ui.setLayouts([id]); setLang(id);
+    const panel = new ui.Osk(), input = h('input', { type: 'text' });
+    document.body.append(input, panel.el); input.focus(); panel.show(input);
+    for (let tries = 0; panel.layout !== id && tries < LAYOUT_IDS.length; tries++) press(panel, fnKey('layout'));
+    assert.equal(panel.layout, id);
+    const labels = () => [...panel.el.querySelectorAll('.osk-number-row button')].map(key => key.textContent);
+    assert.deepEqual(labels(), [...'1234567890'], id);
+    assert.equal(panel.el.querySelector('.osk-row').classList.contains('osk-number-row'), true);
+    const first = () => panel.el.querySelector('.osk-number-row button');
+    first().click(); assert.equal(input.value, '1');
+    const shift = keyButton(panel, fnKey('shift'));
+    fire(shift, 'pointerdown'); fire(shift, 'pointerup'); fire(shift, 'click');
+    assert.deepEqual(labels(), [...ui.numberRow(id, true)]);
+    assert.notDeepEqual(labels(), [...'1234567890']);
+    if (id !== 'en') {
+      press(panel, fnKey('layout'));
+      assert.deepEqual(labels(), [...ui.numberRow(panel.layout, true)], 'layout switch redraws the active Shift row');
+      for (let attempt = 0; panel.layout !== id && attempt < LAYOUT_IDS.length; attempt++) press(panel, fnKey('layout'));
+      assert.equal(panel.layout, id);
+    }
+    const symbol = labels()[0]; first().click();
+    assert.equal(input.value, '1' + symbol, id);
+    assert.deepEqual(labels(), [...'1234567890'], 'one-shot consumed by a symbol');
+    assert.ok(keyButton(panel, charKey(LAYOUTS[id].rows[0][0])), 'letters also return to their unshifted form');
+    press(panel, fnKey('shift')); press(panel, fnKey('shift'));
+    assert.equal(panel.el.querySelector('.osk-shift').classList.contains('osk-caps'), true);
+    assert.deepEqual(labels(), [...'1234567890'], 'Caps affects letter case');
+    first().click(); assert.equal(panel.el.querySelector('.osk-shift').classList.contains('osk-caps'), true);
+    press(panel, fnKey('symbols')); assert.equal(panel.currentPage, 'symbols');
+    assert.equal(panel.el.querySelector('.osk-number-row'), null, 'manual symbols have their own rows');
+    press(panel, fnKey('symbols2')); assert.equal(panel.currentPage, 'symbols2');
+    press(panel, fnKey('letters')); assert.equal(panel.currentPage, 'letters'); assert.deepEqual(labels(), [...'1234567890']);
+    const number = h('input', { type: 'number' }); document.body.append(number); number.focus(); panel.show(number);
+    assert.equal(panel.currentPage, 'digits'); assert.equal(panel.el.querySelector('.osk-number-row'), null);
+    assert.equal(panel.el.querySelectorAll('.osk-key[data-c]').length, DIGIT_ROWS.flat().length);
+    panel.destroy(); input.remove(); number.remove();
+  }
+  if (previousLayouts === null) localStorage.removeItem('gipny.osk.base-layouts');
+  else localStorage.setItem('gipny.osk.base-layouts', previousLayouts);
+  setLang('en');
+});
+
+test('keyboard always has dark keys, with inverted WASD only in English layout across themes', () => {
+  const previousLayouts = localStorage.getItem('gipny.osk.base-layouts');
+  try {
+    setOskMode('on'); resetOskActive();
+    ui.setLayouts(['en', 'ru', 'de', 'vi']); setLang('en');
+    const panel = new ui.Osk(), input = h('input', { type: 'text' });
+    document.body.append(input, panel.el); input.focus(); panel.show(input);
+
+    try {
+      // 1. In English layout: only WASD keys have inverted styling (light keys with dark text)
+      assert.equal(panel.layout, 'en');
+      assert.equal(panel.el.getAttribute('data-layout'), 'en');
+
+      for (const theme of ['light', 'dark', 'system']) {
+        win.document.documentElement.setAttribute('data-theme', theme);
+        // Panel container is dark
+        assert.equal(win.getComputedStyle(panel.el).backgroundColor, '#141a23', `${theme}: osk panel is dark`);
+
+        // WASD keys: inverted styling (light keycap, dark text)
+        for (const char of ['w', 'a', 's', 'd']) {
+          const btn = keyButton(panel, charKey(char));
+          assert.ok(btn.classList.contains('osk-wasd'), `key ${char} has osk-wasd in en`);
+          const cs = win.getComputedStyle(btn);
+          assert.equal(cs.backgroundColor, '#f3f5f8', `${theme}: WASD key ${char} is light`);
+          assert.equal(cs.color, '#121924', `${theme}: WASD key ${char} has dark text`);
+          assert.equal(cs.fontWeight, '600', `${theme}: WASD key ${char} font-weight`);
+        }
+
+        // Other letter keys (e.g. q, e, r, t, y, etc.): dark keys with light text
+        for (const char of ['q', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p']) {
+          const btn = keyButton(panel, charKey(char));
+          assert.equal(btn.classList.contains('osk-wasd'), false, `key ${char} must NOT have osk-wasd`);
+          const cs = win.getComputedStyle(btn);
+          assert.equal(cs.backgroundColor, '#19222e', `${theme}: key ${char} has dark background`);
+          assert.equal(cs.color, '#f0f4f9', `${theme}: key ${char} has light text`);
+        }
+
+        // Number row: dark keys with light text, no WASD class
+        for (const char of [...'1234567890']) {
+          const btn = panel.el.querySelector(`.osk-number-row button[data-c="${char}"]`);
+          assert.ok(btn, `number key ${char} exists`);
+          assert.equal(btn.classList.contains('osk-wasd'), false, `digit ${char} must NOT have osk-wasd`);
+          const cs = win.getComputedStyle(btn);
+          assert.equal(cs.backgroundColor, '#19222e', `${theme}: digit ${char} has dark background`);
+          assert.equal(cs.color, '#f0f4f9', `${theme}: digit ${char} has light text`);
+        }
+
+        // Function keys: dark background with dim text
+        const shiftBtn = keyButton(panel, fnKey('shift'));
+        const shiftCs = win.getComputedStyle(shiftBtn);
+        assert.equal(shiftCs.backgroundColor, '#253140', `${theme}: function key has dark bg`);
+        assert.equal(shiftCs.color, '#b1bfd1', `${theme}: function key has dim text`);
+      }
+
+      // Shifted uppercase WASD in English layout
+      press(panel, fnKey('shift'));
+      for (const char of ['W', 'A', 'S', 'D']) {
+        const btn = keyButton(panel, charKey(char));
+        assert.ok(btn.classList.contains('osk-wasd'), `shifted key ${char} has osk-wasd in en`);
+        const cs = win.getComputedStyle(btn);
+        assert.equal(cs.backgroundColor, '#f3f5f8', `shifted WASD key ${char} is light`);
+        assert.equal(cs.color, '#121924', `shifted WASD key ${char} has dark text`);
+      }
+      // Turn shift off: if double-tap triggered caps, another tap turns it off
+      while (panel.shift !== 'off') {
+        press(panel, fnKey('shift'));
+      }
+      assert.equal(panel.shift, 'off');
+
+      // Cycle layouts and verify non-English layouts:
+      // In Russian ('ru'): zero WASD keys, all Cyrillic keys are dark
+      press(panel, fnKey('layout'));
+      assert.equal(panel.layout, 'ru');
+      assert.equal(panel.el.getAttribute('data-layout'), 'ru');
+      assert.equal(panel.el.querySelectorAll('.osk-wasd').length, 0, 'ru layout has zero osk-wasd keys');
+      for (const char of ['й', 'ц', 'у', 'к', 'ф', 'ы', 'в', 'а']) {
+        const btn = keyButton(panel, charKey(char));
+        assert.equal(btn.classList.contains('osk-wasd'), false);
+        const cs = win.getComputedStyle(btn);
+        assert.equal(cs.backgroundColor, '#19222e', `ru: key ${char} has dark background`);
+        assert.equal(cs.color, '#f0f4f9', `ru: key ${char} has light text`);
+      }
+
+      // In German ('de'): has 'w', 'a', 's', 'd' but they must NOT be light keys
+      press(panel, fnKey('layout'));
+      assert.equal(panel.layout, 'de');
+      assert.equal(panel.el.getAttribute('data-layout'), 'de');
+      for (const theme of ['light', 'dark']) {
+        win.document.documentElement.setAttribute('data-theme', theme);
+        for (const char of ['w', 'a', 's', 'd']) {
+          const btn = keyButton(panel, charKey(char));
+          assert.equal(btn.classList.contains('osk-wasd'), false, `de: key ${char} must NOT have osk-wasd`);
+          const cs = win.getComputedStyle(btn);
+          assert.equal(cs.backgroundColor, '#19222e', `de ${theme}: key ${char} must have dark background`);
+          assert.equal(cs.color, '#f0f4f9', `de ${theme}: key ${char} must have light text`);
+        }
+      }
+
+      // In Vietnamese ('vi'): has 'w', 'a', 's', 'd' but they must NOT be light keys
+      press(panel, fnKey('layout'));
+      assert.equal(panel.layout, 'vi');
+      assert.equal(panel.el.getAttribute('data-layout'), 'vi');
+      for (const char of ['w', 'a', 's', 'd']) {
+        const btn = keyButton(panel, charKey(char));
+        assert.equal(btn.classList.contains('osk-wasd'), false, `vi: key ${char} must NOT have osk-wasd`);
+        const cs = win.getComputedStyle(btn);
+        assert.equal(cs.backgroundColor, '#19222e', `vi: key ${char} must have dark background`);
+        assert.equal(cs.color, '#f0f4f9', `vi: key ${char} must have light text`);
+      }
+
+      // Cycle back to English: WASD returns to inverted light styling
+      press(panel, fnKey('layout'));
+      assert.equal(panel.layout, 'en');
+      assert.equal(panel.el.getAttribute('data-layout'), 'en');
+      for (const char of ['w', 'a', 's', 'd']) {
+        const btn = keyButton(panel, charKey(char));
+        assert.ok(btn.classList.contains('osk-wasd'), `key ${char} has osk-wasd again when returning to en`);
+        const cs = win.getComputedStyle(btn);
+        assert.equal(cs.backgroundColor, '#f3f5f8', `key ${char} is light again`);
+        assert.equal(cs.color, '#121924', `key ${char} has dark text again`);
+      }
+
+      // Auxiliary / service pages: no WASD keys, all keys dark across themes
+      // 1. symbols page (?123)
+      press(panel, fnKey('symbols'));
+      assert.equal(panel.currentPage, 'symbols');
+      assert.equal(panel.el.querySelectorAll('.osk-wasd').length, 0, 'symbols page has no osk-wasd keys');
+      for (const btn of panel.el.querySelectorAll('button.osk-key')) {
+        const cs = win.getComputedStyle(btn);
+        assert.notEqual(cs.backgroundColor, '#f3f5f8', 'symbols key is not light');
+      }
+
+      // 2. symbols2 page (=\<)
+      press(panel, fnKey('symbols2'));
+      assert.equal(panel.currentPage, 'symbols2');
+      assert.equal(panel.el.querySelectorAll('.osk-wasd').length, 0, 'symbols2 page has no osk-wasd keys');
+      for (const btn of panel.el.querySelectorAll('button.osk-key')) {
+        const cs = win.getComputedStyle(btn);
+        assert.notEqual(cs.backgroundColor, '#f3f5f8', 'symbols2 key is not light');
+      }
+
+      // 3. emoji page
+      press(panel, fnKey('letters'));
+      assert.equal(panel.currentPage, 'letters');
+      press(panel, fnKey('emoji'));
+      assert.equal(panel.currentPage, 'emoji');
+      assert.equal(panel.el.querySelectorAll('.osk-wasd').length, 0, 'emoji page has no osk-wasd keys');
+
+      // 4. digits page
+      const numInput = h('input', { type: 'number' });
+      document.body.append(numInput);
+      try {
+        numInput.focus();
+        panel.show(numInput);
+        assert.equal(panel.currentPage, 'digits');
+        assert.equal(panel.el.querySelectorAll('.osk-wasd').length, 0, 'digits page has no osk-wasd keys');
+        for (const btn of panel.el.querySelectorAll('button.osk-key')) {
+          const cs = win.getComputedStyle(btn);
+          assert.notEqual(cs.backgroundColor, '#f3f5f8', 'digits key is not light');
+        }
+      } finally {
+        numInput.remove();
+      }
+    } finally {
+      panel.destroy(); input.remove();
+      win.document.documentElement.removeAttribute('data-theme');
+    }
+  } finally {
+    if (previousLayouts === null) localStorage.removeItem('gipny.osk.base-layouts');
+    else localStorage.setItem('gipny.osk.base-layouts', previousLayouts);
+    setLang('en');
+  }
 });
 
 test('composition replaces the suffix before the caret and any selection', () => {

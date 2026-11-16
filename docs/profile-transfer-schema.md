@@ -6,16 +6,24 @@ native/WASM и список оставшихся adapters; он не замен�
 
 ## Уже реализованные части схемы
 
-`libcore/src/profile_transfer/portable/` содержит только crypto-state codec и
-manifest layout. Формат version 1 использует exact little-endian fixed-integer
-bincode с запретом trailing bytes. Это новый формат; прежние backup/vault
-containers не являются его входом.
+`libcore/src/profile_transfer/portable/` содержит crypto-state codec,
+manifest layout, а также bounded доменные схемы контактов (`contacts.rs`),
+групп (`groups.rs`) и точных UTF-8 строк (`text.rs`) с перекрёстной проверкой
+привязки ключей (cross-domain key pinning). Формат version 1 использует exact
+little-endian fixed-integer bincode с запретом trailing bytes. Это новый формат;
+прежние backup/vault containers не являются его входом.
 
 - Crypto domain сохраняет application signing/DH secrets, current и historical
   signed prekeys, оставшиеся OTK, next-ID high-water mark, primary/lost/alternate
   ratchets и pending own initializations. Public keys проверяются по secrets;
   duplicate keys/IDs и reuse ID отвергаются. Ratchet decoding сохраняет общий
   skipped-key bound и отвергает лишние bytes.
+- Contacts/Groups domains сохраняют trust/admission статус без возможности
+  самовольного повышения доверия при декодировании, валидируют адреса I2P
+  (отвергая clearnet/HTTP/относительные пути), гарантируют стабильность
+  идентификаторов и отсутствие дублей. Проверка `Index` сопоставляет
+  участников групп и сессии ratchet с проверенными контактами и собственной
+  личностью, предотвращая подмену ключей.
 - Secret types не имеют `Debug`/`Clone`, очищаются при уничтожении. Декодеры
   очищают частично заполненные secret buffers при ошибке. Это меры уменьшения
   времени жизни plaintext, не доказательство отсутствия всех compiler/OS copies.

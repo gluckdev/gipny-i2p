@@ -39,8 +39,9 @@ Checkpoint для возобновления сессии: [SESSION_HANDOFF.md](
 - [x] Лёгкие hover/focus, QR возле имени, auto-add распознанной полной карточки,
   защита от повторов/конфликтов identity, остановка поздно открывшейся камеры.
 - [ ] Финальные UI/browser проверки после согласованного переименования.
-- [ ] Постоянный верхний цифровой ряд экранной клавиатуры, символы по Shift;
-  проверки раскладок, состояний Shift и узкого экрана.
+- [x] Постоянный верхний цифровой ряд экранной клавиатуры, символы по Shift,
+  тёмные клавиши WASD как на игровых клавиатурах (`.osk-wasd`); тесты всех
+  восьми раскладок, состояний Shift/Caps, WASD и геометрии узкого экрана.
 - [x] Исправить Android ELF 16 KiB alignment и добавить verifier/test gate.
 - [ ] Новый APK, проверка zipalign и реальный запуск с 16 KiB страницами.
 - [ ] Универсальный выбор установщика, расширение реально проверенных OS/ABI;
@@ -62,7 +63,9 @@ Checkpoint для возобновления сессии: [SESSION_HANDOFF.md](
 - [ ] Заменить backup/restore интерфейс работающим переносом; fault injection,
   adversarial/replay/crash/storage tests и независимое security review.
 - [x] `0d06c10`: pure transfer journals/state model, 13 tests PASS;
-  adapters/crypto/network и фактический перенос этим не реализованы.
+  portable profile transfer: bounded records для contacts, groups, byte-bounded text
+  и cross-domain key pinning (`libcore/src/profile_transfer/portable/`), 30 тестов PASS.
+  Adapters/network/crypto-transport и фактический перенос ещё не реализованы.
 - [ ] Снова объединить ветки, общий SHA, локальные проверки, GitHub матрица,
   проверенные установщики, документация и только затем публикация beta.
 

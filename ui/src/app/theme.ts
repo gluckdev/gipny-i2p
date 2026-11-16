@@ -9,8 +9,8 @@
 export type Theme = 'light' | 'dark' | 'system';
 
 const KEY = 'gipny.theme';
-/** Light is the default because it is what was asked for. */
-const DEFAULT: Theme = 'light';
+/** Dark is the default. */
+const DEFAULT: Theme = 'dark';
 
 export function getTheme(): Theme {
   try {

@@ -28,7 +28,7 @@
         </select>
       </label>
       <label>theme
-        <select id="theme"><option>light</option><option>dark</option><option>system</option></select>
+        <select id="theme"><option>dark</option><option>light</option><option>system</option></select>
       </label>
       <label>language <select id="language"><option>en</option><option>ru</option><option>uk</option><option>de</option><option>km</option><option>vi</option><option>hi</option><option>zh</option></select></label>
       <button id="check">check horizontal overflow</button>
@@ -57,7 +57,7 @@
       const langSel = document.getElementById('language');
       langSel.value = q.get('lang') ?? 'en';
       sceneSel.value = q.get('scene') ?? 'list';
-      themeSel.value = q.get('theme') ?? 'light';
+      themeSel.value = q.get('theme') ?? 'dark';
       const frames = document.getElementById('frames');
       const report = document.getElementById('report');
 

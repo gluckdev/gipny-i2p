@@ -1247,10 +1247,11 @@ test('settings omit relay diagnostics, APK catalog and log controls in either bu
 test('the on-screen keyboard setting reads and writes gipny.osk', async () => {
   const store = chatStore(); const app = new App(store); document.body.append(app.el);
   const previousLang = getLang();
+  let modal;
   try {
     setLang('en');
     localStorage.removeItem('gipny.osk');
-    const modal = new ui.SettingsModal(store, app, () => {});
+    modal = new ui.SettingsModal(store, app, () => {});
     document.body.append(modal.el); await tick();
     const radios = { auto: modal.el.querySelector('#opt-osk-auto'), on: modal.el.querySelector('#opt-osk-on'), off: modal.el.querySelector('#opt-osk-off') };
     for (const id of ['auto', 'on', 'off']) assert.ok(radios[id], `radio opt-osk-${id} is rendered`);
@@ -1261,9 +1262,101 @@ test('the on-screen keyboard setting reads and writes gipny.osk', async () => {
     radios.auto.click(); await tick();
     assert.equal(localStorage.getItem('gipny.osk'), 'auto');
   } finally {
+    modal.el.remove();
     localStorage.removeItem('gipny.osk');
     setLang(previousLang); app.destroy();
   }
+});
+
+test('the theme setting defaults to dark without choice and preserves explicit light, dark, and system', async () => {
+  const store = chatStore(); const app = new App(store); document.body.append(app.el);
+  const previousTheme = localStorage.getItem('gipny.theme');
+  let modal;
+  let reopenedModal;
+  try {
+    localStorage.removeItem('gipny.theme');
+    assert.equal(ui.getTheme(), 'dark', 'default theme is dark without saved preference');
+    ui.applyTheme();
+    assert.equal(document.documentElement.getAttribute('data-theme'), 'dark', 'applyTheme sets dark on root by default');
+
+    modal = new ui.SettingsModal(store, app, () => {});
+    document.body.append(modal.el); await tick();
+
+    const radios = {
+      light: modal.el.querySelector('#opt-theme-light'),
+      dark: modal.el.querySelector('#opt-theme-dark'),
+      system: modal.el.querySelector('#opt-theme-system'),
+    };
+    for (const id of ['light', 'dark', 'system']) assert.ok(radios[id], `radio opt-theme-${id} is rendered`);
+    assert.equal(radios.dark.checked, true, 'the dark radio is checked by default');
+    assert.equal(radios.light.checked, false, 'light radio is unchecked by default');
+    assert.equal(radios.system.checked, false, 'system radio is unchecked by default');
+
+    // Explicit light selection
+    radios.light.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.theme'), 'light', 'explicit light is saved to localStorage');
+    assert.equal(radios.light.checked, true, 'light radio is now checked');
+    assert.equal(radios.dark.checked, false, 'dark radio is now unchecked');
+    assert.equal(ui.getTheme(), 'light', 'getTheme returns light');
+    assert.equal(document.documentElement.getAttribute('data-theme'), 'light', 'applyTheme applied data-theme="light"');
+
+    // Verify reopening settings modal keeps explicit light
+    modal.el.remove();
+    reopenedModal = new ui.SettingsModal(store, app, () => {});
+    document.body.append(reopenedModal.el); await tick();
+    const reopenedLight = reopenedModal.el.querySelector('#opt-theme-light');
+    const reopenedDark = reopenedModal.el.querySelector('#opt-theme-dark');
+    assert.equal(reopenedLight.checked, true, 'reopened settings still has light selected');
+    assert.equal(reopenedDark.checked, false, 'reopened settings has dark unchecked');
+
+    // Explicit system selection
+    const reopenedSystem = reopenedModal.el.querySelector('#opt-theme-system');
+    reopenedSystem.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.theme'), 'system', 'explicit system is saved to localStorage');
+    assert.equal(reopenedSystem.checked, true);
+    assert.equal(ui.getTheme(), 'system', 'getTheme returns system');
+    assert.equal(document.documentElement.getAttribute('data-theme'), 'system');
+
+    // Explicit dark selection
+    reopenedDark.click(); await tick();
+    assert.equal(localStorage.getItem('gipny.theme'), 'dark', 'explicit dark is saved to localStorage');
+    assert.equal(reopenedDark.checked, true);
+    assert.equal(ui.getTheme(), 'dark', 'getTheme returns dark');
+    assert.equal(document.documentElement.getAttribute('data-theme'), 'dark');
+
+    reopenedModal.el.remove();
+  } finally {
+    modal?.el?.remove();
+    reopenedModal?.el?.remove();
+    if (previousTheme !== null) localStorage.setItem('gipny.theme', previousTheme);
+    else localStorage.removeItem('gipny.theme');
+    ui.applyTheme();
+    app.destroy();
+  }
+});
+
+test('theme-init sets dark by default and preserves explicit light, dark, and system', async () => {
+  const initSrc = await readFile(new URL('../public/theme-init.js', import.meta.url), 'utf8');
+  const runInit = (stored) => {
+    const doc = win.document.implementation.createHTMLDocument();
+    const mockStorage = {
+      getItem(key) {
+        if (stored instanceof Error) throw stored;
+        return stored;
+      },
+    };
+    const fn = new Function('document', 'localStorage', initSrc);
+    fn(doc, mockStorage);
+    return doc.documentElement.getAttribute('data-theme');
+  };
+
+  assert.equal(runInit(null), 'dark', 'theme-init defaults to dark when no theme is set');
+  assert.equal(runInit(undefined), 'dark', 'theme-init defaults to dark when storage returns undefined');
+  assert.equal(runInit(new Error('storage blocked')), 'dark', 'theme-init falls back to dark when storage throws');
+  assert.equal(runInit('light'), 'light', 'theme-init preserves explicit light');
+  assert.equal(runInit('system'), 'system', 'theme-init preserves explicit system');
+  assert.equal(runInit('dark'), 'dark', 'theme-init preserves explicit dark');
+  assert.equal(runInit('invalid'), 'dark', 'theme-init ignores unrecognized values and keeps dark default');
 });
 
 test('all eight languages use system preference order and keyboard hints without losing explicit choices', () => {

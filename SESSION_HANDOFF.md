@@ -50,7 +50,13 @@ WebRTC по 11 live assertions; телефоны и TURN не проверены
 установщиков (Unix fixtures PASS; новые Windows fixtures ждут CI);
 `f3005a3` — sparse ACK не подтверждает непредставленные дырки за лимитом 64
 (35 file tests PASS); `0d06c10` — чистая модель durable transfer journals
-(13 tests PASS), пока без transport/crypto/storage adapters и рабочего переноса.
+(13 tests PASS), дополненная переносимыми схемами `contacts.rs`, `groups.rs`, `text.rs`
+в `libcore/src/profile_transfer/portable/` с валидацией I2P, неизменяемостью доверия
+и перекрёстной привязкой ключей (30 tests PASS);
+экранная клавиатура: постоянный верхний ряд 1–0 на буквенной странице, символы
+по Shift согласно раскладке, Caps сохраняет цифры, тёмные клавиши WASD как на
+игровых клавиатурах (`.osk-wasd`), `ui/tests/keyboard.test.mjs` и `ui/tests/keyboard-layout.test.mjs`
+прошли (полный `npm test` 23/23 PASS).
 Независимый Gemini 3.8 review текущей документации: материальных противоречий
 не найдено в предоставленном diff/context; это не runtime/security аудит.
 WhiteRabbit review остановлен по лимиту 300 секунд без содержательного ответа:
