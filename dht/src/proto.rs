@@ -12,6 +12,13 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// recipient's own relay instead.
 pub const MAX_VALUE_BYTES: usize = 4 * 1024 * 1024;
 
+/// Largest destination text accepted into routing state.
+///
+/// Current I2P full destinations are 516 chars (legacy) or 524 chars (ECIES).
+/// Allow up to two trailing `=` padding chars on top of that, and also the
+/// supported compact `.b32.i2p` form (60 chars total).
+pub const MAX_NODE_DESTINATION_BYTES: usize = 526;
+
 /// A node as others know it. Its id is derived from the destination, never
 /// from anything tied to the person running it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

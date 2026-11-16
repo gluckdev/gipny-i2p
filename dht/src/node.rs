@@ -13,7 +13,7 @@ use futures::future::{join_all, BoxFuture};
 use crate::crypto::{sha256, DhtKey};
 use crate::proto::{
     self, node_id, pow_ok, solve_pow, DhtEnvelope, DhtRequest, DhtResponse, NodeInfo, StoredItem,
-    PROTOCOL_VERSION,
+    MAX_NODE_DESTINATION_BYTES, PROTOCOL_VERSION,
 };
 use crate::store::{Storage, StoreStats};
 
@@ -122,6 +122,10 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         Self { me: RwLock::new(None), storage, transport, cfg, clock, peers: Mutex::default(), probe_order: AtomicU64::new(1) }
     }
 
+    fn destination_len_ok(destination: &str) -> bool {
+        destination.len() <= MAX_NODE_DESTINATION_BYTES
+    }
+
     /// Become reachable as `me` (once our relay is up). Until then this node
     /// only asks, and nobody learns about it.
     pub fn set_me(&self, me: Option<NodeInfo>) {
@@ -156,7 +160,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         let mut peers = self.peers();
         for d in destinations {
             let d = d.trim();
-            if d.is_empty() || mine.as_deref() == Some(d) {
+            if d.is_empty() || !Self::destination_len_ok(d) || mine.as_deref() == Some(d) {
                 continue;
             }
             peers.entry(d.to_string())
@@ -195,7 +199,10 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     }
 
     fn learn(&self, info: &NodeInfo, confirmed: bool) {
-        if info.version != PROTOCOL_VERSION || info.destination.is_empty() {
+        if info.version != PROTOCOL_VERSION
+            || info.destination.is_empty()
+            || !Self::destination_len_ok(&info.destination)
+        {
             return;
         }
         if self.me().is_some_and(|m| m.destination == info.destination) {

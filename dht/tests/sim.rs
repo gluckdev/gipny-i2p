@@ -10,7 +10,10 @@ use futures::future::BoxFuture;
 use gipny_dht::crypto::{self, DAY_MS};
 use gipny_dht::items;
 use gipny_dht::node::{self as dnode, Connection, DhtNode, NetError, NodeConfig, Transport};
-use gipny_dht::proto::{DhtEnvelope, DhtRequest, DhtResponse, NodeInfo, StoredItem, PROTOCOL_VERSION};
+use gipny_dht::proto::{
+    DhtEnvelope, DhtRequest, DhtResponse, NodeInfo, StoredItem, MAX_NODE_DESTINATION_BYTES,
+    PROTOCOL_VERSION,
+};
 use gipny_dht::store::{MemStorage, StoreLimits};
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -495,6 +498,57 @@ impl Transport for FillerTransport {
 
 fn fabricated(n: usize) -> Vec<NodeInfo> {
     (0..n).map(|i| NodeInfo { destination: format!("ghost-{i}"), stores: true, version: PROTOCOL_VERSION }).collect()
+}
+
+fn fabricated_with_destination_len(n: usize, len: usize) -> Vec<NodeInfo> {
+    (0..n).map(|i| NodeInfo {
+        destination: format!("{}-{i:08x}", "g".repeat(len.saturating_sub(9))),
+        stores: true,
+        version: PROTOCOL_VERSION,
+    }).collect()
+}
+
+#[tokio::test]
+async fn oversized_destinations_are_not_retained_from_seed_or_caller_paths() {
+    let net = Net::new();
+    let node = new_node(&net, Some("root"), true);
+    let max = "m".repeat(MAX_NODE_DESTINATION_BYTES);
+    let too_long = "x".repeat(MAX_NODE_DESTINATION_BYTES + 1);
+
+    node.add_candidates(&[max.clone(), too_long.clone()], true);
+    assert_eq!(node.table_len(), 1, "seed/candidate path must keep only bounded destinations");
+
+    let _ = node.handle(&[0; 32], DhtEnvelope {
+        from: Some(NodeInfo { destination: too_long.clone(), stores: true, version: PROTOCOL_VERSION }),
+        req: DhtRequest::Ping,
+    });
+    assert_eq!(node.table_len(), 1, "oversized from claim must not be learned");
+
+    let _ = node.handle(&[0; 32], DhtEnvelope {
+        from: Some(NodeInfo { destination: max.clone(), stores: true, version: PROTOCOL_VERSION }),
+        req: DhtRequest::Ping,
+    });
+    assert_eq!(node.table_len(), 2, "boundary-sized from claim should still be learned");
+}
+
+#[tokio::test]
+async fn lookup_ignores_oversized_nodes_announced_by_a_peer() {
+    let net = Net::new();
+    let victim = Arc::new(DhtNode::new(
+        Arc::new(FillerTransport {
+            liar: "liar".into(),
+            fabrications: fabricated_with_destination_len(4, MAX_NODE_DESTINATION_BYTES + 1),
+        }),
+        Arc::new(MemStorage::new(StoreLimits::default())),
+        config(),
+        { let clock = net.clock.clone(); Arc::new(move || clock.load(Ordering::Relaxed)) },
+    ));
+    victim.add_candidates(&["liar".to_string()], true);
+
+    let _ = victim.lookup(&[7; 32]).await;
+
+    assert_eq!(victim.peer_count(), 1, "the responder itself is still a known peer");
+    assert_eq!(victim.table_len(), 1, "oversized nodes from caller path must be dropped");
 }
 
 /// Issue #99: one node's word may not fill other people's tables.
