@@ -11,6 +11,8 @@ pub mod network;
 #[cfg(target_arch = "wasm32")]
 pub use network::*;
 mod metrics;
+mod policy;
+pub use policy::application_tunnel_hops;
 #[cfg(all(feature = "native-peer", not(target_arch = "wasm32")))]
 pub mod native_fixture;
 pub mod ntcp2;

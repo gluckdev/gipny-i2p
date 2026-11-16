@@ -4,7 +4,9 @@ import { clearBrowserFiles } from './features/files/browser-files';
 
 const client = new BrowserCoreClient();
 configureBrowserBackend(client);
-await client.configure();
+// UI, configuration and the fresh worker's JS/WASM load concurrently. Profile
+// commands that need networking wait on the client's configuration barrier.
+void client.prepare().catch(() => { /* The ordinary auth path reports failures. */ });
 window.addEventListener('online', () => { void client.reconnect().catch(() => {}); });
 window.addEventListener('pagehide', () => { client.terminate(); clearBrowserFiles(); document.getElementById('app')?.replaceChildren(); });
 let resumeLocked = false;

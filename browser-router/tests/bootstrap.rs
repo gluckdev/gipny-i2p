@@ -1,11 +1,5 @@
 #![cfg(target_arch = "wasm32")]
 use emissary_core::runtime::Storage;
-use emissary_core::{
-    crypto::{sha256::Sha256, SigningPrivateKey, StaticPrivateKey},
-    primitives::{RouterAddress, RouterInfo},
-    runtime::Runtime,
-    Config,
-};
 use gipny_browser_router::{
     bootstrap::{
         fetch_snapshot, merge_routers, verify_archive, verify_snapshot, LiveNetDb,
@@ -13,71 +7,14 @@ use gipny_browser_router::{
     },
     BrowserRuntime,
 };
-use rand::RngExt;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
 
-fn digest(bytes: &[u8]) -> String {
-    Sha256::new()
-        .update(bytes)
-        .finalize_new()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-fn gzip(bytes: &[u8]) -> Vec<u8> {
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    gzip.write_all(bytes).unwrap();
-    gzip.finish().unwrap()
-}
-
-fn archive(records: &[Vec<u8>]) -> Vec<u8> {
-    let mut tar = tar::Builder::new(Vec::new());
-    for (index, bytes) in records.iter().enumerate() {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append_data(
-            &mut header,
-            format!("rX/routerInfo-{index}.dat"),
-            bytes.as_slice(),
-        )
-        .unwrap();
-    }
-    gzip(&tar.into_inner().unwrap())
-}
-
-fn signed_info(ip: &str, network: u8) -> Vec<u8> {
-    let key = BrowserRuntime::rng().random();
-    let secret = StaticPrivateKey::from_bytes(key);
-    let signing = SigningPrivateKey::random(BrowserRuntime::rng());
-    let address = RouterAddress::new_published_ntcp2(
-        key,
-        [0; 16],
-        None,
-        true,
-        ip.parse().unwrap(),
-        format!("{ip}:12345").parse().unwrap(),
-    );
-    RouterInfo::new::<BrowserRuntime>(
-        &Config {
-            net_id: Some(network),
-            ..Config::default()
-        },
-        Some(address),
-        None,
-        None,
-        None,
-        &secret,
-        &signing,
-        false,
-    )
-    .serialize(&signing)
-}
+#[path = "common/bootstrap.rs"]
+mod fixture;
+use fixture::{archive, digest, gzip, signed_info};
 
 #[wasm_bindgen_test]
 async fn snapshot_verifies_signatures_network_public_targets_and_deduplicates() {

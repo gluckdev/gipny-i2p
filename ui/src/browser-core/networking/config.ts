@@ -1,8 +1,9 @@
 import { rtcSettings, type RtcSettings } from './rtc-transport';
+import { optionalCache, whileActive } from './config-cache';
 
 const CACHE = 'gipny-public-network-v1';
 const LIMIT = 65536;
-type NetworkConfiguration = { config: Record<string, string>; rtc: RtcSettings | null; publicValue: Record<string, unknown> };
+export type NetworkConfiguration = { config: Record<string, string>; rtc: RtcSettings | null; publicValue: Record<string, unknown> };
 
 /** This cache holds the public deployment configuration, never profile data. */
 export function validateNetworkConfiguration(value: unknown): NetworkConfiguration {
@@ -46,34 +47,54 @@ async function readConfiguration(response: Response): Promise<NetworkConfigurati
   return validateNetworkConfiguration(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, length))));
 }
 
-export async function loadNetworkConfiguration(source: URL, fetcher: typeof fetch = fetch, storage: CacheStorage | undefined = globalThis.caches): Promise<NetworkConfiguration | null> {
-  let cache: Cache | undefined;
-  try { cache = await storage?.open(CACHE); } catch { /* Cache denial does not prevent an online start. */ }
-  const drop = async (): Promise<void> => { try { await cache?.delete(source.href); } catch { /* Optional public cache. */ } };
+export function loadNetworkConfiguration(source: URL, fetcher: typeof fetch = fetch, storage: CacheStorage | undefined = globalThis.caches, signal?: AbortSignal): Promise<NetworkConfiguration | null> {
+  return whileActive(() => loadConfiguration(source, fetcher, storage, signal), signal);
+}
+
+async function loadConfiguration(source: URL, fetcher: typeof fetch, storage: CacheStorage | undefined, signal?: AbortSignal): Promise<NetworkConfiguration | null> {
+  const active = (): void => { if (signal?.aborted) throw new Error('Browser startup cancelled'); };
+  active();
+  const cache = await optionalCache(async () => storage?.open(CACHE));
+  const drop = async (): Promise<void> => { await optionalCache(async () => cache?.delete(source.href)); };
   const fallback = async (): Promise<NetworkConfiguration | null> => {
     try {
-      const saved = await cache?.match(source.href);
-      if (saved) return await readConfiguration(saved);
+      const saved = await optionalCache(async () => cache?.match(source.href));
+      if (saved) {
+        const value = await optionalCache(() => readConfiguration(saved));
+        if (value) return value;
+        await drop();
+      }
     } catch { await drop(); }
     return null;
   };
   const abort = new AbortController();
+  const cancel = (): void => abort.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  // CacheStorage awaits above can cross a profile lock.
+  if (signal?.aborted) cancel();
   const deadline = setTimeout(() => abort.abort(), 2500);
-  let response: Response;
   try {
-    response = await fetcher(source, { cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal: abort.signal });
-  } catch { clearTimeout(deadline); return fallback(); }
-  try {
+    active();
+    let current: NetworkConfiguration;
+    try {
+      const response = await fetcher(source, { cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal: abort.signal });
+      current = await readConfiguration(response);
+    } catch {
+      active();
+      const saved = await fallback();
+      active();
+      return saved;
+    }
     // Losing the code host (including a removed repository, denial or rate
     // limit) must not revoke an installed client's public network settings.
     // A valid new configuration replaces them; an invalid cached copy is
     // discarded by fallback. Bridge authorization and RI freshness are still
     // checked independently and never bypassed by this cache.
-    const current = await readConfiguration(response);
+    active();
     try {
-      await cache?.put(source.href, new Response(JSON.stringify(current.publicValue), { headers: { 'Content-Type': 'application/json' } }));
+      await optionalCache(async () => cache?.put(source.href, new Response(JSON.stringify(current.publicValue), { headers: { 'Content-Type': 'application/json' } })));
     } catch { /* Quota/persistence is best effort; in-memory configuration remains valid. */ }
+    active();
     return current;
-  } catch { return await fallback(); }
-  finally { clearTimeout(deadline); }
+  } finally { clearTimeout(deadline); signal?.removeEventListener('abort', cancel); }
 }

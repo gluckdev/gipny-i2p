@@ -2,6 +2,7 @@ import type { BrowserBackend, UnlistenFn } from '../app/api';
 import { enrollBrowserPasskey, unlockBrowserPasskey } from './authorization/passkeys';
 import { RtcBridge, rtcSettings } from './networking/rtc-transport';
 import { loadNetworkConfiguration } from './networking/config';
+import { StartupTimings } from './networking/startup';
 
 type Pending = { resolve(value: unknown): void; reject(error: Error): void; command: string };
 export class BrowserCoreClient implements BrowserBackend {
@@ -14,16 +15,45 @@ export class BrowserCoreClient implements BrowserBackend {
   private unlocked = false;
   private rtc: RtcBridge | null = null;
   private rtcConfig: ReturnType<typeof rtcSettings> | null = null;
-  async configure(): Promise<void> {
-    const loaded = await loadNetworkConfiguration(new URL('browser-config.json', document.baseURI));
-    this.config = loaded?.config ?? null;
-    this.rtcConfig = loaded?.rtc ?? null;
+  private generation = 0;
+  private locking = false;
+  private configured: Promise<void> | null = null;
+  private configAbort: AbortController | null = null;
+  private timings = new StartupTimings();
+
+  /** Public assets/configuration load beside the UI. No profile is opened. */
+  async prepare(): Promise<void> {
+    const generation = this.generation;
+    await this.configure();
+    this.active(generation);
+    await this.send('prewarm_network');
+  }
+  private active(generation: number): void {
+    if (generation !== this.generation || this.locking) throw new Error('Browser startup cancelled');
+  }
+  configure(): Promise<void> {
+    if (this.configured) return this.configured;
+    const generation = this.generation;
+    const workerReady = this.ensureWorker();
+    const abort = new AbortController(); this.configAbort = abort;
+    const loading = loadNetworkConfiguration(new URL('browser-config.json', document.baseURI), fetch, globalThis.caches, abort.signal)
+      .then(loaded => { this.active(generation); this.timings.mark('config_loaded'); return loaded; });
+    const configured = Promise.all([workerReady, loading]).then(async ([, loaded]) => {
+      this.active(generation);
+      this.config = loaded?.config ?? null;
+      this.rtcConfig = loaded?.rtc ?? null;
+      this.rtc?.close(); this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;
+      await this.send('init', { config: this.config });
+      this.active(generation); this.timings.mark('configured');
+    });
+    this.configured = configured;
+    return configured;
   }
   private ensureWorker(): Promise<unknown> {
+    if (this.locking) throw new Error('Profile is locking');
     if (this.init) return this.init;
-    // iOS Lockdown Mode and some hardened browsers remove the WebAssembly
-    // global; the Rust core cannot start and a worker would only die quietly.
-    if (typeof WebAssembly === 'undefined') throw new Error('WebAssembly is disabled in this browser (Lockdown Mode or a restrictive policy), so the messenger cannot run here');
+    // The worker checks its own WASM API and initialization result. Window's
+    // WebAssembly availability is not a capability check for another realm.
     const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'gipny-core' });
     this.worker = worker;
     this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;
@@ -65,7 +95,10 @@ export class BrowserCoreClient implements BrowserBackend {
       this.terminate('The browser core stopped; unlock the profile to recover');
       if (wasUnlocked) window.dispatchEvent(new Event('gipny-browser-locked'));
     };
-    this.init = this.send('init', { config: this.config }).catch(error => {
+    this.init = this.send('init', { config: this.config }).then(value => {
+      if (this.worker === worker) this.timings.mark('worker_wasm_ready');
+      return value;
+    }).catch(error => {
       if (this.worker === worker) this.terminate('Browser core initialization failed');
       throw error;
     });
@@ -82,21 +115,31 @@ export class BrowserCoreClient implements BrowserBackend {
   }
   async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     if (command === 'vault_lock') {
-      if (!this.worker) return null as T;
-      const emergency = setTimeout(() => this.terminate('Profile locked'), 2000);
+      const worker = this.worker;
+      this.generation++; this.locking = true;
+      this.configAbort?.abort(); this.configAbort = null; this.configured = null;
+      if (!worker) { this.terminate(); return null as T; }
+      const emergency = setTimeout(() => { if (this.worker === worker) this.terminate('Profile locked'); }, 2000);
       try { await this.send(command); }
-      finally { clearTimeout(emergency); this.terminate('Profile locked'); }
+      finally { clearTimeout(emergency); if (this.worker === worker) this.terminate('Profile locked'); }
       return null as T;
     }
-    await this.ensureWorker();
+    const generation = this.generation;
     const opening = command === 'vault_create' || command === 'vault_unlock' || command === 'vault_unlock_passkey';
     try {
+      // Profile listing and UI rendering do not wait for a remote code host.
+      // Any operation that can start networking must see the config barrier.
+      if (opening || command === 'prewarm_network' || command === 'retry_network') await this.configure();
+      else await this.ensureWorker();
+      this.active(generation);
       const result = await this.send(command, args) as T;
+      this.active(generation);
       if (opening) this.unlocked = true;
       if (command === 'vault_create') void navigator.storage?.persist?.().catch(() => false);
+      if (command === 'browser_diagnostics') return { ...result, page_startup_ms: this.timings.snapshot() } as T;
       return result;
     } catch (error) {
-      if (opening) this.terminate('Profile opening failed');
+      if (opening && generation === this.generation) this.terminate('Profile opening failed');
       throw error;
     }
   }
@@ -108,6 +151,10 @@ export class BrowserCoreClient implements BrowserBackend {
     return Promise.resolve(() => { listeners!.delete(callback); });
   }
   terminate(message = 'Profile locked'): void {
+    this.generation++; this.locking = false;
+    this.configAbort?.abort(); this.configAbort = null; this.configured = null;
+    this.config = null; this.rtcConfig = null;
+    this.timings.reset();
     this.rtc?.close(); this.rtc = null;
     this.worker?.terminate(); this.worker = null; this.init = null;
     this.unlocked = false;
@@ -123,11 +170,10 @@ export class BrowserCoreClient implements BrowserBackend {
   }
   async reconnect(): Promise<void> {
     if (!this.unlocked) return;
+    const generation = this.generation;
+    this.configAbort?.abort(); this.configAbort = null; this.configured = null;
     await this.configure();
-    if (!this.unlocked) return;
-    this.rtc?.close();
-    this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;
-    await this.invoke('init', { config: this.config });
+    if (!this.unlocked || generation !== this.generation) return;
     await this.invoke('retry_network');
   }
   async unlockPasskey(profile: string, totpCode?: string): Promise<void> {

@@ -1,6 +1,7 @@
 import init from '../../../browser-router/pkg/gipny_browser_router.js';
 import { BrowserBackend } from './backend';
 import { WorkerRtcSocket } from './networking/rtc-transport';
+import { initializeWorkerWasm } from './initialization';
 
 const scope = globalThis as unknown as {
   onmessage: ((event: MessageEvent) => void) | null;
@@ -11,14 +12,16 @@ Object.assign(globalThis, {
     (url, auth, port) => scope.postMessage({ event: 'rtc_connect', endpoint: url, protocol: auth }, [port])),
 });
 const backend = new BrowserBackend((event, payload) => scope.postMessage({ event, payload }));
-const ready = init();
+const ready = initializeWorkerWasm(init);
 scope.onmessage = (event: MessageEvent): void => {
   const request = event.data as { id?: unknown; command?: unknown; args?: unknown };
   if (!Number.isSafeInteger(request.id) || typeof request.command !== 'string' || request.command.length > 100 || (request.args !== undefined && (!request.args || typeof request.args !== 'object' || Array.isArray(request.args)))) return;
   const respond = async (): Promise<void> => {
     try {
-      await ready;
-      const result = await backend.invoke(request.command as string, request.args as Record<string, unknown> | undefined);
+      const initialized = await ready;
+      if (!initialized.ok) throw new Error(initialized.error);
+      const args = request.command === 'init' ? { ...request.args as Record<string, unknown>, wasm_ms: initialized.elapsed_ms } : request.args as Record<string, unknown> | undefined;
+      const result = await backend.invoke(request.command as string, args);
       if (result instanceof Uint8Array) {
         const bytes = new Uint8Array(result); result.fill(0);
         scope.postMessage({ id: request.id, result: bytes }, [bytes.buffer]);

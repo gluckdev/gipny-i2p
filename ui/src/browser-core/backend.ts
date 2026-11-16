@@ -1,8 +1,9 @@
-import { BrowserEngine, AttachmentHasher, attachment_passed_name, attachment_passes_through, contact_qr_svg, envelope_is_initial, public_network_metrics, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
+import { BrowserEngine, PublicBootstrap, application_tunnel_hops, AttachmentHasher, attachment_passed_name, attachment_passes_through, contact_qr_svg, envelope_is_initial, public_network_metrics, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
 import type { BootStatus, CoreEvent, GroupMember, PendingAttachment, RelayInfo } from '../app/api';
 import { isValidI2pAddress } from '../features/contacts/contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './profiles/storage';
 import { BrowserRelay } from './networking/relay';
+import { PublicPrewarm, StartupTimings } from './networking/startup';
 import { acknowledgeBrowserDeletion, deletionEvent, forgetRequestObligations, queuePeerReport, queueDeletionControls, receiveDeletionControl } from './messaging/deletion';
 import { addContact, getContact, removeContact } from './messaging/contacts';
 import { groupWire, ingestGroup } from './messaging/groups';
@@ -71,11 +72,17 @@ export class BrowserBackend {
   private relayAnswered = false;
   private verificationRetry = new Map<string, number>();
   private log = new ActionLog();
+  private prewarm = new PublicPrewarm((url, digest) => new PublicBootstrap(url, digest));
+  private startup = new StartupTimings();
+  private wasmMs: number | null = null;
   constructor(private emit: EventSink) {
     this.log.info('worker_init', 'browser core worker created');
   }
 
-  configure(config: Record<string, string> | null): void { this.networkConfig = config; }
+  configure(config: Record<string, string> | null): void {
+    if (JSON.stringify(config) !== JSON.stringify(this.networkConfig)) this.prewarm.cancel();
+    this.networkConfig = config;
+  }
   private require(): { engine: BrowserEngine; state: BrowserState; identity: PublicIdentity } {
     if (this.closing || !this.engine || !this.state || !this.identity) throw new Error('Profile is locked');
     return { engine: this.engine, state: this.state, identity: this.identity };
@@ -275,6 +282,7 @@ export class BrowserBackend {
    * this worker; no long network operation is held inside the state queue. */
   closeNow(): void {
     this.closing = true;
+    this.prewarm.cancel();
     this.verificationRetry.clear();
     if (this.engine || this.storage) {
       this.log.info('vault_lock', 'keys wiped from worker memory');
@@ -301,6 +309,8 @@ export class BrowserBackend {
     this.closing = false;
     const opening = this.generation;
     const profile = profileName(text(args, 'profile'));
+    this.startup.reset();
+    void this.prewarm.start(this.networkConfig, profile);
     if (create && (args.duressPass || args.maxAttempts)) throw new Error('Browser profiles do not support duress passwords or destructive attempt counters');
     this.log.info(create ? 'vault_create' : 'vault_unlock', passkey ? 'passkey' : 'password');
     this.boot('vault', 'active', create ? 'Creating encrypted browser profile' : 'Opening encrypted browser profile');
@@ -332,12 +342,14 @@ export class BrowserBackend {
       this.verifyReadyFiles();
       this.sweepTimer = setInterval(() => { this.reportStalls(); if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
       this.boot('vault', 'done', 'Profile opened; keys remain in the WASM worker');
+      this.startup.mark('vault_opened');
       const attempt = ++this.generation;
       // "No deposit" stalls count from the network start, not the epoch.
       this.lastDeposit = Date.now(); this.stallReports = 0;
       void this.startNetwork(attempt);
       return null;
     } catch (error) {
+      if (opening === this.generation) this.prewarm.cancel();
       if (this.engine === engine && engine) this.closeNow();
       else { engine?.close(); engine?.free(); storage.close(); }
       this.boot('vault', 'failed', reason(error));
@@ -355,10 +367,14 @@ export class BrowserBackend {
     this.hosted = { state: 'starting' }; this.relayChanged();
     try {
       this.log.info('network_start', `bootstrap attempt ${attempt}`);
+      await this.prewarm.start(this.networkConfig, this.storage?.name);
+      if (attempt !== this.generation || this.closing || this.engine !== engine) return;
+      this.startup.mark('public_bootstrap_finished');
       const network = await engine.start_network(JSON.stringify(this.networkConfig), (raw: string) => {
         if (attempt !== this.generation) return;
         try {
           const status = JSON.parse(raw) as BootStatus;
+          if (status.state === 'done') this.startup.mark(`${status.stage}_reported_done`);
           this.boot(status.stage, status.state, status.detail);
         } catch { /* Reject malformed progress, never invent readiness. */ }
       });
@@ -367,6 +383,7 @@ export class BrowserBackend {
         network.close(); network.free(); return;
       }
       this.network = network;
+      this.startup.mark('application_destination_ready');
       this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error));
       this.relay.start();
       this.hosted = { state: 'ready', address: this.identity!.onion };
@@ -404,6 +421,7 @@ export class BrowserBackend {
             await this.relay!.ping(peer.address);
             if (active()) {
               this.relayProbes.completed++;
+              this.startup.mark('first_authenticated_peer');
               this.log.info('relay_probe_ok', this.who(peer.key));
             }
             break;
@@ -543,6 +561,7 @@ export class BrowserBackend {
       if (attempt !== this.generation || !this.relay) return;
       this.lastDeposit = Date.now(); this.stallReports = 0;
       this.relayAnswered = true;
+      this.startup.mark('first_authenticated_peer');
       this.event({ ContactReachability: { contact_id: contact.id, unreachable: false } });
       this.boot('dht', 'skipped', 'Authenticated peer relay answered');
       this.log.debug('outbox_deposited', `to ${this.who(current.peer)} · attempts ${current.attempts}${current.resends ? ` · resend ${current.resends}` : ''}`);
@@ -744,6 +763,7 @@ export class BrowserBackend {
   async invoke(command: string, args: Args = {}): Promise<unknown> {
     if (command === 'init') {
       this.configure(args.config as Record<string, string> | null);
+      if (typeof args.wasm_ms === 'number' && Number.isFinite(args.wasm_ms) && args.wasm_ms >= 0) this.wasmMs = args.wasm_ms;
       this.log.info('init', this.networkConfig ? 'network config received' : 'started without network config');
       return null;
     }
@@ -771,12 +791,17 @@ export class BrowserBackend {
       try { const [a, b] = storage.readSlots(); return JSON.parse(BrowserEngine.passkey_entries(a, b)); }
       finally { storage.close(); }
     }
-    if (command === 'prewarm_network') return null;
-    if (command === 'prewarm_status') return 'off';
+    if (command === 'prewarm_network') {
+      // A profile is only a cancellation scope. Never open OPFS or an engine
+      // here; the Rust job sees only a public snapshot URL and digest.
+      if (!this.engine) void this.prewarm.start(this.networkConfig, typeof args.profile === 'string' ? profileName(args.profile) : undefined);
+      return null;
+    }
+    if (command === 'prewarm_status') return this.prewarm.status();
     if (command === 'current_version') return typeof __GIPNY_VERSION__ === 'undefined' ? 'unknown-browser' : `${__GIPNY_VERSION__}-browser`;
     if (command === 'update_configured' || command === 'get_auto_update' || command === 'update_installs_itself' || command === 'update_asks_for_root') return false;
     if (command === 'check_update' || command === 'get_agent_mode') return null;
-    if (command === 'browser_diagnostics') return { ...JSON.parse(public_network_metrics()), relay_probes: { ...this.relayProbes } };
+    if (command === 'browser_diagnostics') return { ...JSON.parse(public_network_metrics()), relay_probes: { ...this.relayProbes }, public_bootstrap: this.prewarm.diagnostics(), profile_startup_ms: this.startup.snapshot(), wasm_initialization_ms: this.wasmMs };
     if (command === 'get_relay_info') return this.info();
     if (command === 'get_relay_address') return this.identity?.onion || '';
     if (command === 'get_router_settings') return { transit: 'frugal', upnp: 'off' };
@@ -796,7 +821,10 @@ export class BrowserBackend {
     if (command === 'my_b32') return identity.onion;
     if (command === 'my_fingerprint') return identity.fingerprint;
     if (command === 'get_display_name') return state.displayName;
-    if (command === 'link_stats') return { our_hops: 2, their_hops: 2, padded: true, route: this.relay ? 'relay' : 'none', rtt_ms: null };
+    if (command === 'link_stats') {
+      const hops = application_tunnel_hops();
+      return { our_hops: hops[1], their_hops: hops[0], padded: true, route: this.relay ? 'relay' : 'none', rtt_ms: null };
+    }
     if (command === 'list_contacts') return state.contacts;
     if (command === 'get_contact') return getContact(state, number(args, 'id'));
     if (command === 'list_groups') return state.groups;

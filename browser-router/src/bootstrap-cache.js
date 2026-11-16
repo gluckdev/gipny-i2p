@@ -4,24 +4,30 @@ const NAME = 'gipny-public-netdb-v1';
 const LIMIT = 4 * 1024 * 1024;
 const key = digest => new URL('/__gipny-public-netdb/v1/' + digest, globalThis.location.href).href;
 
+/** Both public caches enforce the limit while reading, before allocating a
+ * response-sized ArrayBuffer. Corrupt same-origin cache entries are untrusted. */
+async function boundedBytes(response) {
+  if (!response?.body) return null;
+  const reader = response.body.getReader();
+  const bytes = new Uint8Array(LIMIT);
+  let length = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      if (length + part.value.byteLength > LIMIT) throw new Error('Oversize cached bootstrap');
+      bytes.set(part.value, length); length += part.value.byteLength;
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  return length ? bytes.slice(0, length) : null;
+}
+
 export async function loadBootstrap(digest) {
   if (!/^[0-9a-f]{64}$/i.test(digest)) return null;
   try {
     const cache = await caches.open(NAME);
     const response = await cache.match(key(digest));
-    if (!response?.body) return null;
-    const reader = response.body.getReader();
-    const bytes = new Uint8Array(LIMIT);
-    let length = 0;
-    try {
-      while (true) {
-        const part = await reader.read();
-        if (part.done) break;
-        if (length + part.value.byteLength > LIMIT) throw new Error('Oversize cached bootstrap');
-        bytes.set(part.value, length); length += part.value.byteLength;
-      }
-    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
-    return bytes.slice(0, length);
+    return await boundedBytes(response);
   } catch { return null; }
 }
 
@@ -50,9 +56,7 @@ export async function loadLiveNetDb() {
   try {
     // match() with cacheName does not create an empty cache on a first start.
     const response = await caches.match(liveKey(), { cacheName: LIVE });
-    if (!response) return null;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    return bytes.length && bytes.length <= LIMIT ? bytes : null;
+    return await boundedBytes(response);
   } catch { return null; }
 }
 

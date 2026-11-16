@@ -712,10 +712,10 @@ index 488d668..6e5fa24 100644
      type UdpSocket: UdpSocket;
      type TcpListener: TcpListener<Self::TcpStream>;
 diff --git a/emissary-core/src/sam/mod.rs b/emissary-core/src/sam/mod.rs
-index cd3b4a4..279885e 100644
+index cd3b4a4..8d613f9 100644
 --- a/emissary-core/src/sam/mod.rs
 +++ b/emissary-core/src/sam/mod.rs
-@@ -74,6 +74,159 @@ pub use {
+@@ -74,6 +74,163 @@ pub use {
      protocol::streaming::Packet,
  };
  
@@ -785,6 +785,10 @@ index cd3b4a4..279885e 100644
 +    }
 +
 +    impl<R: Runtime> ClientHandle<R> {
++        // Application policy, independent of upstream exploratory defaults.
++        pub const INBOUND_HOPS: usize = 3;
++        pub const OUTBOUND_HOPS: usize = 3;
++
 +        pub(crate) fn new(netdb: NetDbHandle, tunnels: TunnelManagerHandle, profiles: ProfileStorage<R>, events: EventHandle<R>) -> Self {
 +            Self { netdb, tunnels, profiles, events }
 +        }
@@ -792,7 +796,7 @@ index cd3b4a4..279885e 100644
 +        pub async fn create(&self, identity: &ClientIdentity) -> crate::Result<ClientSession<R>> {
 +            let (mut control, driver_control) = R::memory_stream_pair().ok_or(Error::NotSupported)?;
 +            let session_id: Arc<str> = Arc::from(base64_encode(identity.destination().id().to_vec()));
-+            let config = TunnelPoolConfig { name: Str::from(Arc::clone(&session_id)), ..TunnelPoolConfig::default() };
++            let config = TunnelPoolConfig { name: Str::from(Arc::clone(&session_id)), num_inbound_hops: Self::INBOUND_HOPS, num_outbound_hops: Self::OUTBOUND_HOPS, ..TunnelPoolConfig::default() };
 +            let future = self.tunnels.create_tunnel_pool(config).map_err(|_| Error::EssentialTaskClosed)?;
 +            let (sender, receiver) = with_recycle(32, SamSessionCommandRecycle::default());
 +            let (datagram_tx, datagram_rx) = channel(1);
