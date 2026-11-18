@@ -1,16 +1,15 @@
 # Сборки и происхождение релизов
 
-Требование владельца, уточнено **2026-10-28**: все дальнейшие сборки GIPNY
-выполняются только в **GitHub Actions** публичного
-[gluckdev/gipny-i2p](https://github.com/gluckdev/gipny-i2p). Слово GitLab в
-предыдущем указании было оговоркой. GitLab остаётся местом публикации библиотеки
-AiBlow, а не сборок приложения. Локальные результаты предыдущих проверок —
-исторические наблюдения, их нельзя выдавать за новый CI результат.
+Ветка `release/0.5.0-beta.1` допускает локальные сборки и тесты.
+Публикуемые пакеты собирает GitHub Actions из одного коммита в публичном
+репозитории. Исходный код, готовый пакет и его контрольная сумма привязаны
+к этому SHA через manifests. [Release workflow](../.github/workflows/release.yml).
 
-Решение владельца от **2026-11-16**: alpha2 не публикуется. Beta допускается
-после межплатформенной совместимости, адаптивных network/UI и защищённого
-переноса профиля на общем проверенном SHA. Старые preview остаются baseline.
-[Матрица платформ, минимумы и незакрытые gates](platform-support.md).
+Последний опубликованный на 18 ноября 2026 года предварительный выпуск —
+[v0.5.0-alpha.1](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.5.0-alpha.1).
+Для beta остаются проверки межплатформенной совместимости, адаптации сети
+и переноса профиля. [Условия выпуска](plans/2026-11-16-beta.md).
+Статический веб-клиент публикуется отдельно. [Деплой Pages](../scripts/deploy/README.md).
 
 ## Что собирается
 
@@ -34,6 +33,7 @@ CI-артефакт не означает публичное развёртыв�
 | Linux x86_64 | `ubuntu-22.04` | AppImage, deb, GNU agent |
 | Linux arm64 | `ubuntu-22.04-arm` | AppImage, deb, GNU agent |
 | Windows x64 | `windows-latest` | NSIS и agent; MSVC, статические зависимости vcpkg |
+| Windows ARM64 | `windows-11-arm` | NSIS и agent для `aarch64-pc-windows-msvc`, PE verification |
 | macOS arm64 | `macos-15` | DMG и agent |
 | macOS Intel | `macos-15-intel` | DMG и agent |
 | Android arm64 / armv7 | `ubuntu-22.04` с NDK | Собственный `libi2pd.so`, затем APK каждого ABI |
@@ -46,7 +46,8 @@ OpenWrt не означает любой роутер: точные ABI и ог�
 [openwrt.md](openwrt.md).
 
 Текущие macOS пакеты имеют minimumSystemVersion 15.0 и отдельные архитектуры;
-universal DMG и Windows ARM64 пока не выпускаются. Android minSdk 24 и две ARM
+universal DMG в матрице отсутствует. Для Windows ARM64 задан отдельный native job.
+Установка его beta-пакета на устройство ещё требует проверки. Android minSdk 24 и две ARM
 ABI не означают проверку всех устройств: нужен hardware Keystore и runtime
 на 4/16 KiB страницах. Собственный verifier проверяет byte-level ELF/ZIP
 выравнивание в `release.yml`; receipts `android-*-pages-*` отделены от shipping
@@ -71,13 +72,9 @@ Windows memory-security CI также выявил upstream SQLCipher logger rec
 оставаться согласованными. Отдельный Windows child-process regression
 форсирует lock failure при включённом `cipher_memory_security`.
 
-Первый Intel preview также выявил unsigned вложенный `gipny-web`: pinned Tauri
-CLI рассматривал оба Cargo bin как содержимое desktop bundle. Gateway теперь
-требует явной non-default feature `web-gateway`; обычное `.app` содержит только
-`gipny`. Gateway продолжает проверяться с явной feature в desktop fast CI.
 После Tauri build `verify-macos-bundle.sh` проверяет Info.plist, единственный
 executable, точную архитектуру и `codesign --verify --deep --strict` для обеих
-macOS архитектур. Отказ подписи нельзя заменять отключением проверки.
+macOS архитектур. Веб-клиент собирается отдельно как статическая PWA.
 macOS запрашивает source build Boost/OpenSSL через Homebrew. OpenWrt проверяет
 SHA256 официального toolchain, Boost, OpenSSL source crate и zlib до сборки.
 
@@ -188,15 +185,10 @@ Rust callers и unit tests на Linux, Windows, macOS arm64/Intel с заглу�
 application artifacts из этой проверки не публикуются. `build.yml` дополнительно
 собирает Kotlin instrumentation APK; компиляция теста не доказывает наличие TEE,
 прохождение hardware-positive тестов или реальный запуск на телефоне.
-Локально допустимы чтение кода, YAML/shell syntax,
-ссылки и проверки данных без компиляции приложения; `cargo build/test/check`,
-Rust probes, `npm run build` и сборка APK выполняются в Actions.
-
-Этот документ описывает реализацию в рабочей ветке на 2026-10-28. Новая полная
-матрица ещё должна пройти GitHub CI после публикации согласованного commit.
-Unit/host check, compile/link и реальная установка/обновление на устройстве —
-разные результаты. Платформенный lifecycle описан в
-[platform-updates.md](platform-updates.md).
+Для локальной проверки используйте те же lockfiles и команды компонента.
+Финальные версии для Windows, macOS, Linux, Android и OpenWrt проходят матрицу
+на GitHub Actions. Проверки установки и обновления описаны в
+[руководстве по платформам](platform-updates.md).
 
 Live verification также фиксирует SHA роутера: PR и обычный manual `e2e-i2pd`
 проверяют committed pin. Schedule/`test_upstream=true` — отдельный upstream probe;

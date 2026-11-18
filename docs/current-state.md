@@ -1,9 +1,17 @@
 # Текущее состояние / Current state
 
-Сверка: **2026-11-16**. Ветка `release/0.5.0-beta.1`; alpha2 не публикуется.
+Сверка: **2026-11-18**. Ветка `release/0.5.0-beta.1`; alpha2 не публикуется.
 Метаданные пока `0.5.0-beta.1`. [Условия beta](plans/2026-11-16-beta.md)
 обязательны до выпуска. Ни версия исходников, ни старый успешный CI сами по
 себе не означают готовую бету или развёрнутый публичный сервис.
+
+На beta-коммите `bb68aa7` с i2pd 3.0.0.1 прошли live jobs встроенного
+роутера на Windows x64/ARM64 и macOS Intel/ARM64, сборка Android arm64
+и две передачи файлов (10 МиБ с перезапуском получателя, 20 МиБ частями).
+GitHub ответил через outproxy. Стабильного релиза для скачивания ещё не было,
+поэтому проверка обновления завершилась ошибкой. Для неё задано
+`continue-on-error`, поэтому весь запуск имеет статус success.
+[Задания i2p-embed](https://github.com/gluckdev/gipny-i2p/actions/runs/44240401850).
 
 ## Реализовано и проверено
 
@@ -59,6 +67,11 @@ installer checks. Release preview был неполным (macOS runner capacity
 доставки обязательны. Чужой upstream/generated-код не рефакторится ради naming.
 
 ## English
+
+On beta commit `bb68aa7`, embedded-router jobs passed on Windows x64/ARM64
+and macOS Intel/ARM64. The Android arm64 router build and both file-delivery
+jobs passed. GitHub answered through the outproxy. The optional updater job failed because there was no stable release to download.
+[CI jobs](https://github.com/gluckdev/gipny-i2p/actions/runs/44240401850).
 
 Development targets beta; alpha2 is not being published. Baseline `2139725`
 passed native delivery, browser WSS/WebRTC, build/security and CodeQL checks.
