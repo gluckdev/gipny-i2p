@@ -7,6 +7,9 @@ on:
       - 'ui/**'
       - 'browser-router/**'
       - 'libcore/**'
+      - 'Cargo.toml'
+      - 'core/icons/**'
+      - 'scripts/prepare-browser-config.py'
       - '.github/workflows/pages.yml'
   push:
     branches: [main]
@@ -15,6 +18,9 @@ on:
       - 'ui/**'
       - 'browser-router/**'
       - 'libcore/**'
+      - 'Cargo.toml'
+      - 'core/icons/**'
+      - 'scripts/prepare-browser-config.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
   workflow_run:

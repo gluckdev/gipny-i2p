@@ -42,9 +42,9 @@ SHA, помещает клиент в `_site/app/`, проверяет публ�
 
 Внешние snapshot, WSS/Rust bridge и TURN настраивает оператор;
 см. [размещение](../docs/browser-messenger.md#hosting-preparation).
-Публикация Pages разрешена workflow только для доверенного `main`, после
-проверок. Подготовка исходников не означает deploy. App builds и executable UI
-checks выполняются в GitHub Actions; локально допустимы проверки текстов/данных.
+GitHub Actions публикует проверенный артефакт из `main`. В Chrome проверяются
+разметка главной страницы и повторное открытие экрана профиля без сети.
+Порядок публикации и проверки доступен в [руководстве по деплою](../scripts/deploy/README.md).
 
 Текст не должен обещать неразличимость трафика, защиту от захваченной ОС,
 гарантированное удаление у получателя или реализованные лишь в планах функции.
@@ -82,8 +82,8 @@ under `_site/app/`. The validated repository variable
 master/API secrets there. Use bounded, renewable TURN credentials. Without a
 network configuration the client provides local offline functionality only.
 Operators separately provide the netDb snapshot, Rust bridge and TURN service.
-Deployment requires trusted main and passing workflow checks. Preparing sources
-is not deployment; application builds/tests run in GitHub Actions.
+GitHub Actions deploys the tested artifact from `main`. Chrome checks the landing
+page layouts and reloads the profile screen offline. See the [deployment guide](../scripts/deploy/README.md).
 
 Copy must distinguish implemented behavior, plans and validation. It must not
 promise traffic indistinguishability, protection from a compromised OS, or
