@@ -9,31 +9,50 @@ index b9a3cf3..2ccc0a9 100644
  version = "0.4.0"
  edition.workspace = true
 diff --git a/emissary-core/src/destination/mod.rs b/emissary-core/src/destination/mod.rs
-index 427fe88..316e1f9 100644
+index 427fe88..805fc97 100644
 --- a/emissary-core/src/destination/mod.rs
 +++ b/emissary-core/src/destination/mod.rs
-@@ -207,6 +207,9 @@ pub struct Destination<R: Runtime> {
-     /// Pending lease set queries:
-     pending_queries: HashSet<DestinationId>,
+@@ -42,7 +42,10 @@ use crate::{
+ };
  
+ use bytes::Bytes;
+-use futures::{FutureExt, Stream, StreamExt};
++use futures::{
++    future::{abortable, AbortHandle},
++    FutureExt, Stream, StreamExt,
++};
+ use hashbrown::{HashMap, HashSet};
+ use rand::Rng;
+ 
+@@ -204,8 +207,11 @@ pub struct Destination<R: Runtime> {
+     /// Handle to [`NetDb`].
+     netdb_handle: NetDbHandle,
+ 
+-    /// Pending lease set queries:
+-    pending_queries: HashSet<DestinationId>,
++    /// NetDb lookups that can be satisfied by a newer signed peer advertisement.
++    pending_queries: HashMap<DestinationId, AbortHandle>,
++
 +    /// Cached destinations that failed a streaming handshake.
 +    stale_destinations: HashSet<DestinationId>,
-+
+ 
      /// Public keys.
      public_keys: Vec<StaticPublicKey>,
- 
-@@ -263,6 +266,7 @@ impl<R: Runtime> Destination<R> {
+@@ -262,7 +268,8 @@ impl<R: Runtime> Destination<R> {
+             ),
              lease_set_prune_timer: R::timer(LEASE_SET_PRUNE_INTERVAL),
              netdb_handle,
-             pending_queries: HashSet::new(),
+-            pending_queries: HashSet::new(),
++            pending_queries: HashMap::new(),
 +            stale_destinations: HashSet::new(),
              public_keys: public_keys.clone(),
              query_futures: R::join_set(),
              remote_destinations: HashMap::new(),
-@@ -292,19 +296,39 @@ impl<R: Runtime> Destination<R> {
+@@ -292,19 +299,39 @@ impl<R: Runtime> Destination<R> {
      /// [`DestinationEvent::LeaseSetFound`], indicating that a lease set is foun and the remote
      /// destination is reachable.
      pub fn query_lease_set(&mut self, destination_id: &DestinationId) -> LeaseSetStatus {
+-        if self.pending_queries.contains(destination_id) {
 +        self.query_lease_set_inner(destination_id, false)
 +    }
 +
@@ -51,7 +70,7 @@ index 427fe88..316e1f9 100644
 +        destination_id: &DestinationId,
 +        force_refresh: bool,
 +    ) -> LeaseSetStatus {
-         if self.pending_queries.contains(destination_id) {
++        if self.pending_queries.contains_key(destination_id) {
              return LeaseSetStatus::Pending;
          }
  
@@ -72,7 +91,55 @@ index 427fe88..316e1f9 100644
              );
          }
  
-@@ -478,6 +502,7 @@ impl<R: Runtime> Destination<R> {
+@@ -317,34 +344,36 @@ impl<R: Runtime> Destination<R> {
+         let handle = self.netdb_handle.clone();
+         let destination_id = destination_id.clone();
+ 
+-        self.pending_queries.insert(destination_id.clone());
+-        self.query_futures.push(async move {
++        let query_id = destination_id.clone();
++        let (lookup, abort_handle) = abortable(async move {
+             for _ in 0..NUM_QUERY_RETRIES {
+-                let Ok(rx) = handle.query_lease_set(Bytes::from(destination_id.to_vec())) else {
++                let Ok(rx) = handle.query_lease_set(Bytes::from(query_id.to_vec())) else {
+                     R::delay(NETDB_BACKOFF_TIMEOUT).await;
+                     continue;
+                 };
+ 
+                 tracing::trace!(
+                     target: LOG_TARGET,
+-                    %destination_id,
++                    destination_id = %query_id,
+                     "lease set query started",
+                 );
+ 
+-                match rx.await {
+-                    Err(_) => return (destination_id, Err(QueryError::Timeout)),
+-                    Ok(Err(error)) => return (destination_id, Err(error)),
+-                    Ok(Ok(lease_set)) => return (destination_id, Ok(lease_set)),
+-                }
++                return rx.await.unwrap_or(Err(QueryError::Timeout));
+             }
+ 
+             tracing::warn!(
+                 target: LOG_TARGET,
+-                %destination_id,
++                destination_id = %query_id,
+                 "failed to start lease set query after {NUM_QUERY_RETRIES} retries",
+             );
+ 
+-            (destination_id, Err(QueryError::RetryFailure))
++            Err(QueryError::RetryFailure)
++        });
++        self.pending_queries.insert(destination_id.clone(), abort_handle);
++        self.query_futures.push(async move {
++            // If superseded, poll_next resolves the original callers from the
++            // signed record, provided that it remains current and unexpired.
++            (destination_id, lookup.await.unwrap_or(Err(QueryError::ValueNotFound)))
+         });
+ 
+         LeaseSetStatus::NotFound
+@@ -478,6 +507,7 @@ impl<R: Runtime> Destination<R> {
                          }
                      }
                      None => {
@@ -80,7 +147,7 @@ index 427fe88..316e1f9 100644
                          tracing::warn!(
                              target: LOG_TARGET,
                              %destination_id,
-@@ -672,6 +697,14 @@ impl<R: Runtime> Destination<R> {
+@@ -672,6 +702,27 @@ impl<R: Runtime> Destination<R> {
                                  "store lease set for remote destination",
                              );
  
@@ -91,40 +158,59 @@ index 427fe88..316e1f9 100644
 +                                return None;
 +                            }
 +
++                            if let Some(lookup) = self.pending_queries.get(&destination_id) {
++                                let newer = self.remote_destinations.get(&destination_id)
++                                    .is_none_or(|known| known.lease_set.header.published < lease_set.header.published);
++                                let compatible = lease_set.public_keys.iter().any(|remote| {
++                                    self.public_keys.iter().any(|local| {
++                                        mem::discriminant(local) == mem::discriminant(remote)
++                                    })
++                                });
++                                if newer && compatible && !lease_set.is_expired::<R>() {
++                                    lookup.abort();
++                                }
++                            }
++
 +                            self.stale_destinations.remove(&destination_id);
                              self.routing_path_manager
                                  .register_leases(&destination_id, Ok(lease_set.leases.clone()));
  
-@@ -847,6 +880,17 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -847,6 +898,21 @@ impl<R: Runtime> Stream for Destination<R> {
              Poll::Pending => {}
              Poll::Ready(None) => return Poll::Ready(None),
              Poll::Ready(Some((destination_id, result))) => {
 +                // A delayed floodfill reply must not roll back a newer signed
 +                // LeaseSet already learned from a peer's inbound garlic message.
-+                let result = result.map(|lease_set| {
-+                    match self.remote_destinations.get(&destination_id) {
-+                        Some(current) if current.lease_set.header.published > lease_set.header.published => {
-+                            R::client_event("client_stale_lease_query_ignored", 1);
-+                            current.lease_set.clone()
-+                        }
-+                        _ => lease_set,
++                let peer_replied = self.pending_queries.remove(&destination_id)
++                    .is_some_and(|lookup| lookup.is_aborted());
++                let result = match (result, self.remote_destinations.get(&destination_id)) {
++                    (Ok(retrieved), Some(current)) if current.lease_set.header.published > retrieved.header.published => {
++                        R::client_event("client_stale_lease_query_ignored", 1);
++                        Ok(current.lease_set.clone())
 +                    }
-+                });
++                    (Err(_), Some(current)) if peer_replied && !current.lease_set.is_expired::<R>() => {
++                        R::client_event("client_lease_query_satisfied_by_peer", 1);
++                        Ok(current.lease_set.clone())
++                    }
++                    (result, _) => result,
++                };
                  // always register lease set query result, regardless of its status as one or more
                  // routing paths might've initiated the query and need to know whether it succeeded
                  // or not
-@@ -860,6 +904,7 @@ impl<R: Runtime> Stream for Destination<R> {
+@@ -860,7 +926,7 @@ impl<R: Runtime> Stream for Destination<R> {
  
                  match result {
                      Err(error) => {
+-                        self.pending_queries.remove(&destination_id);
 +                        R::client_event("client_lease_query_failure", 1);
-                         self.pending_queries.remove(&destination_id);
  
                          return Poll::Ready(Some(DestinationEvent::LeaseSetNotFound {
-@@ -868,6 +913,14 @@ impl<R: Runtime> Stream for Destination<R> {
+                             destination_id,
+@@ -868,7 +934,14 @@ impl<R: Runtime> Stream for Destination<R> {
                          }));
                      }
                      Ok(lease_set) => {
+-                        self.pending_queries.remove(&destination_id);
 +                        R::client_event("client_lease_query_success", 1);
 +                        if let Some(previous) = self.remote_destinations.get(&destination_id) {
 +                            R::client_event(if lease_set.header.published > previous.lease_set.header.published {
@@ -133,10 +219,10 @@ index 427fe88..316e1f9 100644
 +                                "client_unchanged_lease_received"
 +                            }, 1);
 +                        }
-                         self.pending_queries.remove(&destination_id);
  
                          match lease_set.public_keys.iter().find(|&remote_key| {
-@@ -877,7 +930,8 @@ impl<R: Runtime> Stream for Destination<R> {
+                             self.public_keys
+@@ -877,7 +950,8 @@ impl<R: Runtime> Stream for Destination<R> {
                          }) {
                              Some(key) => {
                                  self.session_manager
@@ -146,7 +232,7 @@ index 427fe88..316e1f9 100644
                              }
                              None => {
                                  tracing::warn!(
-@@ -1008,7 +1062,7 @@ mod tests {
+@@ -1008,7 +1082,7 @@ mod tests {
  
      #[tokio::test]
      async fn query_lease_set_found() {
@@ -155,7 +241,7 @@ index 427fe88..316e1f9 100644
          let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
          let private_key = StaticPrivateKey::random(MockRuntime::rng());
          let mut destination = Destination::<MockRuntime>::new(
-@@ -1027,6 +1081,11 @@ mod tests {
+@@ -1027,6 +1101,11 @@ mod tests {
          // insert dummy lease set for `remote` into `Destination`
          let remote = DestinationId::random();
          let (lease_set, _) = LeaseSet2::random();
@@ -167,7 +253,7 @@ index 427fe88..316e1f9 100644
          destination.remote_destinations.insert(
              remote.clone(),
              DestinationContext {
-@@ -1038,6 +1097,33 @@ mod tests {
+@@ -1038,6 +1117,33 @@ mod tests {
  
          // query lease set and verify it exists
          assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
@@ -201,6 +287,105 @@ index 427fe88..316e1f9 100644
      }
  
      #[tokio::test]
+@@ -1077,7 +1183,7 @@ mod tests {
+             LeaseSetStatus::NotFound
+         );
+ 
+-        assert!(destination.pending_queries.contains(&remote));
++        assert!(destination.pending_queries.contains_key(&remote));
+         assert_eq!(destination.query_futures.len(), 1);
+     }
+ 
+@@ -1107,7 +1213,7 @@ mod tests {
+             LeaseSetStatus::NotFound
+         );
+ 
+-        assert!(destination.pending_queries.contains(&remote));
++        assert!(destination.pending_queries.contains_key(&remote));
+         assert_eq!(destination.query_futures.len(), 1);
+     }
+ 
+@@ -1137,7 +1243,7 @@ mod tests {
+             LeaseSetStatus::NotFound
+         );
+ 
+-        assert!(destination.pending_queries.contains(&remote));
++        assert!(destination.pending_queries.contains_key(&remote));
+         assert_eq!(destination.query_futures.len(), 1);
+ 
+         // verify that the status is pending on subsequent queries
+@@ -1179,7 +1285,7 @@ mod tests {
+             LeaseSetStatus::NotFound
+         );
+ 
+-        assert!(destination.pending_queries.contains(&remote));
++        assert!(destination.pending_queries.contains_key(&remote));
+         assert_eq!(destination.query_futures.len(), 1);
+ 
+         match destination.next().await {
+@@ -1341,7 +1447,7 @@ mod tests {
+             )
+             .unwrap();
+ 
+-        assert!(destination.pending_queries.contains(&remote));
++        assert!(destination.pending_queries.contains_key(&remote));
+         assert_eq!(destination.query_futures.len(), 1);
+         assert_eq!(
+             destination.remote_destinations.get(&remote).unwrap().pending_messages.len(),
+@@ -1385,7 +1491,7 @@ mod tests {
+ 
+     #[tokio::test]
+     async fn new_lease_set_received() {
+-        let (netdb_handle, _rx) = NetDbHandle::create();
++        let (netdb_handle, rx) = NetDbHandle::create();
+         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
+         let private_key = StaticPrivateKey::random(MockRuntime::rng());
+         let destination_id = DestinationId::random();
+@@ -1425,7 +1531,7 @@ mod tests {
+                     expires: Duration::from_secs(10).as_secs() as u32,
+                     is_unpublished: false,
+                     offline_signature: None,
+-                    published: MockRuntime::time_since_epoch().as_secs() as u32,
++                    published: MockRuntime::time_since_epoch().as_secs() as u32 - 1,
+                 },
+                 public_keys: vec![encryption_key.public()],
+                 leases: vec![expiring_inbound1.clone(), expiring_inbound2.clone()],
+@@ -1539,6 +1645,19 @@ mod tests {
+         );
+         session_manager.register_lease_set(new_lease_set);
+ 
++        // The peer can send us its signed leases while the floodfill is still
++        // looking them up for a pending outbound connection.
++        assert_eq!(destination.refresh_lease_set(&remote_dest_id), LeaseSetStatus::NotFound);
++        let mut startup_actions = Vec::new();
++        let lookup = tokio::time::timeout(Duration::from_secs(2), async {
++            loop {
++                match rx.recv().await.unwrap() {
++                    NetDbAction::QueryLeaseSet2 { tx, .. } => break tx,
++                    action => startup_actions.push(action),
++                }
++            }
++        }).await.unwrap();
++
+         // send ES with a bundled lease set
+         let payload = session_manager.encrypt(&destination_id, vec![1, 3, 4, 0]).unwrap();
+         let message = Message {
+@@ -1553,6 +1672,15 @@ mod tests {
+         assert_eq!(messages.len(), 1);
+         assert_eq!(messages[0], vec![1, 3, 4, 0]);
+ 
++        let event = tokio::time::timeout(Duration::from_secs(2), destination.next())
++            .await.expect("peer's signed leases must wake the pending connection").unwrap();
++        assert!(matches!(
++            event,
++            DestinationEvent::LeaseSetFound { destination_id } if destination_id == remote_dest_id
++        ));
++        assert_eq!(destination.query_lease_set(&remote_dest_id), LeaseSetStatus::Found);
++        drop(lookup);
++
+         // verify that the old lease set is now `expiring_leases`
+         match destination.remote_destinations.get(&remote_dest_id) {
+             Some(context) => {
 diff --git a/emissary-core/src/destination/routing_path.rs b/emissary-core/src/destination/routing_path.rs
 index 2da85b2..3adf175 100644
 --- a/emissary-core/src/destination/routing_path.rs
