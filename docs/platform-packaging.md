@@ -11,13 +11,15 @@
 | Linux desktop | x64 AppImage, архив AppImage.tar.gz, Debian x64 DEB | AppImage и Debian DEB для x86_64 и AArch64. Отдельные headless-артефакты для агента и релея |
 | Web / OpenWrt | Среди файлов этого тега отсутствуют браузерный мессенджер и OpenWrt-пакеты | PWA с JS/WASM и отдельным сетевым bootstrap, headless OpenWrt agent. Эти цели поставляются независимо от графических desktop-пакетов |
 
+В опубликованном Gipny v0.5.0-rc3 было 22 артефакта. Из графических клиентов перечислены два APK, два DMG, Windows x64 Setup, два AppImage и два DEB. Остальные файлы — агент, исходники, manifests и контрольные суммы. Windows ARM64 и iOS появились в последующей beta-ветке. [Артефакты Gipny rc3](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.5.0-rc3).
+
 Источники — [релиз Hiddify](https://github.com/hiddify/hiddify-app/releases/tag/v5.5.5), [его workflow](https://github.com/hiddify/hiddify-app/blob/v5.5.5/.github/workflows/build.yml), [цели iOS](https://github.com/hiddify/hiddify-app/blob/v5.5.5/Makefile), [параметры экспорта](https://github.com/hiddify/hiddify-app/blob/v5.5.5/ios/exportOptions.plist), [release workflow Gipny](../.github/workflows/release.yml) и [iOS workflow Gipny](../.github/workflows/ios.yml).
 
 ## Получение iOS-сборки
 
 Откройте GitHub Actions → **iOS IPA and simulator**. Из успешного device job скачайте артефакт `gipny-iOS-arm64-unsigned`, распакуйте его и выполните `shasum -a 256 -c SHA256SUMS.txt`. Внутри находится `Gipny-iOS-arm64-unsigned.ipa`. В device IPA лежит приложение для физического устройства. Симулятор использует отдельный SDK и отдельный .app из своей сборки. Для установки на обычный iPhone IPA потребуется подписать для этого устройства или выбранного Apple-канала.
 
-При локальной сборке повторите шаги workflow на macOS с Xcode и соответствующим SDK. Генерация Xcode-проекта выполняется из каталога `core` командой `cargo tauri ios init --ci --skip-targets-install`. Команда device-пакета — `cargo tauri ios build --target aarch64 --no-sign`. Для Apple Distribution выберите собственный Team ID через `APPLE_DEVELOPMENT_TEAM`, зарегистрируйте bundle ID `app.gipny.i2p`, установите собственные сертификат и provisioning profile. В таком окружении экспорт для App Store Connect выполняет `cargo tauri ios build --target aarch64 --export-method app-store-connect`. Публикация в App Store Connect — отдельное действие. Секреты и идентификаторы Hiddify для Gipny не применимы.
+При локальной сборке повторите шаги workflow на macOS с Xcode и соответствующим SDK. Генерация Xcode-проекта выполняется из каталога `core` командой `cargo tauri ios init --ci --skip-targets-install`. Команда device-пакета — `cargo tauri ios build --target aarch64 --no-sign`. Для этого процесса сертификат Apple, его пароль и Apple Developer Team не требуются. Владелец выбрал сборку без сертификата.
 
 Реализация использует существующий embedded router, профиль в Library/Application Support и iOS Keychain с `WhenUnlockedThisDeviceOnly`. Уведомления и звонки в фоне, доставка на физическом устройстве, поведение при блокировке и установка подписанного артефакта требуют собственных проверок.
 
