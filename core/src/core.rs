@@ -223,7 +223,7 @@ fn hex_bytes(b: &[u8]) -> String {
     s
 }
 use gipny_libcore::session::{
-    collect_lane_holds, collect_lane_wanted, decode_payload, encode_payload, lanes_for,
+    collect_lane_holds, collect_lane_wanted, decode_payload, encode_payload,
     ours_stands, pad_payload, peer_relay_backoff, peer_relay_redial_after, unpad_payload,
     WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply,
 };

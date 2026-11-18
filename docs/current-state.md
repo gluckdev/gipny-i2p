@@ -21,7 +21,7 @@ GitHub ответил через outproxy. Стабильного релиза �
 | Браузерная самостоятельная сеть | JavaScript/Worker управляет локальным WASM router/криптографией и OPFS. WSS/WebRTC bridge переносит NTCP2-байты; сервер не хранит профиль и не заменяет browser Core |
 | Browser WSS и WebRTC | [Baseline CI](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781): по11 assertions, 5MiB файл, переписка, receipts, reload и работа после остановки app host. Физические телефоны/TURN не проверены |
 | Защитная политика | Application Destination:3 hops inbound/3 outbound, padding включён; caffeine/cocaine режимы удалены. Exploratory pool — отдельная политика; не приравнивать hops, tunnels, streams и router sessions |
-| Файловые lanes | Default до4, measurement override1…8; окно16. Первый sweep1…8 доставил все файлы, но нарушил probes deadline на1/3/8. Автоматический throughput controller пока не реализован |
+| Файловые lanes | Default до4, measurement override1…8; окно16. Первый sweep1…8 доставил все файлы, но нарушил probes deadline на1/3/8. Native пробует по одному потоку и сравнивает скорость подтверждения частей; браузер регулирует число одновременных отправок по подтверждениям и таймаутам |
 | Предзапуск | Native единый router, параллельные client/relay и owned cancellation; browser public bootstrap/cache/preload до unlock, generation guards. Измеренный выигрыш cold/warm ещё не установлен |
 | Durable inbox | Ratchet, расход OPK и ciphertext inbox фиксируются синхронно до relay ACK. Unit и live delivery есть; устойчивость к реальной потере питания проверяется отдельно |
 | Native storage | SQLCipher и OS credential provider; изоляция копий/удаление проверяются отдельными платформенными jobs. OpenWrt и iOS не объявлены работающими без provider |
@@ -81,7 +81,7 @@ forwarder does not replace it with a server-owned messenger.
 
 Application tunnels retain3/3 hops and padding. Default file lanes remain4;
 the first1…8 sweep delivered every file but missed interactive deadlines.
-Automatic lane adaptation, stronger resume verification, wider platform
+Live validation of adaptive concurrency, stronger resume verification, wider platform
 coverage and the I2P-only profile move remain beta gates. UI improvements and
 Android16KiB structural fixes are implemented; final integration and runtime
 checks are still required. No calls, arbitrary QUIC/ICMP fallback, universal

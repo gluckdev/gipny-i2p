@@ -327,15 +327,14 @@ impl Core {
         let Route::Relay(main) = route else {
             return Ok(());
         };
-        // As many lanes as the contact's window needs; see libcore `lanes_for`.
-        let window = self
+        let wanted = self
             .flows
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .entry(contact.id)
             .or_default()
-            .window();
-        let lanes = self.file_lanes(contact, main, lanes_for(window)).await;
+            .desired_lanes();
+        let lanes = self.file_lanes(contact, main, wanted).await;
         let heard = self
             .heard
             .lock()

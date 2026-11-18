@@ -17,6 +17,8 @@ export type FileTransfer = WireFileOffer & {
   /** Outgoing: part index -> local time the relay stored its letter. Bounded
    * by the per-recipient window; a lost part is encrypted again, never resent. */
   flight?: Record<string, number>;
+  sendSlots?: number;
+  lastSlotCut?: number;
   /** Outgoing: last receipt (or creation), last stored part, smoothed RTT. */
   progress_at?: number; deposited_at?: number; rtt?: number;
 };
@@ -206,6 +208,11 @@ export function queueReceipt(state: BrowserState, peer: string, letter: WirePayl
   return true;
 }
 
+/** Fractional slots accumulate one more concurrent deposit per acknowledged flight. */
+export function fileSendSlots(file: FileTransfer): number {
+  return Number.isFinite(file.sendSlots) ? Math.min(4, Math.max(1, file.sendSlots!)) : 2;
+}
+
 /** Choose letters to send now. Never returns a deposited ciphertext: a
  * deposited letter that still waits for its answer is returned only when a
  * new encryption is due (`reopenForResend`). File parts are encrypted only
@@ -216,6 +223,10 @@ export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { 
   const silent = new Set(state.contacts.filter(contact => contact.trust === 2 || contact.request === 'incoming').map(contact => contact.sign_pk));
   const failing = new Set(state.outbox.filter(item => !busy.has(item.key) && item.blob !== null && !item.deposited && item.attempts > 0).map(item => item.peer));
   let sealed = state.outbox.filter(item => item.file && item.blob !== null).length;
+  const slots = new Map<string, number>();
+  for (const file of state.transfers) if (!file.incoming && file.status === 'sending') {
+    slots.set(file.peer + ':' + hex(file.file_id), Math.floor(fileSendSlots(file)));
+  }
   const perPeer = new Map<string, number>();
   for (const item of state.outbox) if (item.file && busy.has(item.key)) perPeer.set(item.peer, (perPeer.get(item.peer) ?? 0) + 1);
   const picked: Outbox[] = [];
@@ -227,7 +238,7 @@ export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { 
       if (!retained(item) || now - item.at < resendDelay(item.resends ?? 0)) continue;
     } else if (now - item.at < retryDelay(item.attempts)) continue;
     if (item.file) {
-      if ((perPeer.get(item.peer) ?? 0) >= 4) continue;
+      if ((perPeer.get(item.peer) ?? 0) >= (slots.get(item.peer + ':' + item.file.id) ?? 1)) continue;
       if (item.blob === null) {
         if (failing.has(item.peer) || sealed >= SEALED_PART_LIMIT) continue;
         sealed++;

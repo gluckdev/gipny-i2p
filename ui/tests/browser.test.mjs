@@ -629,9 +629,25 @@ test('a letter being sent is not picked twice and does not stall its peer', () =
   const due = ui.dueLetters(f.state, later, 8, new Set([busy.key]));
   assert.ok(!due.includes(busy), 'never sent twice at once');
   assert.ok(due.some(item => item.peer === a && item.blob === null), 'further parts are encrypted meanwhile');
-  assert.equal(due.filter(item => item.file && item.peer === a).length, 3, 'the busy part keeps its per-peer slot');
+  assert.equal(due.filter(item => item.file && item.peer === a).length, 1, 'the busy part keeps one of the two initial slots');
   // Not marked busy, the same state is a failing relay.
   assert.ok(!ui.dueLetters(f.state, later).some(item => item.peer === a && item.blob === null));
+});
+
+test('file deposit concurrency grows on fresh receipts and falls once for an expired flight', async () => {
+  const f = outgoingFixture();
+  ui.queueFileChunks(f.state, f.own, 100000);
+  const due = time => ui.dueLetters(f.state, time).filter(item => item.file);
+  assert.equal(due(100000).length, 2);
+  for (const part of due(100000)) f.sealAndStore(part, 100000);
+  const ack = f.receipt({ received_up_to: 2, seen_to: 2 });
+  await ui.receiveFileControl(f.state, f.own, f.peer, ack, {}, [], 102000);
+  await ui.receiveFileControl(f.state, f.own, f.peer, ack, {}, [], 102100);
+  assert.equal(due(102100).length, 3);
+  for (const part of due(102100)) f.sealAndStore(part, 102100);
+  const expired = 102100 + ui.fileRto(f.state.transfers[0]);
+  ui.queueFileChunks(f.state, f.own, expired);
+  assert.equal(due(expired).length, 1);
 });
 
 test('a silent relay stream is given up well before the transport timeouts', async () => {

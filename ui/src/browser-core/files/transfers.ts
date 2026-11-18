@@ -1,7 +1,7 @@
 import type { CoreEvent, FileProgress } from '../../app/api';
 import { MAX_FILE_BYTES, type FileStorage } from './storage';
 import {
-  allocate, base64, canSendControls, countBits, firstClear, fromBase64, hasBit, hex, lastSet, OUTBOX_LIMIT, payload, queueReceipt,
+  allocate, base64, canSendControls, fileSendSlots, countBits, firstClear, fromBase64, hasBit, hex, lastSet, OUTBOX_LIMIT, payload, queueReceipt,
   readBits, RECEIPT_RESERVE, retained, setBit, unbase64, unhex, visible, writeBits,
   type BrowserState, type ClosedFile, type FileTransfer, type Outbox, type PublicIdentity, type StoredAttachment,
   type WireFileAck, type WireFileOffer, type WirePayload,
@@ -272,6 +272,13 @@ export async function acceptFileOffers(state: BrowserState, own: PublicIdentity,
 
 // ---- Sender ----
 
+function reduceSendSlots(file: FileTransfer, depositedAt: number, now: number): void {
+  // Delayed timeouts from one flight should cause a single reduction.
+  if (file.lastSlotCut !== undefined && depositedAt <= file.lastSlotCut) return;
+  file.sendSlots = Math.max(1, Math.floor(fileSendSlots(file) / 2));
+  file.lastSlotCut = now;
+}
+
 /** Apply a receipt to an outgoing transfer. Returns the parts to encrypt
  * again now: a hole is usually a part still on its way, so only one past its
  * timeout counts as lost — or everything unheld when the receiver restarted. */
@@ -291,10 +298,18 @@ export function applyFileReceipt(file: FileTransfer, a: WireFileAck, now: number
   const flight = file.flight ??= {};
   const rto = fileRto(file);
   const again: number[] = [];
+  let confirmed = 0;
   for (const [key, at] of Object.entries(flight)) {
     const index = Number(key);
-    if (hasBit(bits, index)) { delete flight[key]; continue; }
-    if (a.resumed || (missing.has(index) && now - at >= rto)) { delete flight[key]; again.push(index); }
+    if (hasBit(bits, index)) { confirmed++; delete flight[key]; continue; }
+    if (a.resumed || (missing.has(index) && now - at >= rto)) {
+      reduceSendSlots(file, at, now);
+      delete flight[key]; again.push(index);
+    }
+  }
+  if (confirmed && !again.length) {
+    const slots = fileSendSlots(file);
+    file.sendSlots = Math.min(4, slots + Math.min(1, confirmed / slots));
   }
   return again.sort((x, y) => x - y);
 }
@@ -398,7 +413,10 @@ export function queueFileChunks(state: BrowserState, own: PublicIdentity, now = 
     const flight = file.flight ??= {};
     // Tail parts: nothing after them arrives, so no receipt names them.
     const rto = fileRto(file);
-    for (const [key, at] of Object.entries(flight)) if (now - at >= rto) delete flight[key];
+    for (const [key, at] of Object.entries(flight)) if (now - at >= rto) {
+      reduceSendSlots(file, at, now);
+      delete flight[key];
+    }
     load.set(file.peer, (load.get(file.peer) ?? 0) + Object.keys(flight).length);
   }
   for (const { file } of sendable(state, visibleIds(state))) {

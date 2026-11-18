@@ -481,6 +481,7 @@ const OUTLIER: f64 = 4.0;
 #[derive(Clone, Debug)]
 pub struct Flow {
     lane_cursor: lanes::Cursor,
+    lanes: lanes::Adaptive,
     cwnd: f64,
     ssthresh: f64,
     srtt: Option<f64>,
@@ -507,6 +508,7 @@ impl Default for Flow {
     fn default() -> Self {
         Self {
             lane_cursor: Default::default(),
+            lanes: Default::default(),
             cwnd: FLOW_START,
             ssthresh: WINDOW as f64,
             srtt: None,
@@ -524,7 +526,12 @@ impl Default for Flow {
 impl Flow {
     /// Select a stream without restarting round-robin at every ACK-driven batch.
     pub fn next_lane(&mut self, count: usize) -> usize {
+        self.lanes.using(count);
         self.lane_cursor.next(count)
+    }
+
+    pub fn desired_lanes(&self) -> usize {
+        self.lanes.desired(self.window())
     }
 
     /// Parts that may be in flight now.
@@ -579,6 +586,7 @@ impl Flow {
             .filter(|((f, i), _)| *f == file_id && held(*i))
             .map(|((_, i), (t, r))| (*i, *t, *r))
             .collect();
+        self.lanes.ack(now, arrived.len(), self.in_flight() >= self.window().div_ceil(2) && self.window() >= 8);
         if !arrived.is_empty() {
             // The path delivers: whatever the loss was, it is over.
             self.backoff = 1;
@@ -677,6 +685,7 @@ impl Flow {
         if sent_at <= self.last_cut || now - self.last_cut < rtt {
             return;
         }
+        self.lanes.loss(now);
         self.last_cut = now;
         self.undo = Some((self.cwnd, self.ssthresh, now));
         self.ssthresh = (self.cwnd / 2.0).max(2.0);
