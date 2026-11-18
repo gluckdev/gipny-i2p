@@ -401,6 +401,19 @@ impl Core {
         if self.wipe_pending_since(contact_id).is_some() {
             return Ok(());
         }
+        if payload.typing == Some(false) {
+            if let Some(frame) = payload.body.strip_prefix("gipny-call/1 ") {
+                if payload.origin_msg_id == 0 && payload.group.is_none() && frame.len() <= 8192
+                    && now_ms().abs_diff(payload.sent_at) <= 30_000
+                    && self.db.get_contact(contact_id)?.is_some_and(|c| c.request_state == RequestState::None && c.trust != TrustLevel::Blocked)
+                {
+                    let _ = self.events.try_send(CoreEvent::CallFrame {
+                        contact_id, frame: frame.to_owned(), sent_at: payload.sent_at,
+                    });
+                }
+                return Ok(());
+            }
+        }
         self.note_peer_seen(contact_id, payload.sent_at);
         if self.handle_dm_control(contact_id, &payload).await? { return Ok(()); }
         if self.reject_deleted_dm_content(contact_id, &payload).await? { return Ok(()); }

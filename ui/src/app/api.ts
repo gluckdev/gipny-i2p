@@ -280,6 +280,7 @@ export type CheckResult =
 
 export type CoreEvent =
   | 'RelayConnected' | 'RelayDisconnected'
+  | { CallFrame: { contact_id: number; frame: string; sent_at: number } }
   | { IncomingMessage: { contact_id: number | null; group_id: string | null; sender_sign_pk: string | null; message_id: number; body: string; sent_at: number; notify_sound: string | null; console_kind: number | null } }
   | { MessageEdited: { message_id: number; body: string; buttons: Button[][] | null } }
   | { MessageDeleted: { contact_id: number; message_id: number; deleted_at: number; pending: boolean; deletion_notice?: DeletionNotice | null } }
@@ -580,6 +581,10 @@ export class Api {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  static sendCallFrame(contactId: number, frame: string, lane: number): Promise<void> {
+    return invoke('send_call_frame', { contactId, frame, lane });
   }
 
   static sendTyping(contactId: number | null, groupId: string | null, typing: boolean): Promise<void> {

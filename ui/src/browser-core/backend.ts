@@ -631,6 +631,15 @@ export class BrowserBackend {
       if (initial) rememberInitial(state, peer, hash);
       const incoming = decoded.payload;
       validatePayload(incoming);
+      if (incoming.typing === false && incoming.body.startsWith('gipny-call/1 ')) {
+        const frame = incoming.body.slice('gipny-call/1 '.length);
+        if (contact?.request === 'none' && !incoming.group && incoming.origin_msg_id === 0
+            && frame.length <= 8192 && Math.abs(Date.now() - incoming.sent_at) <= 30000) {
+          events.push({ CallFrame: { contact_id: contact.id, frame, sent_at: incoming.sent_at } });
+        }
+        rememberEnvelope(state, { hash, peer, ack: null });
+        return;
+      }
       if (!contact) {
         if (!incoming.relay_address || !isValidI2pAddress(incoming.relay_address)) throw new Error('New contact has no valid reply address');
         contact = addContact(state, this.identity!, this.log, { signPk: peer, dhPk: decoded.dh_pk, i2pAddress: incoming.relay_address, relay: incoming.relay_address, name: incoming.sender_name || peer.slice(0, 12) }, 'incoming');
@@ -767,6 +776,28 @@ export class BrowserBackend {
       this.configure(args.config as Record<string, string> | null);
       if (typeof args.wasm_ms === 'number' && Number.isFinite(args.wasm_ms) && args.wasm_ms >= 0) this.wasmMs = args.wasm_ms;
       this.log.info('init', this.networkConfig ? 'network config received' : 'started without network config');
+      return null;
+    }
+    if (command === 'send_call_frame') {
+      const { engine, state } = this.require();
+      const relay = this.relay;
+      const contact = state.contacts.find(c => c.id === args.contactId);
+      const frame = text(args, 'frame');
+      if (!relay || !contact || contact.request !== 'none' || contact.trust === 2 || !frame.length || frame.length > 8192) throw new Error('I2P call unavailable');
+      const address = contact.relay || contact.i2p_address;
+      const peer = contact.sign_pk;
+      const bundle = engine.has_session(peer) ? new Uint8Array() : await relay.bundle(address, peer);
+      const encrypted = await this.transact((next, crypto) => {
+        const current = next.contacts.find(c => c.id === args.contactId && c.sign_pk === peer);
+        if (crypto !== engine || this.relay !== relay || current?.request !== 'none' || current.trust === 2) throw new Error('I2P call ended');
+        const letter = payload(this.identity!, next.displayName);
+        letter.typing = false;
+        letter.relay_address = null;
+        letter.body = 'gipny-call/1 ' + frame;
+        return crypto.encrypt(peer, current.dh_pk, bundle, JSON.stringify(letter)).slice();
+      });
+      if (this.engine !== engine || this.relay !== relay || this.closing) throw new Error('Profile is locked');
+      await relay.deposit(address, peer, encrypted);
       return null;
     }
     if (command === 'retry_network') {

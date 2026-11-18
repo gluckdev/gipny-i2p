@@ -249,7 +249,7 @@ impl Core {
     /// The usual connection to this contact's relay and up to
     /// `files::lanes::limit() - 1` more, dialled in the background as needed: parts
     /// spread over several i2p streams go that many times faster.
-    async fn file_lanes(
+    pub(super) async fn relay_lanes(
         self: &Arc<Self>,
         contact: &gipny_libcore::db::Contact,
         main: &mpsc::Sender<ClientToRelay>,
@@ -334,7 +334,7 @@ impl Core {
             .entry(contact.id)
             .or_default()
             .desired_lanes();
-        let lanes = self.file_lanes(contact, main, wanted).await;
+        let lanes = self.relay_lanes(contact, main, wanted).await;
         let heard = self
             .heard
             .lock()

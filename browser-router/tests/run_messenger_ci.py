@@ -72,10 +72,17 @@ BRIDGE = r"""
   let worker, url, options, next = -1;
   const pending = new Map();
   globalThis.__coreFailures = [];
+  globalThis.__voiceCounts = {audio: 0, ack: 0};
+
   const attach = target => {
     worker = target;
     target.addEventListener('message', event => {
       const message = event.data;
+      const frame = message.event === 'core_event' && message.payload?.CallFrame?.frame;
+      if (frame) {
+        const kind = JSON.parse(frame).kind;
+        if (kind === 'audio' || kind === 'ack') globalThis.__voiceCounts[kind]++;
+      }
       const failure = message.event === 'core_event' && message.payload?.MessageFailed?.reason;
       if (typeof failure === 'string') {
         globalThis.__coreFailures.push(failure.slice(0, 300));
@@ -305,7 +312,8 @@ def main():
             for name, port in [('alice', 18771), ('bob', 18772)]:
                 log = (output / f'chrome-{name}.log').open('w'); logs.append(log)
                 process = subprocess.Popen([browser, '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
-                    '--disable-background-networking', '--no-first-run', '--disable-features=WebRtcHideLocalIpsWithMdns', '--remote-debugging-address=127.0.0.1',
+                    '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+                    '--autoplay-policy=no-user-gesture-required', '--disable-background-networking', '--no-first-run', '--disable-features=WebRtcHideLocalIpsWithMdns', '--remote-debugging-address=127.0.0.1',
                     f'--remote-debugging-port={port}', f'--user-data-dir={private}/{name}', 'about:blank'], stdout=log, stderr=subprocess.STDOUT)
                 browsers.append(process)
                 wait_port(port, process=process)
@@ -384,6 +392,20 @@ def main():
                 raise RuntimeError('attachment bytes changed during delivery')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and authenticated multipart attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
+            # Exercise the production microphone, UI and I2P router together.
+            wait_for(lambda: evaluate(alice, """(() => {
+              const row = [...document.querySelectorAll('.contact')].find(el => el.querySelector('.contact-name')?.textContent === 'Bob');
+              if (row) row.click(); return !!row;
+            })()"""), 30, 'caller opens accepted contact')
+            def click_voice(cdp, selector):
+                return evaluate(cdp, "(() => {const b=document.querySelector(" + json.dumps(selector) + ");if(!b || b.hidden)return false;b.click();return true})()")
+            wait_for(lambda: click_voice(alice, '.voice-call'), 30, 'start voice call')
+            wait_for(lambda: click_voice(bob, '.voice-answer'), 30, 'answer voice call')
+            wait_for(lambda: all(evaluate(client, '__voiceCounts.audio >= 2 && __voiceCounts.ack >= 2') for client in (alice, bob)), 60, 'bidirectional voice over I2P')
+            if not click_voice(alice, '.voice-end'):
+                raise RuntimeError('caller lost the active voice call')
+            wait_for(lambda: evaluate(bob, "!document.querySelector('.voice-call-panel')"), 30, 'remote hangup')
+            receipt['assertions'].append('bidirectional microphone frames and frame acknowledgements through production I2P routers')
             large_size = 5 * 1024 * 1024 + 19
             large_id = evaluate(bob, '(async()=>{const data=new Uint8Array(' + str(large_size) + ');for(let i=0;i<data.length;i++)data[i]=i%251;return __coreCall("send_message",{contactId:' + str(bob_contact) + ',body:"multipart fixture",browserFiles:[new File([data],"fixture.bin")],ttlSecs:null,replyTo:null})})()')
             wait_for(lambda: any(row['body'] == 'multipart fixture' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 150, 'multipart offer delivered')

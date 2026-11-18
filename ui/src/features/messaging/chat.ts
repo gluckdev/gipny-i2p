@@ -21,6 +21,9 @@ import { renderAnsi } from './ansi';
 import { detectParticipantLayouts, setChatLayouts } from '../keyboard/osk';
 import { deletionRuns } from './deletion-notices';
 
+import { isVoiceFile, supportsCapture, voiceTime } from '../voice/audio';
+import { recordClip } from '../voice/clip';
+
 interface PendingFile { name: string; path: string; size: number }
 
 /** What the disappearing-message timer starts at, in seconds.
@@ -295,6 +298,10 @@ export class ChatView extends View {
     const searchBtn = h('button', { class: 'icon-btn', title: tr('chat.search_this_chat'), onClick: () => this.openSearch() }, icon('search'));
     const mediaBtn = h('button', { class: 'icon-btn', title: tr('chat.media_and_files'), onClick: () => this.openMedia() }, icon('image'));
 
+    const callButton = h('button', {
+      class: 'icon-btn voice-call', title: tr('voice.call'), 'aria-label': tr('voice.call'),
+      onClick: () => { if (target.kind === 'contact') this.app.calls.start(target.id); },
+    }, icon('phone'));
     const agentControls = h('div', { class: 'agent-controls' });
     this.modeBtn = h('button', {
       class: 'btn btn-ghost btn-sm',
@@ -324,6 +331,8 @@ export class ChatView extends View {
     };
     const renderInputMode = (): void => {
       const consoleMode = !isGroup && store.isConsoleMode(target);
+      const peer = store.contacts.get().find(c => c.id === target.id);
+      callButton.hidden = !supportsCapture() || peer?.request !== 'none' || peer.trust === 2;
       this.el?.classList.toggle('console', consoleMode);
       this.promptEl.textContent = consoleMode ? '$' : '>';
       this.input.placeholder = placeholderFor(consoleMode);
@@ -341,6 +350,7 @@ export class ChatView extends View {
               class: 'trust-badge trust-' + (c?.trust ?? 0),
               title: trustLabel(c?.trust ?? 0),
             }, trustLabel(c?.trust ?? 0)),
+            callButton,
             agentControls,
             searchBtn,
             mediaBtn,
@@ -416,6 +426,22 @@ export class ChatView extends View {
         h('div', { class: 'chat-input-row' },
           this.promptEl = h('div', { class: 'prompt' }, '>'),
           this.input,
+          supportsCapture() && h('button', { class: 'icon-btn voice-clip', title: tr('voice.clip'), 'aria-label': tr('voice.clip'), onClick: () => {
+            recordClip(this.app, async file => {
+              const epoch = this.draftEpoch;
+              const data = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(reader.error);
+                reader.onload = () => resolve(String(reader.result).split(',')[1]!);
+                reader.readAsDataURL(file);
+              });
+              if (this.disposed || epoch !== this.draftEpoch || !sameTarget(store.selectedChat.get(), target)) return;
+              const attachments = [{ name: file.name, data }];
+              if (target.kind === 'contact') await Api.sendMessage(target.id, '', attachments, this.ttlSecs, this.replyTo?.id);
+              else await Api.sendGroupMessage(target.id, '', attachments, null, this.replyTo?.id);
+              await store.loadMessages(target);
+            });
+          } }, icon('microphone')),
           h('button', { class: 'icon-btn chat-attach', title: tr('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
           h('button', { class: 'btn chat-send', title: tr('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, tr('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
         ),
@@ -1392,12 +1418,42 @@ export class ChatView extends View {
     const bar = h('div', { class: 'msg-attachments' });
     for (const attachment of attachments) {
       const image = isImageName(attachment.name) && (isTauri || attachment.size <= 32 * 1024 * 1024);
+      if (isVoiceFile(attachment.name, attachment.size)) {
+        bar.appendChild(h('button', { type: 'button', class: 'attachment file-card voice-bubble',
+          onClick: () => this.playVoiceClip(attachment.id, msgId) },
+          h('span', { class: 'voice-play' }, icon('play', 17)), h('span', {}, tr('voice.clip')),
+          h('time', {}, voiceTime((attachment.size - 44) / 32000))));
+        continue;
+      }
       bar.appendChild(h('button', {
         type: 'button', class: 'attachment file-card' + (image ? ' image-stub' : ''),
         onClick: () => image ? this.openImageLazy(attachment.id, attachment.name, msgId) : this.downloadAttachment(attachment.id, attachment.name),
       }, icon('attach', 20), h('span', { class: 'file-card-copy' }, h('span', { class: 'file-card-name' }, attachment.name), h('span', { class: 'file-size' }, humanSize(attachment.size)))));
     }
     container.appendChild(bar);
+  }
+
+  private async playVoiceClip(id: number, messageId: number): Promise<void> {
+    if (!this.isMessageLive(messageId)) return;
+    this.imageClosers.get(id)?.();
+    let closed = false;
+    let url: string | undefined;
+    const dismiss = this.app.openModal(close => {
+      const media = h('audio', { controls: true });
+      const root = h('div', { class: 'modal voice-panel', role: 'dialog', 'aria-label': tr('voice.clip') }, h('h2', {}, tr('voice.clip')), media,
+        h('button', { class: 'btn', onClick: close }, tr('common.close')));
+      void Api.loadAttachment(id).then(encoded => {
+        if (closed || !this.isMessageLive(messageId)) return;
+        const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+        url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+        bytes.fill(0);
+        media.src = url;
+        void media.play().catch(() => {});
+      }).catch(error => { if (!closed) this.store.showToast(errorText(error), true); });
+      return root;
+    }, () => { closed = true; if (url) URL.revokeObjectURL(url); this.imageClosers.delete(id); this.imageMessages.delete(id); });
+    this.imageMessages.set(id, messageId);
+    this.imageClosers.set(id, dismiss);
   }
 
   private async openImageLazy(attId: number, name: string, messageId: number): Promise<void> {

@@ -94,6 +94,7 @@ pub enum CoreEvent {
         contact_id: i64,
         ms: u32,
     },
+    CallFrame { contact_id: i64, frame: String, sent_at: i64 },
     Typing {
         contact_id: Option<i64>,
         group_id: Option<String>,

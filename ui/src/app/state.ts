@@ -107,6 +107,7 @@ function freshBootSteps(): BootStep[] {
 }
 
 export class Store {
+  onCallFrame?: (peer: number, frame: string, at: number) => void;
   view = new Signal<ViewKind>('profile-select');
   bootStage = new Signal<BootStage>('unlocking');
   /** Resumed startup has one status instead of replaying the step rows. */
@@ -1341,6 +1342,10 @@ export class Store {
     }
     if (!e || typeof e !== 'object') return;
     if (this.contentLocked) return;
+    if ('CallFrame' in e) {
+      this.onCallFrame?.(e.CallFrame.contact_id, e.CallFrame.frame, e.CallFrame.sent_at);
+      return;
+    }
     if ('IncomingMessage' in e) {
       const m = e.IncomingMessage;
       const target: ChatTarget | null = m.group_id

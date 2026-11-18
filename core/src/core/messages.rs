@@ -256,6 +256,22 @@ impl Core {
             .await
     }
 
+    pub async fn send_call_frame(
+        self: &Arc<Self>, contact_id: i64, frame: String, lane: usize,
+    ) -> Result<()> {
+        if frame.is_empty() || frame.len() > 8192 || lane > 3 { return Err(CoreError::State); }
+        let contact = self.db.get_contact(contact_id)?.ok_or(CoreError::NotFound)?;
+        if contact.request_state != RequestState::None || contact.trust == TrustLevel::Blocked {
+            return Err(CoreError::State);
+        }
+        let main = self.relay_for(&contact).await.ok_or(CoreError::State)?;
+        self.ensure_session_for(&contact, &Route::Relay(main.clone())).await?;
+        let lanes = self.relay_lanes(&contact, &main, lane + 1).await;
+        let mut payload = make_typing_payload(None, false);
+        payload.body = format!("gipny-call/1 {frame}");
+        self.send_payload_via_relay(&contact, &mut payload, &Route::Relay(lanes[lane % lanes.len()].clone())).await
+    }
+
     pub async fn send_typing_dm(self: &Arc<Self>, contact_id: i64, typing: bool) -> Result<()> {
         if !self.sessions.lock().await.contains_key(&contact_id) {
             return Ok(());

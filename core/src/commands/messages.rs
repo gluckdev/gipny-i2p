@@ -378,6 +378,13 @@ pub(crate) async fn clear_message_history(
 }
 
 #[tauri::command]
+pub(crate) async fn send_call_frame(
+    contact_id: i64, frame: String, lane: usize, ctx: State<'_, AppCtx>,
+) -> Result<(), String> {
+    core_of(&ctx).await?.send_call_frame(contact_id, frame, lane).await.map_err(err)
+}
+
+#[tauri::command]
 pub(crate) async fn send_typing(
     contact_id: Option<i64>,
     group_id: Option<String>,

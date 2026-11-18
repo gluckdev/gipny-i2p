@@ -205,6 +205,7 @@ pub fn run() {
             diagnostics::clear_debug_log,
             commands::backup::export_identity,
             commands::backup::import_identity_to_profile,
+            commands::messages::send_call_frame,
             commands::messages::send_typing,
             platform::play_notify_sound,
             platform::notify_os,

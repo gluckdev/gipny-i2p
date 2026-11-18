@@ -380,6 +380,11 @@ impl SessionManager {
         contact_id: i64,
         payload: WirePayload,
     ) -> Result<()> {
+        // A headless session has no microphone or call UI. Consume live voice
+        // controls before the message/agent dispatch and history paths.
+        if payload.typing == Some(false) && payload.body.starts_with("gipny-call/1 ") {
+            return Ok(());
+        }
         if self.handle_dm_control(contact_id, &payload).await? {
             return Ok(());
         }

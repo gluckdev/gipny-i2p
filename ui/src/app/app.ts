@@ -10,6 +10,7 @@ import { AuthCreate } from '../features/profiles/create';
 import { AuthUnlock } from '../features/authorization/unlock';
 import { AuthBooting } from '../features/authorization/boot';
 import { Sidebar } from '../features/messaging/sidebar';
+import { Calls } from '../features/voice/calls';
 import { ChatView } from '../features/messaging/chat';
 import { ToastLayer } from '../features/notifications/toast';
 import { installEffects } from './effects';
@@ -27,8 +28,13 @@ export class App extends View {
   private modalClosers = new Set<() => void>();
   private toasts = new ToastLayer();
 
+  readonly calls: Calls;
+
   constructor(private store: Store) {
     super();
+    this.calls = new Calls(this, store);
+    store.onCallFrame = (peer, frame, at) => this.calls.receive(peer, frame, at);
+    this.subs.push(() => { store.onCallFrame = undefined; });
     this.subs.push(installEffects());
     this.el = h('div', { class: 'stack app-root', style: { height: '100%' } }, this.updateBanner);
     this.sub(store.view, (v) => this.render(v));

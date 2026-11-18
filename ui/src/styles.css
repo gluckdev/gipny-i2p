@@ -2865,3 +2865,26 @@ button { overflow-wrap: anywhere; }
 .language-options .opt-text { min-width: 0; overflow-wrap: anywhere; }
 .auth-language { min-width: 0; }
 .auth-language select { max-width: 145px; }
+
+/* Voice capture and playback share the theme with the conversation. */
+.chat.console .voice-clip, .voice-call[hidden], .voice-panel [hidden] { display: none; }
+.voice-call, .voice-clip { color: var(--accent); }
+.voice-panel {
+  width: min(24rem, calc(100vw - 24px)); padding: 20px;
+  display: grid; gap: 12px; overflow: auto; max-height: 90vh;
+}
+.voice-panel h2, .voice-panel p { margin: 0; overflow-wrap: anywhere; }
+.voice-panel p, .voice-call-state { color: var(--fg-dim); }
+.voice-panel audio { display: block; width: 100%; min-width: 0; }
+.voice-monitor { display: grid; gap: 10px; padding: 14px; border-radius: 10px; background: var(--accent-dim); }
+.voice-monitor meter { width: 100%; height: 12px; accent-color: var(--accent); }
+.voice-time, .voice-bubble time { font-variant-numeric: tabular-nums; }
+.voice-time { font-size: 1.25rem; }
+.voice-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.voice-actions .btn { min-height: 44px; white-space: normal; }
+.voice-call-panel { text-align: center; justify-items: center; }
+.voice-call-panel .avatar { width: 56px; height: 56px; font-size: 1.5rem; }
+.voice-end, .voice-actions [aria-pressed="true"] { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+.voice-bubble { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.voice-bubble time { color: var(--fg-muted); }
+.voice-play { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); }
