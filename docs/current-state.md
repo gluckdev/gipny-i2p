@@ -24,7 +24,7 @@ GitHub ответил через outproxy. Стабильного релиза �
 | Файловые lanes | Default до4, measurement override1…8; окно16. Первый sweep1…8 доставил все файлы, но нарушил probes deadline на1/3/8. Native пробует по одному потоку и сравнивает скорость подтверждения частей; браузер регулирует число одновременных отправок по подтверждениям и таймаутам |
 | Предзапуск | Native единый router, параллельные client/relay и owned cancellation; browser public bootstrap/cache/preload до unlock, generation guards. Измеренный выигрыш cold/warm ещё не установлен |
 | Durable inbox | Ratchet, расход OPK и ciphertext inbox фиксируются синхронно до relay ACK. Unit и live delivery есть; устойчивость к реальной потере питания проверяется отдельно |
-| Native storage | SQLCipher и OS credential provider; изоляция копий/удаление проверяются отдельными платформенными jobs. OpenWrt требует собственного provider. iOS получил Keychain provider, физическая проверка ещё нужна |
+| Native storage | SQLCipher и OS credential provider; изоляция копий/удаление проверяются отдельными платформенными jobs. OpenWrt требует собственного provider. Нативный iOS снят с beta после проверки порта |
 | Browser storage | Два AEAD-слота OPFS, пароль/WebAuthn PRF; зашифрованные вложения отдельно. Очистка сайта/eviction могут уничтожить профиль |
 | Файлы в браузере | Multipart до2GiB, ограничение metadata16MiB и quota reserve, проверка полного SHA-256. Малый live файл не подтверждает2GiB на каждом телефоне |
 | UPnP | Собственный native IPv4 IGD manager, контроль владения mappings и отмены; браузер не управляет IGD. Физические NAT/маршрутизаторы требуют отдельной проверки |

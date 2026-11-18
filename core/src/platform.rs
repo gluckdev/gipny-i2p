@@ -53,7 +53,7 @@ pub fn resolve_base_dir() -> PathBuf {
             .unwrap_or_else(|| "app.gipny.i2p".to_string());
         return PathBuf::from(format!("/data/user/0/{}", pkg)).join("gipny");
     }
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_os = "macos")]
     {
         let base = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join("Library/Application Support"))
