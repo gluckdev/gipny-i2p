@@ -1,6 +1,6 @@
 # Направления развития / Development roadmap
 
-Обновлено: 2026-11-16. Текущий приоритет — [условия beta](plans/2026-11-16-beta.md),
+[Сверка состояния всех планов на 18 ноября](audits/2026-11-18-plan-review.md). Текущий приоритет — [условия beta](plans/2026-11-16-beta.md),
 [перенос профиля](profile-transfer.md), [адаптация сети](network-adaptation.md) и
 [проверенные платформы](platform-support.md). Alpha2 не публикуется.
 

@@ -1,3 +1,4 @@
+import { focusVoiceDialog } from './dialog';
 import type { App } from '../../app/app';
 import { h } from '../../app/view';
 import { t } from '../localization/i18n';
@@ -14,7 +15,7 @@ export function recordClip(app: App, attach: (file: File) => Promise<void>): () 
     const clock = h('time', { class: 'voice-time' }, '0:00 / ' + voiceTime(CLIP_SECONDS));
     const level = h('meter', { min: 0, max: 1, value: 0, 'aria-label': t('voice.level') });
     const monitor = h('div', { class: 'voice-monitor' }, clock, level);
-    const pause = h('button', { class: 'btn', disabled: true, onClick: () => {
+    const pause = h('button', { class: 'btn btn-ghost', disabled: true, onClick: () => {
       paused = !paused;
       audio?.mute(paused);
       status.textContent = t(paused ? 'voice.paused' : 'voice.recording');
@@ -61,6 +62,6 @@ export function recordClip(app: App, attach: (file: File) => Promise<void>): () 
         });
       } catch (error) { audio?.close(); if (active) status.textContent = String(error); }
     })();
-    return root;
+    return focusVoiceDialog(root, close);
   });
 }

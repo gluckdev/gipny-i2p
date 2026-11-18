@@ -24,13 +24,14 @@ GitHub ответил через outproxy. Стабильного релиза �
 | Файловые lanes | Default до4, measurement override1…8; окно16. Первый sweep1…8 доставил все файлы, но нарушил probes deadline на1/3/8. Native пробует по одному потоку и сравнивает скорость подтверждения частей; браузер регулирует число одновременных отправок по подтверждениям и таймаутам |
 | Предзапуск | Native единый router, параллельные client/relay и owned cancellation; browser public bootstrap/cache/preload до unlock, generation guards. Измеренный выигрыш cold/warm ещё не установлен |
 | Durable inbox | Ratchet, расход OPK и ciphertext inbox фиксируются синхронно до relay ACK. Unit и live delivery есть; устойчивость к реальной потере питания проверяется отдельно |
-| Native storage | SQLCipher и OS credential provider; изоляция копий/удаление проверяются отдельными платформенными jobs. OpenWrt и iOS не объявлены работающими без provider |
+| Native storage | SQLCipher и OS credential provider; изоляция копий/удаление проверяются отдельными платформенными jobs. OpenWrt требует собственного provider. iOS получил Keychain provider, физическая проверка ещё нужна |
 | Browser storage | Два AEAD-слота OPFS, пароль/WebAuthn PRF; зашифрованные вложения отдельно. Очистка сайта/eviction могут уничтожить профиль |
 | Файлы в браузере | Multipart до2GiB, ограничение metadata16MiB и quota reserve, проверка полного SHA-256. Малый live файл не подтверждает2GiB на каждом телефоне |
 | UPnP | Собственный native IPv4 IGD manager, контроль владения mappings и отмены; браузер не управляет IGD. Физические NAT/маршрутизаторы требуют отдельной проверки |
 | Уведомления | Полный текст в центральной полупрозрачной карточке; обычное уведомление не перехватывает клики, длинное можно прокручивать. Layout/keyboard/modal tests есть |
 | Новые взаимодействия | Auto-add полной валидной вставленной/сканированной карточки без повышения trust, QR возле имени, лёгкие hover/focus/blur, reduced-effects, camera cancellation. [Описание](ui-interactions.md); после naming нужна финальная матрица |
 | Android16KiB | Linker flags и verifier ELF/APK сохранены,15 unit tests PASS. Старый native router ELF не соответствовал16KiB. Новый APK и runtime ещё ожидаются |
+| Голос | [Личные I2P-звонки, голосовые сообщения и проверки](voice.md) в beta. Публичный браузер требует настроенного маршрута |
 
 ## Не готово или требует отдельной среды
 

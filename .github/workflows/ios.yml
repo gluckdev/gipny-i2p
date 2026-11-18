@@ -28,7 +28,11 @@ jobs:
       IPHONEOS_DEPLOYMENT_TARGET: '15.0'
     steps:
       - uses: actions/checkout@v7
-      - run: git submodule update --init third_party/i2pd
+      - name: Prepare the pinned router and its reseed certificates
+        run: |
+          git submodule update --init --depth 1 third_party/i2pd
+          .github/scripts/assert-i2pd-pin.sh
+          scripts/fresh-i2p-certs.sh "$RUNNER_TEMP/i2p-certs"
       - uses: actions/setup-node@v7
         with: { node-version: '24' }
       - uses: dtolnay/rust-toolchain@stable
@@ -48,6 +52,10 @@ jobs:
           repository: microsoft/vcpkg
           ref: 9eec002df1cd109f8f104cd966a763daf9751489
           path: .ci-vcpkg
+      - uses: actions/cache@v5
+        with:
+          path: .ci-vcpkg/installed
+          key: ios-deps-v1-9eec002d-${{ matrix.triplet }}-macos26
       - name: Build iOS router dependencies for the selected SDK
         run: |
           .ci-vcpkg/bootstrap-vcpkg.sh -disableMetrics

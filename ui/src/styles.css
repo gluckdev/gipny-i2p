@@ -2888,3 +2888,11 @@ button { overflow-wrap: anywhere; }
 .voice-bubble { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
 .voice-bubble time { color: var(--fg-muted); }
 .voice-play { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); }
+.voice-panel { align-content: start; }
+.voice-panel .voice-actions { align-items: center; }
+@media (max-width: 640px) {
+  .modal.voice-panel {
+    height: auto; align-self: flex-end; border-radius: 18px 18px 0 0 !important;
+    padding: 22px 18px max(18px, var(--safe-bottom));
+  }
+}

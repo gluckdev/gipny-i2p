@@ -74,6 +74,7 @@ test('every layout has three unique rows and a shifted form for each key', () =>
     assert.equal(new Set(keys).size, keys.length, 'symbols are unique within a page');
   }
   assert.deepEqual(DIGIT_ROWS.flat().filter((c) => /\d/.test(c)).sort(), [...'0123456789']);
+  assert.equal(EMOJI.length, 60, 'fixed basic emoji palette');
   assert.equal(new Set(EMOJI).size, EMOJI.length, 'emoji are unique');
 });
 

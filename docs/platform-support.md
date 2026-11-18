@@ -17,7 +17,7 @@ network/UI и защищённого переноса профиля. Налич
 | Android native | Подписанные ARM64 и ARMv7 APK с настоящим i2pd | `minSdk=24` (Android 7), compile/targetSdk=36; NDK 27.3.13750724. Пакет `app.gipny.i2p`. Native UI build держит syntax floor Chromium 83. Обязателен аппаратный TEE/StrongBox Keystore; один minSdk не гарантирует его наличие. Это не обещание актуальных исправлений безопасности старого WebView. |
 | Android x86/x86_64 | Есть debug/stub/emulator plumbing | Отсутствуют shipping APK с доказанным реальным router для этих ABI. Debug x86_64 smoke не равен native I2P compatibility. |
 | OpenWrt agent | Static musl AArch64, ARMv7 soft-float, x86_64, i686/SSE2 | Реальные C++/crypto/ABI probes и `--help` под QEMU; не full profile/live I2P на физических роутерах. На обычном OpenWrt защищённый credential provider не предоставлен: runtime может и должен fail closed. |
-| iOS/iPadOS native | Shipping target отсутствует | Наличие `cfg(ios)` не означает порт. Нет generated Apple project/release job и нет зарегистрированного iOS DeviceKeyProvider: текущий код вернёт provider unavailable. |
+| iOS/iPadOS native | Экспериментальные arm64 IPA и simulator app | [CI и сравнение упаковки](platform-packaging.md). Xcode-проект генерирует Tauri, ключ хранится в iOS Keychain. Для статуса shipping ещё нужны подписанная установка и проверка физического устройства. |
 | Browser | Отдельная WASM/Emissary сборка, не C++ i2pd | Build floor Safari/iOS 16.4, Chrome/Edge108, Firefox111. Реальный Chrome live WSS/WebRTC PASS; Playwright WebKit create/reload PASS; physical Safari/WKWebView и Firefox live пока не доказаны. Публичный byte-forwarder/config необходим при browser-owned router. |
 
 Основные собственные источники: `.github/workflows/release.yml`,
@@ -84,7 +84,7 @@ Keystore, реальные 3-hop tunnels и сообщение/файл. Пов�
 | P1 | Android x86_64 реальный router | Дополнить native router matrix, Rust+Gradle target и unsigned fixture runtime в x86_64 emulator; shipping только при работающем защищённом key provider. |
 | P2 | macOS 12/13/14 как исследуемый lower floor | Пересобрать все native зависимости под выбранный deployment target и проверить на самой старой заявленной ОС. До этого остаётся 15+. Понижение одного Info.plist недостаточно. |
 | P2 | Windows x86, Linux ARMv7 GUI | Отдельные полные native dependency chains, современный renderer и достаточная память. Это новые targets, не изменение подписи существующего artifact. |
-| Отдельный порт | iOS native ARM64 | Keychain provider, iOS C++ dependency/sysroot build, приложение/Xcode signing, lifecycle/network/file permissions, физический iPhone/iPad. Сейчас не включать как готовую beta платформу. |
+| Отдельный порт | iOS native ARM64 | Проверить собранный Keychain provider, C++ router, Xcode signing, lifecycle/network/file permissions на физическом iPhone/iPad. Сейчас не включать как готовую beta платформу. |
 | Отдельный runtime проект | OpenWrt на физических устройствах | Защищённый provider и provisioning, измеренная память/CPU/flash, реальная I2P; только потом user-facing support. MIPS/MIPSel/ARMv6/RISC-V не подтверждены. |
 
 Android NDK поддерживает четыре ABI, но ARMv7 не покрывает ARMv5/v6, а
@@ -187,16 +187,10 @@ kernel и полный desktop login/keyring сценарий.
 
 ## iOS, браузер и защищённое хранилище
 
-Нативный iOS пока блокирует наш код: `device_binding::provider()` имеет только
-Windows/macOS/Linux, Android регистрирует JNI provider отдельно; iOS аналога
-нет. i2p-embed build glue не задаёт iOS SDK/sysroot/frameworks/dependencies и
-ветку lifecycle для порта. Нельзя объявить поддержку, просто добавив target.
-macOS ARM64 static libraries не являются iOS ARM64 libraries.
-
-Следующая отдельная задача iOS: зарегистрировать Keychain provider с явной
-политикой non-sync/device binding; создать own Apple project; собрать i2pd,
-Boost/OpenSSL/zlib/SQLCipher под device и simulator SDK; затем signing и
-physical-device тесты. Tauri подтверждает требования signing/provisioning
+В beta появилась отдельная сборка под device и simulator SDK, iOS Keychain provider
+и путь профиля в контейнере приложения. [Порядок сборки и проверки IPA](platform-packaging.md).
+Дальнейшие проверки охватывают подписанную установку, работу на физическом устройстве,
+доставку I2P и lifecycle. Tauri подтверждает требования signing/provisioning
 для end-user устройств. [Tauri iOS signing](https://v2.tauri.app/distribute/sign/ios/).
 
 Нельзя обещать постоянно работающий I2P router в фоне iOS: Apple предоставляет

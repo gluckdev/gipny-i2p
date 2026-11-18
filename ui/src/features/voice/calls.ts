@@ -1,3 +1,4 @@
+import { focusVoiceDialog } from './dialog';
 import { Api } from '../../app/api';
 import type { App } from '../../app/app';
 import type { Store } from '../../app/state';
@@ -142,11 +143,11 @@ export class Calls {
         call.mute.setAttribute('aria-pressed', String(mute));
         call.mute.textContent = t(mute ? 'voice.unmute' : 'voice.mute');
       };
-      return h('div', { class: 'modal voice-panel voice-call-panel', role: 'dialog', 'aria-modal': true, 'aria-label': t('voice.call') },
+      return focusVoiceDialog(h('div', { class: 'modal voice-panel voice-call-panel', role: 'dialog', 'aria-modal': true, 'aria-label': t('voice.call') },
         avatar(person.name, person.sign_pk), h('h2', {}, person.name),
         h('div', { class: 'voice-call-state' }, t('voice.call'), ' · I2P'), call.status, call.clock,
         h('div', { class: 'voice-actions' }, answer, call.mute,
-          h('button', { class: 'btn voice-end', onClick: close }, t('voice.hangup'))));
+          h('button', { class: 'btn btn-danger voice-end', onClick: close }, t('voice.hangup')))), close);
     }, () => {
       clearInterval(timer);
       window.removeEventListener('pagehide', end);
