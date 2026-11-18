@@ -13,6 +13,7 @@ export class BrowserCoreClient implements BrowserBackend {
   private listeners = new Map<string, Set<(payload: unknown) => void>>();
   private config: Record<string, string> | null = null;
   private unlocked = false;
+  private reconnectAfterOpen = false;
   private rtc: RtcBridge | null = null;
   private rtcConfig: ReturnType<typeof rtcSettings> | null = null;
   private generation = 0;
@@ -138,7 +139,13 @@ export class BrowserCoreClient implements BrowserBackend {
       this.active(generation);
       const result = await this.send(command, args) as T;
       this.active(generation);
-      if (opening) this.unlocked = true;
+      if (opening) {
+        this.unlocked = true;
+        if (this.reconnectAfterOpen) {
+          this.reconnectAfterOpen = false;
+          void this.reconnect().catch(() => {});
+        }
+      }
       if (command === 'vault_create') void navigator.storage?.persist?.().catch(() => false);
       if (command === 'browser_diagnostics') return { ...result, page_startup_ms: this.timings.snapshot() } as T;
       return result;
@@ -162,6 +169,7 @@ export class BrowserCoreClient implements BrowserBackend {
     this.rtc?.close(); this.rtc = null;
     this.worker?.terminate(); this.worker = null; this.init = null;
     this.unlocked = false;
+    this.reconnectAfterOpen = false;
     for (const pending of this.pending.values()) pending.reject(new Error(message));
     this.pending.clear();
   }
@@ -173,7 +181,11 @@ export class BrowserCoreClient implements BrowserBackend {
     } finally { prf.fill(0); result.prf.fill(0); }
   }
   async reconnect(): Promise<void> {
-    if (!this.unlocked) return;
+    if (!this.unlocked) {
+      // Config can finish offline while the user is still on the sign-in screen.
+      if (this.worker && !this.locking) this.reconnectAfterOpen = true;
+      return;
+    }
     const generation = this.generation;
     const info = await this.invoke<RelayInfo>('get_relay_info');
     if (!this.unlocked || generation !== this.generation ||

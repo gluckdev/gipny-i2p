@@ -93,6 +93,29 @@ test('an online event reloads missing settings once and leaves a live router con
   } finally { client.terminate(); }
 });
 
+test('an online event during sign-in recovers a missing configuration after unlock', async () => {
+  const client = new BrowserCoreClient();
+  const offline = deferred();
+  let fetches = 0;
+  globalThis.fetch = async () => ++fetches === 1 ? offline.promise : new Response(JSON.stringify(config));
+  try {
+    const opening = client.invoke('vault_unlock', { profile: 'Alice', pass: 'test' });
+    await tick();
+    await client.reconnect();
+    await client.reconnect();
+    assert.equal(fetches, 1);
+    offline.resolve(new Response(null, { status: 404 }));
+    await opening;
+    await tick();
+    const messages = WorkerFixture.all.at(-1).messages;
+    assert.equal(fetches, 2);
+    const unlock = messages.findIndex(row => row.command === 'vault_unlock');
+    const configured = messages.findIndex(row => row.command === 'init' && row.args?.config?.capability);
+    assert.ok(configured > unlock && messages.findIndex(row => row.command === 'retry_network') > configured);
+    assert.equal(messages.filter(row => row.command === 'retry_network').length, 1);
+  } finally { client.terminate(); }
+});
+
 test('lock cancels pending configuration and an old unlock cannot initialize or terminate the next profile worker', async () => {
   const requests = [];
   globalThis.fetch = (_url, options) => { const request = deferred(); requests.push({ ...request, signal: options.signal }); return request.promise; };

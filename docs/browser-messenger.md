@@ -49,6 +49,8 @@ Cromite153.0.8010.37 отдельно проверен на Linux: при шта
 
 В beta при восстановлении интернета открытый профиль повторно запрашивает
 конфигурацию, если сеть не была настроена или запуск завершился ошибкой.
+Если интернет вернулся ещё на экране входа, клиент выполняет эту проверку
+сразу после создания или разблокировки профиля.
 Когда конфигурация появляется, клиент запускает I2P в том же профиле.
 Успешная проверка прямого релея принятого контакта позволяет раньше повторить
 отправку ожидающих сообщений и квитанций. Статус доставки меняется после
@@ -260,13 +262,17 @@ private storage (OPFS): no profile can be created; use a normal window.
 
 ### Hosting status
 
-The public client at https://gluckdev.github.io/gipny-i2p/app/browser.html is
-offline-only: it has no `browser-config.json` beside it (HTTP 404), because the
-repository variable `GIPNY_BROWSER_CONFIG_JSON` is unset and no public bridge, TURN,
-netDb snapshot or domain is deployed. The WASM router does not start in any browser.
-A person creates a profile and reads saved chats; the boot screen states that this
-hosting provides no network service and opens the chats offline. Sending and
-receiving begin once an operator deploys the service.
+On November 18 the public Pages deployment returned HTTP 404 for
+`app/browser-config.json`. A fresh profile could open offline and read saved
+chats. The deployment still needs a verified public bridge.
+
+When connectivity returns, the beta client checks for updated configuration if
+the router was unconfigured or startup failed. If connectivity returns on the
+sign-in screen, the client runs that check after profile creation or unlock.
+A newly published configuration starts I2P in the open profile. A successful
+probe of an accepted contact's direct relay can bring queued retries forward.
+Delivery still requires the recipient's receipt. The last live run before this
+change timed out during recovery. [WSS and WebRTC results](https://github.com/gluckdev/gipny-i2p/actions/runs/44282718672).
 
 To go live, an operator does, in order:
 

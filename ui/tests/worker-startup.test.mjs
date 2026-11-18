@@ -36,7 +36,7 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
 try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.GIPNY_CHROMIUM || '/usr/bin/google-chrome' });
-  for (const mode of ['normal', 'window-missing', 'worker-missing', 'compile-failed']) {
+  for (const mode of ['normal', 'online-before-open', 'window-missing', 'worker-missing', 'compile-failed']) {
     fault = mode;
     publishConfig = false;
     const context = await browser.newContext({ serviceWorkers: 'block' });
@@ -55,21 +55,25 @@ try {
       if (mode === 'worker-missing') assert.match(text, /WASM_API_UNAVAILABLE/);
       else if (mode === 'compile-failed') assert.match(text, /WASM_INIT_FAILED, CompileError.*test unsupported module instruction/);
       else assert.equal(await page.locator('#app .auth.err').count(), 0, text);
-      if (mode === 'normal') {
+      if (mode === 'normal' || mode === 'online-before-open') {
         const advance = page.locator('.salon-create .auth-actions .btn:not(.btn-ghost)');
         await page.locator('#create-name').fill('recovery');
         await advance.click();
         await page.locator('#create-password').fill('local recovery test password');
         await page.locator('#create-confirm').fill('local recovery test password');
         await advance.click();
-        await advance.click();
-        await page.waitForSelector('.main');
-        publishConfig = true;
         // A local snapshot request proves the real worker started bootstrap.
         const bootstrap = page.context().waitForEvent('request', {
           predicate: req => new URL(req.url()).pathname === '/test-snapshot', timeout: 20_000,
         });
-        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        const goOnline = async () => {
+          publishConfig = true;
+          await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        };
+        if (mode === 'online-before-open') await goOnline();
+        await advance.click();
+        await page.waitForSelector('.main');
+        if (mode === 'normal') await goOnline();
         await bootstrap;
       }
       assert.doesNotMatch(text, /Lockdown Mode|WebAssembly is disabled/);
