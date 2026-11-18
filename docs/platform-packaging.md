@@ -15,6 +15,14 @@
 
 Источники — [релиз Hiddify](https://github.com/hiddify/hiddify-app/releases/tag/v5.5.5), [его workflow](https://github.com/hiddify/hiddify-app/blob/v5.5.5/.github/workflows/build.yml), [цели iOS](https://github.com/hiddify/hiddify-app/blob/v5.5.5/Makefile), [параметры экспорта](https://github.com/hiddify/hiddify-app/blob/v5.5.5/ios/exportOptions.plist), [release workflow Gipny](../.github/workflows/release.yml) и [iOS workflow Gipny](../.github/workflows/ios.yml).
 
+## Публикация с нулевым бюджетом
+
+Публичный GitHub Release может содержать APK, desktop-пакеты и unsigned IPA. В публичном репозитории вычислительное время стандартного GitHub-hosted macOS runner бесплатно. [Условия GitHub](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+На обычном iPhone одного скачивания unsigned IPA недостаточно. Бесплатная Personal Team в Xcode позволяет владельцу установить приложение на своё устройство. Provisioning profile истекает через 7 дней, после чего требуется повторная установка с обновлённым профилем. Обычная программа распространения Apple стоит 99 USD в год; для отдельных категорий организаций Apple может одобрить освобождение от взноса. Для релиза Gipny на GitHub вступать в программу не требуется. [Установка на личное устройство](https://developer.apple.com/help/account/basics/about-your-developer-account/) · [Условия Apple](https://developer.apple.com/help/account/membership/fee-waivers/).
+
+Для пользователей iPhone доступен также [веб-клиент](https://gluckdev.github.io/gipny-i2p/app/browser.html). На 18 ноября его публичная конфигурация моста отсутствовала; для переписки через I2P требуется рабочее подключение. [Состояние браузерного развёртывания](browser-network-deployment.md).
+
 ## Получение iOS-сборки
 
 Откройте GitHub Actions → **iOS IPA and simulator**. Из успешного device job скачайте артефакт `gipny-iOS-arm64-unsigned`, распакуйте его и выполните `shasum -a 256 -c SHA256SUMS.txt`. Внутри находится `Gipny-iOS-arm64-unsigned.ipa`. В device IPA лежит приложение для физического устройства. Симулятор использует отдельный SDK и отдельный .app из своей сборки. Для установки на обычный iPhone IPA потребуется подписать для этого устройства или выбранного Apple-канала.
