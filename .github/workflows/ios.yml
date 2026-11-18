@@ -41,6 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ios-${{ matrix.target }}
+          cache-on-failure: true
       - name: Build UI and install Xcode project tools
         run: |
           npm ci --prefix ui
@@ -52,26 +53,29 @@ jobs:
           repository: microsoft/vcpkg
           ref: 9eec002df1cd109f8f104cd966a763daf9751489
           path: .ci-vcpkg
-      - uses: actions/cache@v5
+      - uses: actions/cache/restore@v5
+        id: dependencies
         with:
           path: .ci-vcpkg/installed
           key: ios-deps-v1-9eec002d-${{ matrix.triplet }}-macos26
       - name: Build iOS router dependencies for the selected SDK
+        if: steps.dependencies.outputs.cache-hit != 'true'
         run: |
           .ci-vcpkg/bootstrap-vcpkg.sh -disableMetrics
           .ci-vcpkg/vcpkg install --triplet "${{ matrix.triplet }}" \
             boost-asio boost-program-options boost-algorithm boost-property-tree boost-system \
             boost-lexical-cast boost-beast boost-atomic boost-smart-ptr openssl zlib
-          dep="$GITHUB_WORKSPACE/.ci-vcpkg/installed/${{ matrix.triplet }}"
-          test -s "$dep/lib/libboost_program_options.a"
-          {
-            echo "I2P_EMBED_INCLUDE_DIRS=$dep/include"
-            echo "I2P_EMBED_LIB_DIRS=$dep/lib"
-            echo "I2P_EMBED_STATIC=1"
-            echo "OPENSSL_DIR=$dep"
-            echo "OPENSSL_NO_VENDOR=1"
-            echo "OPENSSL_STATIC=1"
-          } >> "$GITHUB_ENV"
+      - uses: actions/cache/save@v5
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        with:
+          path: .ci-vcpkg/installed
+          key: ${{ steps.dependencies.outputs.cache-primary-key }}
+      - name: Configure Cargo for the Xcode Rust build phase
+        env:
+          IOS_TRIPLET: ${{ matrix.triplet }}
+          RUST_TARGET: ${{ matrix.rust }}
+        run: |
+          python3 .github/scripts/ios-cargo.py
       - name: Archive Gipny with the embedded i2pd router
         working-directory: core
         run: |
