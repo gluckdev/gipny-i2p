@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { buildDefinitions } from './build-policy';
+import { buildDefinitions } from './build-policy.ts';
 
 // The oldest browsers the WASM messenger can honestly run in. The profile
 // vault lives in OPFS behind synchronous access handles; Safari 15.2–16.3 and
@@ -28,10 +28,15 @@ export default defineConfig(({ command }) => ({
       // Vite emits transformed HTML/CSS after ordinary user hooks.
       order: 'post',
       handler(_options, bundle) {
-      this.emitFile({ type: 'asset', fileName: 'browser-icon.svg', source: readFileSync(new URL('../core/icons/icon.svg', import.meta.url)) });
-      this.emitFile({ type: 'asset', fileName: 'browser-icon-256.png', source: readFileSync(new URL('../core/icons/128x128@2x.png', import.meta.url)) });
-      this.emitFile({ type: 'asset', fileName: 'browser.webmanifest', source: JSON.stringify({ id: './browser.html', name: 'Gipny', short_name: 'Gipny', start_url: './browser.html', scope: './', display: 'standalone', background_color: '#eef3f8', theme_color: '#eef3f8', icons: [{ src: 'browser-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }, { src: 'browser-icon-256.png', sizes: '256x256', type: 'image/png', purpose: 'any' }] }) });
-      const files = [...new Set([...Object.keys(bundle), 'browser.html', 'browser-icon.svg', 'browser-icon-256.png', 'browser.webmanifest', 'theme-init.js', 'avatars.webp', 'notify.wav', 'sounds/success.wav'])].filter(name => !name.endsWith('.map') && name !== 'browser-config.json');
+      const generated = new Map<string, string | Uint8Array>([
+        ['browser-icon.svg', readFileSync(new URL('../core/icons/icon.svg', import.meta.url))],
+        ['browser-icon-256.png', readFileSync(new URL('../core/icons/128x128@2x.png', import.meta.url))],
+        ['browser.webmanifest', JSON.stringify({ id: './browser.html', name: 'Gipny', short_name: 'Gipny', start_url: './browser.html', scope: './', display: 'standalone', background_color: '#eef3f8', theme_color: '#eef3f8', icons: [{ src: 'browser-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }, { src: 'browser-icon-256.png', sizes: '256x256', type: 'image/png', purpose: 'any' }] })],
+      ]);
+      for (const [fileName, source] of generated) this.emitFile({ type: 'asset', fileName, source });
+      const publicFiles = ['theme-init.js', 'avatars.webp', 'notify.wav', 'sounds/success.wav'];
+      const files = [...new Set([...Object.keys(bundle), ...generated.keys(), ...publicFiles])]
+        .filter(name => !name.endsWith('.map') && name !== 'browser-config.json').sort();
       if (!files.some(name => name.endsWith('.wasm')) || !files.some(name => /worker.*\.js$/.test(name))) throw new Error('Offline shell is missing the emitted WASM worker assets');
       const digest = createHash('sha256');
       const downloadWorker = readFileSync(new URL('./src/browser-download-sw.js', import.meta.url), 'utf8');
@@ -39,7 +44,9 @@ export default defineConfig(({ command }) => ({
       for (const name of files) {
         const file = bundle[name];
         digest.update(name);
-        if (file) digest.update(file.type === 'chunk' ? file.code : file.source);
+        const bytes = file ? (file.type === 'chunk' ? file.code : file.source)
+          : generated.get(name) ?? readFileSync(new URL('./public/' + name, import.meta.url));
+        digest.update(bytes);
       }
       const version = digest.digest('hex').slice(0, 20);
       this.emitFile({ type: 'asset', fileName: 'browser-sw.js', source: `
@@ -47,7 +54,7 @@ const CACHE = 'gipny-shell-${version}';
 const URLS = ${JSON.stringify(files)}.map(path => new URL(path, self.registration.scope).href);
 const ALLOWED = new Set(URLS);
 ${downloadWorker}
-self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(URLS))));
+self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(URLS.map(url => new Request(url, { cache: 'reload' }))))));
 // A waiting update activates when old windows close. Never replace a running
 // worker or reload an unlocked profile behind the person's back.
 self.addEventListener('activate', event => event.waitUntil((async () => {

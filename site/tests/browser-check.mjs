@@ -85,7 +85,7 @@ class CDP {
 async function startServer(root) {
   const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
-    '.webp': 'image/webp', '.jpg': 'image/jpeg', '.json': 'application/json' };
+    '.webp': 'image/webp', '.jpg': 'image/jpeg', '.json': 'application/json', '.wasm': 'application/wasm' };
   server = createServer(async (request, response) => {
     try {
       const path = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
@@ -114,7 +114,7 @@ async function startChrome() {
   for (const candidate of candidates.filter(Boolean)) {
     try { await access(candidate, constants.X_OK); executable = candidate; break; } catch { /* next installed browser */ }
   }
-  assert(executable, 'GitHub runner must provide Chrome/Chromium; this helper never downloads a browser');
+  assert(executable, 'Install Chrome/Chromium or set CHROME_BIN; this helper never downloads a browser');
   profile = await mkdtemp(join(tmpdir(), 'gipny-site-browser-'));
   browser = spawn(executable, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
     '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-component-update',
@@ -228,8 +228,22 @@ async function snapshot(width, language) {
   return data;
 }
 
+async function checkOfflineApp(base) {
+  const url = new URL('app/browser.html', base).href;
+  const navigation = await cdp.call('Page.navigate', { url });
+  assert(!navigation.errorText, navigation.errorText);
+  await until(() => cdp.evaluate(`location.href === ${JSON.stringify(url)}
+    && !!document.querySelector('#app .auth') && !!navigator.serviceWorker.controller`), 'installed browser app');
+  const before = await cdp.evaluate('performance.timeOrigin');
+  await cdp.call('Network.enable');
+  await cdp.call('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  await cdp.call('Page.reload');
+  await until(() => cdp.evaluate(`performance.timeOrigin !== ${before} && location.href === ${JSON.stringify(url)}
+    && !!navigator.serviceWorker.controller && !!document.querySelector('#app .auth')`), 'offline profile screen');
+  report.offlineApp = { path: new URL(url).pathname, passed: true };
+}
+
 async function run() {
-  assert.equal(process.env.GITHUB_ACTIONS, 'true', 'This browser helper runs only inside GitHub Actions');
   assert(Number(process.versions.node.split('.')[0]) >= 24, 'Node 24+ is required');
   const root = await realpath(resolve(process.argv[2] ?? '_site'));
   await access(join(root, 'index.html'));
@@ -263,6 +277,7 @@ async function run() {
     await until(() => cdp.evaluate(`performance.timeOrigin !== ${JSON.stringify(previousDocument)}`), 'fresh reloaded document');
     await ready('en'); // The explicit URL must retain the language after reload.
   }
+  await checkOfflineApp(base);
   assert.equal(report.runtimeErrors.length, 0, JSON.stringify(report.runtimeErrors));
 }
 

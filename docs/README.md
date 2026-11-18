@@ -16,6 +16,7 @@
 | Задача | Руководство |
 |---|---|
 | Пользоваться WASM-клиентом, хранить профиль, настроить сеть | [Браузер](browser-messenger.md) |
+| Опубликовать сайт и WASM-клиент, проверить обновление и запуск без сети | [Деплой Pages](../scripts/deploy/README.md) |
 | Разместить WSS/WebRTC транспорт | [Rust-форвардер](../browser-router/forwarder/README.md) |
 | Понять текущее состояние и планы | [Матрица функций](current-state.md), [планы](roadmap.md) |
 | Обновить upstream и проверить настройки | [Источники и настройки](upstreams-and-settings.md) |
@@ -49,6 +50,8 @@ WSS или WebRTC → Rust-форвардер → I2P. Отдельный лок
 Russian is primary; English follows in current guides. Source snapshot:
 2026-11-06, baseline `a6e41ca`. Working-tree transport/documentation changes need
 new CI evidence. A source version is not a published release.
+
+For Pages deployment and offline checks, see the [deployment guide](../scripts/deploy/README.md).
 
 Start with the [English README](../README.en.md), [feature status](current-state.md)
 and [security model](../SECURITY.md). The table above links browser setup,
