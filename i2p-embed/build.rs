@@ -110,7 +110,7 @@ fn main() {
             .define("_WIN32_WINNT", "0x0A00")
             .define("WINVER", "0x0A00");
     }
-    if target_os == "macos" {
+    if matches!(target_os.as_str(), "macos" | "ios") {
         // FS.cpp and friends key the macOS paths off it, as upstream's builds.
         build.define("MAC_OSX", None);
     }
@@ -158,7 +158,7 @@ fn main() {
                 println!("cargo:rustc-link-lib={name}");
             }
         }
-        "macos" => {
+        "macos" | "ios" => {
             // libc++ comes with cc; OpenSSL's rand and keychain bits.
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=Security");
@@ -187,7 +187,7 @@ fn build_miniupnpc(manifest: &std::path::Path, target_os: &str) {
             .define("_CRT_SECURE_NO_WARNINGS", None).define("_WINSOCK_DEPRECATED_NO_WARNINGS", None);
     } else {
         build.define("MINIUPNPC_GET_SRC_ADDR", None).define("_BSD_SOURCE", None).define("_DEFAULT_SOURCE", None);
-        if target_os == "macos" { build.define("_DARWIN_C_SOURCE", None); }
+        if matches!(target_os, "macos" | "ios") { build.define("_DARWIN_C_SOURCE", None); }
         else { build.define("_XOPEN_SOURCE", "600"); }
     }
     build.compile("gipny_miniupnpc");

@@ -1,0 +1,83 @@
+name: iOS IPA and simulator
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, release/0.5.0-beta.1]
+    paths: ['.github/workflows/ios.yml', '.github/scripts/ios-*', 'core/**', 'libcore/**', 'i2p-embed/**', 'ui/**', 'third_party/i2pd', 'Cargo.lock', 'Cargo.toml']
+permissions:
+  contents: read
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apple:
+    name: iOS ${{ matrix.target }}
+    runs-on: macos-26
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64
+            rust: aarch64-apple-ios
+            triplet: arm64-ios-release
+          - target: aarch64-sim
+            rust: aarch64-apple-ios-sim
+            triplet: arm64-ios-simulator-release
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v7
+      - run: git submodule update --init third_party/i2pd
+      - uses: actions/setup-node@v7
+        with: { node-version: '24' }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ios-${{ matrix.target }}
+      - name: Build UI and install Xcode project tools
+        run: |
+          npm ci --prefix ui
+          npm run build --prefix ui
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          cargo install tauri-cli --version '=2.12.2' --locked
+      - uses: actions/checkout@v7
+        with:
+          repository: microsoft/vcpkg
+          ref: 9eec002df1cd109f8f104cd966a763daf9751489
+          path: .ci-vcpkg
+      - name: Build iOS router dependencies for the selected SDK
+        run: |
+          .ci-vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          .ci-vcpkg/vcpkg install --triplet "${{ matrix.triplet }}" \
+            boost-asio boost-program-options boost-algorithm boost-property-tree boost-system \
+            boost-lexical-cast boost-beast boost-atomic boost-smart-ptr openssl zlib
+          dep="$GITHUB_WORKSPACE/.ci-vcpkg/installed/${{ matrix.triplet }}"
+          test -s "$dep/lib/libboost_program_options.a"
+          {
+            echo "I2P_EMBED_INCLUDE_DIRS=$dep/include"
+            echo "I2P_EMBED_LIB_DIRS=$dep/lib"
+            echo "I2P_EMBED_STATIC=1"
+            echo "OPENSSL_DIR=$dep"
+            echo "OPENSSL_NO_VENDOR=1"
+            echo "OPENSSL_STATIC=1"
+          } >> "$GITHUB_ENV"
+      - name: Archive Gipny with the embedded i2pd router
+        working-directory: core
+        run: |
+          cargo tauri ios init --ci --skip-targets-install
+          cargo tauri ios build --target "${{ matrix.target }}" --no-sign
+      - name: Verify and stage device IPA
+        if: matrix.target == 'aarch64'
+        run: bash .github/scripts/ios-verify.sh
+      - name: Boot and launch the simulator app
+        if: matrix.target == 'aarch64-sim'
+        run: bash .github/scripts/ios-simulator.sh
+      - uses: actions/upload-artifact@v7
+        if: matrix.target == 'aarch64'
+        with:
+          name: gipny-iOS-arm64-unsigned
+          path: ios-artifacts/*
+          if-no-files-found: error

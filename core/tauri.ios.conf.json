@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": [],
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    }
+  }
+}

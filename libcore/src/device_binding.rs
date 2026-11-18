@@ -57,13 +57,13 @@ fn provider() -> Result<Arc<dyn DeviceKeyProvider>> {
     if let Some(provider) = REGISTERED.get() { return Ok(provider.clone()); }
     #[cfg(target_os = "windows")]
     let native: Arc<dyn DeviceKeyProvider> = Arc::new(windows::Provider);
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     let native: Arc<dyn DeviceKeyProvider> = Arc::new(macos::Provider);
     #[cfg(target_os = "linux")]
     let native: Arc<dyn DeviceKeyProvider> = Arc::new(linux::Provider);
-    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "ios", target_os = "linux"))]
     { Ok(native) }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "ios", target_os = "linux")))]
     { Err(BindingError::Unavailable("native protected-credential provider is not configured")) }
 }
 
@@ -293,7 +293,7 @@ mod windows {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod macos;
 
 #[cfg(test)]

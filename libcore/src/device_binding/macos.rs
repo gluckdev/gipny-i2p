@@ -7,10 +7,13 @@ type Ref = *const c_void;
 extern "C" {
     static kCFTypeDictionaryKeyCallBacks: u8;
     static kCFTypeDictionaryValueCallBacks: u8;
+    #[cfg(target_os = "macos")]
     static kCFTypeArrayCallBacks: u8;
     static kCFBooleanTrue: Ref;
+    #[cfg(target_os = "macos")]
     static kCFBooleanFalse: Ref;
     fn CFDictionaryCreate(allocator: Ref, keys: *const Ref, values: *const Ref, count: isize, key_callbacks: Ref, value_callbacks: Ref) -> Ref;
+    #[cfg(target_os = "macos")]
     fn CFArrayCreate(allocator: Ref, values: *const Ref, count: isize, callbacks: Ref) -> Ref;
     fn CFStringCreateWithBytes(allocator: Ref, bytes: *const u8, count: isize, encoding: u32, external: u8) -> Ref;
     fn CFDataCreateMutable(allocator: Ref, capacity: isize) -> *mut c_void;
@@ -28,21 +31,29 @@ extern "C" {
     static kSecClassGenericPassword: Ref;
     static kSecAttrService: Ref;
     static kSecAttrAccount: Ref;
+    #[cfg(target_os = "macos")]
     static kSecUseDataProtectionKeychain: Ref;
+    #[cfg(target_os = "macos")]
     static kSecUseKeychain: Ref;
+    #[cfg(target_os = "macos")]
     static kSecMatchSearchList: Ref;
+    #[cfg(target_os = "ios")]
+    static kSecAttrAccessible: Ref;
+    #[cfg(target_os = "ios")]
+    static kSecAttrAccessibleWhenUnlockedThisDeviceOnly: Ref;
     static kSecValueData: Ref;
     static kSecReturnData: Ref;
     fn SecItemAdd(attributes: Ref, result: *mut Ref) -> i32;
     fn SecItemCopyMatching(query: Ref, result: *mut Ref) -> i32;
     fn SecItemDelete(query: Ref) -> i32;
+    #[cfg(target_os = "macos")]
     fn SecKeychainCopyDefault(keychain: *mut Ref) -> i32;
 }
 
 struct Object(Ref);
 impl Object {
     fn checked(value: Ref) -> Result<Self> {
-        if value.is_null() { Err(BindingError::Unavailable("macOS protected Keychain allocation failed")) } else { Ok(Self(value)) }
+        if value.is_null() { Err(BindingError::Unavailable("Keychain allocation failed")) } else { Ok(Self(value)) }
     }
 }
 impl Drop for Object { fn drop(&mut self) { unsafe { CFRelease(self.0); } } }
@@ -68,24 +79,31 @@ fn text(value: &str) -> Result<Object> {
 fn query(id: &str, adding: bool, extra: &[(Ref, Ref)]) -> Result<Object> {
     let service = text("app.gipny.i2p-device-v2")?;
     let account = text(id)?;
-    let mut keychain = std::ptr::null();
-    if unsafe { SecKeychainCopyDefault(&mut keychain) } != 0 {
-        return Err(BindingError::Unavailable("macOS default local Keychain is unavailable; unlock or provision the OS Keychain"));
-    }
-    let keychain = Object::checked(keychain)?;
-    let search = Object::checked(unsafe {
-        CFArrayCreate(std::ptr::null(), &keychain.0, 1, std::ptr::addr_of!(kCFTypeArrayCallBacks).cast())
-    })?;
     let mut entries = unsafe { vec![
         (kSecClass, kSecClassGenericPassword),
         (kSecAttrService, service.0), (kSecAttrAccount, account.0),
-        // One explicit software tier, never an entitlement-dependent DP
-        // provider with a hidden fallback. File Keychain does not iCloud-sync;
-        // no DP-only synchronizable/accessibility attributes are supplied.
-        (kSecUseDataProtectionKeychain, kCFBooleanFalse),
-        if adding { (kSecUseKeychain, keychain.0) }
-        else { (kSecMatchSearchList, search.0) },
     ] };
+    // macOS explicitly targets the default local file keychain.
+    #[cfg(target_os = "macos")]
+    let (_keychain, _search) = {
+        let mut keychain = std::ptr::null();
+        if unsafe { SecKeychainCopyDefault(&mut keychain) } != 0 {
+            return Err(BindingError::Unavailable("macOS default local Keychain is unavailable; unlock or provision the OS Keychain"));
+        }
+        let keychain = Object::checked(keychain)?;
+        let search = Object::checked(unsafe {
+            CFArrayCreate(std::ptr::null(), &keychain.0, 1, std::ptr::addr_of!(kCFTypeArrayCallBacks).cast())
+        })?;
+        unsafe {
+            entries.push((kSecUseDataProtectionKeychain, kCFBooleanFalse));
+            entries.push(if adding { (kSecUseKeychain, keychain.0) } else { (kSecMatchSearchList, search.0) });
+        }
+        (keychain, search)
+    };
+    #[cfg(target_os = "ios")]
+    if adding {
+        unsafe { entries.push((kSecAttrAccessible, kSecAttrAccessibleWhenUnlockedThisDeviceOnly)); }
+    }
     entries.extend_from_slice(extra);
     let keys: Vec<_> = entries.iter().map(|(key, _)| *key).collect();
     let values: Vec<_> = entries.iter().map(|(_, value)| *value).collect();
@@ -98,7 +116,9 @@ fn query(id: &str, adding: bool, extra: &[(Ref, Ref)]) -> Result<Object> {
 
 pub(super) struct Provider;
 impl DeviceKeyProvider for Provider {
-    fn kind(&self) -> &'static str { "macos-local-keychain-v2" }
+    fn kind(&self) -> &'static str {
+        if cfg!(target_os = "ios") { "ios-device-keychain-v1" } else { "macos-local-keychain-v2" }
+    }
     fn seal(&self, id: &str, secret: &[u8; 32]) -> Result<Vec<u8>> {
         let data = SecretData(Object::checked(unsafe { CFDataCreateMutable(std::ptr::null(), 32) })?);
         unsafe { CFDataAppendBytes(data.0.0.cast_mut(), secret.as_ptr(), 32); }
@@ -106,7 +126,7 @@ impl DeviceKeyProvider for Provider {
             (kSecValueData, data.0.0),
         ] })?;
         if unsafe { SecItemAdd(query.0, std::ptr::null_mut()) } != 0 {
-            return Err(BindingError::Unavailable("macOS local Keychain could not store the credential; unlock it and allow OS access when prompted"));
+            return Err(BindingError::Unavailable("Local Keychain could not store the credential; unlock it and allow OS access when prompted"));
         }
         Ok(Vec::new())
     }
@@ -127,12 +147,12 @@ impl DeviceKeyProvider for Provider {
         let query = query(id, false, &[])?;
         match unsafe { SecItemDelete(query.0) } {
             0 | -25300 => Ok(()), // success or already absent
-            _ => Err(BindingError::Unavailable("macOS local Keychain could not delete the credential; allow OS access when prompted")),
+            _ => Err(BindingError::Unavailable("Local Keychain could not delete the credential; allow OS access when prompted")),
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use std::ffi::CString;
