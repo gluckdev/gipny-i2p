@@ -21,6 +21,7 @@ CI baseline `2139725` проверен; новые beta-изменения тр�
 | Измеренные lanes, адаптация и предзапуск | [Производительность](performance-anonymity.md), [startup](startup-performance.md), [сетевая адаптация](network-adaptation.md) |
 | Контакт по QR, эффекты и доступность UI | [Взаимодействие](ui-interactions.md) |
 | Пользоваться WASM-клиентом, хранить профиль, настроить сеть | [Браузер](browser-messenger.md) |
+| Опубликовать сайт и WASM-клиент, проверить обновление и запуск без сети | [Деплой Pages](../scripts/deploy/README.md) |
 | Разместить WSS/WebRTC транспорт | [Rust-форвардер](../browser-router/forwarder/README.md) |
 | Понять текущее состояние и планы | [Матрица функций](current-state.md), [планы](roadmap.md) |
 | Обновить upstream и проверить настройки | [Источники и настройки](upstreams-and-settings.md) |
@@ -54,6 +55,8 @@ WSS или WebRTC → Rust-форвардер → I2P. Отдельный лок
 Russian is primary; English follows in current guides. Source snapshot:
 2026-11-16, branch `release/0.5.0-beta.1`. Baseline `2139725` passed CI;
 new beta changes need their own evidence. A source version is not a published release.
+
+For Pages deployment and offline checks, see the [deployment guide](../scripts/deploy/README.md).
 
 Start with the [English README](../README.en.md), [feature status](current-state.md)
 and [security model](../SECURITY.md). The table above links browser setup,

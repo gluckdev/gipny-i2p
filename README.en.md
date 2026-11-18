@@ -14,6 +14,8 @@ of gipny; the [migration history](MIGRATION-i2p.md) is retained separately.
 
 ## Status
 
+As of 18 November 2026, the newest published prerelease is [v0.5.0-alpha.1](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.5.0-alpha.1). Pages publishes the web client from `main`. See the [deployment guide](scripts/deploy/README.md) for publication and offline startup checks.
+
 Development targets **beta** on `release/0.5.0-beta.1`; alpha2 will not be
 published. Package metadata still says `0.5.0-beta.1`. A source version, a passing build,
 a published package and a deployed service are different things.

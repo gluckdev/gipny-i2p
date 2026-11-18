@@ -45,9 +45,9 @@ SHA, помещает клиент в `_site/app/`, проверяет публ�
 
 Внешние snapshot, WSS/Rust bridge и TURN настраивает оператор;
 см. [размещение](../docs/browser-messenger.md#hosting-preparation).
-Публикация Pages разрешена workflow только для доверенного `main`, после
-проверок. Подготовка исходников не означает deploy. App builds и executable UI
-checks выполняются в GitHub Actions; локально допустимы проверки текстов/данных.
+GitHub Actions публикует проверенный артефакт из `main`. В Chrome проверяются
+разметка главной страницы и повторное открытие экрана профиля без сети.
+Порядок публикации и проверки доступен в [руководстве по деплою](../scripts/deploy/README.md).
 
 Карточка сетевой защиты описывает текущие трёхузловые туннели приложения
 в обоих направлениях и включённое выравнивание кадров. Скорость зависит от I2P;
@@ -90,8 +90,8 @@ under `_site/app/`. The validated repository variable
 master/API secrets there. Use bounded, renewable TURN credentials. Without a
 network configuration the client provides local offline functionality only.
 Operators separately provide the netDb snapshot, Rust bridge and TURN service.
-Deployment requires trusted main and passing workflow checks. Preparing sources
-is not deployment; application builds/tests run in GitHub Actions.
+GitHub Actions deploys the tested artifact from `main`. Chrome checks the landing
+page layouts and reloads the profile screen offline. See the [deployment guide](../scripts/deploy/README.md).
 
 The network protection card describes current three-hop application tunnels
 in both directions and enabled frame padding. Throughput depends on I2P;
