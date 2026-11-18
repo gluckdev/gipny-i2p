@@ -596,6 +596,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
     }
 
     /// Delete mail we opened, wherever the closest nodes (and seeds) hold it.
+    /// The total reported across replicas saturates at u32::MAX.
     pub async fn delete(&self, key: &DhtKey, token: &[u8; 32]) -> u32 {
         let mut n = self.storage.delete(key, token);
         let mut targets: Vec<NodeInfo> = self.lookup(key).await.into_iter().filter(|n| n.stores).collect();
@@ -606,7 +607,7 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         }
         for r in join_all(targets.iter().map(|t| self.ask(&t.destination, DhtRequest::Delete { key: *key, token: *token }))).await {
             if let Some(DhtResponse::Deleted(d)) = r {
-                n += d;
+                n = n.saturating_add(d);
             }
         }
         n
