@@ -1,9 +1,7 @@
 target/
-**/target/
 **/*.rs.bk
 
 node_modules/
-**/node_modules/
 ui/dist/
 ui/browser-dist/
 ui/.vite/
@@ -32,7 +30,6 @@ core/gen/android/app/src/main/assets/certificates/
 core/gen/android/app/src/main/assets/netdb/
 android-router/netdb-seed/
 android-router/netdb-seed-archive/
-core/resources/i2pd-netdb-seed.tar.gz
 # Prebuilt i2pd JNI libraries dropped in for local Android builds (CI artifacts).
 android-router/prebuilt/
 core/gen/android/buildSrc/build/

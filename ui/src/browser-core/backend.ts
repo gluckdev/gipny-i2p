@@ -20,7 +20,7 @@ import { FileStorage, FILE_PREVIEW_LIMIT, StorageBusy } from './files/storage';
 import { ActionLog, LOG_LOCATION } from './diagnostics/log';
 import {
   allocate, base64, canSendControls, clearHistory, dueLetters, expireHistory, expireResends, fromBase64, hex, inHistory, redactMessage, loadState, newState, payload, pruneMessageOutbox,
-  queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, unbase64, unhex, visible,
+  queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, sleepingPeerLetters, unbase64, unhex, visible,
   type BrowserState, type Outbox, type PublicIdentity, type SeenEnvelope, type StoredBlob, type StoredMessage, type WirePayload,
 } from './profiles/model';
 
@@ -386,7 +386,8 @@ export class BrowserBackend {
       }
       this.network = network;
       this.startup.mark('application_destination_ready');
-      this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error));
+      this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error),
+        peer => { void this.resumePeerRetries(peer, attempt).catch(error => this.log.info('outbox_fault', reason(error))); });
       this.relay.start();
       this.hosted = { state: 'ready', address: this.identity!.i2p_address };
       this.boot('core', 'done', 'In-process client destination is ready');
@@ -403,40 +404,58 @@ export class BrowserBackend {
     } catch (error) { if (attempt === this.generation && !this.closing) this.networkFailed(reason(error)); }
   }
 
+  private async resumePeerRetries(peer: string, generation: number): Promise<void> {
+    if (generation !== this.generation || this.closing || !this.state ||
+        !sleepingPeerLetters(this.state, peer, Date.now(), this.sending).length) return;
+    await this.transact(state => {
+      if (generation !== this.generation) return;
+      for (const item of sleepingPeerLetters(state, peer, Date.now(), this.sending)) item.at = 0;
+    });
+    if (generation === this.generation) this.schedule(0);
+  }
+
   private async warmPeerRelays(attempt: number): Promise<void> {
     // A restored destination has fresh I2P encryption keys and inbound leases.
     // Establish outbound streams so peers learn its current signed LeaseSet
     // without waiting for their cached pre-restart address to expire.
-    const peers = this.state?.contacts.filter(peer => peer.trust !== 2 && peer.request !== 'incoming')
+    let peers = this.state?.contacts.filter(peer => peer.trust !== 2 && peer.request !== 'incoming')
       .map(peer => ({ key: peer.sign_pk, address: peer.relay || peer.i2p_address })) || [];
     this.relayProbes = { attempted: 0, completed: 0, failed: 0 };
-    let next = 0;
     const active = (): boolean => attempt === this.generation && !this.closing && this.relay !== null;
-    const worker = async (): Promise<void> => {
-      while (active() && next < peers.length) {
-        const peer = peers[next++]!;
-        for (let retry = 0; retry < 3 && active(); retry++) {
-          if (!this.state?.contacts.some(contact => contact.sign_pk === peer.key && contact.trust !== 2 && contact.request !== 'incoming')) break;
+    // Give every saved contact a first attempt before retrying unreachable ones.
+    // Later rounds span the period when the restored leases reach floodfills.
+    for (const delay of [0, 10_000, 20_000, 40_000, 60_000]) {
+      if (!peers.length || !active()) return;
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      const failed: typeof peers = [];
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        while (active() && next < peers.length) {
+          const peer = peers[next++]!;
+          const contact = this.state?.contacts.find(value => value.sign_pk === peer.key);
+          if (!contact || contact.trust === 2 || contact.request === 'incoming' ||
+              (contact.relay || contact.i2p_address) !== peer.address) continue;
           this.relayProbes.attempted++;
+          this.log.debug('relay_probe', this.who(peer.key));
           try {
-            this.log.debug('relay_probe', `${this.who(peer.key)}${peer.address === this.state?.contacts.find(contact => contact.sign_pk === peer.key)?.i2p_address ? '' : ' via its relay'} · try ${retry + 1}/3`);
             await this.relay!.ping(peer.address);
-            if (active()) {
-              this.relayProbes.completed++;
-              this.startup.mark('first_authenticated_peer');
-              this.log.info('relay_probe_ok', this.who(peer.key));
-            }
-            break;
           } catch {
             if (!active()) return;
             this.relayProbes.failed++;
-            this.log.debug('relay_probe_failed', `${this.who(peer.key)} · try ${retry + 1}/3`);
-            if (retry < 2) await new Promise(resolve => setTimeout(resolve, 10000));
+            this.log.debug('relay_probe_failed', this.who(peer.key));
+            failed.push(peer);
+            continue;
           }
+          if (!active()) return;
+          this.relayProbes.completed++;
+          this.startup.mark('first_authenticated_peer');
+          this.log.info('relay_probe_ok', this.who(peer.key));
+          await this.resumePeerRetries(peer.key, attempt).catch(error => this.log.info('outbox_fault', reason(error)));
         }
-      }
-    };
-    await Promise.all([worker(), worker()]);
+      };
+      await Promise.all([worker(), worker()]);
+      peers = failed;
+    }
   }
   /** This hosting serves the client without a network service. Not a failure
    * a retry would mend — none is armed — so it is its own relay state rather
@@ -801,7 +820,7 @@ export class BrowserBackend {
       return null;
     }
     if (command === 'retry_network') {
-      if (this.engine && this.hosted.state === 'failed' && this.networkConfig) {
+      if (this.engine && this.networkConfig && (this.hosted.state === 'failed' || this.hosted.state === 'unconfigured')) {
         if (this.retryTimer) clearTimeout(this.retryTimer); this.retryTimer = null;
         void this.startNetwork(++this.generation);
       }

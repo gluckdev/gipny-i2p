@@ -634,6 +634,32 @@ test('a letter being sent is not picked twice and does not stall its peer', () =
   assert.ok(!ui.dueLetters(f.state, later).some(item => item.peer === a && item.blob === null));
 });
 
+test('a returning direct peer wakes only its sleeping retries and keeps the sealed message', () => {
+  const peer = '0a'.repeat(32), other = '0b'.repeat(32);
+  const state = ui.newBrowserState('sender');
+  const contact = { sign_pk: peer, trust: 1, request: 'none', relay: 'own.b32.i2p', i2p_address: 'own.b32.i2p' };
+  state.contacts.push(contact);
+  const failed = { peer, key: 'message', row: 1, payload: {}, blob: 'sealed', at: 100_000, attempts: 5, deposited: false };
+  state.outbox.push(failed, { ...failed, key: 'busy' }, { ...failed, key: 'done', deposited: true },
+    { ...failed, key: 'other', peer: other });
+  const busy = new Set(['busy']);
+  const now = 108_000;
+  assert.deepEqual(ui.dueLetters(state, now, 4, busy), []);
+  assert.deepEqual(ui.sleepingPeerLetters(state, peer, 100_001, busy), []);
+  for (const override of [{ trust: 2 }, { request: 'incoming' }, { relay: 'external.b32.i2p' }]) {
+    state.contacts[0] = { ...contact, ...override };
+    assert.deepEqual(ui.sleepingPeerLetters(state, peer, now, busy), []);
+  }
+  state.contacts[0] = contact;
+  const sleeping = ui.sleepingPeerLetters(state, peer, now, busy);
+  assert.deepEqual(sleeping, [failed]);
+  sleeping[0].at = 0;
+  assert.deepEqual(ui.dueLetters(state, now, 4, busy), [failed]);
+  assert.equal(failed.blob, 'sealed');
+  assert.equal(failed.attempts, 5);
+  assert.deepEqual(ui.sleepingPeerLetters(state, peer, now, busy), []);
+});
+
 test('file deposit concurrency grows on fresh receipts and falls once for an expired flight', async () => {
   const f = outgoingFixture();
   ui.queueFileChunks(f.state, f.own, 100000);

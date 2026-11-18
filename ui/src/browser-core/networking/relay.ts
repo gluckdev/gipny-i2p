@@ -22,7 +22,8 @@ export class BrowserRelay {
   private serving = 0;
   private sequence = 1;
   constructor(private engine: BrowserEngine, private network: BrowserNetwork, private identity: PublicIdentity,
-    private incoming: (from: string, blob: Uint8Array) => Promise<void>, private failure: (reason: string) => void) {}
+    private incoming: (from: string, blob: Uint8Array) => Promise<void>, private failure: (reason: string) => void,
+    private peerPing: (peer: string) => void) {}
 
   start(): void { void this.acceptLoop(); }
   close(): void {
@@ -71,7 +72,11 @@ export class BrowserRelay {
     await this.writeRelay(stream, 'AuthOk');
     while (!this.closed) {
       const frame = await this.readClient(stream);
-      if (frame === 'Ping') { await this.writeRelay(stream, 'Pong'); continue; }
+      if (frame === 'Ping') {
+        await this.writeRelay(stream, 'Pong');
+        if (!this.closed) this.peerPing(from);
+        continue;
+      }
       if (typeof frame !== 'object') throw new Error('Unexpected relay frame');
       if ('GetBundle' in frame) {
         const served = hex(frame.GetBundle.pk) === this.identity.sign_pk;

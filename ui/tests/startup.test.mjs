@@ -36,11 +36,14 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 class WorkerFixture {
   static all = [];
   static error = null;
-  messages = []; stopped = false;
+  messages = []; stopped = false; hosted = 'unconfigured';
   constructor() { this.error = WorkerFixture.error; WorkerFixture.all.push(this); }
   postMessage(message) {
     this.messages.push(message);
-    queueMicrotask(() => this.onmessage?.({ data: { id: message.id, ...(this.error ? { error: this.error } : { result: message.command === 'list_profiles' ? ['Alice', 'Bob'] : {} }) } }));
+    let result = {};
+    if (message.command === 'list_profiles') result = ['Alice', 'Bob'];
+    if (message.command === 'get_relay_info') result = { hosted: { state: this.hosted } };
+    queueMicrotask(() => this.onmessage?.({ data: { id: message.id, ...(this.error ? { error: this.error } : { result }) } }));
   }
   terminate() { this.stopped = true; }
 }
@@ -64,6 +67,29 @@ test('profile list and worker initialization proceed while config waits; unlock 
     assert.ok(configured < worker.messages.findIndex(row => row.command === 'vault_unlock'));
     const stats = await client.invoke('browser_diagnostics');
     assert.ok(stats.page_startup_ms.config_loaded >= 0 && stats.page_startup_ms.worker_wasm_ready >= 0);
+  } finally { client.terminate(); }
+});
+
+test('an online event reloads missing settings once and leaves a live router connected', async () => {
+  const client = new BrowserCoreClient();
+  let fetches = 0;
+  const published = deferred();
+  globalThis.fetch = async () => ++fetches === 1 ? new Response(null, { status: 404 }) : published.promise;
+  try {
+    await client.invoke('vault_unlock', { profile: 'Alice', pass: 'test' });
+    const worker = WorkerFixture.all.at(-1);
+    const first = client.reconnect(), second = client.reconnect();
+    await tick();
+    assert.equal(fetches, 2);
+    published.resolve(new Response(JSON.stringify(config)));
+    await Promise.all([first, second]);
+    const configured = worker.messages.findIndex(row => row.command === 'init' && row.args?.config?.capability);
+    assert.ok(configured >= 0 && worker.messages.findIndex(row => row.command === 'retry_network') > configured);
+    worker.hosted = 'ready';
+    const count = worker.messages.length;
+    await client.reconnect();
+    assert.equal(fetches, 2);
+    assert.deepEqual(worker.messages.slice(count).map(row => row.command), ['get_relay_info']);
   } finally { client.terminate(); }
 });
 

@@ -1,5 +1,5 @@
-// Actual module-worker/WASM loading through the production CSP. No profile is
-// opened and hosting remains disabled. Run after build:browser; needs Chromium.
+// Actual module-worker/WASM loading through the production CSP. No
+// external bridge is needed. Run after build:browser; needs Chromium.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -9,9 +9,17 @@ import { chromium } from 'playwright';
 const dist = resolve(new URL('../browser-dist/', import.meta.url).pathname);
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json' };
 let fault = '';
+let publishConfig = false;
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://local').pathname;
   const file = resolve(dist, '.' + path);
+  if (path === '/browser-config.json' && publishConfig) {
+    const origin = '127.0.0.1:' + server.address().port;
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ snapshot_url: 'http://' + origin + '/test-snapshot', snapshot_sha256: 'a'.repeat(64),
+      forwarder_url: 'ws://' + origin + '/stream', capability: 'b'.repeat(43) }));
+    return;
+  }
   if (!file.startsWith(dist + '/') || path === '/browser-config.json') { res.writeHead(404).end(); return; }
   try {
     let bytes = readFileSync(file);
@@ -30,6 +38,7 @@ try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.GIPNY_CHROMIUM || '/usr/bin/google-chrome' });
   for (const mode of ['normal', 'window-missing', 'worker-missing', 'compile-failed']) {
     fault = mode;
+    publishConfig = false;
     const context = await browser.newContext({ serviceWorkers: 'block' });
     try {
       const page = await context.newPage();
@@ -46,6 +55,23 @@ try {
       if (mode === 'worker-missing') assert.match(text, /WASM_API_UNAVAILABLE/);
       else if (mode === 'compile-failed') assert.match(text, /WASM_INIT_FAILED, CompileError.*test unsupported module instruction/);
       else assert.equal(await page.locator('#app .auth.err').count(), 0, text);
+      if (mode === 'normal') {
+        const advance = page.locator('.salon-create .auth-actions .btn:not(.btn-ghost)');
+        await page.locator('#create-name').fill('recovery');
+        await advance.click();
+        await page.locator('#create-password').fill('local recovery test password');
+        await page.locator('#create-confirm').fill('local recovery test password');
+        await advance.click();
+        await advance.click();
+        await page.waitForSelector('.main');
+        publishConfig = true;
+        // A local snapshot request proves the real worker started bootstrap.
+        const bootstrap = page.context().waitForEvent('request', {
+          predicate: req => new URL(req.url()).pathname === '/test-snapshot', timeout: 20_000,
+        });
+        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        await bootstrap;
+      }
       assert.doesNotMatch(text, /Lockdown Mode|WebAssembly is disabled/);
       assert.deepEqual(errors, []); assert.deepEqual(unhandled, []);
       assert.deepEqual(external, [], 'disabled hosting must not start a bridge or bootstrap download');

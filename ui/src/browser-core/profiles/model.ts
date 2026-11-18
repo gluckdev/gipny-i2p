@@ -208,6 +208,19 @@ export function queueReceipt(state: BrowserState, peer: string, letter: WirePayl
   return true;
 }
 
+/** A contact's authenticated startup ping can wake its direct mailbox.
+ * Keep the attempt count and sealed envelopes. A failed retry backs off again. */
+export function sleepingPeerLetters(state: BrowserState, peer: string, now: number, busy: { has(key: string): boolean }): Outbox[] {
+  const contact = state.contacts.find(value => value.sign_pk === peer);
+  if (!contact || contact.trust === 2 || contact.request !== 'none' ||
+      (contact.relay && contact.relay !== contact.i2p_address)) return [];
+  return state.outbox.filter(item => {
+    const elapsed = now - item.at;
+    return item.peer === peer && !item.deposited && !busy.has(item.key) && item.attempts > 0 &&
+      elapsed >= retryDelay(0) && elapsed < retryDelay(item.attempts);
+  });
+}
+
 /** Fractional slots accumulate one more concurrent deposit per acknowledged flight. */
 export function fileSendSlots(file: FileTransfer): number {
   return Number.isFinite(file.sendSlots) ? Math.min(4, Math.max(1, file.sendSlots!)) : 2;

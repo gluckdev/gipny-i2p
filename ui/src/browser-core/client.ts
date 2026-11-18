@@ -1,4 +1,4 @@
-import type { BrowserBackend, UnlistenFn } from '../app/api';
+import type { BrowserBackend, RelayInfo, UnlistenFn } from '../app/api';
 import { enrollBrowserPasskey, unlockBrowserPasskey } from './authorization/passkeys';
 import { RtcBridge, rtcSettings } from './networking/rtc-transport';
 import { loadNetworkConfiguration } from './networking/config';
@@ -41,11 +41,15 @@ export class BrowserCoreClient implements BrowserBackend {
     const configured = Promise.all([workerReady, loading]).then(async ([, loaded]) => {
       this.active(generation);
       this.config = loaded?.config ?? null;
-      this.rtcConfig = loaded?.rtc ?? null;
-      this.rtc?.close(); this.rtc = this.rtcConfig ? new RtcBridge(this.rtcConfig) : null;
+      const rtc = loaded?.rtc ?? null;
+      if (JSON.stringify(rtc) !== JSON.stringify(this.rtcConfig)) {
+        this.rtc?.close();
+        this.rtcConfig = rtc;
+        this.rtc = rtc ? new RtcBridge(rtc) : null;
+      }
       await this.send('init', { config: this.config });
       this.active(generation); this.timings.mark('configured');
-    });
+    }).finally(() => { if (this.configAbort === abort) this.configAbort = null; });
     this.configured = configured;
     return configured;
   }
@@ -171,7 +175,10 @@ export class BrowserCoreClient implements BrowserBackend {
   async reconnect(): Promise<void> {
     if (!this.unlocked) return;
     const generation = this.generation;
-    this.configAbort?.abort(); this.configAbort = null; this.configured = null;
+    const info = await this.invoke<RelayInfo>('get_relay_info');
+    if (!this.unlocked || generation !== this.generation ||
+        (info.hosted.state !== 'failed' && info.hosted.state !== 'unconfigured')) return;
+    if (!this.configAbort) this.configured = null;
     await this.configure();
     if (!this.unlocked || generation !== this.generation) return;
     await this.invoke('retry_network');
