@@ -9,7 +9,7 @@ export { WorkerRtcSocket, rtcSettings, filteredSdp } from '../src/browser-core/n
 export { redactMessage, refreshDeletionNotice, inHistory, payload, hex } from '../src/browser-core/profiles/model';
 export { acknowledgeBrowserDeletion, queueDeletionControls, queuePeerReport, receiveDeletionControl, forgetRequestObligations, DELETION_WINDOW } from '../src/browser-core/messaging/deletion';
 export {
-  base64, fromBase64, readBits, writeBits, countBits, canSendControls, queueLetter, queueReceipt, dueLetters, sleepingPeerLetters, reopenForResend, expireResends,
+  base64, fromBase64, readBits, writeBits, countBits, canSendControls, queueLetter, queueReceipt, dueLetters, wakePeerRetries, reopenForResend, expireResends,
   retryDelay, resendDelay, recentEnvelope, rememberEnvelope, rememberInitial, replayedInitial, RECENT_ENVELOPES, INITIALS_PER_PEER,
   OUTBOX_LIMIT, RECEIPT_RESERVE, SEALED_PART_LIMIT, RESEND_TTL_MS,
 } from '../src/browser-core/profiles/model';

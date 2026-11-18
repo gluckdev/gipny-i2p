@@ -208,17 +208,19 @@ export function queueReceipt(state: BrowserState, peer: string, letter: WirePayl
   return true;
 }
 
-/** A contact's authenticated startup ping can wake its direct mailbox.
- * Keep the attempt count and sealed envelopes. A failed retry backs off again. */
-export function sleepingPeerLetters(state: BrowserState, peer: string, now: number, busy: { has(key: string): boolean }): Outbox[] {
+/** Remember a direct peer's authenticated ping even while its deposit is in
+ * flight. The pump consumes the hint once, after the current attempt settles. */
+export function wakePeerRetries(state: BrowserState, peer: string, busy: { has(key: string): boolean }, wake: WeakSet<Outbox>): boolean {
   const contact = state.contacts.find(value => value.sign_pk === peer);
   if (!contact || contact.trust === 2 || contact.request !== 'none' ||
-      (contact.relay && contact.relay !== contact.i2p_address)) return [];
-  return state.outbox.filter(item => {
-    const elapsed = now - item.at;
-    return item.peer === peer && !item.deposited && !busy.has(item.key) && item.attempts > 0 &&
-      elapsed >= retryDelay(0) && elapsed < retryDelay(item.attempts);
-  });
+      (contact.relay && contact.relay !== contact.i2p_address)) return false;
+  let changed = false;
+  for (const item of state.outbox) {
+    if (item.peer !== peer || item.deposited || wake.has(item) || (!item.attempts && !busy.has(item.key))) continue;
+    wake.add(item);
+    changed = true;
+  }
+  return changed;
 }
 
 /** Fractional slots accumulate one more concurrent deposit per acknowledged flight. */
@@ -232,7 +234,7 @@ export function fileSendSlots(file: FileTransfer): number {
  * for reachable peers and within the snapshot-wide cap. Letters in `busy` are
  * being sent: never picked twice, not yet failures, and their parts keep their
  * per-peer slots. */
-export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { has(key: string): boolean } = new Set<string>()): Outbox[] {
+export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { has(key: string): boolean } = new Set<string>(), wake?: WeakSet<Outbox>): Outbox[] {
   const silent = new Set(state.contacts.filter(contact => contact.trust === 2 || contact.request === 'incoming').map(contact => contact.sign_pk));
   const failing = new Set(state.outbox.filter(item => !busy.has(item.key) && item.blob !== null && !item.deposited && item.attempts > 0).map(item => item.peer));
   let sealed = state.outbox.filter(item => item.file && item.blob !== null).length;
@@ -249,7 +251,7 @@ export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { 
     if (silent.has(item.peer) || busy.has(item.key)) continue;
     if (item.deposited) {
       if (!retained(item) || now - item.at < resendDelay(item.resends ?? 0)) continue;
-    } else if (now - item.at < retryDelay(item.attempts)) continue;
+    } else if (now - item.at < retryDelay(wake?.has(item) ? 0 : item.attempts)) continue;
     if (item.file) {
       if ((perPeer.get(item.peer) ?? 0) >= (slots.get(item.peer + ':' + item.file.id) ?? 1)) continue;
       if (item.blob === null) {

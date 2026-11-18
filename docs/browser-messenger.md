@@ -53,9 +53,15 @@ Cromite153.0.8010.37 отдельно проверен на Linux: при шта
 сразу после создания или разблокировки профиля.
 Когда конфигурация появляется, клиент запускает I2P в том же профиле.
 Успешная проверка прямого релея принятого контакта позволяет раньше повторить
-отправку ожидающих сообщений и квитанций. Статус доставки меняется после
-подтверждения получателя. Последний живой прогон до этой правки превысил
-тайм-аут восстановления. [Результаты WSS и WebRTC](https://github.com/gluckdev/gipny-i2p/actions/runs/44282718672).
+отправку ожидающих сообщений и квитанций. Если в это время уже идёт отправка,
+очередь запоминает сигнал до её завершения. При ошибке та же зашифрованная копия сообщения
+становится доступна для повтора через две секунды. Статус доставки меняется
+после подтверждения получателя.
+
+На `875a318` восстановление очереди через WebRTC прошло с квитанцией и одной
+копией в истории. На `b53459c` WSS превысил 300 секунд ожидания сообщения после
+перезапуска, а тест WebRTC завершился на двустороннем звуке до проверки очереди.
+[Прогон 875a318](https://github.com/gluckdev/gipny-i2p/actions/runs/44312581501) · [Прогон b53459c](https://github.com/gluckdev/gipny-i2p/actions/runs/44322195198).
 
 Чтобы выйти в сеть, оператор делает по порядку:
 
@@ -271,8 +277,14 @@ the router was unconfigured or startup failed. If connectivity returns on the
 sign-in screen, the client runs that check after profile creation or unlock.
 A newly published configuration starts I2P in the open profile. A successful
 probe of an accepted contact's direct relay can bring queued retries forward.
-Delivery still requires the recipient's receipt. The last live run before this
-change timed out during recovery. [WSS and WebRTC results](https://github.com/gluckdev/gipny-i2p/actions/runs/44282718672).
+If a deposit is already in flight, the queue remembers the ping until that
+attempt finishes. On failure the same ciphertext is eligible for retry after
+two seconds. Delivery still requires the recipient's receipt.
+
+On `875a318` WebRTC recovery produced a receipt and a single history entry.
+On `b53459c` the WSS receiver timed out after 300 seconds waiting for the
+queued message, and the WebRTC run stopped at the bidirectional audio check
+before it could test recovery. [Run on 875a318](https://github.com/gluckdev/gipny-i2p/actions/runs/44312581501) · [Run on b53459c](https://github.com/gluckdev/gipny-i2p/actions/runs/44322195198).
 
 To go live, an operator does, in order:
 

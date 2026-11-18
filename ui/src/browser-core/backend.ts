@@ -20,7 +20,7 @@ import { FileStorage, FILE_PREVIEW_LIMIT, StorageBusy } from './files/storage';
 import { ActionLog, LOG_LOCATION } from './diagnostics/log';
 import {
   allocate, base64, canSendControls, clearHistory, dueLetters, expireHistory, expireResends, fromBase64, hex, inHistory, redactMessage, loadState, newState, payload, pruneMessageOutbox,
-  queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, sleepingPeerLetters, unbase64, unhex, visible,
+  queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, wakePeerRetries, unbase64, unhex, visible,
   type BrowserState, type Outbox, type PublicIdentity, type SeenEnvelope, type StoredBlob, type StoredMessage, type WirePayload,
 } from './profiles/model';
 
@@ -58,6 +58,7 @@ export class BrowserBackend {
   private pumping = false;
   /** Outbox keys being sent (at most SEND_STREAMS) and the step each is in. */
   private sending = new Map<string, { stage: string; at: number }>();
+  private retryOnReturn = new WeakSet<Outbox>();
   /** When the running profile transaction started; for stall diagnostics. */
   private transactSince: number | null = null;
   private stallReported = 0;
@@ -274,7 +275,7 @@ export class BrowserBackend {
     const parts = outbox.filter(item => item.file);
     const flight = this.state.transfers.reduce((n, file) => n + (!file.incoming && file.status === 'sending' ? Object.keys(file.flight ?? {}).length : 0), 0);
     stalled.push(`slots ${this.sending.size}/${SEND_STREAMS}`, `outbox ${outbox.length} (parts ${parts.length}, sealed ${parts.filter(item => item.blob !== null).length})`,
-      `due ${dueLetters(this.state, now, 8, this.sending).length}`, `parts in flight ${flight}`, `no deposit for ${age(this.lastDeposit)}`);
+      `due ${dueLetters(this.state, now, 8, this.sending, this.retryOnReturn).length}`, `parts in flight ${flight}`, `no deposit for ${age(this.lastDeposit)}`);
     this.stallReported = now; this.stallReports++;
     this.log.info('stall', `${stalled.join(' · ')}${this.pumping ? ' · outbox pass running' : ''}`);
   }
@@ -285,6 +286,7 @@ export class BrowserBackend {
     this.closing = true;
     this.prewarm.cancel();
     this.verificationRetry.clear();
+    this.retryOnReturn = new WeakSet();
     if (this.engine || this.storage) {
       this.log.info('vault_lock', 'keys wiped from worker memory');
       this.log.snapshot();
@@ -387,7 +389,7 @@ export class BrowserBackend {
       this.network = network;
       this.startup.mark('application_destination_ready');
       this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error),
-        peer => { void this.resumePeerRetries(peer, attempt).catch(error => this.log.info('outbox_fault', reason(error))); });
+        peer => this.resumePeerRetries(peer, attempt));
       this.relay.start();
       this.hosted = { state: 'ready', address: this.identity!.i2p_address };
       this.boot('core', 'done', 'In-process client destination is ready');
@@ -404,14 +406,12 @@ export class BrowserBackend {
     } catch (error) { if (attempt === this.generation && !this.closing) this.networkFailed(reason(error)); }
   }
 
-  private async resumePeerRetries(peer: string, generation: number): Promise<void> {
-    if (generation !== this.generation || this.closing || !this.state ||
-        !sleepingPeerLetters(this.state, peer, Date.now(), this.sending).length) return;
-    await this.transact(state => {
-      if (generation !== this.generation) return;
-      for (const item of sleepingPeerLetters(state, peer, Date.now(), this.sending)) item.at = 0;
-    });
-    if (generation === this.generation) this.schedule(0);
+  private resumePeerRetries(peer: string, generation: number): void {
+    if (generation !== this.generation || this.closing || !this.state) return;
+    if (wakePeerRetries(this.state, peer, this.sending, this.retryOnReturn)) {
+      this.log.debug('outbox_peer_returned', this.who(peer));
+      this.schedule(0);
+    }
   }
 
   private async warmPeerRelays(attempt: number): Promise<void> {
@@ -450,7 +450,7 @@ export class BrowserBackend {
           this.relayProbes.completed++;
           this.startup.mark('first_authenticated_peer');
           this.log.info('relay_probe_ok', this.who(peer.key));
-          await this.resumePeerRetries(peer.key, attempt).catch(error => this.log.info('outbox_fault', reason(error)));
+          this.resumePeerRetries(peer.key, attempt);
         }
       };
       await Promise.all([worker(), worker()]);
@@ -517,7 +517,8 @@ export class BrowserBackend {
       // further parts never wait for the slowest send.
       const free = SEND_STREAMS - this.sending.size;
       if (free <= 0) return;
-      for (const item of dueLetters(this.state, Date.now(), free, this.sending)) {
+      for (const item of dueLetters(this.state, Date.now(), free, this.sending, this.retryOnReturn)) {
+        this.retryOnReturn.delete(item);
         this.sending.set(item.key, { stage: 'start', at: Date.now() });
         void this.sendItem(item, attempt)
           .catch(error => { if (!this.closing) this.log.info('outbox_fault', reason(error)); })

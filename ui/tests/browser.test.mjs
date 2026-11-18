@@ -634,30 +634,34 @@ test('a letter being sent is not picked twice and does not stall its peer', () =
   assert.ok(!ui.dueLetters(f.state, later).some(item => item.peer === a && item.blob === null));
 });
 
-test('a returning direct peer wakes only its sleeping retries and keeps the sealed message', () => {
+test('a direct peer ping during a deposit expedites its next retry once the flight settles', () => {
   const peer = '0a'.repeat(32), other = '0b'.repeat(32);
   const state = ui.newBrowserState('sender');
   const contact = { sign_pk: peer, trust: 1, request: 'none', relay: 'own.b32.i2p', i2p_address: 'own.b32.i2p' };
   state.contacts.push(contact);
   const failed = { peer, key: 'message', row: 1, payload: {}, blob: 'sealed', at: 100_000, attempts: 5, deposited: false };
-  state.outbox.push(failed, { ...failed, key: 'busy' }, { ...failed, key: 'done', deposited: true },
-    { ...failed, key: 'other', peer: other });
-  const busy = new Set(['busy']);
-  const now = 108_000;
-  assert.deepEqual(ui.dueLetters(state, now, 4, busy), []);
-  assert.deepEqual(ui.sleepingPeerLetters(state, peer, 100_001, busy), []);
-  for (const override of [{ trust: 2 }, { request: 'incoming' }, { relay: 'external.b32.i2p' }]) {
+  const flight = { ...failed, key: 'busy' };
+  state.outbox.push(failed, flight, { ...failed, key: 'done', deposited: true }, { ...failed, key: 'other', peer: other });
+  const wake = new WeakSet(), busy = new Set([flight.key]);
+  const due = time => ui.dueLetters(state, time, 4, busy, wake);
+  for (const override of [{ trust: 2 }, { request: 'incoming' }, { request: 'outgoing' }, { relay: 'external.b32.i2p' }]) {
     state.contacts[0] = { ...contact, ...override };
-    assert.deepEqual(ui.sleepingPeerLetters(state, peer, now, busy), []);
+    assert.equal(ui.wakePeerRetries(state, peer, busy, wake), false);
   }
   state.contacts[0] = contact;
-  const sleeping = ui.sleepingPeerLetters(state, peer, now, busy);
-  assert.deepEqual(sleeping, [failed]);
-  sleeping[0].at = 0;
-  assert.deepEqual(ui.dueLetters(state, now, 4, busy), [failed]);
-  assert.equal(failed.blob, 'sealed');
-  assert.equal(failed.attempts, 5);
-  assert.deepEqual(ui.sleepingPeerLetters(state, peer, now, busy), []);
+  assert.deepEqual(due(108_000), []);
+  assert.equal(ui.wakePeerRetries(state, peer, busy, wake), true);
+  assert.equal(ui.wakePeerRetries(state, peer, busy, wake), false);
+  assert.deepEqual(due(108_000), [failed]);
+  wake.delete(failed);
+  flight.at = 109_000;
+  busy.delete(flight.key);
+  assert.deepEqual(due(109_001), []);
+  assert.deepEqual(due(109_000 + ui.retryDelay(0)), [flight]);
+  wake.delete(flight);
+  assert.deepEqual(due(112_000), []);
+  assert.equal(flight.attempts, 5);
+  assert.equal(flight.blob, 'sealed');
 });
 
 test('file deposit concurrency grows on fresh receipts and falls once for an expired flight', async () => {
