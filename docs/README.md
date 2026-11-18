@@ -4,7 +4,7 @@
 
 Основной язык — русский; английское описание следует вторым в каждом текущем
 руководстве. Обновление: **2026-11-16**, ветка `release/0.5.0-beta.1`.
-CI baseline `589ad57` проверен; новые beta-изменения требуют своей матрицы.
+CI baseline `2139725` проверен; новые beta-изменения требуют свою матрицу.
 Номер версии не означает опубликованный релиз.
 
 Начните с [README](../README.md), [состояния функций](current-state.md) и
@@ -52,7 +52,7 @@ WSS или WebRTC → Rust-форвардер → I2P. Отдельный лок
 ## English
 
 Russian is primary; English follows in current guides. Source snapshot:
-2026-11-16, branch `release/0.5.0-beta.1`. Baseline `589ad57` passed CI;
+2026-11-16, branch `release/0.5.0-beta.1`. Baseline `2139725` passed CI;
 new beta changes need their own evidence. A source version is not a published release.
 
 Start with the [English README](../README.en.md), [feature status](current-state.md)

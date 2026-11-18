@@ -3,7 +3,7 @@
 ## Русский
 
 Состояние на 2026-11-16: реализация, unit/fixture и native baseline CI
-на589ad57 прошли; реальные домашние роутеры ещё не проверены. Сам флаг `upnp.enabled` UPnP не запускает:
+на2139725 прошли; реальные домашние роутеры ещё не проверены. Сам флаг `upnp.enabled` UPnP не запускает:
 приложение использует API libi2pd без daemon-компонента i2pd, поэтому порты
 открывает собственный менеджер `i2p-embed`.
 
@@ -66,7 +66,7 @@ Wi-Fi/mobile и перезапуск IGD проверяются отдельно
 
 ## English
 
-Status on2026-11-16: implemented; unit/fixture and native baseline CI at589ad57
+Status on2026-11-16: implemented; unit/fixture and native baseline CI at2139725
 passed. Physical home routers remain untested. `upnp.enabled` alone does nothing: the app embeds the
 libi2pd API without i2pd's daemon, so `i2p-embed` runs its own manager.
 

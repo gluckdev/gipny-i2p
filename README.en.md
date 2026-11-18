@@ -15,10 +15,10 @@ of gipny; the [migration history](MIGRATION-i2p.md) is retained separately.
 ## Status
 
 Development targets **beta** on `release/0.5.0-beta.1`; alpha2 will not be
-published. Package metadata still says `0.5.0-alpha.2`. A source version, a passing build,
+published. Package metadata still says `0.5.0-beta.1`. A source version, a passing build,
 a published package and a deployed service are different things.
 See [current capabilities](docs/current-state.md). Native and browser WSS/WebRTC
-CI passed at baseline `589ad57`; new beta changes need their own evidence.
+CI passed at baseline `2139725`; new beta changes need their own evidence.
 [Release gates](docs/plans/2026-11-16-beta.md) include profile transfer over I2P,
 network adaptation and platform coverage. Old-data compatibility and migrations
 are not planned.

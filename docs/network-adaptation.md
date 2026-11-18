@@ -24,7 +24,7 @@ Application pools сохраняют configured 3 inbound / 3 outbound hops и p
 
 ## 2. Browser WSS/WebRTC: доказательства и оставшиеся проверки
 
-На SHA `589ad57fdbf4d8f6759ce4c698e4b189ea6e5b48` [browser CI 43891713781](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781) прошёл full messenger scenario отдельно через WSS и WebRTC: по 11 acceptance assertions, verified 5 MiB attachment, ratchet messages/receipts, restart recovery и доставка после остановки application host. Оба receipt содержат configured application policy 3/3+padded. Это не независимое наблюдение фактических hops на wire. Публичные receipts находятся в artifacts указанного CI run; проверку нужно повторить на конечном beta SHA.
+На SHA `2139725` [browser CI 43891713781](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781) прошёл full messenger scenario отдельно через WSS и WebRTC: по 11 acceptance assertions, verified 5 MiB attachment, ratchet messages/receipts, restart recovery и доставка после остановки application host. Оба receipt содержат configured application policy 3/3+padded. Это не независимое наблюдение фактических hops на wire. Публичные receipts находятся в artifacts указанного CI run; проверку нужно повторить на конечном beta SHA.
 
 Оба receipt явно говорят `physical_phone:false`, `turn_relay_tested:false`. Поэтому CI подтверждает реализованный byte path и сценарий на fixture, но не доступность публичного TURN, работу на телефоне или в сети с заблокированным UDP. Сравнение полных сценариев WSS 680.31s / WebRTC 718.05s не является транспортным throughput benchmark: в них входят setup, UI, ожидания и разные моменты состояния I2P.
 

@@ -6,7 +6,7 @@
 собирает OpenSSL. Boost program_options компилирует наш `jni/Android.mk`.
 
 Переход на layout i2pd-android 3.0.0 (`0d2008a`) был подготовлен 2026-10-31.
-В [preview 589ad57](https://github.com/gluckdev/gipny-i2p/actions/runs/43891757344)
+В [preview 2139725](https://github.com/gluckdev/gipny-i2p/actions/runs/43891757344)
 2026-11-16 обе настоящие ARM router libraries и подписанные APK собраны успешно.
 Это отдельное доказательство от старого stub cross-check;16 KiB runtime
 ещё не проверен. [Матрица платформ](../docs/platform-support.md).

@@ -1,7 +1,7 @@
 # Браузерный мессенджер / Browser messenger
 
 Сверка / Reviewed: 2026-11-16. Public Pages `browser-config.json` по последней
-проверке отвечает404; публичный bridge не подтверждён. На baseline `589ad57`
+проверке отвечает404; публичный bridge не подтверждён. На baseline `2139725`
 [CI WSS и WebRTC](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781)
 прошёл по11 acceptance checks, включая файл и восстановление после reload/остановки
 хостинга. Это fixture, не физический телефон или TURN. Новые beta изменения

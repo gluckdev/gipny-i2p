@@ -7,7 +7,7 @@
 
 | Компонент | Закреплённая ревизия / источник |
 |---|---|
-| i2pd desktop и Android library | `3835d09efc722c92fa86c8c31930477315c1abb2` |
+| i2pd desktop и Android library | `56958857c9f00b1de2cbbe55dd3a853310e608be` |
 | Android upstream build/dependencies | `df7e2420b6a5108caa7463bde420d3ab48ff2888` |
 | emissary для WASM | `620fb9debb0cbfd41de664ca5297c1deab8bd40b`, `browser-router/emissary-source.json` |
 | miniupnpc | 2.3.3/API 21, `2cb87d04034587bdb0f51549b3936e0d9e143bcb`, `i2p-embed/miniupnpc-source.json` |

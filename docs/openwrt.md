@@ -8,7 +8,7 @@ CPU, ABI, ядром и ресурсами конкретной прошивки
 этой проверки приведены ниже. Это не подтверждение запуска на любом роутере.
 
 На 2026-11-16 те же четыре target jobs прошли и в
-[preview 589ad57](https://github.com/gluckdev/gipny-i2p/actions/runs/43891757344).
+[preview 2139725](https://github.com/gluckdev/gipny-i2p/actions/runs/43891757344).
 Реальный профиль и I2P на физическом роутере этим не проверены. Для запуска
 agent необходим защищённый OS credential provider: обычная OpenWrt установка
 его не предоставляет автоматически, и код завершится fail-closed.

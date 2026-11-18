@@ -1,7 +1,7 @@
 # Текущее состояние / Current state
 
 Сверка: **2026-11-16**. Ветка `release/0.5.0-beta.1`; alpha2 не публикуется.
-Метаданные пока `0.5.0-alpha.2`. [Условия beta](plans/2026-11-16-beta.md)
+Метаданные пока `0.5.0-beta.1`. [Условия beta](plans/2026-11-16-beta.md)
 обязательны до выпуска. Ни версия исходников, ни старый успешный CI сами по
 себе не означают готовую бету или развёрнутый публичный сервис.
 
@@ -9,7 +9,7 @@
 
 | Возможность | Реализация и границы доказательства |
 |---|---|
-| Native I2P, сообщения, группы, файлы | Собственный Core/Session поверх встроенного C++i2pd. Native external/embedded/agent/offline CI на `589ad57` PASS; новые beta изменения требуют повторения |
+| Native I2P, сообщения, группы, файлы | Собственный Core/Session поверх встроенного C++i2pd. Native external/embedded/agent/offline CI на `2139725` PASS; новые beta изменения требуют повторения |
 | Браузерная самостоятельная сеть | JavaScript/Worker управляет локальным WASM router/криптографией и OPFS. WSS/WebRTC bridge переносит NTCP2-байты; сервер не хранит профиль и не заменяет browser Core |
 | Browser WSS и WebRTC | [Baseline CI](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781): по11 assertions, 5MiB файл, переписка, receipts, reload и работа после остановки app host. Физические телефоны/TURN не проверены |
 | Защитная политика | Application Destination:3 hops inbound/3 outbound, padding включён; caffeine/cocaine режимы удалены. Exploratory pool — отдельная политика; не приравнивать hops, tunnels, streams и router sessions |
@@ -46,7 +46,7 @@
 
 ## Доказательства и следующая проверка
 
-Baseline `589ad57` прошёл build, security, native e2e, browser, CodeQL,
+Baseline `2139725` прошёл build, security, native e2e, browser, CodeQL,
 installer checks. Release preview был неполным (macOS runner capacity); он не
 публиковался. Новый benchmark harness `f73fd42` исправляет deadline/checkpoint:
 предыдущий повтор6,4,6,4 имеет две завершённые точки, третью с неизвестным
@@ -60,7 +60,7 @@ installer checks. Release preview был неполным (macOS runner capacity
 
 ## English
 
-Development targets beta; alpha2 is not being published. Baseline `589ad57`
+Development targets beta; alpha2 is not being published. Baseline `2139725`
 passed native delivery, browser WSS/WebRTC, build/security and CodeQL checks.
 Those results do not validate subsequent beta code, public hosting, physical
 phones or TURN. The web client owns its I2P router and keys locally; the byte
