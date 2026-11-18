@@ -96,6 +96,11 @@ jobs:
         env:
           GIPNY_CHROMIUM: /usr/bin/google-chrome
         run: node tests/worker-startup.test.mjs
+      - name: Verify call preflight with a delayed echo between two profiles
+        working-directory: ui
+        env:
+          GIPNY_CHROMIUM: /usr/bin/google-chrome
+        run: node tests/voice.test.mjs
       - name: Verify mobile notices with keyboard, safe areas and modal controls
         working-directory: ui
         env:

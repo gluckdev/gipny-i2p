@@ -17,6 +17,8 @@ try {
     await page.screenshot({ path: process.env.GIPNY_LAYOUT_ARTIFACTS + '/' + name + '.png' });
   };
   const errors = [];
+  let firstEcho;
+  let retriedProbe = false;
   for (const page of pages) page.on('pageerror', e => errors.push(String(e)));
   for (const [side, page] of pages.entries()) {
     await page.goto(base + '/dev/frame.html?scene=chat&lang=en&theme=' + (side ? 'dark' : 'light'));
@@ -38,7 +40,25 @@ try {
       };
     });
     await page.exposeFunction('voiceSendClip', attachments => pages[0].evaluate(data => window.workerCall(data), { side, command: 'sendClip', attachments }));
-    await page.exposeFunction('voiceSend', (frame, lane) => pages[0].evaluate(data => window.workerCall(data), { side, command: 'send', frame, lane }));
+    await page.exposeFunction('voiceSend', async (frame, lane) => {
+      const { kind, seq } = JSON.parse(frame);
+      // Each control leg can be fresh when the complete exchange exceeds 30 s.
+      if (kind === 'invite' || kind === 'accept') await new Promise(resolve => setTimeout(resolve, 16_000));
+      // Deliver the first echo only after the caller retries its single-lane
+      // probe. Lose the next two probes so only the delayed original can
+      // finish this single-lane measurement.
+      if (side === 1 && kind === 'echo' && seq === 1) {
+        await new Promise(resolve => { firstEcho = resolve; });
+      }
+      if (side === 0 && kind === 'probe' && seq === 2) {
+        assert.ok(firstEcho, 'the first probe reached the peer');
+        retriedProbe = true;
+        firstEcho();
+        return;
+      }
+      if (side === 0 && kind === 'probe' && seq === 3) return;
+      return pages[0].evaluate(data => window.workerCall(data), { side, command: 'send', frame, lane });
+    });
   }
   await pages[0].exposeFunction('deliverToPage', (side, event) => pages[side].evaluate(e => window.receiveCall(e), event));
   await pages[0].evaluate(async () => {
@@ -62,6 +82,7 @@ try {
   assert.equal(await pages[1].evaluate(() => window.tracks.length), 0);
   await capture(pages[1], 'incoming-call');
   await pages[1].getByRole('button', { name: 'Answer', exact: true }).click();
+  await pages[1].waitForFunction(() => window.sentKinds.includes('probe'));
   for (const page of pages) {
     await page.waitForFunction(() => window.sentKinds.includes('audio') && window.sentKinds.includes('ack'));
     const mute = page.getByRole('button', { name: 'Mute', exact: true });
@@ -72,6 +93,7 @@ try {
     const bounds = await page.locator('.voice-panel').boundingBox();
     assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 361);
   }
+  assert.ok(retriedProbe);
   await pages[1].getByRole('button', { name: 'End call' }).click();
   for (const page of pages) {
     await page.waitForSelector('.voice-panel', { state: 'detached' });

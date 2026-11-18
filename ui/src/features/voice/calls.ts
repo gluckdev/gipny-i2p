@@ -9,6 +9,7 @@ import { CALL_RATE, FRAME_SAMPLES, decodeAudio, encodeAudio, parsePacket, type C
 
 const probeData = encodeAudio(new Int16Array(FRAME_SAMPLES));
 const frameLifetime = 6000;
+const controlLifetime = 30000;
 type Phase = 'ringing' | 'preflight' | 'live';
 
 class Session {
@@ -17,7 +18,7 @@ class Session {
   audio?: VoiceAudio;
   accepted = false;
   peerReady = false;
-  lastSeen = performance.now();
+  lastActivity = performance.now();
   lastPlayed = -1;
   seq = 0;
   window = 1;
@@ -55,7 +56,7 @@ export class Calls {
   }
 
   receive(peer: number, raw: string, at: number): void {
-    if (Math.abs(Date.now() - at) > 30000 || !this.eligible(peer)) return;
+    if (Math.abs(Date.now() - at) > controlLifetime || !this.eligible(peer)) return;
     const p = parsePacket(raw);
     if (!p) return;
     const call = this.current;
@@ -76,16 +77,20 @@ export class Calls {
       this.preflight(call);
     } else if (p.kind === 'probe' && call.peerReady) {
       this.send(call, 'echo', p.seq);
-    } else if (p.kind === 'echo' && call.phase === 'preflight' && call.pending.delete(p.seq)) {
-      if (!call.pending.size) {
-        const elapsed = Math.max(1, performance.now() - call.probeStart);
-        if (!call.firstProbeMs) {
-          call.firstProbeMs = call.smoothedRtt = elapsed;
-          this.probes(call, 2);
-        } else {
-          call.window = elapsed < 1.8 * call.firstProbeMs ? 2 : 1;
-          this.live(call);
-        }
+    } else if (p.kind === 'echo' && call.phase === 'preflight') {
+      const sent = call.pending.get(p.seq);
+      if (sent === undefined) return;
+      const elapsed = Math.max(1, performance.now() - sent);
+      call.pending.delete(p.seq);
+      if (!call.firstProbeMs) {
+        // The first answer to any single-lane attempt measures that attempt.
+        // Discard the remaining singles before measuring the parallel pair.
+        call.pending.clear();
+        call.firstProbeMs = call.smoothedRtt = elapsed;
+        this.probes(call, 2);
+      } else if (!call.pending.size) {
+        call.window = elapsed < 1.8 * call.firstProbeMs ? 2 : 1;
+        this.live(call);
       }
     } else if (p.kind === 'audio' && call.peerReady && Math.abs(Date.now() - at) < frameLifetime) {
       this.send(call, 'ack', p.seq);
@@ -107,7 +112,7 @@ export class Calls {
         call.received = 0;
       }
     }
-    call.lastSeen = performance.now();
+    call.lastActivity = performance.now();
   }
 
   private prune(): void {
@@ -122,13 +127,17 @@ export class Calls {
     const timer = window.setInterval(() => {
       if (call.phase === 'live') call.clock.textContent = voiceTime((performance.now() - call.connectedAt) / 1000);
       if (call.phase === 'preflight' && !call.firstProbeMs && call.probeRetries < 2 && performance.now() - call.probeStart > frameLifetime) {
-        call.pending.clear(); call.probeRetries++; this.probes(call, 1);
+        call.probeRetries++; this.probes(call, 1);
       }
       if (call.phase === 'preflight' && call.firstProbeMs && performance.now() - call.probeStart > frameLifetime) {
         call.window = 1;
         this.live(call);
       }
-      if (performance.now() - call.lastSeen > 30000) {
+      // An outgoing invite, the recipient's time to answer, and their accept
+      // are three separate waits. Each control frame still expires in transit.
+      const waitingForAnswer = call.phase === 'ringing' && call.accepted && !call.inbound;
+      const timeout = waitingForAnswer ? 3 * controlLifetime : controlLifetime;
+      if (performance.now() - call.lastActivity > timeout) {
         this.store.showToast(t('voice.timeout'), true); call.close();
       }
     }, 500);
@@ -169,6 +178,7 @@ export class Calls {
       await call.audio.start(CALL_RATE, samples => this.media(call, samples));
       if (this.current !== call) return;
       call.accepted = true;
+      call.lastActivity = performance.now();
       call.mute.hidden = false;
       call.status.textContent = t('voice.ringing');
       if (call.inbound) {
@@ -181,6 +191,7 @@ export class Calls {
 
   private preflight(call: Session): void {
     call.phase = 'preflight';
+    call.lastActivity = performance.now();
     call.status.textContent = t('voice.probe');
     this.probes(call, 1);
   }

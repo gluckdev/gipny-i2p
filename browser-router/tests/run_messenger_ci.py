@@ -72,17 +72,21 @@ BRIDGE = r"""
   let worker, url, options, next = -1;
   const pending = new Map();
   globalThis.__coreFailures = [];
-  globalThis.__voiceCounts = {audio: 0, ack: 0};
+  // Public stage counters only. Never retain frame contents or call IDs.
+  const counts = () => ({invite: 0, accept: 0, probe: 0, echo: 0, audio: 0, ack: 0, end: 0});
+  globalThis.__voiceCounts = {submitted: counts(), received: counts()};
+  const countFrame = (direction, frame) => {
+    const kind = JSON.parse(frame).kind;
+    const counters = globalThis.__voiceCounts[direction];
+    if (Object.hasOwn(counters, kind)) counters[kind]++;
+  };
 
   const attach = target => {
     worker = target;
     target.addEventListener('message', event => {
       const message = event.data;
       const frame = message.event === 'core_event' && message.payload?.CallFrame?.frame;
-      if (frame) {
-        const kind = JSON.parse(frame).kind;
-        if (kind === 'audio' || kind === 'ack') globalThis.__voiceCounts[kind]++;
-      }
+      if (frame) countFrame('received', frame);
       const failure = message.event === 'core_event' && message.payload?.MessageFailed?.reason;
       if (typeof failure === 'string') {
         globalThis.__coreFailures.push(failure.slice(0, 300));
@@ -99,6 +103,10 @@ BRIDGE = r"""
     constructor(location, settings) {
       super(location, settings);
       if (settings?.name === 'gipny-core') { url = location; options = settings; attach(this); }
+    }
+    postMessage(request, ...options) {
+      if (this === worker && request?.command === 'send_call_frame') countFrame('submitted', request.args.frame);
+      return super.postMessage(request, ...options);
     }
   };
   globalThis.__coreCall = (command, args = {}) => new Promise((resolve, reject) => {
@@ -263,6 +271,22 @@ def unlock_ui(cdp, profile, password, wrong_password='incorrect password'):
     wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production unlock form')
 
 
+def check_voice(alice, bob):
+    def click_voice(cdp, selector):
+        return evaluate(cdp, "(() => {const b=document.querySelector(" + json.dumps(selector) + ");if(!b || b.hidden)return false;b.click();return true})()")
+
+    wait_for(lambda: evaluate(alice, """(() => {
+      const row = [...document.querySelectorAll('.contact')].find(el => el.querySelector('.contact-name')?.textContent === 'Bob');
+      if (row) row.click(); return !!row;
+    })()"""), 30, 'caller opens accepted contact')
+    wait_for(lambda: click_voice(alice, '.voice-call'), 30, 'start voice call')
+    wait_for(lambda: click_voice(bob, '.voice-answer'), 30, 'answer voice call')
+    wait_for(lambda: all(evaluate(cdp, '__voiceCounts.received.audio >= 2 && __voiceCounts.received.ack >= 2') for cdp in (alice, bob)), 60, 'bidirectional voice over I2P')
+    if not click_voice(alice, '.voice-end'):
+        raise RuntimeError('caller lost the active voice call')
+    wait_for(lambda: evaluate(bob, "!document.querySelector('.voice-call-panel')"), 30, 'remote hangup')
+
+
 def main():
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         raise SystemExit('Run browser integration only in GitHub Actions')
@@ -392,20 +416,19 @@ def main():
                 raise RuntimeError('attachment bytes changed during delivery')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and authenticated multipart attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
-            # Exercise the production microphone, UI and I2P router together.
-            wait_for(lambda: evaluate(alice, """(() => {
-              const row = [...document.querySelectorAll('.contact')].find(el => el.querySelector('.contact-name')?.textContent === 'Bob');
-              if (row) row.click(); return !!row;
-            })()"""), 30, 'caller opens accepted contact')
-            def click_voice(cdp, selector):
-                return evaluate(cdp, "(() => {const b=document.querySelector(" + json.dumps(selector) + ");if(!b || b.hidden)return false;b.click();return true})()")
-            wait_for(lambda: click_voice(alice, '.voice-call'), 30, 'start voice call')
-            wait_for(lambda: click_voice(bob, '.voice-answer'), 30, 'answer voice call')
-            wait_for(lambda: all(evaluate(client, '__voiceCounts.audio >= 2 && __voiceCounts.ack >= 2') for client in (alice, bob)), 60, 'bidirectional voice over I2P')
-            if not click_voice(alice, '.voice-end'):
-                raise RuntimeError('caller lost the active voice call')
-            wait_for(lambda: evaluate(bob, "!document.querySelector('.voice-call-panel')"), 30, 'remote hangup')
-            receipt['assertions'].append('bidirectional microphone frames and frame acknowledgements through production I2P routers')
+            # A media failure still fails this run, while healthy profiles can
+            # exercise the independent file, outbox and host-recovery checks.
+            try:
+                check_voice(alice, bob)
+            except RuntimeError as error:
+                receipt['voice_error'] = str(error)[:500]
+            receipt['voice_frames'] = {name: evaluate(client, '__voiceCounts') for name, client in zip(('alice', 'bob'), clients)}
+            if 'voice_error' in receipt:
+                for client in clients:
+                    evaluate(client, "document.querySelector('.voice-end')?.click()")
+                wait_for(lambda: all(evaluate(client, "!document.querySelector('.voice-call-panel')") for client in clients), 10, 'voice cleanup')
+            else:
+                receipt['assertions'].append('bidirectional microphone frames and frame acknowledgements through production I2P routers')
             large_size = 5 * 1024 * 1024 + 19
             large_id = evaluate(bob, '(async()=>{const data=new Uint8Array(' + str(large_size) + ');for(let i=0;i<data.length;i++)data[i]=i%251;return __coreCall("send_message",{contactId:' + str(bob_contact) + ',body:"multipart fixture",browserFiles:[new File([data],"fixture.bin")],ttlSecs:null,replyTo:null})})()')
             wait_for(lambda: any(row['body'] == 'multipart fixture' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 150, 'multipart offer delivered')
@@ -537,6 +560,8 @@ def main():
             for client in clients:
                 rpc(client, 'vault_lock')
             receipt['assertions'].append('application host stopped: root navigation, cached WASM, decrypted history, two fresh routers, message and end-to-end receipt through independent transport using revalidated local bootstrap')
+            if 'voice_error' in receipt:
+                raise RuntimeError(receipt['voice_error'])
             receipt['stage'] = 'passed'
             print('MESSENGER_PASS live browser exchange and restart recovery', flush=True)
     except Exception as error:
