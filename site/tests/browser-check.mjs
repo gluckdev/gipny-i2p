@@ -243,6 +243,22 @@ async function snapshot(width, language, height) {
     assert(mobile.states.every(Boolean), `${name}: both mobile actions must remain visible in every language while scrolling`);
     assert(mobile.clearFooter, `${name}: bottom actions obstruct footer content`);
   }
+  const routeControls = await cdp.evaluate(`(() => {
+    const buttons = [...document.querySelectorAll('.path-route button')];
+    return buttons.map(button => {
+      button.click();
+      return button.getAttribute('aria-expanded') === 'true'
+        && document.querySelectorAll('.path-route [aria-expanded="true"]').length === 1
+        && !!document.getElementById(button.getAttribute('aria-controls'))?.getClientRects().length;
+    });
+  })()`);
+  assert.deepEqual(routeControls, [true, true, true]);
+  await cdp.evaluate(`document.querySelector('.path-route [aria-expanded="true"]').click();
+    document.querySelector('.shot-trigger').focus()`);
+  for (const type of ['keyDown', 'keyUp']) await cdp.call('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, ...(type === 'keyDown' ? {text: '\r'} : {}) });
+  assert(await cdp.evaluate(`!!document.querySelector('.shot-dialog:modal .shot-full img') && document.activeElement.matches('[data-close-shot]')`), 'screenshot opens from the keyboard');
+  for (const type of ['keyDown', 'keyUp']) await cdp.call('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await until(() => cdp.evaluate(`!document.querySelector('.shot-dialog[open]') && document.activeElement.matches('.shot-trigger')`), 'screenshot closes and restores focus');
   const normalMotion = await cdp.evaluate(pathMotion);
   report.checks.at(-1).normalMotion = normalMotion;
   assert(normalMotion.some(item => item.name !== 'none' && item.duration.split(',').some(value => parseFloat(value) > 0)
@@ -300,19 +316,21 @@ async function run() {
     await until(() => cdp.loaded.has(navigation.loaderId), 'document load event');
     await ready('ru');
     const russian = await snapshot(width, 'ru', height);
-    const point = await cdp.evaluate(`(async () => {
-      const button = document.querySelector('[data-language="en"]');
-      // The mobile snapshot ends at the footer; CSS smooth scrolling would
-      // leave the immediate click coordinates offscreen or still moving.
-      button.scrollIntoView({ block: 'center', behavior: 'instant' });
-      await new Promise(yes => requestAnimationFrame(() => requestAnimationFrame(yes)));
-      const rect = button.getBoundingClientRect();
-      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-      return { x, y, visible: rect.width > 0 && rect.height > 0 && rect.left >= 0
-        && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
-        hit: button.contains(document.elementFromPoint(x, y)) };
-    })()`);
-    assert(point.visible && point.hit, `${width}x${height}: English toggle is not an unobstructed visible click target`);
+    const point = await until(async () => {
+      const target = await cdp.evaluate(`(async () => {
+        const button = document.querySelector('[data-language="en"]');
+        // The mobile snapshot ends at the footer; CSS smooth scrolling would
+        // leave the immediate click coordinates offscreen or still moving.
+        button.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await new Promise(yes => requestAnimationFrame(() => requestAnimationFrame(yes)));
+        const rect = button.getBoundingClientRect();
+        const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+        return { x, y, visible: rect.width > 0 && rect.height > 0 && rect.left >= 0
+          && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
+          hit: button.contains(document.elementFromPoint(x, y)) };
+      })()`);
+      return target.visible && target.hit ? target : null;
+    }, `${width}x${height}: unobstructed English toggle`);
     await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, x: point.x, y: point.y });
     await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, x: point.x, y: point.y });
     await ready('en');

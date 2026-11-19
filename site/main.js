@@ -1,5 +1,10 @@
 export const messages = {
   "ru": {
+    "enlargeShot": "Открыть снимок крупнее",
+    "closeShot": "Закрыть снимок",
+    "routeSeal": "На вашем устройстве текст шифруется для собеседника.",
+    "routeCarry": "I2P доставляет зашифрованные части на личный терминал получателя.",
+    "routeOpen": "Получатель расшифровывает письмо на своём устройстве.",
     "title": "gipny.i2p — Личная переписка через I2P.",
     "description": "Мессенджер с открытым кодом: сквозное шифрование, встроенный I2P и локальные профили без номера телефона. Приложения для компьютеров, Android и браузера.",
     "skip": "Перейти к содержимому",
@@ -23,7 +28,7 @@ export const messages = {
     "pathSender": "Ваше устройство",
     "pathRecipient": "Устройство собеседника",
     "pathSealed": "Сначала шифрование — затем отправка.",
-    "pathCaption": "I2P переносит трафик, а сквозное шифрование защищает текст и вложения. Релеи передают и временно хранят шифротекст; собеседник расшифровывает его на своём устройстве.",
+    "pathCaption": "На вашем устройстве текст шифруется для собеседника. I2P доставляет зашифрованные части на личный терминал получателя. Получатель расшифровывает письмо на своём устройстве.",
     "pathLocal": "Ключи на вашем устройстве",
     "pathNoAccount": "Без номера телефона",
     "principlesEyebrow": "Как это устроено",
@@ -154,8 +159,8 @@ export const messages = {
     "layerBridgeLead": "Единственный посредник, и он видит только шифр",
     "layerBridgeBody": "Браузер не умеет открывать прямые TCP-соединения, поэтому до первого узла I2P байты доходят через мост. Внутри уже зашифрованный трафик I2P поверх вашего сквозного шифрования. Мост пускает только к проверенным узлам I2P на допустимых портах. Он видит ваш IP, время и объём, но не ключи, не собеседников и не текст.",
     "layerNetworkTitle": "Сеть I2P и собеседник",
-    "layerNetworkLead": "Туннели, почтовый релей и любой клиент на другой стороне",
-    "layerNetworkBody": "Сообщение уходит через исходящий туннель в почтовый релей собеседника и ждёт там зашифрованным, пока он его не заберёт. Собеседник может сидеть в браузере, на компьютере или на Android: протокол один и тот же.",
+    "layerNetworkLead": "Личный терминал получателя",
+    "layerNetworkBody": "Если собеседник офлайн, сообщение ждёт у отправителя. Для передачи оба личных терминала должны быть доступны через I2P.",
     "devicesEyebrow": "Под капотом",
     "devicesTitle": "Как Gipny устроен на вашем устройстве.",
     "devicesIntro": "Везде одно ядро на Rust и один протокол. Отличается то, где живёт роутер I2P и чем защищено хранилище.",
@@ -202,8 +207,8 @@ export const messages = {
     "secNetworkLead": "Собеседник и релеи не видят ваш IP",
     "secNetworkBody": "Сообщения идут через раздельные входящие и исходящие туннели I2P из нескольких узлов, и каждый узел знает только своих соседей. Адрес приложения в I2P новый при каждом запуске; постоянная личность — ваш ключ, а не сетевой адрес. Прямого IP-соединения с собеседником нет никогда.",
     "secDeliveryTitle": "Доставка без потерь",
-    "secDeliveryLead": "Релей хранит только шифротекст",
-    "secDeliveryBody": "Если собеседник не в сети, письмо ждёт его в почтовом релее зашифрованным. Получатель сначала сохраняет расшифрованное сообщение вместе с состоянием шифра одной транзакцией и только потом подтверждает релею доставку, поэтому сбой или переполненный диск не теряют сообщение.",
+    "secDeliveryLead": "I2P доставляет зашифрованные части на личный терминал получателя.",
+    "secDeliveryBody": "Если собеседник офлайн, сообщение ждёт у отправителя. Для передачи оба личных терминала должны быть доступны через I2P.",
     "secStorageTitle": "Хранилище на устройстве",
     "secStorageLead": "Зашифровано и привязано к устройству",
     "secStorageBody": "Профиль — зашифрованная база (SQLCipher в приложениях, зашифрованный OPFS в браузере), ключ выводится из пароля через Argon2id. В приложениях ключ дополнительно привязан к защищённому хранилищу системы. По желанию история стирается при каждой блокировке, а сообщения — по таймеру.",
@@ -236,6 +241,11 @@ export const messages = {
     "screensCaption": "На снимках — отметка «Собеседник скопировал текст», удаление, которое собеседник подтверждает кнопкой «ОК», файл, запрос контакта и таймер исчезновения сообщений."
   },
   "en": {
+    "enlargeShot": "Enlarge screenshot",
+    "closeShot": "Close screenshot",
+    "routeSeal": "Your device encrypts the message for your contact.",
+    "routeCarry": "I2P carries encrypted parts to the recipient’s personal terminal.",
+    "routeOpen": "Your contact decrypts the letter on their own device.",
     "title": "gipny.i2p — Private conversations over I2P.",
     "description": "An open-source messenger with end-to-end encryption, built-in I2P and local profiles without a phone number. Apps for desktop, Android and the browser.",
     "skip": "Skip to content",
@@ -259,7 +269,7 @@ export const messages = {
     "pathSender": "Your device",
     "pathRecipient": "Their device",
     "pathSealed": "Encryption first. Sending second.",
-    "pathCaption": "I2P carries the traffic; end-to-end encryption protects text and attachments. Relays forward and temporarily store ciphertext. The recipient decrypts it on their device.",
+    "pathCaption": "Your device encrypts the message for your contact. I2P carries encrypted parts to the recipient’s personal terminal. Your contact decrypts the letter on their own device.",
     "pathLocal": "Keys on your device",
     "pathNoAccount": "No phone number",
     "principlesEyebrow": "How it works",
@@ -390,8 +400,8 @@ export const messages = {
     "layerBridgeLead": "The only intermediary, and it sees only ciphertext",
     "layerBridgeBody": "Browsers cannot open direct TCP connections, so bytes reach the first I2P router through a bridge. What passes is already-encrypted I2P traffic on top of your end-to-end encryption. The bridge only connects to verified I2P routers on allowed ports. It sees your IP, timing and volume, but not your keys, your contacts or any text.",
     "layerNetworkTitle": "The I2P network and your contact",
-    "layerNetworkLead": "Tunnels, a mail relay and any client on the other side",
-    "layerNetworkBody": "A message leaves through an outbound tunnel to your contact’s mail relay and waits there, encrypted, until they collect it. Your contact can be in a browser, on a desktop or on Android: the protocol is the same.",
+    "layerNetworkLead": "The recipient’s personal terminal",
+    "layerNetworkBody": "While your contact is offline the message waits with the sender. Both personal terminals need to be reachable over I2P for delivery.",
     "devicesEyebrow": "Under the hood",
     "devicesTitle": "How Gipny works on your device.",
     "devicesIntro": "One Rust core and one protocol everywhere. What differs is where the I2P router lives and what protects storage.",
@@ -438,8 +448,8 @@ export const messages = {
     "secNetworkLead": "Contacts and relays do not see your IP",
     "secNetworkBody": "Messages travel through separate inbound and outbound I2P tunnels made of several routers, each knowing only its neighbours. The app’s I2P address is new on every start; your lasting identity is your key, not a network address. There is never a direct IP connection to your contact.",
     "secDeliveryTitle": "Delivery that does not lose messages",
-    "secDeliveryLead": "Relays hold only ciphertext",
-    "secDeliveryBody": "If your contact is offline, the letter waits for them in a mail relay, encrypted. The recipient first saves the decrypted message together with the cipher state in one transaction, and only then confirms delivery to the relay, so a crash or a full disk does not lose the message.",
+    "secDeliveryLead": "I2P carries encrypted parts to the recipient’s personal terminal.",
+    "secDeliveryBody": "While your contact is offline the message waits with the sender. Both personal terminals need to be reachable over I2P for delivery.",
     "secStorageTitle": "Storage on the device",
     "secStorageLead": "Encrypted and bound to the device",
     "secStorageBody": "The profile is an encrypted database (SQLCipher in the apps, encrypted OPFS in the browser), with a key derived from your password through Argon2id. In the apps the key is also bound to the system’s protected storage. If you wish, history is wiped at every lock and messages expire on a timer.",
@@ -472,6 +482,11 @@ export const messages = {
     "screensCaption": "Shown: a copy notice, a deletion your contact confirms with OK, a file, a contact request and the disappearing-message timer."
   },
   "uk": {
+    "enlargeShot": "Збільшити знімок",
+    "closeShot": "Закрити знімок",
+    "routeSeal": "Ваш пристрій шифрує текст для співрозмовника.",
+    "routeCarry": "I2P доставляє зашифровані частини на особистий термінал отримувача.",
+    "routeOpen": "Отримувач розшифровує лист на своєму пристрої.",
     "title": "gipny.i2p — Приватні розмови через I2P.",
     "description": "Месенджер із відкритим кодом із наскрізним шифруванням, вбудованим I2P і локальними профілями без номера телефону. Програми для робочого столу, Android і браузера.",
     "skip": "Перейти до вмісту",
@@ -495,7 +510,7 @@ export const messages = {
     "pathSender": "Ваш пристрій",
     "pathRecipient": "Їх пристрій",
     "pathSealed": "Спочатку шифрування. Відправка друга.",
-    "pathCaption": "I2P передає трафік, а наскрізне шифрування захищає текст і вкладення. Ретранслятори передають і тимчасово зберігають шифротекст. Одержувач розшифровує його на своєму пристрої.",
+    "pathCaption": "Ваш пристрій шифрує текст для співрозмовника. I2P доставляє зашифровані частини на особистий термінал отримувача. Отримувач розшифровує лист на своєму пристрої.",
     "pathLocal": "Ключі на вашому пристрої",
     "pathNoAccount": "Немає номера телефону",
     "principlesEyebrow": "Як це працює",
@@ -626,8 +641,8 @@ export const messages = {
     "layerBridgeLead": "Єдиний посередник, і він бачить лише зашифрований текст",
     "layerBridgeBody": "Браузери не можуть відкривати прямі TCP-з’єднання, тому байти надходять до першого маршрутизатора I2P через міст. Він передає трафік, уже захищений I2P на додачу до наскрізного шифрування. Міст підключається лише до перевірених маршрутизаторів I2P на дозволених портах. Він бачить вашу IP-адресу, час та обсяг передачі, але не ключі, контакти чи текст.",
     "layerNetworkTitle": "Мережа I2P і ваш контакт",
-    "layerNetworkLead": "Тунелі, поштовий ретранслятор і будь-який клієнт з іншого боку",
-    "layerNetworkBody": "Повідомлення надходить через вихідний тунель до поштового ретранслятора вашого контакту та чекає там у зашифрованому вигляді, доки вони не отримають його. Ваш контакт може бути в браузері, на робочому столі або на Android: протокол однаковий.",
+    "layerNetworkLead": "Особистий термінал отримувача",
+    "layerNetworkBody": "Коли адресат офлайн, лист чекає у відправника. Для доставлення обидва особисті термінали мають бути доступні через I2P.",
     "devicesEyebrow": "Внутрішня будова",
     "devicesTitle": "Як Gipny працює на вашому пристрої.",
     "devicesIntro": "Одне ядро ​​Rust і один протокол всюди. Різниця полягає в тому, де живе маршрутизатор I2P і що захищає сховище.",
@@ -674,8 +689,8 @@ export const messages = {
     "secNetworkLead": "Співрозмовники й ретранслятори не бачать вашу IP-адресу",
     "secNetworkBody": "Повідомлення проходять через окремі вхідні та вихідні тунелі I2P, які складаються з кількох маршрутизаторів, кожен з яких знає лише своїх сусідів. Адреса програми I2P стає новою під час кожного запуску; ваша довгострокова особистість – це ваш ключ, а не мережева адреса. Ніколи не існує прямого зв’язку IP з вашим контактом.",
     "secDeliveryTitle": "Доставка без втрати повідомлень",
-    "secDeliveryLead": "Реле зберігають лише зашифрований текст",
-    "secDeliveryBody": "Якщо ваш контакт офлайн, лист чекає на нього в поштовому ретрансляторі в зашифрованому вигляді. Одержувач спочатку зберігає розшифроване повідомлення разом із станом шифру в одній транзакції, а лише потім підтверджує доставку на ретранслятор, тому збій або повний диск не втрачає повідомлення.",
+    "secDeliveryLead": "I2P доставляє зашифровані частини на особистий термінал отримувача.",
+    "secDeliveryBody": "Коли адресат офлайн, лист чекає у відправника. Для доставлення обидва особисті термінали мають бути доступні через I2P.",
     "secStorageTitle": "Зберігання на пристрої",
     "secStorageLead": "Зашифровано та прив’язано до пристрою",
     "secStorageBody": "Профіль — це зашифрована база даних (SQLCipher у додатках, зашифрована OPFS у браузері) з ключем, отриманим із вашого пароля через Argon2id. У програмах ключ також прив’язаний до захищеного сховища системи. Якщо ви хочете, історія стирається під час кожного блокування, а повідомлення закінчуються за таймером.",
@@ -708,6 +723,11 @@ export const messages = {
     "screensCaption": "Показано: сповіщення про копію, видалення, яке ваш контакт підтверджує за допомогою OK, файл, запит на контакт і таймер зникнення повідомлень."
   },
   "de": {
+    "enlargeShot": "Screenshot vergrößern",
+    "closeShot": "Screenshot schließen",
+    "routeSeal": "Ihr Gerät verschlüsselt die Nachricht für Ihren Kontakt.",
+    "routeCarry": "I2P überträgt verschlüsselte Teile zum persönlichen Terminal des Empfängers.",
+    "routeOpen": "Ihr Kontakt entschlüsselt die Nachricht auf dem eigenen Gerät.",
     "title": "gipny.i2p – Private Gespräche über I2P.",
     "description": "Ein Open-Source-Messenger mit Ende-zu-Ende-Verschlüsselung, integriertem I2P und lokalen Profilen ohne Telefonnummer. Apps für Desktop, Android und den Browser.",
     "skip": "Zum Inhalt springen",
@@ -731,7 +751,7 @@ export const messages = {
     "pathSender": "Ihr Gerät",
     "pathRecipient": "Ihr Gerät",
     "pathSealed": "Verschlüsselung zuerst. Sekunde senden.",
-    "pathCaption": "I2P transportiert den Datenverkehr; Ende-zu-Ende-Verschlüsselung schützt Text und Anhänge. Relays leiten den verschlüsselten Inhalt weiter und speichern ihn vorübergehend. Der Empfänger entschlüsselt ihn auf seinem Gerät.",
+    "pathCaption": "Ihr Gerät verschlüsselt die Nachricht für Ihren Kontakt. I2P überträgt verschlüsselte Teile zum persönlichen Terminal des Empfängers. Ihr Kontakt entschlüsselt die Nachricht auf dem eigenen Gerät.",
     "pathLocal": "Schlüssel auf Ihrem Gerät",
     "pathNoAccount": "Keine Telefonnummer",
     "principlesEyebrow": "Wie es funktioniert",
@@ -862,8 +882,8 @@ export const messages = {
     "layerBridgeLead": "Der einzige Vermittler, der nur Geheimtext sieht",
     "layerBridgeBody": "Browser können keine direkten TCP-Verbindungen öffnen. Daher gelangen die Daten über eine Bridge zum ersten I2P-Router. Zusätzlich zur Ende-zu-Ende-Verschlüsselung ist dieser Datenverkehr bereits durch I2P verschlüsselt. Die Bridge verbindet sich nur mit verifizierten I2P-Routern auf zugelassenen Ports. Sie sieht Ihre IP-Adresse, Verbindungszeiten und das Datenvolumen, aber keine Schlüssel, Kontakte oder Nachrichteninhalte.",
     "layerNetworkTitle": "Das I2P-Netzwerk und Ihr Ansprechpartner",
-    "layerNetworkLead": "Tunnel, ein Mail-Relay und jeder Client auf der anderen Seite",
-    "layerNetworkBody": "Eine Nachricht gelangt über einen ausgehenden Tunnel zum E-Mail-Relay Ihres Kontakts und wartet dort verschlüsselt, bis dieser sie abholt. Ihr Kontakt kann in einem Browser, auf einem Desktop oder auf Android erfolgen: Das Protokoll ist dasselbe.",
+    "layerNetworkLead": "Das persönliche Terminal des Empfängers",
+    "layerNetworkBody": "Ist Ihr Kontakt offline, wartet die Nachricht beim Absender. Zur Zustellung müssen beide persönlichen Terminals über I2P erreichbar sein.",
     "devicesEyebrow": "Technischer Aufbau",
     "devicesTitle": "So funktioniert Gipny auf Ihrem Gerät.",
     "devicesIntro": "Ein Rust-Kern und ein Protokoll überall. Der Unterschied besteht darin, wo sich der I2P-Router befindet und was den Speicher schützt.",
@@ -910,8 +930,8 @@ export const messages = {
     "secNetworkLead": "Kontakte und Relays sehen Ihre IP-Adresse nicht",
     "secNetworkBody": "Nachrichten werden über separate eingehende und ausgehende I2P-Tunnel übertragen, die aus mehreren Routern bestehen, von denen jeder nur seine Nachbarn kennt. Die I2P-Adresse der App ist bei jedem Start neu; Ihre dauerhafte Identität ist Ihr Schlüssel, keine Netzwerkadresse. Es besteht niemals eine direkte IP-Verbindung zu Ihrem Kontakt.",
     "secDeliveryTitle": "Zustellung, bei der keine Nachrichten verloren gehen",
-    "secDeliveryLead": "Relais enthalten nur Chiffretext",
-    "secDeliveryBody": "Wenn Ihr Kontakt offline ist, wartet der Brief verschlüsselt in einem Mail-Relay auf ihn. Der Empfänger speichert zunächst die entschlüsselte Nachricht zusammen mit dem Verschlüsselungsstatus in einer Transaktion und bestätigt erst dann die Zustellung an das Relay, sodass die Nachricht bei einem Absturz oder einer vollen Festplatte nicht verloren geht.",
+    "secDeliveryLead": "I2P überträgt verschlüsselte Teile zum persönlichen Terminal des Empfängers.",
+    "secDeliveryBody": "Ist Ihr Kontakt offline, wartet die Nachricht beim Absender. Zur Zustellung müssen beide persönlichen Terminals über I2P erreichbar sein.",
     "secStorageTitle": "Speicherung auf dem Gerät",
     "secStorageLead": "Verschlüsselt und an das Gerät gebunden",
     "secStorageBody": "Das Profil ist eine verschlüsselte Datenbank (SQLCipher in den Apps, verschlüsselt OPFS im Browser), mit einem Schlüssel, der über Argon2id von Ihrem Passwort abgeleitet wird. In den Apps ist der Schlüssel auch an den geschützten Speicher des Systems gebunden. Wenn Sie möchten, wird der Verlauf bei jeder Sperre gelöscht und Nachrichten verfallen nach einem Timer.",
@@ -944,6 +964,11 @@ export const messages = {
     "screensCaption": "Gezeigt: ein Kopierhinweis, ein Löschvorgang, den Ihr Kontakt mit OK bestätigt, eine Datei, eine Kontaktanfrage und der Timer für das Verschwinden der Nachricht."
   },
   "km": {
+    "enlargeShot": "ពង្រីករូបថតអេក្រង់",
+    "closeShot": "បិទរូបថតអេក្រង់",
+    "routeSeal": "ឧបករណ៍របស់អ្នកអ៊ិនគ្រីបសារសម្រាប់អ្នកទទួល។",
+    "routeCarry": "I2P បញ្ជូនបំណែកដែលបានអ៊ិនគ្រីបទៅស្ថានីយផ្ទាល់ខ្លួនរបស់អ្នកទទួល។",
+    "routeOpen": "អ្នកទទួលឌិគ្រីបសារនៅលើឧបករណ៍របស់ខ្លួន។",
     "title": "gipny.i2p - ការសន្ទនាឯកជនលើ I2P ។",
     "description": "កម្មវិធីផ្ញើសារប្រភពបើកចំហជាមួយនឹងការអ៊ិនគ្រីបពីចុងដល់ចុង ភ្ជាប់មកជាមួយ I2P និងទម្រង់មូលដ្ឋានដោយគ្មានលេខទូរស័ព្ទ។ កម្មវិធីសម្រាប់កុំព្យូទ័រលើតុ Android និងកម្មវិធីរុករក។",
     "skip": "រំលងទៅមាតិកា",
@@ -967,7 +992,7 @@ export const messages = {
     "pathSender": "ឧបករណ៍របស់អ្នក។",
     "pathRecipient": "ឧបករណ៍របស់ពួកគេ។",
     "pathSealed": "ការអ៊ិនគ្រីបជាមុនសិន។ បញ្ជូនលើកទីពីរ។",
-    "pathCaption": "I2P បញ្ជូនចរាចរណ៍ ហើយការអ៊ិនគ្រីបពីចុងដល់ចុងការពារអត្ថបទ និងឯកសារភ្ជាប់។ ម៉ាស៊ីនបញ្ជូនបន្តបញ្ជូន និងរក្សាទុកទិន្នន័យអ៊ិនគ្រីបជាបណ្តោះអាសន្ន។ អ្នកទទួលឌិគ្រីបវាលើឧបករណ៍របស់ខ្លួន។",
+    "pathCaption": "ឧបករណ៍របស់អ្នកអ៊ិនគ្រីបសារសម្រាប់អ្នកទទួល។ I2P បញ្ជូនបំណែកដែលបានអ៊ិនគ្រីបទៅស្ថានីយផ្ទាល់ខ្លួនរបស់អ្នកទទួល។ អ្នកទទួលឌិគ្រីបសារនៅលើឧបករណ៍របស់ខ្លួន។",
     "pathLocal": "គ្រាប់ចុចនៅលើឧបករណ៍របស់អ្នក។",
     "pathNoAccount": "គ្មានលេខទូរស័ព្ទ",
     "principlesEyebrow": "របៀបដែលវាដំណើរការ",
@@ -1098,8 +1123,8 @@ export const messages = {
     "layerBridgeLead": "អន្តរការីតែមួយគត់ ហើយវាមើលឃើញតែអក្សរសម្ងាត់",
     "layerBridgeBody": "កម្មវិធីរុករកមិនអាចបើកការតភ្ជាប់ TCP ដោយផ្ទាល់ទេ ដូច្នេះទិន្នន័យឆ្លងកាត់ស្ពានទៅរ៉ោតទ័រ I2P ដំបូង។ ចរាចរណ៍នេះត្រូវបានអ៊ិនគ្រីបដោយ I2P បន្ថែមលើការអ៊ិនគ្រីបពីចុងដល់ចុង។ ស្ពានភ្ជាប់តែទៅរ៉ោតទ័រ I2P ដែលបានផ្ទៀងផ្ទាត់ តាមច្រកដែលអនុញ្ញាត។ វាឃើញ IP ពេលវេលា និងបរិមាណទិន្នន័យ ប៉ុន្តែមិនឃើញសោ ទំនាក់ទំនង ឬអត្ថបទរបស់អ្នកទេ។",
     "layerNetworkTitle": "បណ្តាញ I2P និងទំនាក់ទំនងរបស់អ្នក។",
-    "layerNetworkLead": "ផ្លូវរូងក្រោមដី ការបញ្ជូនសំបុត្រ និងអតិថិជនណាមួយនៅម្ខាងទៀត។",
-    "layerNetworkBody": "សារមួយចាកចេញពីផ្លូវរូងក្រោមដីទៅកាន់ការបញ្ជូនសំបុត្ររបស់ទំនាក់ទំនងរបស់អ្នក ហើយរង់ចាំនៅទីនោះ អ៊ិនគ្រីប រហូតដល់ពួកគេប្រមូលវា។ ទំនាក់ទំនងរបស់អ្នកអាចនៅក្នុងកម្មវិធីរុករកតាមអ៊ីនធឺណិត នៅលើផ្ទៃតុ ឬនៅលើ Android៖ ពិធីការគឺដូចគ្នា។",
+    "layerNetworkLead": "ស្ថានីយផ្ទាល់ខ្លួនរបស់អ្នកទទួល",
+    "layerNetworkBody": "ពេលអ្នកទទួលមិននៅលើបណ្ដាញ សាររង់ចាំនៅខាងអ្នកផ្ញើ។ ស្ថានីយផ្ទាល់ខ្លួនទាំងពីរត្រូវអាចទាក់ទងគ្នាតាម I2P ដើម្បីបញ្ជូនសារ។",
     "devicesEyebrow": "ដំណើរការខាងក្នុង",
     "devicesTitle": "របៀបដែល Gipny ដំណើរការនៅលើឧបករណ៍របស់អ្នក។",
     "devicesIntro": "ស្នូល Rust មួយ និងពិធីការមួយនៅគ្រប់ទីកន្លែង។ អ្វីដែលខុសគ្នានោះគឺកន្លែងដែលរ៉ោតទ័រ I2P រស់នៅ និងអ្វីដែលការពារការផ្ទុក។",
@@ -1146,8 +1171,8 @@ export const messages = {
     "secNetworkLead": "ទំនាក់ទំនង និងការបញ្ជូនតមិនឃើញ IP របស់អ្នកទេ។",
     "secNetworkBody": "សារធ្វើដំណើរឆ្លងកាត់ផ្លូវរូងក្រោមដី I2P ដាច់ដោយឡែកពីគ្នាដែលធ្វើពីរ៉ោតទ័រជាច្រើន ដោយម្នាក់ៗស្គាល់តែអ្នកជិតខាងប៉ុណ្ណោះ។ អាសយដ្ឋាន I2P របស់កម្មវិធីគឺថ្មីនៅរាល់ការចាប់ផ្តើម។ អត្តសញ្ញាណយូរអង្វែងរបស់អ្នកគឺជាសោរបស់អ្នក មិនមែនជាអាសយដ្ឋានបណ្តាញទេ។ មិនដែលមានការតភ្ជាប់ IP ដោយផ្ទាល់ទៅទំនាក់ទំនងរបស់អ្នកទេ។",
     "secDeliveryTitle": "ការដឹកជញ្ជូនដែលមិនបាត់បង់សារ",
-    "secDeliveryLead": "ការបញ្ជូនតកាន់តែអក្សរសម្ងាត់ប៉ុណ្ណោះ។",
-    "secDeliveryBody": "ប្រសិនបើទំនាក់ទំនងរបស់អ្នកគ្មានអ៊ីនធឺណិត សំបុត្រនោះរង់ចាំពួកគេនៅក្នុងការបញ្ជូនបន្តអ៊ីមែល ដែលបានអ៊ិនគ្រីប។ ដំបូងអ្នកទទួលរក្សាទុកសារដែលបានឌិគ្រីបរួមជាមួយនឹងស្ថានភាពសម្ងាត់ក្នុងប្រតិបត្តិការមួយ ហើយមានតែបន្ទាប់មកបញ្ជាក់ការបញ្ជូនទៅកាន់ការបញ្ជូនត ដូច្នេះការគាំង ឬថាសពេញមិនបាត់បង់សារនោះទេ។",
+    "secDeliveryLead": "I2P បញ្ជូនបំណែកដែលបានអ៊ិនគ្រីបទៅស្ថានីយផ្ទាល់ខ្លួនរបស់អ្នកទទួល។",
+    "secDeliveryBody": "ពេលអ្នកទទួលមិននៅលើបណ្ដាញ សាររង់ចាំនៅខាងអ្នកផ្ញើ។ ស្ថានីយផ្ទាល់ខ្លួនទាំងពីរត្រូវអាចទាក់ទងគ្នាតាម I2P ដើម្បីបញ្ជូនសារ។",
     "secStorageTitle": "ការផ្ទុកនៅលើឧបករណ៍",
     "secStorageLead": "បានអ៊ិនគ្រីប និងចងភ្ជាប់ទៅនឹងឧបករណ៍",
     "secStorageBody": "ប្រវត្តិរូបគឺជាមូលដ្ឋានទិន្នន័យដែលបានអ៊ិនគ្រីប (SQLCipher នៅក្នុងកម្មវិធីដែលបានអ៊ិនគ្រីប OPFS នៅក្នុងកម្មវិធីរុករក) ដោយមានសោដែលបានមកពីពាក្យសម្ងាត់របស់អ្នកតាមរយៈ Argon2id ។ នៅក្នុងកម្មវិធី សោក៏ត្រូវបានចងភ្ជាប់ទៅនឹងកន្លែងផ្ទុកដែលត្រូវបានការពាររបស់ប្រព័ន្ធផងដែរ។ ប្រសិនបើអ្នកចង់បាន ប្រវត្តិត្រូវបានលុបចោលនៅរាល់ការចាក់សោ ហើយសារនឹងផុតកំណត់នៅលើកម្មវិធីកំណត់ម៉ោង។",
@@ -1180,6 +1205,11 @@ export const messages = {
     "screensCaption": "បង្ហាញ៖ ការជូនដំណឹងអំពីច្បាប់ចម្លង ការលុបទំនាក់ទំនងរបស់អ្នកបញ្ជាក់ជាមួយ OK ឯកសារ សំណើទំនាក់ទំនង និងកម្មវិធីកំណត់ពេលវេលាសារដែលបាត់។"
   },
   "vi": {
+    "enlargeShot": "Phóng to ảnh chụp",
+    "closeShot": "Đóng ảnh chụp",
+    "routeSeal": "Thiết bị của bạn mã hóa tin nhắn cho người nhận.",
+    "routeCarry": "I2P chuyển các phần đã mã hóa đến điểm cuối cá nhân của người nhận.",
+    "routeOpen": "Người nhận giải mã tin nhắn trên thiết bị của mình.",
     "title": "gipny.i2p - Cuộc trò chuyện riêng tư qua I2P.",
     "description": "Trình nhắn tin mã nguồn mở có mã hóa đầu cuối, I2P tích hợp sẵn và hồ sơ cục bộ không có số điện thoại. Ứng dụng dành cho máy tính để bàn, Android và trình duyệt.",
     "skip": "Chuyển đến nội dung",
@@ -1203,7 +1233,7 @@ export const messages = {
     "pathSender": "Thiết bị của bạn",
     "pathRecipient": "Thiết bị của họ",
     "pathSealed": "Mã hóa đầu tiên. Gửi thứ hai.",
-    "pathCaption": "I2P truyền lưu lượng; mã hóa đầu cuối bảo vệ văn bản và tệp đính kèm. Các nút chuyển tiếp truyền và tạm lưu bản mã. Người nhận giải mã trên thiết bị của mình.",
+    "pathCaption": "Thiết bị của bạn mã hóa tin nhắn cho người nhận. I2P chuyển các phần đã mã hóa đến điểm cuối cá nhân của người nhận. Người nhận giải mã tin nhắn trên thiết bị của mình.",
     "pathLocal": "Các phím trên thiết bị của bạn",
     "pathNoAccount": "Không có số điện thoại",
     "principlesEyebrow": "Nó hoạt động như thế nào",
@@ -1334,8 +1364,8 @@ export const messages = {
     "layerBridgeLead": "Trung gian duy nhất và nó chỉ nhìn thấy bản mã",
     "layerBridgeBody": "Trình duyệt không thể mở kết nối TCP trực tiếp nên dữ liệu tới bộ định tuyến I2P đầu tiên qua một cầu nối. Lưu lượng đã được I2P mã hóa thêm bên ngoài lớp mã hóa đầu cuối. Cầu nối chỉ kết nối tới các bộ định tuyến I2P đã xác minh trên cổng được phép. Nó thấy địa chỉ IP, thời gian và dung lượng truyền, nhưng không thấy khóa, danh bạ hay nội dung văn bản.",
     "layerNetworkTitle": "Mạng I2P và liên hệ của bạn",
-    "layerNetworkLead": "Đường hầm, chuyển tiếp thư và bất kỳ ứng dụng khách nào ở phía bên kia",
-    "layerNetworkBody": "Một tin nhắn sẽ đi qua đường hầm gửi đi đến dịch vụ chuyển tiếp thư của người liên hệ của bạn và đợi ở đó, được mã hóa cho đến khi họ nhận được nó. Liên hệ của bạn có thể ở trong trình duyệt, trên máy tính để bàn hoặc trên Android: giao thức giống nhau.",
+    "layerNetworkLead": "Điểm cuối cá nhân của người nhận",
+    "layerNetworkBody": "Khi người nhận ngoại tuyến, tin nhắn chờ ở phía người gửi. Cả hai điểm cuối cá nhân cần kết nối được qua I2P để giao tin.",
     "devicesEyebrow": "Cơ chế bên trong",
     "devicesTitle": "Cách Gipny hoạt động trên thiết bị của bạn.",
     "devicesIntro": "Một lõi Rust và một giao thức ở mọi nơi. Điều khác biệt là bộ định tuyến I2P hoạt động ở đâu và điều gì bảo vệ bộ lưu trữ.",
@@ -1382,8 +1412,8 @@ export const messages = {
     "secNetworkLead": "Người liên hệ và các nút chuyển tiếp không thấy địa chỉ IP của bạn",
     "secNetworkBody": "Tin nhắn di chuyển qua các đường hầm I2P gửi đến và gửi đi riêng biệt được tạo thành từ một số bộ định tuyến, mỗi bộ định tuyến chỉ biết các lân cận của nó. Địa chỉ I2P của ứng dụng luôn mới mỗi lần bắt đầu; danh tính lâu dài của bạn là khóa của bạn chứ không phải địa chỉ mạng. Không bao giờ có kết nối IP trực tiếp với liên hệ của bạn.",
     "secDeliveryTitle": "Giao hàng không bị mất tin nhắn",
-    "secDeliveryLead": "Nút chuyển tiếp chỉ giữ bản mã",
-    "secDeliveryBody": "Nếu liên hệ của bạn ngoại tuyến, thư sẽ đợi họ trong chuyển tiếp thư, được mã hóa. Trước tiên, người nhận sẽ lưu tin nhắn được giải mã cùng với trạng thái mật mã trong một giao dịch, sau đó chỉ xác nhận việc gửi đến nút chuyển tiếp, do đó, khi xảy ra sự cố hoặc ổ đĩa đầy sẽ không làm mất tin nhắn.",
+    "secDeliveryLead": "I2P chuyển các phần đã mã hóa đến điểm cuối cá nhân của người nhận.",
+    "secDeliveryBody": "Khi người nhận ngoại tuyến, tin nhắn chờ ở phía người gửi. Cả hai điểm cuối cá nhân cần kết nối được qua I2P để giao tin.",
     "secStorageTitle": "Lưu trữ trên thiết bị",
     "secStorageLead": "Được mã hóa và liên kết với thiết bị",
     "secStorageBody": "Hồ sơ là một cơ sở dữ liệu được mã hóa (SQLCipher trong ứng dụng, OPFS được mã hóa trong trình duyệt), với khóa được lấy từ mật khẩu của bạn thông qua Argon2id. Trong các ứng dụng, khóa cũng được liên kết với bộ lưu trữ được bảo vệ của hệ thống. Nếu bạn muốn, lịch sử sẽ bị xóa sau mỗi lần khóa và tin nhắn sẽ hết hạn theo thời gian.",
@@ -1416,6 +1446,11 @@ export const messages = {
     "screensCaption": "Được hiển thị: một thông báo sao chép, việc xóa liên hệ của bạn xác nhận bằng OK, một tệp, yêu cầu liên hệ và bộ hẹn giờ tin nhắn biến mất."
   },
   "hi": {
+    "enlargeShot": "स्क्रीनशॉट बड़ा करें",
+    "closeShot": "स्क्रीनशॉट बंद करें",
+    "routeSeal": "आपका डिवाइस प्राप्तकर्ता के लिए संदेश एन्क्रिप्ट करता है।",
+    "routeCarry": "I2P एन्क्रिप्ट किए गए हिस्से प्राप्तकर्ता के निजी टर्मिनल तक पहुँचाता है।",
+    "routeOpen": "प्राप्तकर्ता अपने डिवाइस पर संदेश डिक्रिप्ट करता है।",
     "title": "gipny.i2p — I2P पर निजी बातचीत।",
     "description": "एंड-टू-एंड एन्क्रिप्शन वाला एक ओपन-सोर्स मैसेंजर, बिल्ट-इन I2P और बिना फोन नंबर के स्थानीय प्रोफाइल। डेस्कटॉप, Android और ब्राउज़र के लिए ऐप्स।",
     "skip": "सामग्री पर जाएं",
@@ -1439,7 +1474,7 @@ export const messages = {
     "pathSender": "आपका उपकरण",
     "pathRecipient": "उनका उपकरण",
     "pathSealed": "पहले एन्क्रिप्शन. दूसरा भेज रहा हूँ.",
-    "pathCaption": "I2P डेटा पहुँचाता है; एंड-टू-एंड एन्क्रिप्शन टेक्स्ट और अटैचमेंट की सुरक्षा करता है। रिले एन्क्रिप्टेड डेटा आगे भेजते हैं और अस्थायी रूप से रखते हैं। प्राप्तकर्ता उसे अपने डिवाइस पर डिक्रिप्ट करता है।",
+    "pathCaption": "आपका डिवाइस प्राप्तकर्ता के लिए संदेश एन्क्रिप्ट करता है। I2P एन्क्रिप्ट किए गए हिस्से प्राप्तकर्ता के निजी टर्मिनल तक पहुँचाता है। प्राप्तकर्ता अपने डिवाइस पर संदेश डिक्रिप्ट करता है।",
     "pathLocal": "आपके डिवाइस पर कुंजियाँ",
     "pathNoAccount": "कोई फ़ोन नंबर नहीं",
     "principlesEyebrow": "यह कैसे काम करता है",
@@ -1570,8 +1605,8 @@ export const messages = {
     "layerBridgeLead": "एकमात्र मध्यस्थ, और यह केवल सिफरटेक्स्ट देखता है",
     "layerBridgeBody": "ब्राउज़र सीधे TCP कनेक्शन नहीं खोल सकते, इसलिए डेटा ब्रिज से पहले I2P राउटर तक जाता है। यह ट्रैफ़िक एंड-टू-एंड एन्क्रिप्शन के ऊपर I2P से भी एन्क्रिप्ट होता है। ब्रिज केवल स्वीकृत पोर्ट पर सत्यापित I2P राउटर से जुड़ता है। वह आपका IP पता, कनेक्शन का समय और डेटा की मात्रा देखता है, लेकिन कुंजियाँ, संपर्क या संदेश का टेक्स्ट नहीं।",
     "layerNetworkTitle": "I2P नेटवर्क और आपका संपर्क",
-    "layerNetworkLead": "सुरंगें, एक मेल रिले और दूसरी तरफ कोई ग्राहक",
-    "layerNetworkBody": "एक संदेश आपके संपर्क के मेल रिले के लिए एक आउटबाउंड सुरंग के माध्यम से निकलता है और एन्क्रिप्टेड रूप में वहां प्रतीक्षा करता है, जब तक कि वे इसे एकत्र नहीं कर लेते। आपका संपर्क ब्राउज़र में, डेस्कटॉप पर या Android पर हो सकता है: प्रोटोकॉल समान है।",
+    "layerNetworkLead": "प्राप्तकर्ता का निजी टर्मिनल",
+    "layerNetworkBody": "प्राप्तकर्ता ऑफ़लाइन हो तो संदेश भेजने वाले के पास रहता है। डिलीवरी के लिए दोनों निजी टर्मिनल I2P पर उपलब्ध होने चाहिए।",
     "devicesEyebrow": "अंदर कैसे काम करता है",
     "devicesTitle": "Gipny आपके डिवाइस पर कैसे काम करता है।",
     "devicesIntro": "हर जगह एक Rust कोर और एक प्रोटोकॉल। अंतर यह है कि I2P राउटर कहां रहता है और स्टोरेज की सुरक्षा क्या करता है।",
@@ -1618,8 +1653,8 @@ export const messages = {
     "secNetworkLead": "संपर्क और रिले आपके IP को नहीं देखते हैं",
     "secNetworkBody": "संदेश कई राउटर्स से बने अलग-अलग इनबाउंड और आउटबाउंड I2P सुरंगों के माध्यम से यात्रा करते हैं, जिनमें से प्रत्येक केवल अपने पड़ोसियों को जानता है। ऐप का I2P पता हर शुरुआत पर नया होता है; आपकी स्थायी पहचान आपकी कुंजी है, नेटवर्क पता नहीं। आपके संपर्क से कभी भी सीधा IP कनेक्शन नहीं होता है।",
     "secDeliveryTitle": "डिलीवरी जो संदेश नहीं खोती",
-    "secDeliveryLead": "रिले केवल सिफरटेक्स्ट को धारण करते हैं",
-    "secDeliveryBody": "यदि आपका संपर्क ऑफ़लाइन है, तो पत्र एन्क्रिप्टेड, मेल रिले में उनका इंतजार करता है। प्राप्तकर्ता पहले एक लेन-देन में सिफर स्थिति के साथ डिक्रिप्टेड संदेश को सहेजता है, और उसके बाद ही रिले को डिलीवरी की पुष्टि करता है, इसलिए क्रैश या पूर्ण डिस्क संदेश को नहीं खोता है।",
+    "secDeliveryLead": "I2P एन्क्रिप्ट किए गए हिस्से प्राप्तकर्ता के निजी टर्मिनल तक पहुँचाता है।",
+    "secDeliveryBody": "प्राप्तकर्ता ऑफ़लाइन हो तो संदेश भेजने वाले के पास रहता है। डिलीवरी के लिए दोनों निजी टर्मिनल I2P पर उपलब्ध होने चाहिए।",
     "secStorageTitle": "डिवाइस पर भंडारण",
     "secStorageLead": "एन्क्रिप्टेड और डिवाइस से बंधा हुआ",
     "secStorageBody": "प्रोफ़ाइल एक एन्क्रिप्टेड डेटाबेस है (ऐप्स में SQLCipher, ब्राउज़र में एन्क्रिप्टेड OPFS), जिसमें Argon2id के माध्यम से आपके पासवर्ड से प्राप्त एक कुंजी होती है। ऐप्स में कुंजी सिस्टम के संरक्षित स्टोरेज से भी जुड़ी होती है। यदि आप चाहें, तो प्रत्येक लॉक पर इतिहास मिटा दिया जाता है और संदेश टाइमर पर समाप्त हो जाते हैं।",
@@ -1652,6 +1687,11 @@ export const messages = {
     "screensCaption": "दिखाया गया: एक कॉपी नोटिस, एक विलोपन जिसकी पुष्टि आपका संपर्क OK से करता है, एक फ़ाइल, एक संपर्क अनुरोध और गायब होने वाला संदेश टाइमर।"
   },
   "zh": {
+    "enlargeShot": "放大截图",
+    "closeShot": "关闭截图",
+    "routeSeal": "你的设备为收件人加密消息。",
+    "routeCarry": "I2P 将加密后的分片传送到收件人的个人终端。",
+    "routeOpen": "收件人在自己的设备上解密消息。",
     "title": "gipny.i2p — 通过 I2P 进行私人对话。",
     "description": "具有端到端加密功能的开源通讯工具，内置 I2P 和本地个人档案，无需电话号码。适用于桌面、Android 和浏览器的应用程序。",
     "skip": "跳至内容",
@@ -1675,7 +1715,7 @@ export const messages = {
     "pathSender": "您的设备",
     "pathRecipient": "他们的设备",
     "pathSealed": "首先加密。发送第二个。",
-    "pathCaption": "I2P承载流量；端到端加密可保护文本和附件。中继转发并临时存储密文。收件人在其设备上对其进行解密。",
+    "pathCaption": "你的设备为收件人加密消息。 I2P 将加密后的分片传送到收件人的个人终端。 收件人在自己的设备上解密消息。",
     "pathLocal": "您设备上的密钥",
     "pathNoAccount": "没有电话号码",
     "principlesEyebrow": "它是如何运作的",
@@ -1806,8 +1846,8 @@ export const messages = {
     "layerBridgeLead": "唯一的中介，它只能看到密文",
     "layerBridgeBody": "浏览器无法直接建立 TCP 连接，因此数据通过桥接服务抵达第一个 I2P 路由器。这些数据在端到端加密之外，还经过 I2P 加密。桥接服务只通过允许的端口连接已验证的 I2P 路由器。它能看到你的 IP 地址、传输时间和数据量，但看不到密钥、联系人或消息正文。",
     "layerNetworkTitle": "I2P 网络和你的联系人",
-    "layerNetworkLead": "隧道、邮件中继和另一端的任何客户端",
-    "layerNetworkBody": "消息通过出站隧道发送到联系人的邮件中继，并在那里加密等待，直到他们收集消息。您的联系人可以在浏览器、桌面或 Android 上：协议是相同的。",
+    "layerNetworkLead": "收件人的个人终端",
+    "layerNetworkBody": "收件人离线时，消息在发件人处等待。要完成投递，双方的个人终端都必须能够通过 I2P 连接。",
     "devicesEyebrow": "内部原理",
     "devicesTitle": "Gipny 如何在您的设备上工作。",
     "devicesIntro": "一个 Rust 核心和一种协议无处不在。不同之处在于 I2P 路由器所在的位置以及保护存储的内容。",
@@ -1854,8 +1894,8 @@ export const messages = {
     "secNetworkLead": "联系人和中继看不到你的 IP 地址",
     "secNetworkBody": "消息通过由多个路由器组成的单独入站和出站 I2P 隧道传输，每个路由器只知道其邻居。该应用程序的 I2P 地址每次启动时都是新的；您的持久身份是您的密钥，而不是网络地址。与您的联系人之间永远不会有直接的 IP 连接。",
     "secDeliveryTitle": "不丢失消息的传递",
-    "secDeliveryLead": "中继仅保存密文",
-    "secDeliveryBody": "联系人离线时，消息会以加密形式在邮件中继等待。接收方先在同一事务中保存解密后的消息和加密会话状态，再向中继确认送达，避免因崩溃或磁盘已满而丢失消息。",
+    "secDeliveryLead": "I2P 将加密后的分片传送到收件人的个人终端。",
+    "secDeliveryBody": "收件人离线时，消息在发件人处等待。要完成投递，双方的个人终端都必须能够通过 I2P 连接。",
     "secStorageTitle": "设备上的存储",
     "secStorageLead": "加密并绑定到设备",
     "secStorageBody": "该个人档案是一个加密数据库（应用程序中为 SQLCipher，浏览器中为加密 OPFS），其密钥通过 Argon2id 从您的密码派生。在应用程序中，密钥还绑定到系统的受保护存储。如果您愿意，历史记录会在每次锁定时被擦除，并且消息会在计时器上过期。",
@@ -2014,12 +2054,66 @@ export function applyLanguage(language, root) {
   return selected;
 }
 
+function initializeIllustrations(root) {
+  const path = root.querySelector('.message-path');
+  if (path) {
+    const caption = path.querySelector('figcaption');
+    const buttons = [];
+    for (const node of path.querySelectorAll('[data-route]')) {
+      const button = root.createElement('button');
+      button.type = 'button';
+      button.className = node.className;
+      button.setAttribute('aria-controls', node.dataset.route);
+      button.setAttribute('aria-expanded', 'false');
+      button.append(...node.childNodes);
+      node.replaceWith(button);
+      buttons.push(button);
+      button.addEventListener('click', () => {
+        const expand = button.getAttribute('aria-expanded') !== 'true';
+        for (const step of buttons) {
+          const selected = step === button && expand;
+          step.setAttribute('aria-expanded', String(selected));
+          root.getElementById(step.getAttribute('aria-controls')).hidden = !selected;
+        }
+        caption.hidden = expand;
+      });
+    }
+  }
+  const dialog = root.querySelector('.shot-dialog');
+  if (!dialog || typeof dialog.showModal !== 'function') return;
+  const preview = dialog.querySelector('.shot-full');
+  const close = dialog.querySelector('[data-close-shot]');
+  close.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => preview.replaceChildren());
+  for (const frame of root.querySelectorAll('.screen')) {
+    const trigger = root.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'shot-trigger';
+    trigger.dataset.i18nAria = 'enlargeShot';
+    trigger.setAttribute('aria-label', messages[root.documentElement.lang].enlargeShot);
+    trigger.setAttribute('aria-haspopup', 'dialog');
+    trigger.append(...frame.childNodes);
+    frame.append(trigger);
+    trigger.addEventListener('click', () => {
+      const shown = [...trigger.querySelectorAll('img')].find(image => image.getClientRects().length);
+      if (!shown) return;
+      const image = shown.cloneNode(false);
+      image.removeAttribute('class');
+      preview.replaceChildren(image);
+      dialog.showModal();
+      close.focus();
+    });
+  }
+}
+
 export function initialize(root, browser) {
   const languages = preferredLanguages(browser);
   let keyboardLanguage = null;
   let chosen = false;
   const preferred = () => resolveLanguage(browser.location.search, languages, keyboardLanguage);
   applyLanguage(preferred(), root);
+  initializeIllustrations(root);
   void initializeDownloads(root, browser);
   root.querySelector('.language-switch').hidden = false;
   // A late layout result must respect explicit links and clicks.

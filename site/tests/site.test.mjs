@@ -256,7 +256,7 @@ test('build publishes only the static public files and the app screenshots, pres
 function releaseFixture(version = '0.4.18', extended = false) {
   const names = [
     ...['x64-setup.exe', 'amd64.AppImage', 'aarch64.AppImage', 'amd64.deb', 'arm64.deb', 'x64.dmg', 'aarch64.dmg', 'android-arm64.apk', 'android-armv7.apk'].map(suffix => 'gipny-i2p_' + version + '_' + suffix),
-    ...['agent', 'relay'].flatMap(component => ['amd64', 'arm64'].map(arch => 'gipny-' + component + '_' + version + '_linux-' + arch + '.tar.gz')),
+    ...(version.startsWith('0.4.') ? ['agent', 'relay'] : ['agent']).flatMap(component => ['amd64', 'arm64'].map(arch => 'gipny-' + component + '_' + version + '_linux-' + arch + '.tar.gz')),
     ...(extended ? [
       ...['darwin-amd64', 'darwin-arm64', 'windows-amd64', 'aarch64-unknown-linux-musl', 'armv7-unknown-linux-musleabi', 'i686-unknown-linux-musl', 'x86_64-unknown-linux-musl'].map(target => 'gipny-agent_' + version + '_' + target + '.tar.gz'),
       'gipny-source_' + version + '_' + 'a'.repeat(40) + '.tar.gz', 'BUILD-MANIFEST.json', 'SOURCE-MANIFEST.json',

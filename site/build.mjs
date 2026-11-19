@@ -30,27 +30,25 @@ export function classifyAsset(name, version) {
     const [platform, arch, format, icon] = native[name.slice(app.length)];
     return { group: 'native', platform, arch, format, icon };
   }
-  for (const component of ['agent', 'relay']) {
-    const prefix = 'gipny-' + component + '_' + version + '_';
-    if (!name.startsWith(prefix) || !name.endsWith('.tar.gz')) continue;
-    const target = name.slice(prefix.length, -7);
+  const agentPrefix = 'gipny-agent_' + version + '_';
+  if (name.startsWith(agentPrefix) && name.endsWith('.tar.gz')) {
+    const target = name.slice(agentPrefix.length, -7);
     const targets = {
       'linux-amd64': ['Linux', 'x86_64 · GNU', 'linux'],
       'linux-arm64': ['Linux', 'ARM64 · GNU', 'linux'],
-      ...(component === 'agent' ? {
-        'darwin-amd64': ['macOS', 'Intel x86_64', 'macos'],
-        'darwin-arm64': ['macOS', 'Apple Silicon ARM64', 'macos'],
-        'windows-amd64': ['Windows', 'x86_64', 'windows'],
-        'windows-arm64': ['Windows', 'ARM64', 'windows'],
-        'aarch64-unknown-linux-musl': ['OpenWrt / musl', 'ARM64 / AArch64', 'router'],
-        'armv7-unknown-linux-musleabi': ['OpenWrt / musl', 'ARMv7-A · soft-float', 'router'],
-        'i686-unknown-linux-musl': ['OpenWrt / musl', 'x86 · Pentium 4+ / SSE2', 'router'],
-        'x86_64-unknown-linux-musl': ['OpenWrt / musl', 'x86_64', 'router'],
-      } : {}),
+      'darwin-amd64': ['macOS', 'Intel x86_64', 'macos'],
+      'darwin-arm64': ['macOS', 'Apple Silicon ARM64', 'macos'],
+      'windows-amd64': ['Windows', 'x86_64', 'windows'],
+      'windows-arm64': ['Windows', 'ARM64', 'windows'],
+      'aarch64-unknown-linux-musl': ['OpenWrt / musl', 'ARM64 / AArch64', 'router'],
+      'armv7-unknown-linux-musleabi': ['OpenWrt / musl', 'ARMv7-A · soft-float', 'router'],
+      'i686-unknown-linux-musl': ['OpenWrt / musl', 'x86 · Pentium 4+ / SSE2', 'router'],
+      'x86_64-unknown-linux-musl': ['OpenWrt / musl', 'x86_64', 'router'],
     };
-    if (!Object.hasOwn(targets, target)) break;
-    const [platform, arch, icon] = targets[target];
-    return { group: icon === 'router' ? 'openwrt' : component + 's', platform, arch, format: 'TAR.GZ', icon };
+    if (Object.hasOwn(targets, target)) {
+      const [platform, arch, icon] = targets[target];
+      return { group: icon === 'router' ? 'openwrt' : 'agents', platform, arch, format: 'TAR.GZ', icon };
+    }
   }
   if (['SHA256SUMS.txt', 'BUILD-MANIFEST.json', 'SOURCE-MANIFEST.json'].includes(name)) return { group: 'metadata' };
   const source = 'gipny-source_' + version + '_';
@@ -70,7 +68,7 @@ export function releaseCatalog(release) {
   }
   const version = release.tag_name.replace(/^v/, '');
   const names = new Set();
-  const assets = release.assets.map(asset => {
+  const assets = release.assets.flatMap(asset => {
     if (!asset || typeof asset.name !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(asset.name) ||
         names.has(asset.name) || asset.state !== 'uploaded' ||
         !Number.isSafeInteger(asset.size) || asset.size <= 0 ||
@@ -78,6 +76,8 @@ export function releaseCatalog(release) {
       throw new Error('Invalid or duplicate uploaded release asset');
     }
     names.add(asset.name);
+    // Stable releases from the 0.4 series also contained retired server packages.
+    if (version.startsWith('0.4.') && ['amd64', 'arm64'].some(arch => asset.name === 'gipny-relay_' + version + '_linux-' + arch + '.tar.gz')) return [];
     return { ...classifyAsset(asset.name, version), name: asset.name, size: asset.size, url: asset.browser_download_url };
   });
   if (!assets.some(asset => asset.group === 'native')) throw new Error('Release has no supported native application');
