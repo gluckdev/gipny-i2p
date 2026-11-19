@@ -260,7 +260,11 @@ impl Vault {
         Self::open_record(key, record)
     }
 
-    fn unwrap_passkey(header: &Header, credential_id: &[u8], prf: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+    fn unwrap_passkey(
+        header: &Header,
+        credential_id: &[u8],
+        prf: &[u8],
+    ) -> Result<Zeroizing<[u8; 32]>, String> {
         let entry = header
             .passkeys
             .iter()
@@ -280,7 +284,9 @@ impl Vault {
 
     pub fn verify_passkey(&self, credential_id: &[u8], prf: &[u8]) -> Result<(), String> {
         let candidate = Self::unwrap_passkey(&self.header, credential_id, prf)?;
-        if *candidate != *self.key { return Err("wrong passkey".into()); }
+        if *candidate != *self.key {
+            return Err("wrong passkey".into());
+        }
         Ok(())
     }
 

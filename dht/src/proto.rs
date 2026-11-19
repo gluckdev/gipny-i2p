@@ -24,8 +24,7 @@ pub const MAX_NODE_DESTINATION_BYTES: usize = 526;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub destination: String,
-    /// Holds items for others. Phones and clients behind an external relay
-    /// do not, and are never chosen to.
+    /// Accepts discovery records. Nodes that decline storage are skipped.
     pub stores: bool,
     pub version: u16,
 }

@@ -1,8 +1,7 @@
-//! A network of gipny relays that hold sealed items for each other.
+//! Peer discovery for personal Gipny I2P terminals.
 //!
-//! Transport and storage are traits: the desktop app and the agent plug in
-//! their i2p connections and SQLite, the standalone relay its own, and the
-//! tests an in-memory network.
+//! Desktop and headless clients use I2P connections and SQLite. Protocol
+//! tests implement the same traits with an in-memory network.
 
 pub mod crypto;
 pub mod items;
