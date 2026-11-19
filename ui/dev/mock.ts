@@ -205,7 +205,6 @@ mockIPC(async (cmd, payload) => {
     case 'get_relay_address': return relayStarting ? '' : RELAY;
     case 'get_attachment_privacy': return true;
     case 'get_relay_info': return {
-      mode: 'builtin', external: '',
       hosted: relayStarting ? { state: 'starting' } : { state: 'ready', address: RELAY },
     };
     case 'list_unreachable_contacts': return scene === 'chat' && params.get('demo') !== '1' ? [2] : [];

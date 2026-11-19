@@ -257,6 +257,10 @@ jobs:
       - name: Two browsers exchange messages and recover their profiles over WSS
         if: ${{ !cancelled() && steps.messenger_build.outcome == 'success' }}
         run: python3 browser-router/tests/run_messenger_ci.py
+      - name: Check native and WASM view-once interoperability
+        if: ${{ !cancelled() && steps.messenger_build.outcome == 'success' }}
+        working-directory: ui
+        run: node --test tests/view-once-interop.test.mjs
       - name: Two browsers exchange messages and recover their profiles over WebRTC
         if: ${{ !cancelled() && steps.messenger_build.outcome == 'success' }}
         env:

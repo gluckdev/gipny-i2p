@@ -10,6 +10,11 @@ export function deletionRuns(messages: readonly Message[]): DeletionRun[] {
   const rows: DeletionRun[] = [];
   let previous: Message | undefined;
   for (const message of messages) {
+    if (message.delivery_expired_at != null && message.deleted_at != null) {
+      rows.push({ message, members: [message] });
+      previous = undefined;
+      continue;
+    }
     const last = rows[rows.length - 1];
     if (message.deleted_at != null && message.deletion_notice === null) { previous = undefined; continue; }
     const notice = message.deletion_notice;

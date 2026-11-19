@@ -17,8 +17,10 @@ pub use dm::{
 };
 mod file_transfer;
 pub use file_transfer::FileBatch;
+mod delivery_receipt;
+pub use delivery_receipt::DeliveryReceipt;
 mod message_commit;
-pub use message_commit::{IncomingCommit, NewOutgoingDm};
+pub use message_commit::{IncomingCommit, MessageLifetime, NewOutgoingDm};
 mod group_wire;
 pub use group_wire::MAX_GROUP_MEMBERS;
 mod inbox;
@@ -203,6 +205,7 @@ pub struct Message {
     pub sent_at: i64,
     pub sent: bool,
     pub delivered: bool,
+    pub delivery_expired_at: Option<i64>,
     pub read: bool,
     pub expires_at: Option<i64>,
     pub last_attempt_at: Option<i64>,
@@ -357,8 +360,8 @@ macro_rules! select_group {
         "SELECT id, name, created_at, pinned_at, last_message_at FROM groups"
     };
 }
-macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to, dm_seq, deleted_at" }; }
-macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to, m.dm_seq, m.deleted_at" }; }
+macro_rules! message_cols { () => { "id, contact_id, group_id, sender_sign_pk, direction, body, sent_at, sent, delivered, read, expires_at, last_attempt_at, send_attempts, reply_to, dm_seq, deleted_at, delivery_expired_at" }; }
+macro_rules! message_cols_m { () => { "m.id, m.contact_id, m.group_id, m.sender_sign_pk, m.direction, m.body, m.sent_at, m.sent, m.delivered, m.read, m.expires_at, m.last_attempt_at, m.send_attempts, m.reply_to, m.dm_seq, m.deleted_at, m.delivery_expired_at" }; }
 
 mod attachments;
 mod backup;
@@ -368,6 +371,10 @@ mod dht;
 mod groups;
 mod messages;
 mod outbox;
+mod delivery_expiry;
+mod view_once;
+pub use view_once::ViewOnceDelivery;
+pub use delivery_expiry::DeliveryExpiryNotice;
 mod pins;
 mod prekeys;
 mod schema;

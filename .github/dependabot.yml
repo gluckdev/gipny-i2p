@@ -21,22 +21,6 @@ updates:
       rust-deps:
         patterns: ["*"]
 
-  # Rust: the relay server (separate workspace).
-  - package-ecosystem: cargo
-    directory: "/core/relay"
-    schedule:
-      interval: weekly
-    ignore:
-      # The relay crate itself uses bincode 2 and dht (a path dependency of this
-      # workspace) uses bincode 1, so a semver-major bump would change the wire
-      # format and cannot be automated here. This also excludes the bincode 3
-      # tombstone; a second, overlapping >=3 ignore is unnecessary.
-      - dependency-name: bincode
-        update-types: ["version-update:semver-major"]
-    groups:
-      relay-deps:
-        patterns: ["*"]
-
   # Frontend.
   - package-ecosystem: cargo
     directory: "/browser-router"

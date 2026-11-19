@@ -74,7 +74,7 @@ select_agent_release_urls() {
 if [[ -n ${BASH_SOURCE[0]:-} && ${BASH_SOURCE[0]} != "$0" ]]; then return; fi
 
 REPO=gluckdev/gipny-i2p
-MASTER='' NAME='' DATA='' CWD='' RELAY='' TIMEOUT=120 VERSION=latest ACTION=install
+MASTER='' NAME='' DATA='' CWD='' TIMEOUT=120 VERSION=latest ACTION=install
 fail() { printf 'Ошибка: %s\n' "$*" >&2; exit 1; }
 help() {
   cat <<'HELP'
@@ -86,7 +86,6 @@ GIPNY · установка удалённого агента
   --name <name>     Имя агента (по умолчанию постоянное кошачье имя)
   --data <dir>      Данные: /var/lib/gipny-agent или ~/.local/share/gipny-agent
   --cwd <dir>       Рабочий каталог команд (по умолчанию домашний)
-  --relay <relay>   Внешний релей (по умолчанию встроенный)
   --timeout <secs>  Таймаут команды, по умолчанию 120 секунд
   --version <ver>   GitHub release tag или latest
   --status          Статус службы и последние логи
@@ -104,11 +103,11 @@ while (($#)); do
     --help|-h) help; exit 0 ;;
     --uninstall) ACTION=uninstall; shift ;;
     --status) ACTION=status; shift ;;
-    --master|--name|--data|--cwd|--relay|--timeout|--version)
+    --master|--name|--data|--cwd|--timeout|--version)
       (($# >= 2)) && [[ -n $2 ]] || fail "для $1 требуется значение"
       case "$1" in
         --master) MASTER=$2 ;; --name) NAME=$2 ;; --data) DATA=$2 ;;
-        --cwd) CWD=$2 ;; --relay) RELAY=$2 ;; --timeout) TIMEOUT=$2 ;; --version) VERSION=$2 ;;
+        --cwd) CWD=$2 ;; --timeout) TIMEOUT=$2 ;; --version) VERSION=$2 ;;
       esac
       shift 2 ;;
     *) fail "неизвестный параметр: $1 (см. --help)" ;;
@@ -132,7 +131,7 @@ DATA=${DATA:-$DEFAULT_DATA}
 [[ $DATA == /* && $DATA != / && $DATA != "$HOME" && $DATA != /usr && $DATA != /var && $DATA != /etc && $DATA != /tmp ]] || fail '--data должен быть абсолютным путём к отдельному каталогу агента'
 [[ $DATA != *$'\n'* ]] || fail 'перевод строки в пути данных не поддерживается'
 [[ $DATA != "$BIN" && $DATA != "$CONFIG" && $DATA != "$(dirname "$CONFIG")" ]] || fail 'данные должны лежать отдельно от бинарника и конфигурации'
-for value in "$MASTER" "$NAME" "$DATA" "$CWD" "$RELAY" "$HOME"; do
+for value in "$MASTER" "$NAME" "$DATA" "$CWD" "$HOME"; do
   [[ $value != *$'\n'* && $value != *$'\r'* ]] || fail 'переводы строк в параметрах не поддерживаются'
 done
 MODE=fallback
@@ -194,7 +193,7 @@ if [[ -z $MASTER ]]; then
   IFS= read -r MASTER < /dev/tty || fail 'передайте --master <card>'
 fi
 [[ $MASTER != *$'\n'* && $MASTER != *$'\r'* ]] || fail 'переводы строк в карточке не поддерживаются'
-master_card_shape "$MASTER" || fail 'нужна карточка gipny:v3 (или v2) с релеем из настроек мастера'
+master_card_shape "$MASTER" || fail 'нужна карточка gipny:v3 (или v2) с адресом личного терминала мастера'
 if [[ -z $NAME && -f $CONFIG/agent-name ]]; then IFS= read -r NAME < "$CONFIG/agent-name"; fi
 if [[ -z $NAME ]]; then
   cat_names=(Murka Barsik Matroskin Felix Luna Nala Simba Tigra Tom Bagheera)
@@ -230,7 +229,7 @@ EXE=$(find "$TMP/unpack" -type f -name gipny-agent | head -n 1)
 SEED=$(find "$TMP/unpack" -type f -name i2pd-netdb-seed.tar.gz | head -n 1)
 [[ -n $EXE && -n $SEED ]] || fail 'в архиве отсутствует агент или снимок сети'
 chmod 0755 "$EXE"
-verify_staged_master "$EXE" "$MASTER" || fail 'карточка повреждена или эта версия агента не поддерживает v3; нужны 0.4.19 или новее'
+verify_staged_master "$EXE" "$MASTER" || fail 'карточка повреждена или выбранный агент не поддерживает этот формат карточки мастера'
 [[ ! -f $CONFIG/backend ]] || stop
 mkdir -p "$BIN" "$CONFIG" "$DATA"; chmod 700 "$CONFIG" "$DATA"
 install -m 0755 "$EXE" "$BIN/gipny-agent"; install -m 0644 "$SEED" "$BIN/i2pd-netdb-seed.tar.gz"
@@ -239,7 +238,6 @@ printf '%s\n' "$DATA" > "$CONFIG/data-dir"; printf '%s\n' "$MODE" > "$CONFIG/bac
 printf '%s\n' "$NAME" > "$CONFIG/agent-name"
 ARGS=(--data "$DATA" --master "$MASTER" --name "$NAME" --timeout "$TIMEOUT")
 [[ -z $CWD ]] || ARGS+=(--cwd "$CWD")
-[[ -z $RELAY ]] || ARGS+=(--relay "$RELAY")
 { printf '#!/usr/bin/env bash\nexec '; printf '%q ' "$BIN/gipny-agent" "${ARGS[@]}"; printf '\n'; } > "$RUN"
 chmod 700 "$RUN"
 # systemd EnvironmentFile quoting, including nested quotes used by $ARGS expansion.

@@ -112,7 +112,7 @@ class ReviewedLockfiles(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.names = ('Cargo.lock', 'core/relay/Cargo.lock', 'ui/package-lock.json')
+        self.names = ('Cargo.lock', 'ui/package-lock.json')
         self.committed = {name: f'synthetic reviewed input: {name}\n'.encode() for name in self.names}
         for name, content in self.committed.items():
             path = self.root / name
@@ -144,7 +144,7 @@ class ReviewedLockfiles(unittest.TestCase):
             provenance.reviewed_lockfiles()
 
     def test_missing_lockfile_is_not_omitted_from_the_manifest(self):
-        (self.root / self.names[2]).unlink()
+        (self.root / 'ui/package-lock.json').unlink()
         with self.assertRaisesRegex(ValueError, 'lockfile is missing'):
             provenance.reviewed_lockfiles()
 

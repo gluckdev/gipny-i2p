@@ -41,9 +41,17 @@ impl Db {
     pub fn commit_received(
         &self, contact_id: i64, session: Option<&[u8]>, spent_prekey: Option<i64>, payload: &[u8],
     ) -> Result<i64> {
+        self.commit_received_session(contact_id, session, spent_prekey, payload, false)
+    }
+
+    pub fn commit_incoming_initial(&self, contact_id: i64, session: &[u8], spent_prekey: Option<i64>, payload: &[u8]) -> Result<i64> {
+        self.commit_received_session(contact_id, Some(session), spent_prekey, payload, true)
+    }
+
+    fn commit_received_session(&self, contact_id: i64, session: Option<&[u8]>, spent_prekey: Option<i64>, payload: &[u8], replaced: bool) -> Result<i64> {
         let mut conn = self.conn.lock().map_err(|_| DbError::State)?;
         conn.execute_batch("PRAGMA synchronous = FULL")?;
-        let committed = Self::commit_received_tx(&mut conn, contact_id, session, spent_prekey, payload);
+        let committed = Self::commit_received_tx(&mut conn, contact_id, session, spent_prekey, payload, replaced);
         let restored = conn.execute_batch("PRAGMA synchronous = NORMAL");
         let id = committed?;
         restored?;
@@ -51,7 +59,7 @@ impl Db {
     }
 
     fn commit_received_tx(
-        conn: &mut Connection, contact_id: i64, session: Option<&[u8]>, spent_prekey: Option<i64>, payload: &[u8],
+        conn: &mut Connection, contact_id: i64, session: Option<&[u8]>, spent_prekey: Option<i64>, payload: &[u8], replaced: bool,
     ) -> Result<i64> {
         let tx = conn.transaction()?;
         let id = {
@@ -67,8 +75,9 @@ impl Db {
             if let Some(state) = session {
                 tx.execute(
                     "INSERT INTO sessions (contact_id, state, updated_at) VALUES (?1, ?2, ?3)
-                     ON CONFLICT(contact_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at",
+                     ON CONFLICT(contact_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at, pending_initial=NULL",
                     params![contact_id, state, now_ms()])?;
+                if replaced { tx.execute("DELETE FROM prepared_deposits WHERE contact_id=?1", [contact_id])?; }
             }
             tx.execute("INSERT INTO inbox (contact_id, payload, received_at) VALUES (?1, ?2, ?3)",
                 params![contact_id, payload, now_ms()])?;

@@ -78,7 +78,7 @@ impl Transfer<'_> {
             .context("timeout: bot-b never got a third of the file")?;
             let held = b_parts.0.load(std::sync::atomic::Ordering::SeqCst);
             eprintln!("[e2e] bot-b: stopping with {held} parts in");
-            b.session.shutdown();
+            b.session.shutdown_and_wait().await;
             tokio::time::sleep(Duration::from_secs(10)).await;
             let (again, mut again_events) = SessionManager::start(
                 work_dir.join("bot-b"),

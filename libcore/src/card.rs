@@ -191,6 +191,9 @@ pub(crate) fn address_hash(address: &str) -> Result<[u8; 32], CardError> {
     Ok(Sha256::digest(&raw).into())
 }
 
+/// Canonical form of a full or compact I2P destination.
+pub fn compact_address(address: &str) -> Result<String,CardError> { Ok(b32_address(&address_hash(address)?)) }
+
 fn b32_address(hash: &[u8; 32]) -> String {
     const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut text = String::with_capacity(60);

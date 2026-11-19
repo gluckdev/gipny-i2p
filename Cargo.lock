@@ -1178,10 +1178,10 @@ name = "e2e-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "gipny-dht",
  "gipny-libcore",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -1758,8 +1758,10 @@ dependencies = [
  "arboard",
  "argon2",
  "bincode",
+ "cc",
  "chacha20poly1305",
  "ed25519-dalek",
+ "gio",
  "gipny-libcore",
  "hkdf",
  "hmac",
@@ -1785,6 +1787,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "windows",
+ "windows-future",
  "windows-sys 0.61.2",
  "x25519-dalek",
  "zeroize",

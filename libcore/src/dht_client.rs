@@ -33,19 +33,6 @@ pub type Node = DhtNode<I2pTransport, DbStorage>;
 /// renews our address records (they live two hours).
 pub const MAINTAIN_EVERY: Duration = Duration::from_secs(45 * 60);
 
-/// Seed nodes baked in at build time, comma or whitespace separated
-/// (`GIPNY_DHT_SEEDS`, set from a repository variable in release.yml).
-/// Deliberately not read at run time: where a shipped client first looks for
-/// the network is decided by the build, not by whoever starts the process.
-pub fn builtin_seeds() -> Vec<String> {
-    option_env!("GIPNY_DHT_SEEDS")
-        .unwrap_or("")
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
 /// Whether this process holds items for others. Not on Android: the system
 /// puts the app to sleep, and a node that is mostly asleep loses what it holds.
 pub fn stores_here() -> bool {
@@ -134,23 +121,21 @@ pub async fn maintain(node: &Arc<Node>, db: &Arc<Db>, identity: &Arc<Identity>, 
     save_peers(node, db);
 }
 
-/// Where to look for the network: seeds, nodes that answered before, and
-/// the relays our contacts collect at.
+/// Bootstrap discovery from accepted contacts and nodes that previously answered.
 ///
 /// Whether there was anything at all to try, for the log line. A bootstrap with
 /// nothing to try is the case worth being able to tell apart later: the lookup
 /// that follows returns just as promptly as one that reached half the network.
 fn add_candidates(node: &Arc<Node>, db: &Arc<Db>) -> bool {
-    let seeds = builtin_seeds();
     let saved = db.dht_peers_load().unwrap_or_default();
     let relays: Vec<String> = db
         .list_contacts()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|c| c.relay_address)
+        .filter(|c|c.trust!=TrustLevel::Blocked && c.request_state==RequestState::None)
+        .flat_map(|c|c.relay_address.into_iter().chain(std::iter::once(c.i2p_address)))
         .collect();
-    let offered = !seeds.is_empty() || !saved.is_empty() || !relays.is_empty();
-    node.add_candidates(&seeds, true);
+    let offered = !saved.is_empty() || !relays.is_empty();
     node.add_candidates(&saved, false);
     node.add_candidates(&relays, false);
     offered
@@ -211,81 +196,6 @@ fn pair_with(identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32
 
 fn to_stored(item: gipny_dht::items::PreparedItem) -> StoredItem {
     StoredItem { key: item.key, value: item.value, delete_hash: item.delete_hash, expires_at_ms: item.expires_at_ms }
-}
-
-/// Leave an envelope where this contact collects it. `true` when at least one
-/// node took it.
-pub async fn put_mail(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32], envelope: &[u8]) -> bool {
-    let Some(pair) = pair_with(identity, their_sign, their_dh) else { return false };
-    let item = {
-        let Ok(guard) = pair.open() else { return false };
-        let Some(item) = gipny_dht::items::mail(&guard, their_sign, node.now_ms(), envelope) else { return false };
-        item
-    };
-    node.put(to_stored(item)).await > 0
-}
-
-/// A first letter to someone who may not know us yet: sealed to their card,
-/// so only they can open it, and found under a key any holder of that card
-/// can compute.
-pub async fn put_intro(node: &Arc<Node>, their_sign: &[u8; 32], their_dh: &[u8; 32], envelope: &[u8]) -> bool {
-    let Some(item) = gipny_dht::items::intro(their_sign, their_dh, node.now_ms(), envelope) else { return false };
-    node.put(to_stored(item)).await > 0
-}
-
-/// One letter found in the network, with what it takes to remove it.
-pub struct Letter {
-    pub envelope: Vec<u8>,
-    pub key: [u8; 32],
-    pub delete_token: [u8; 32],
-}
-
-/// Letters this contact left for us over the last `days` days.
-pub async fn collect_mail(node: &Arc<Node>, identity: &Arc<Identity>, their_sign: &[u8; 32], their_dh: &[u8; 32], days: u32) -> Vec<Letter> {
-    let Some(pair) = pair_with(identity, their_sign, their_dh) else { return Vec::new() };
-    let me = identity.card().sign_pk;
-    let mut out = Vec::new();
-    let keys = {
-        let Ok(guard) = pair.open() else { return out };
-        gipny_dht::items::mail_keys_to_poll(&guard, &me, node.now_ms(), days)
-    };
-    for key in keys {
-        for item in node.get(&key).await {
-            let opened = {
-                let Ok(guard) = pair.open() else { return out };
-                gipny_dht::items::open_mail(&guard, &key, &item.value)
-            };
-            if let Some(opened) = opened {
-                out.push(Letter { envelope: opened.envelope, key, delete_token: opened.delete_token });
-            }
-        }
-    }
-    out
-}
-
-/// First letters addressed to our card, from anyone.
-pub async fn collect_intros(node: &Arc<Node>, identity: &Arc<Identity>, days: u32) -> Vec<Letter> {
-    let me = identity.card();
-    let mut out = Vec::new();
-    for key in gipny_dht::items::intro_keys_to_poll(&me.sign_pk, &me.dh_pk, node.now_ms(), days) {
-        for item in node.get(&key).await {
-            if let Ok(Some(opened)) = identity.with_secret_bytes(|_, dh| gipny_dht::items::open_intro(dh, &key, &item.value)) {
-                out.push(Letter { envelope: opened.envelope, key, delete_token: opened.delete_token });
-            }
-        }
-    }
-    out
-}
-
-/// Identifies a letter for the "already handled" table.
-pub fn letter_hash(envelope: &[u8]) -> [u8; 32] {
-    gipny_dht::crypto::sha256(&[envelope])
-}
-
-/// Take a letter we have read out of the network. Only the recipient can: the
-/// token was inside the sealed value.
-pub async fn drop_letter(node: &Arc<Node>, letter: &Letter) {
-    node.delete(&letter.key, &letter.delete_token).await;
 }
 
 /// Where this contact collects now, as they published it, and when.
@@ -449,7 +359,7 @@ pub fn status(node: &Arc<Node>) -> DhtStatus {
         bytes: stats.bytes,
         joined: node.me().is_some(),
         stores: stores_here(),
-        seeds: builtin_seeds().len(),
+        seeds: 0,
     }
 }
 
@@ -468,12 +378,15 @@ impl DbStorage {
 
 impl Storage for DbStorage {
     fn put(&self, item: StoredItem, now_ms: u64) -> Result<(), StoreError> {
+        // Standard mail and introductory letters are the only DHT records
+        // carrying delete capabilities. Personal terminals only host discovery records.
+        if item.delete_hash.is_some(){return Err(StoreError::Backend("discovery records only".into()));}
         let item = admit(item, &self.limits, now_ms)?;
         self.db.dht_item_put(&item, &self.limits).map_err(|e| StoreError::Backend(e.to_string()))
     }
 
     fn get(&self, key: &[u8; 32], now_ms: u64) -> Vec<StoredItem> {
-        self.db.dht_items_get(key, now_ms as i64).unwrap_or_default()
+        self.db.dht_items_get(key, now_ms as i64).unwrap_or_default().into_iter().filter(|item|item.delete_hash.is_none()).collect()
     }
 
     fn delete(&self, key: &[u8; 32], token: &[u8; 32]) -> u32 {
@@ -485,7 +398,7 @@ impl Storage for DbStorage {
     }
 
     fn all(&self, now_ms: u64) -> Vec<StoredItem> {
-        self.db.dht_items_all(now_ms as i64).unwrap_or_default()
+        self.db.dht_items_all(now_ms as i64).unwrap_or_default().into_iter().filter(|item|item.delete_hash.is_none()).collect()
     }
 
     fn stats(&self) -> StoreStats {
@@ -575,7 +488,11 @@ mod tests {
         let token = [7u8; 32];
         let mut deletable = item(4, b"z", now + 50);
         deletable.delete_hash = Some(gipny_dht::items::delete_hash(&token));
-        s.put(deletable, now).unwrap();
+        assert!(s.put(deletable.clone(),now).is_err());
+        // A migrated profile may retain old mail until its original TTL.
+        db.dht_item_put(&deletable,&s.limits).unwrap();
+        assert!(s.get(&[4;32],now).is_empty());
+        assert!(s.all(now).iter().all(|item|item.delete_hash.is_none()));
         assert_eq!(s.delete(&[4; 32], &[8; 32]), 0);
         assert_eq!(s.delete(&[4; 32], &token), 1);
 

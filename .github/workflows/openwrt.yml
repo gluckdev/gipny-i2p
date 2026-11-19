@@ -45,7 +45,6 @@ jobs:
           - x86_64-unknown-linux-musl
           - i686-unknown-linux-musl
     env:
-      GIPNY_DHT_SEEDS: ${{ vars.GIPNY_DHT_SEEDS }}
       GIPNY_RELEASE_LOGS: ${{ inputs.release-logs }}
       GIPNY_OPENWRT_JOBS: 2
       OPENWRT_WORK: ${{ github.workspace }}/.openwrt-cross/${{ matrix.target }}

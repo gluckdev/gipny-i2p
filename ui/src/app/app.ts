@@ -7,6 +7,7 @@ import type { Store, UpdateProgress, ChatTarget } from './state';
 import { View, h, busy, humanSize } from './view';
 import { ProfileSelect } from '../features/profiles/profile';
 import { AuthCreate } from '../features/profiles/create';
+import { ScreenUnlock } from '../features/authorization/screen-unlock';
 import { AuthUnlock } from '../features/authorization/unlock';
 import { AuthBooting } from '../features/authorization/boot';
 import { Sidebar } from '../features/messaging/sidebar';
@@ -20,6 +21,7 @@ export class App extends View {
   private setupPending = needsLanguageSetup();
   private setupLayouts = new SetupLayoutSelection();
   private current: View | null = null;
+  private coveredDraft: ReturnType<MainView['captureDraft']> = null;
   private updateBanner = h('div', { class: 'update-banner hidden', role: 'status', 'aria-live': 'polite' });
   private updateModalEl: HTMLElement | null = null;
   private updateProgressEl: HTMLElement | null = null;
@@ -38,6 +40,7 @@ export class App extends View {
     this.subs.push(installEffects());
     this.el = h('div', { class: 'stack app-root', style: { height: '100%' } }, this.updateBanner);
     this.sub(store.view, (v) => this.render(v));
+    this.sub(store.screenLocked, () => this.render(store.view.get()), false);
     this.sub(store.selectedChat, () => this.closeModals(), false);
     this.sub(store.toast, (t) => this.renderToast(t));
     this.sub(store.updateAvailable, (info) => this.onUpdateAvailable(info));
@@ -90,8 +93,21 @@ export class App extends View {
   }
 
   private render(view: string): void {
+    if (view !== 'main') this.coveredDraft = null;
+    else if (this.store.screenLocked.get() && this.current instanceof MainView) {
+      this.coveredDraft = this.current.captureDraft();
+      // A quoted message may be deleted or expire while the display is locked.
+      if (this.coveredDraft) this.coveredDraft.replyTo = null;
+    }
     this.closeModals();
     this.current?.destroy();
+    if (this.store.screenLocked.get() && view === 'main') {
+      this.clearToasts();
+      this.closeUpdateModal();
+      this.current = new ScreenUnlock(this.store);
+      this.el.appendChild(this.current.el);
+      return;
+    }
     if (this.setupPending) {
       this.current = new LanguageSetup(this.setupLayouts, () => {
         this.setupPending = false;
@@ -111,6 +127,10 @@ export class App extends View {
     }
     this.current = next;
     this.el.appendChild(next.el);
+    if (next instanceof MainView && this.coveredDraft) {
+      next.restoreDraft(this.coveredDraft);
+      this.coveredDraft = null;
+    }
   }
 
   private renderToast(t: { text: string; err: boolean } | null): void {
@@ -126,6 +146,7 @@ export class App extends View {
   }
 
   openModal(build: (close: () => void) => HTMLElement, onClose?: () => void): () => void {
+    if (this.store.screenLocked.get()) { onClose?.(); return () => {}; }
     const backdrop = h('div', { class: 'modal-backdrop' });
     const close = () => {
       if (!this.modalClosers.delete(close)) return;
@@ -292,6 +313,7 @@ export class App extends View {
   }
 
   private openUpdateModal(info: UpdateInfo): void {
+    if (this.store.screenLocked.get()) return;
     const backdrop = h('div', { class: 'modal-backdrop update-modal' });
     this.updateStatusEl = h('div', {
       class: 'fp',
@@ -401,18 +423,13 @@ class MainView extends View {
       const discovery = store.bootSteps.get().find(step => step.id === 'dht')?.state;
       const failed = info?.hosted.state === 'failed' || (info?.dial?.unreachable_checks ?? 0) >= 2 || discovery === 'failed';
       const ready = store.relayConnected.get() && (store.dhtReached.get() === true || discovery === 'skipped' || store.contacts.get().length === 0) && !failed;
-      // The browser client on a hosting with no network service. Not the
-      // native "no relay address" case: nothing retries, and there is no
-      // field in Settings to fill in — so it says what is missing.
-      const unconfigured = info?.mode === 'builtin' && info.hosted.state === 'unconfigured';
-      const offline = store.relayUnconfigured.get() || unconfigured;
+      const unconfigured = info?.hosted.state === 'unconfigured';
       network.classList.toggle('hidden', ready);
       network.classList.toggle('is-retrying', failed);
-      network.classList.toggle('is-offline', offline);
-      networkText.textContent = tr(unconfigured ? 'app.network_unconfigured' : offline ? 'app.network_offline' : failed ? 'app.network_retry' : 'app.network_connecting');
+      network.classList.toggle('is-offline', unconfigured);
+      networkText.textContent = tr(unconfigured ? 'app.network_unconfigured' : failed ? 'app.network_retry' : 'app.network_connecting');
     };
     this.sub(store.relayConnected, paintNetwork);
-    this.sub(store.relayUnconfigured, paintNetwork);
     this.sub(store.relayInfo, paintNetwork);
     this.sub(store.dhtReached, paintNetwork);
     this.sub(store.bootSteps, paintNetwork);

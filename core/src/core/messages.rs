@@ -8,11 +8,11 @@ impl Core {
         contact_id: i64,
         body: String,
         attachments: Vec<PendingAttachment>,
-        ttl: Option<Duration>,
+        ttl: impl Into<gipny_libcore::db::MessageLifetime>,
         reply_to: Option<i64>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let expires_at = ttl.map(|d| sent_at + d.as_millis() as i64);
+        let expires_at = ttl.into().expiry(sent_at)?;
         let staged = self.store_outgoing(&attachments)?;
         let msg_id = staged.publish_dm(
             &self.db,
@@ -265,11 +265,11 @@ impl Core {
             return Err(CoreError::State);
         }
         let main = self.relay_for(&contact).await.ok_or(CoreError::State)?;
-        self.ensure_session_for(&contact, &Route::Relay(main.clone())).await?;
-        let lanes = self.relay_lanes(&contact, &main, lane + 1).await;
+        self.ensure_session_for(&contact, &main).await?;
+        let lanes = self.relay_lanes(&contact, &main, lane + 1).await?;
         let mut payload = make_typing_payload(None, false);
         payload.body = format!("gipny-call/1 {frame}");
-        self.send_payload_via_relay(&contact, &mut payload, &Route::Relay(lanes[lane % lanes.len()].clone())).await
+        self.send_payload_via_relay(&contact, &mut payload, &lanes[lane % lanes.len()]).await
     }
 
     pub async fn send_typing_dm(self: &Arc<Self>, contact_id: i64, typing: bool) -> Result<()> {

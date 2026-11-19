@@ -1,3 +1,4 @@
+import { DEFAULT_TTL_SECS } from './message-lifetime';
 import { errorText } from './error-text';
 import { t as tr } from '../features/localization/i18n';
 import type { Contact, Message, IdentityCard, CoreEvent, Group, GroupMember, UpdateInfo, AgentMaster, RelayInfo, BootStatus } from './api';
@@ -9,7 +10,7 @@ const CONSOLE_KINDS = new Set([CONSOLE_COMMAND, CONSOLE_OUTPUT, CONSOLE_GRANT, C
 function isConsoleEvent(kind: number | null): boolean {
   return kind != null && CONSOLE_KINDS.has(kind);
 }
-import { Api, isTauri } from './api';
+import { Api, invoke, listen, isTauri } from './api';
 import { registerBrowserFile, clearBrowserFiles } from '../features/files/browser-files';
 import { toastLifetime } from '../features/notifications/toast';
 import {
@@ -108,6 +109,7 @@ function freshBootSteps(): BootStep[] {
 
 export class Store {
   onCallFrame?: (peer: number, frame: string, at: number) => void;
+  viewOnceChanged = new Signal<number>(0);
   view = new Signal<ViewKind>('profile-select');
   bootStage = new Signal<BootStage>('unlocking');
   /** Resumed startup has one status instead of replaying the step rows. */
@@ -146,7 +148,12 @@ export class Store {
   private contentEpoch = 0;
   private static readonly VISIBLE_MESSAGES = 2000;
   private profileEpoch = 0;
-  private contentLocked = false;
+  private expiryDisplay = { reading: false, requested: false, shown: new Set<number | string>() };
+  readonly screenLocked = new Signal(false);
+  private vaultClosing = false;
+  private screenEpoch = 0;
+  private screenOffEpoch = 0;
+  private get contentLocked(): boolean { return this.vaultClosing || this.screenLocked.get(); }
   private deletedMessages = new Map<number, { deleted_at: number; pending: boolean; deletion_notice?: Message['deletion_notice'] }>();
   /** Messages whose files in parts moved on, and how far (for the bar). */
   fileProgress = new Signal<Map<number, { done: number; total: number; incoming: boolean }>>(new Map());
@@ -227,7 +234,6 @@ export class Store {
   private watchdogTimer: number | null = null;
   private bootTimer: number | null = null;
   /** No relay configured: the app is usable, it just cannot send yet. */
-  relayUnconfigured = new Signal<boolean>(false);
   /** Mode and built-in relay state; null until the core has been asked. */
   relayInfo = new Signal<RelayInfo | null>(null);
   /** How the relay network went after the core joined it. Null until it says.
@@ -284,8 +290,13 @@ export class Store {
     this.view.subscribe((view) => {
       // A new attempt starts at the boot screen; the list and the chats are
       // past the forms. Only the two forms keep the message.
+      if (view !== 'auth-booting' && view !== 'main') this.screenLocked.set(false);
       if (view !== 'auth-create' && view !== 'auth-unlock') this.authError.set(null);
-      if (view === 'main') { this.contentLocked = false; return; }
+      if (view === 'main') {
+        this.vaultClosing = false;
+        void this.showDeliveryExpiryNotices();
+        return;
+      }
       this.contentEpoch++;
       this.messages.set(new Map());
       this.pinned.set(new Map());
@@ -630,10 +641,6 @@ export class Store {
     }));
     if (status.state !== 'active') this.bootStepStartedAt = now;
     // onUnlocked enables the entry button after profile data has loaded.
-    // Either way round there is no relay work left: in hosted mode it came up,
-    // and with an external relay there never was any of ours to build. Waiting
-    // for 'done' only meant a person running an external relay sat on this
-    // screen until the timeout fired.
     if (status.stage === 'relay' && (status.state === 'done' || status.state === 'skipped')) {
       this.bootNetworkReady = true;
       this.enterMain();
@@ -699,15 +706,13 @@ export class Store {
    */
   private async enterMainWhenReady(): Promise<void> {
     const attempt = this.bootAttempt;
-    const [configured, info, unreachable] = await Promise.all([
-      Api.getRelayAddress().catch(() => ''),
+    const [info, unreachable] = await Promise.all([
       Api.getRelayInfo().catch(() => null),
       Api.listUnreachableContacts().catch(() => [] as number[]),
     ]);
     if (attempt !== this.bootAttempt) return;
     this.relayInfo.set(info);
     this.unreachable.set(new Set(unreachable));
-    this.relayUnconfigured.set(info?.mode !== 'builtin' && configured.trim() === '');
     this.profileLoaded = true;
     const profile = this.currentProfile.get();
     if (profile) this.openedProfiles.add(profile);
@@ -716,13 +721,13 @@ export class Store {
     // The browser client on a hosting with no network service: nothing is on
     // its way, so there is nothing to wait for. The chats open at once and
     // the main view says what is missing where the person will read it.
-    if (info?.mode === 'builtin' && info.hosted.state === 'unconfigured') {
+    if (info?.hosted.state === 'unconfigured') {
       this.enterMain();
       return;
     }
     // In built-in mode there is always a relay on the way: nothing for the
     // user to configure, only a minute or two to wait.
-    if (info?.mode === 'builtin' && info.hosted.state !== 'ready') {
+    if (info && info.hosted.state !== 'ready') {
       // Stay on the loading screen while the relay builds its tunnels — it is
       // a real step and the screen now shows it moving — but never as a
       // prison: the screen offers «Открыть чаты сейчас», and the timeout below
@@ -731,11 +736,7 @@ export class Store {
       this.armBootTimeout();
       return;
     }
-    if (this.relayUnconfigured.get()) {
-      this.enterMain();
-      return;
-    }
-    if (info?.mode === 'builtin' && info.hosted.state === 'ready') {
+    if (info?.hosted.state === 'ready') {
       this.enterMain();
       return;
     }
@@ -764,6 +765,14 @@ export class Store {
   private installVisibilityHook(): void {
     if (this.visibilityHookInstalled) return;
     this.visibilityHookInstalled = true;
+    if (isTauri) {
+      void listen('screen_hidden', () => this.coverScreen(true)).catch(() => {});
+      void listen('app_hidden', () => this.coverScreen()).catch(() => {});
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.coverScreen();
+    });
+    document.addEventListener('freeze', () => this.coverScreen());
     this.windowVisible = !document.hidden && document.hasFocus();
     const update = (): void => {
       const wasVisible = this.windowVisible;
@@ -854,18 +863,71 @@ export class Store {
   private async clearHistoryIfAsked(): Promise<void> {
     try {
       await Api.flushChatPrefs();
-      const { clearOnLock } = await Api.getChatPrefs();
-      if (!clearOnLock) return;
       await Api.clearMessageHistory(true);
     } catch {
       // Nothing to say to anyone here: the lock screen is already on its way.
     }
   }
 
+  coverScreen(screenOff = false): void {
+    if (!['main', 'auth-booting'].includes(this.view.get())) return;
+    this.screenEpoch++;
+    if (screenOff) this.screenOffEpoch++;
+    this.contentEpoch++;
+    this.screenLocked.set(true);
+    this.messages.set(new Map());
+    this.pinned.set(new Map());
+    this.clearAudio();
+    this.toast.set(null);
+  }
+
+  async revealScreen(verify: (profile: string) => Promise<void>, systemPrompt = false): Promise<void> {
+    const epoch = this.screenEpoch;
+    const screenOff = this.screenOffEpoch;
+    const session = this.profileEpoch;
+    const profile = this.currentProfile.get();
+    if (!profile || !this.screenLocked.get() || this.vaultClosing) return;
+    try { await verify(profile); }
+    catch (error) {
+      if (String(error).includes('session closed') && this.currentProfile.get() === profile) await this.lock();
+      throw error;
+    }
+    // An OS credential prompt may itself background the Activity. Reveal only
+    // after it returns, while the initiating profile session is still current.
+    if (systemPrompt && document.hidden) {
+      const deadline = Date.now() + 1500;
+      const returned = await new Promise<boolean>(resolve => {
+        const finish = (): void => {
+          document.removeEventListener('visibilitychange', visible);
+          window.clearTimeout(timer);
+          resolve(!document.hidden && Date.now() <= deadline);
+        };
+        const visible = (): void => { if (!document.hidden) finish(); };
+        const timer = window.setTimeout(finish, 1500);
+        document.addEventListener('visibilitychange', visible);
+      });
+      if (!returned) return;
+    }
+    if ((systemPrompt ? this.screenOffEpoch !== screenOff : this.screenEpoch !== epoch) ||
+        this.profileEpoch !== session || this.currentProfile.get() !== profile || this.vaultClosing || document.hidden) return;
+    this.screenLocked.set(false);
+    void this.showDeliveryExpiryNotices();
+    const target = this.selectedChat.get();
+    await Promise.all([this.refreshAll(), ...(target ? [this.loadMessages(target), this.loadPinned(target)] : [])]);
+  }
+
+  async lockAndClose(): Promise<void> {
+    this.coverScreen();
+    await this.lock();
+    if (isTauri) await invoke('close_locked_app');
+    else if (window.opener) window.close();
+  }
+
   async lock(): Promise<void> {
+    this.expiryDisplay = { reading: false, requested: false, shown: new Set() };
     this.profileEpoch++;
     this.endBoot();
-    this.contentLocked = true;
+    this.vaultClosing = true;
     if (!isTauri) clearBrowserFiles();
     this.contentEpoch++;
     this.selectedChat.set(null);
@@ -1158,7 +1220,7 @@ export class Store {
     target: ChatTarget,
     body: string,
     paths: string[] = [],
-    ttlSecs: number | null = null,
+    ttlSecs: number | null = DEFAULT_TTL_SECS,
     replyTo: number | null = null,
   ): Promise<void> {
     // The send button supplies the gesture browsers require for permission.
@@ -1312,12 +1374,58 @@ export class Store {
     this.updateAvailable.set(null);
   }
 
+  private async showDeliveryExpiryNotices(): Promise<void> {
+    const display = this.expiryDisplay;
+    const profile = this.currentProfile.get();
+    const visible = (): boolean => display === this.expiryDisplay && this.currentProfile.get() === profile &&
+      this.view.get() === 'main' && !this.contentLocked && !document.hidden;
+    if (!profile || !visible()) return;
+    display.requested = true;
+    if (display.reading) return;
+    display.reading = true;
+    try {
+      while (display.requested && visible()) {
+        display.requested = false;
+        const notices = await Api.listDeliveryExpiryNotices(profile);
+        if (!visible()) return;
+        const expiredOnce = ((await Api.listViewOnceDeliveries()) ?? []).filter(row => row.status === 'unconfirmed');
+        if (!visible() || (!notices?.length && !expiredOnce.length)) return;
+        const freshOnce = expiredOnce.filter(row => !display.shown.has(row.id));
+        const fresh = (notices ?? []).filter(notice => !display.shown.has(notice.message_id));
+        if (fresh.length || freshOnce.length) {
+          for (const notice of fresh) {
+            const key = notice.group_id != null ? targetKey({ kind: 'group', id: notice.group_id }) :
+              notice.contact_id != null ? targetKey({ kind: 'contact', id: notice.contact_id }) : null;
+            if (key) this.messages.update(map => {
+              const rows = map.get(key);
+              return !rows ? map : new Map(map).set(key, rows.map(row => row.id === notice.message_id
+                ? { ...row, delivered: false, delivery_expired_at: notice.expired_at } : row));
+            });
+          }
+          this.showToast(tr('chat.delivery_expired_count', { n: fresh.length + freshOnce.length }), true);
+          for (const notice of fresh) display.shown.add(notice.message_id);
+          for (const row of freshOnce) display.shown.add(row.id);
+        }
+        if (expiredOnce.length && visible()) {
+          await Api.acknowledgeViewOnceDeliveries(expiredOnce.map(row => row.id));
+          for (const row of expiredOnce) display.shown.delete(row.id);
+        }
+        if (!visible()) return;
+        if (notices?.length) await Api.acknowledgeDeliveryExpiryNotices(profile, notices.map(notice => notice.message_id));
+        for (const notice of notices ?? []) display.shown.delete(notice.message_id);
+      }
+    } catch {
+      // A failed ACK leaves the notices on disk. Remember what this session
+      // has shown, so retrying the write does not present the same toast twice.
+      window.setTimeout(() => { if (visible()) void this.showDeliveryExpiryNotices(); }, 5000);
+    } finally { display.reading = false; }
+  }
+
   private handleEvent(e: CoreEvent): void {
     if (typeof e === 'string') {
       if (e === 'RelayConnected') {
         const wasOffline = !this.relayConnected.get();
         this.relayConnected.set(true);
-        this.relayUnconfigured.set(false);
         this.bootNetworkReady = true;
         this.enterMain();
         if (wasOffline) {
@@ -1346,6 +1454,19 @@ export class Store {
       this.onCallFrame?.(e.CallFrame.contact_id, e.CallFrame.frame, e.CallFrame.sent_at);
       return;
     }
+    if ('ViewOnceDeliveryChanged' in e) {
+      if (e.ViewOnceDeliveryChanged.status === 'unconfirmed') void this.showDeliveryExpiryNotices();
+      return;
+    }
+    if ('ViewOnceAvailable' in e) {
+      this.viewOnceChanged.update(n => n + 1);
+      const contact = this.contacts.get().find(item => item.id === e.ViewOnceAvailable.contact_id);
+      const title = contact?.name || 'Gipny';
+      if (document.visibilityState === 'hidden') this.nativeNotify(title, tr('chat.view_once'));
+      else this.showToast(`${title} · ${tr('chat.view_once')}`);
+      return;
+    }
+    if ('MessageDeliveryExpired' in e) { void this.showDeliveryExpiryNotices(); return; }
     if ('IncomingMessage' in e) {
       const m = e.IncomingMessage;
       const target: ChatTarget | null = m.group_id
@@ -1484,7 +1605,7 @@ export class Store {
         const n = new Map(m);
         for (const [k, list] of n) {
           const idx = list.findIndex((x) => x.id === id);
-          if (idx >= 0) {
+          if (idx >= 0 && list[idx]?.delivery_expired_at == null) {
             const copy = list.slice();
             copy[idx] = { ...copy[idx]!, sent: true, delivered: true };
             n.set(k, copy);
@@ -1581,8 +1702,7 @@ export class Store {
       const info = e.RelayInfoChanged.info;
       this.relayInfo.set(info);
       // Ready, or never coming: either way there is no relay work left to wait for.
-      if (info.mode === 'builtin' && (info.hosted.state === 'ready' || info.hosted.state === 'unconfigured')) { this.bootNetworkReady = true; this.enterMain(); }
-      this.relayUnconfigured.set(info.mode !== 'builtin' && info.external.trim() === '');
+      if (info.hosted.state === 'ready' || info.hosted.state === 'unconfigured') { this.bootNetworkReady = true; this.enterMain(); }
     } else if ('DhtJoined' in e) {
       // Zero peers is a fact worth keeping, not a failure to raise: a device on
       // a fresh profile has nobody to bootstrap from until its contacts answer.
@@ -1650,6 +1770,7 @@ export class Store {
   }
 
   showToast(text: string, err = false): void {
+    if (this.screenLocked.get()) return;
     if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
     const notice = { text, err };
     this.toast.set(notice);

@@ -12,20 +12,20 @@ impl Db {
         relay: Option<&str>,
     ) -> Result<i64> {
         let relay = relay.map(str::trim).filter(|r| !r.is_empty());
-        self.with_conn(|conn| {
+        self.with_tx(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, i2p_address, display_name, trust, created_at, relay_address) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
                 params![sign, dh, i2p_address, name, now_ms(), relay],
             )?;
-            // A card seen again may carry a relay the stored contact predates, or
-            // a new one after they moved. Adopt it; never overwrite with nothing.
-            if relay.is_some() {
-                conn.execute(
-                    "UPDATE contacts SET relay_address = ?2 WHERE identity_dh = ?1",
-                    params![dh, relay],
-                )?;
+            let (id,pinned): (i64,Vec<u8>)=conn.query_row("SELECT id,identity_sign FROM contacts WHERE identity_dh=?1",[dh],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            if pinned.as_slice()!=sign { return Err(DbError::State); }
+            if crate::is_valid_i2p_address(i2p_address) {
+                conn.execute("UPDATE contacts SET i2p_address=?2 WHERE id=?1",params![id,i2p_address])?;
             }
-            Ok(conn.query_row("SELECT id FROM contacts WHERE identity_dh = ?1", params![dh], |r| r.get(0))?)
+            if let Some(addr)=relay {
+                conn.execute("UPDATE contacts SET relay_address=?2 WHERE id=?1",params![id,addr])?;
+            }
+            Ok(id)
         })
     }
 

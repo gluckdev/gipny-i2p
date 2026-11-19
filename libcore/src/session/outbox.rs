@@ -4,8 +4,21 @@ use super::*;
 
 impl SessionManager {
     pub(super) fn spawn_send_loop(self: Arc<Self>) {
+        // A slow relay or DHT lookup must not delay local expiry or offline notices.
+        let maintenance = self.clone();
+        self.spawn_task(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if let Err(error) = maintenance.maintain_message_expiry() {
+                    crate::debug_error!("[delivery] message expiry: {error:?}");
+                }
+            }
+        });
+
         let this = self.clone();
-        let handle = tokio::spawn(async move {
+        self.spawn_task(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(5));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await;
@@ -19,16 +32,24 @@ impl SessionManager {
                 }
             }
         });
-        self.tasks.lock().unwrap().push(handle);
+    }
+
+    fn maintain_message_expiry(&self) -> Result<()> {
+        let now = now_ms();
+        self.db.expire_outgoing_delivery(now)?;
+        self.db.dispatch_delivery_expiry_notices(|notice| {
+            self.events.try_send(SessionEvent::MessageDeliveryExpired(notice)).is_ok()
+        })?;
+        for deletion in self.db.delete_expired_dm(now)? {
+            self.emit_dm_deleted(&deletion)?;
+        }
+        self.db.purge_expired(now)?;
+        self.db
+            .cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
+        Ok(())
     }
 
     pub(super) async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
-        for deletion in self.db.delete_expired_dm(now_ms())? {
-            self.emit_dm_deleted(&deletion)?;
-        }
-        self.db
-            .cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
-        self.db.purge_expired_group_outbound(now_ms())?;
         let contacts = self.db.list_contacts()?;
         let groups_by_id: HashMap<Vec<u8>, String> = self
             .db
@@ -70,10 +91,12 @@ impl SessionManager {
             )?;
             let deletions = self.db.pending_dm_deletes(contact.id, now_ms())?;
             let notice_acks = self.db.pending_dm_notice_acks(contact.id, now_ms())?;
+            let receipts = self.db.pending_delivery_receipts(contact.id, now_ms())?;
             let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
+                && receipts.is_empty()
                 && deletions.is_empty()
                 && notice_acks.is_empty()
                 && !needs_session
@@ -83,16 +106,23 @@ impl SessionManager {
                 continue;
             }
             let route = match self.relay_for(&contact).await {
-                Some(out) => Route::Relay(out),
-                None if self.peer_relay_settling(&contact).await => continue,
+                Some(out) => out,
                 None if self.dht.peer_count() > 0 => {
                     self.maybe_look_up_address(&contact).await;
-                    Route::Dht
+                    continue;
                 }
                 None => continue,
             };
             if self.ensure_session_for(&contact, &route).await.is_err() {
                 continue;
+            }
+            for receipt in receipts {
+                let mut payload = receipt.payload(now_ms(), &groups_by_id, &members_by_group,
+                    &self.identity.card().sign_pk, &contact.identity_sign);
+                if self.send_payload_via_relay(&contact, &mut payload, &route).await.is_err() {
+                    break;
+                }
+                self.db.finish_delivery_receipt(contact.id, receipt.message_id)?;
             }
             for reference in deletions {
                 let at = self.db.dm_local_delete_time(contact.id, &reference)?;
@@ -165,9 +195,7 @@ impl SessionManager {
                     break;
                 }
             }
-            // Parts only to their relay: the relay network holds too little
-            // per key for a file (dht/src/store.rs); they wait for it.
-            if file_work && matches!(route, Route::Relay(_)) {
+            if file_work {
                 if let Err(e) = self.send_file_parts(&contact, &route).await {
                     crate::debug_trace!("[files] parts to contact {}: {:?}", contact.id, e);
                 }
@@ -181,27 +209,8 @@ impl SessionManager {
                     }
                 };
                 let mut payload = self.build_payload_from_db(&msg)?;
-                if let Some(group_id) = &msg.group_id {
-                    let name = groups_by_id.get(group_id).cloned().unwrap_or_default();
-                    let members = members_by_group
-                        .get(group_id)
-                        .map(|members| {
-                            members
-                                .iter()
-                                .map(|member| WireMember {
-                                    sign_pk: member.sign_pk.clone(),
-                                    dh_pk: member.dh_pk.clone(),
-                                    i2p_address: member.i2p_address.clone(),
-                                    name: member.display_name.clone(),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    payload.group = Some(WireGroupRef {
-                        id: group_id.clone(),
-                        name,
-                        members,
-                    });
+                if let Some(id) = &msg.group_id {
+                    payload.group = Some(WireGroupRef::from_stored_members(id, &groups_by_id, &members_by_group));
                 }
                 if let Err(e) = attempt_group_delivery(
                     &self.db,
@@ -225,6 +234,10 @@ impl SessionManager {
     }
 
     pub(super) async fn ensure_session_for(&self, contact: &Contact, route: &Route) -> Result<()> {
+        if let Some(blob) = self.db.pending_initial(contact.id)? {
+            self.deliver(contact, blob.clone(), route, true, None).await?;
+            self.db.confirm_initial(contact.id, &blob)?;
+        }
         if self.sessions.lock().await.contains_key(&contact.id) {
             return Ok(());
         }
@@ -252,10 +265,9 @@ impl SessionManager {
                 .filter(|(_, at)| at.elapsed() < BUNDLE_PREFETCH_TTL)
                 .map(|(b, _)| b)
         };
-        let bundle_bytes = match route {
-            _ if prefetched.is_some() => prefetched,
-            Route::Relay(out) => {
-                let (tx, rx) = tokio::sync::oneshot::channel();
+        let bundle_bytes = if prefetched.is_some() { prefetched } else {
+            let out=route;
+            let (tx, rx) = tokio::sync::oneshot::channel();
                 self.bundle_waiters
                     .lock()
                     .await
@@ -269,11 +281,6 @@ impl SessionManager {
                     .await
                     .map_err(|_| SessionError::State)?
                     .map_err(|_| SessionError::State)?
-            }
-            Route::Dht => {
-                let their_dh = to_arr32(contact.identity_dh.clone())?;
-                dht_client::find_bundle(&self.dht, &pk, &their_dh).await
-            }
         };
         let bundle_bytes = bundle_bytes.ok_or(SessionError::NotFound)?;
         let bundle: PreKeyBundle = bincode::deserialize(&bundle_bytes)?;
@@ -294,20 +301,18 @@ impl SessionManager {
         }
         let pt = pad_payload(&encode_payload(&empty)?);
         let (state, init) = crypto::x3dh_initiate(&self.identity, &bundle, &pt, &ad)?;
-        self.own_inits
-            .lock()
-            .await
-            .insert(contact.id, init.header.dh);
-        self.lost_inits.lock().await.remove(&contact.id);
-        self.db.put_session(contact.id, &state.to_bytes()?)?;
-        self.sessions.lock().await.insert(contact.id, state);
-        self.session_created_at
-            .lock()
-            .await
-            .insert(contact.id, now_ms());
+        let own_dh = init.header.dh;
         let blob = bincode::serialize(&EnvelopeBlob::X3dhInit(init))?;
-        self.deliver(contact, blob, route, true).await?;
-        crate::debug_trace!("[session] x3dh sent to contact {}", contact.id);
+        if self.db.install_outbound_initial(contact.id, &state.to_bytes()?, &blob)? {
+            self.own_inits.lock().await.insert(contact.id, own_dh);
+            self.lost_inits.lock().await.remove(&contact.id);
+            self.sessions.lock().await.insert(contact.id, state);
+            self.session_created_at.lock().await.insert(contact.id, now_ms());
+        }
+        if let Some(pending) = self.db.pending_initial(contact.id)? {
+            self.deliver(contact, pending.clone(), route, true, None).await?;
+            self.db.confirm_initial(contact.id, &pending)?;
+        }
         Ok(())
     }
 
@@ -337,7 +342,6 @@ impl SessionManager {
                 payload.origin_msg_id
             );
             if payload.origin_msg_id > 0 {
-                let _ = self.db.mark_sent(payload.origin_msg_id as i64);
                 let _ = self
                     .events
                     .send(SessionEvent::MessageFailed {
@@ -348,28 +352,33 @@ impl SessionManager {
             }
             return Err(SessionError::State);
         }
-        let pt = pad_payload(&raw);
-        let (header, ct) = {
-            let mut sess = self.sessions.lock().await;
-            let state = sess.get_mut(&contact.id).ok_or(SessionError::State)?;
-            let r = state.encrypt(&pt, &ad)?;
-            self.db.put_session(contact.id, &state.to_bytes()?)?;
-            r
-        };
-        let blob = bincode::serialize(&EnvelopeBlob::Ratchet {
-            header,
-            ciphertext: ct,
-        })?;
-        self.deliver(contact, blob, route, false).await?;
-        self.incoming_since_send.lock().await.insert(contact.id, 0);
-        if payload.origin_msg_id > 0
+        let message_offer = payload.origin_msg_id > 0
             && payload.edit_of.is_none()
             && payload.pin.is_none()
             && payload.callback_data.is_none()
-            && payload.ack_for.is_none()
-        {
-            self.db.mark_sent(payload.origin_msg_id as i64)?;
-        }
+            && payload.ack_for.is_none();
+        let pt = pad_payload(&raw);
+        let msg_id = message_offer.then_some(payload.origin_msg_id as i64);
+        let blob = {
+            let mut sess = self.sessions.lock().await;
+            if message_offer && !self.db.may_send_message(payload.origin_msg_id as i64, contact.id, now_ms())? {
+                return Ok(());
+            }
+            if let Some(part) = &payload.file_chunk {
+                if !self.db.may_send_file_part(&part.file_id, contact.id, now_ms())? { return Ok(()); }
+            }
+            let state = sess.get_mut(&contact.id).ok_or(SessionError::State)?;
+            let Some(blob) = self.db.seal_for_deposit(contact.id, msg_id, state, &pt, &ad)? else { return Ok(()); };
+            blob
+        };
+        let remaining = message_offer.then(|| {
+            let limit = payload.ttl_ms.unwrap_or(i64::MAX).min(7 * 86_400_000);
+            let ms = payload.sent_at.saturating_add(limit).saturating_sub(now_ms()).max(0);
+            Duration::from_millis(ms as u64)
+        });
+        self.deliver(contact, blob.clone(), route, false, remaining).await?;
+        if let Some(id) = msg_id { self.db.confirm_deposit(contact.id, id, &blob)?; }
+        self.incoming_since_send.lock().await.insert(contact.id, 0);
         Ok(())
     }
 
@@ -405,7 +414,7 @@ impl SessionManager {
             .ok()
             .flatten()
             .and_then(|b| bincode::deserialize::<WireConsole>(&b).ok());
-        let ttl_ms = msg.expires_at.map(|e| e - msg.sent_at);
+        let ttl_ms = crate::db::MessageLifetime::wire_ttl_ms(msg.sent_at,msg.expires_at);
         let mut p = WirePayload::simple(
             msg.id as u64,
             msg.body.clone(),

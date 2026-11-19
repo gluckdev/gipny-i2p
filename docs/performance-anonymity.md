@@ -98,7 +98,7 @@ identities при этом должно остаться прежним.
 | Частей на одну lane при выборе их числа | 4 | `PARTS_PER_LANE` в [`files/lanes.rs`](../libcore/src/files/lanes.rs) |
 | Максимум исходящих file lanes | 4, включая основное соединение | `DEFAULT_LANES` в [`files/lanes.rs`](../libcore/src/files/lanes.rs) |
 | Выбор числа исходящих lanes | `ceil(window / 4)`, с ограничением 1…4 | `desired()` в [`files/lanes.rs`](../libcore/src/files/lanes.rs) |
-| Дополнительные collect lanes | До 3 к своему внешнему релею, пока приходят части | [`spawn_collect_lanes()`](../libcore/src/session/files.rs) |
+| Дополнительные collect lanes | Для локального терминала используется соединение внутри процесса | [`spawn_collect_lanes()`](../libcore/src/session/files.rs) |
 | Время удержания collect lanes после части | 5 минут | `COLLECT_LANE_IDLE_MS` в [`session.rs`](../libcore/src/session.rs) |
 | Relay queues | По 256 входящих/исходящих frames на соединение | [`relay.rs`](../libcore/src/relay.rs) |
 | Таймаут части | Начальный 30 с, затем RTT/RTO с пределами 10…120 с | [`Flow`](../libcore/src/files.rs) |
@@ -139,18 +139,11 @@ Collect lanes также открываются по одному; локаль�
 получает лишних сетевых collect connections. Эти различия нужно учитывать при
 сравнении сценариев.
 
-При подготовке benchmark исправлено отдельное ограничение: standalone
-[`gipny-relay`](../core/relay/src/main.rs) раньше создавал Destination с 2 hops
-по умолчанию, а комментарий ошибочно говорил об exploratory tunnels. Теперь
-обычный relay использует по 3 hops, как встроенный `EphemeralRelay`; для этого
-не нужен `GIPNY_FAST_HOPS`. После native readiness relay публикует локальный
-`destination-policy.json` с действительным Destination и переданными
-inbound/outbound options. Benchmark сверяет его с `dest.pub`. Это подтверждение
-принятой конфигурации, а не независимая трассировка каждого пакета.
+Harness получает фактическую конфигурацию обеих клиентских destination и обоих личных терминалов через runtime API. Проверка требует 3 hops у всех четырёх. Эти значения описывают запрошенную у роутера конфигурацию туннелей.
 
-Первый sweep сохраняет исходную политику полосы. Клиенты стартуют с
-[`TransitProfile::Balanced`](../libcore/src/router.rs): bandwidth `O`, share 50%,
-не более 256 transit tunnels; standalone relay — `L`, share 0%, transit 0.
+Исторический sweep от 16 ноября использовал клиентские роутеры с
+[`TransitProfile::Balanced`](../libcore/src/router.rs), bandwidth `O`, share 50%,
+до 256 transit tunnels. Два отдельных серверных процесса того прогона использовали класс `L`, share 0%, transit 0.
 В закреплённом i2pd `3835d09efc722c92fa86c8c31930477315c1abb2` класс `L`
 соответствует **48**, а `O` — **256 KiB/s**, не старому значению L=32.
 [`RouterContext`](https://github.com/PurpleI2P/i2pd/blob/3835d09efc722c92fa86c8c31930477315c1abb2/libi2pd/RouterContext.cpp)
@@ -211,7 +204,7 @@ window и его алгоритм также оставить прежними. 
   padding, identity boundaries и обычная политика ротации туннелей одинаковы.
   Не фиксировать конкретные peers и не выбирать более короткий путь.
 - Один набор данных, версии приложения, аппаратные ограничения и relay
-  topology. Отдельные серии: локальный и внешний relay, desktop и ограниченное
+  topology. Отдельные серии для разных реализаций терминалов, desktop и ограниченного
   устройство. Не смешивать warm/cold start и resume после restart.
 - Один большой файл, несколько файлов одному контакту и нескольким контактам;
   во время передачи — сообщения малого размера для измерения задержки.
@@ -279,9 +272,9 @@ gh workflow run e2e-i2pd.yml --ref <candidate-branch> \
 успешно завершиться все четыре delivery jobs в отдельном pinned run, а не
 оказаться skipped в throughput режиме.
 
-Одна native release-сборка `e2e-harness` и `gipny-relay` закрепляет SHA приложения,
+Одна native release-сборка `e2e-harness` закрепляет SHA приложения,
 gitlink i2pd, SHA исходника актуальных reseed certificates, public patch hashes
-и SHA256 обоих executables. Все точки используют этот артефакт; повторной
+и SHA256 исполняемого файла. Все точки используют этот артефакт; повторной
 сборки или загрузки другой версии между точками нет. Перед runtime build-флаги
 `I2P_EMBED_STUB=0`/`I2P_EMBED_SKIP_NATIVE=0` удаляются: защищённый harness запрещает
 даже их присутствие. Нативность устанавливает build job, а runner проверяет
@@ -290,15 +283,12 @@ gitlink i2pd, SHA исходника актуальных reseed certificates, p
 Вход `streams` принимает от 1 до 12 значений 1…8, включая явные повторения
 baseline, например `4,5,6,7,8,4`; размер файла — 1…128 MiB, default 32 MiB.
 Следующая точка начинается только после завершения и очистки предыдущей.
-На точку выделено до 20 минут вместе со стартом, из них до 10 минут на
-готовность standalone relays. Каждый вариант получает новые тестовые identities
+На точку выделено до 20 минут вместе со стартом обоих личных терминалов. Каждый вариант получает новые тестовые identities
 и отдельные каталоги, затем они удаляются. Изменение состояния живой сети
 между точками остаётся источником разброса; одного sweep недостаточно для
 статистического вывода.
 
-Два клиента используют один встроенный router в процессе harness; два
-standalone relay работают отдельными процессами на том же runner. Это
-**не четыре независимых устройства** и не тест browser engine. Перед файлом
+Два клиента со своими личными терминалами используют один встроенный роутер в процессе harness. Отчёт помечает такой запуск как `shared_router_personal_terminals`. Для сравнения со старыми измерениями учитывайте, что в baseline от 16 ноября серверы работали в отдельных процессах. Перед файлом
 выполняется echo warmup, который вместе со startup исключён из file goodput.
 Во время файла отправляются небольшие echo probes раз в 2 секунды, с deadline
 60 секунд и максимум четырьмя отслеживаемыми запросами одновременно. Есть
@@ -321,11 +311,10 @@ RTT включает прикладные очереди и echo; это не on
 после него sweep продолжается; итоговый job остаётся failed. Ошибки артефакта,
 конфигурации, политики, startup или cleanup останавливают серию. JSON, stdout
 и router logs сохраняются даже при неуспехе; identities/databases не загружаются.
-`resources.txt` содержит CPU/RSS процесса harness по GNU time, без двух внешних
-relay процессов. Это стоимость всей жизни harness, включая его startup/warmup,
+`resources.txt` содержит CPU/RSS единственного процесса harness по GNU time, включая оба терминала. Это стоимость всей жизни harness, включая его startup/warmup,
 а не отдельный интервал файловой передачи. Детерминированный тестовый файл
 также хранится в памяти; размер данных одинаков для всех точек. Это ограничение
-текущего профилирования, не суммарная стоимость всей топологии.
+текущего профилирования.
 
 Пока отсутствуют measured optimum, независимые client hosts, контроль jitter
 для реального voice/video, per-lane useful byte counters и суммарный CPU/RSS

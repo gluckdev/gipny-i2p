@@ -8,6 +8,87 @@ use crate::dto::{attach_extras, MessageDto, SearchHitDto};
 use crate::{base64_decode, core_of, err, hex, parse_group_id, AppCtx};
 
 const SETTING_MUTES: &str = "muted_targets";
+
+#[tauri::command]
+pub(crate) async fn list_view_once_deliveries(
+    ctx: State<'_, AppCtx>,
+) -> Result<Vec<gipny_libcore::db::ViewOnceDelivery>, String> {
+    core_of(&ctx)
+        .await?
+        .db()
+        .list_view_once_deliveries()
+        .map_err(err)
+}
+
+#[tauri::command]
+pub(crate) async fn acknowledge_view_once_deliveries(
+    ids: Vec<String>,
+    ctx: State<'_, AppCtx>,
+) -> Result<(), String> {
+    let ids: Vec<[u8; 16]> = ids
+        .iter()
+        .map(|id| {
+            crate::hex_decode(id)
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| "invalid id".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    core_of(&ctx)
+        .await?
+        .db()
+        .dismiss_view_once_deliveries(&ids)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub(crate) async fn send_view_once(
+    contact_id: i64,
+    body: String,
+    ttl_secs: Option<u64>,
+    ctx: State<'_, AppCtx>,
+) -> Result<String, String> {
+    core_of(&ctx)
+        .await?
+        .send_view_once(
+            contact_id,
+            body,
+            ttl_secs.map(std::time::Duration::from_secs),
+        )
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+pub(crate) async fn list_view_once(
+    contact_id: i64,
+    ctx: State<'_, AppCtx>,
+) -> Result<Vec<crate::core::ViewOnceNotice>, String> {
+    core_of(&ctx).await?.list_view_once(contact_id).map_err(err)
+}
+
+#[tauri::command]
+pub(crate) async fn open_view_once(id: String, ctx: State<'_, AppCtx>) -> Result<String, String> {
+    core_of(&ctx).await?.open_view_once(&id).map_err(err)
+}
+
+#[tauri::command]
+pub(crate) async fn list_delivery_expiry_notices(
+    profile: String, ctx: State<'_, AppCtx>,
+) -> Result<Vec<gipny_libcore::db::DeliveryExpiryNotice>, String> {
+    let _operation = ctx.begin_profile_operation()?;
+    if ctx.profile.lock().await.as_deref() != Some(profile.as_str()) { return Err("profile changed".into()); }
+    core_of(&ctx).await?.db().list_delivery_expiry_notices().map_err(err)
+}
+
+#[tauri::command]
+pub(crate) async fn acknowledge_delivery_expiry_notices(
+    profile: String, message_ids: Vec<i64>, ctx: State<'_, AppCtx>,
+) -> Result<(), String> {
+    let _operation = ctx.begin_profile_operation()?;
+    if ctx.profile.lock().await.as_deref() != Some(profile.as_str()) { return Err("profile changed".into()); }
+    core_of(&ctx).await?.db().acknowledge_delivery_expiry_notices(&message_ids).map_err(err)
+}
+
 #[tauri::command]
 pub(crate) async fn list_messages(
     contact_id: i64,
@@ -112,6 +193,11 @@ pub(crate) async fn forward_message(
         .get_message(source_message_id)
         .map_err(err)?
         .ok_or_else(|| "source not found".to_string())?;
+    if src.deleted_at.is_some() {
+        return Err("source message was deleted".into());
+    }
+    let lifetime = src.expires_at.map(gipny_libcore::db::MessageLifetime::Until)
+        .unwrap_or_else(|| None.into());
     let attachments = core.db().list_attachments(source_message_id).map_err(err)?;
     let mut pending: Vec<PendingAttachment> = Vec::with_capacity(attachments.len());
     for a in &attachments {
@@ -123,12 +209,12 @@ pub(crate) async fn forward_message(
         });
     }
     if let Some(cid) = contact_id {
-        core.send_message(cid, src.body, pending, None, None)
+        core.send_message(cid, src.body, pending, lifetime, None)
             .await
             .map_err(err)
     } else if let Some(gid_hex) = group_id {
         let gid = parse_group_id(&gid_hex)?;
-        core.send_to_group(&gid, src.body, pending, None, None)
+        core.send_to_group(&gid, src.body, pending, lifetime, None)
             .await
             .map_err(err)
     } else {

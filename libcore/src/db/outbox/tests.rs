@@ -444,7 +444,7 @@ mod group_delivery_tests {
     }
 
     #[test]
-    fn expiration_clears_group_queue_without_erasing_history_or_touching_dm() {
+    fn expiration_clears_due_group_and_dm_queues_without_erasing_history() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_plain(&dir.path().join("group.db")).unwrap();
         let a = db.add_contact(&[1; 32], &[2; 32], "", "A", None).unwrap();
@@ -480,15 +480,15 @@ mod group_delivery_tests {
             .unwrap();
         db.pending_outbound_add(dm, a).unwrap();
         assert_eq!(
-            db.purge_expired_group_outbound(now + RETRY_TTL_MS).unwrap(),
-            1
+            db.expire_outgoing_delivery(now + RETRY_TTL_MS).unwrap().len(),
+            2
         );
         assert_eq!(
             db.acknowledge_group_delivery(id, a).unwrap(),
             GroupDeliveryAck::NotPending
         );
         assert!(!db.get_message(id).unwrap().unwrap().delivered);
-        assert_eq!(due(&db, a), vec![fresh, dm]);
+        assert_eq!(due(&db, a), vec![fresh]);
         assert_eq!(db.list_group_messages(&group, 10, None).unwrap().len(), 2);
     }
 }
@@ -523,8 +523,8 @@ mod group_expiry_boundary_tests {
             params![now + 60_000, id, b],
         )?; Ok(()) }).unwrap();
         assert_eq!(
-            db.purge_expired_group_outbound(now + RETRY_TTL_MS).unwrap(),
-            2
+            db.expire_outgoing_delivery(now + RETRY_TTL_MS).unwrap().len(),
+            1
         );
         assert_eq!(
             db.acknowledge_group_delivery(id, b).unwrap(),

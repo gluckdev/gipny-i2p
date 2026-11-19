@@ -16,7 +16,7 @@ mod implementation {
     use gipny_libcore::{
         card::ContactCard,
         crypto::{self, Identity, PreKeyBundle, PreKeyPair, RatchetState, X3dhInitial},
-        relay::{auth_v2_message, destination_hash, EnvelopeBlob},
+        relay::{auth_v2_message, framed_auth_message, terminal_proof_message, destination_hash, EnvelopeBlob},
         session::{
             build_ad, decode_payload, encode_payload, pad_payload, unpad_payload, WirePayload,
         },
@@ -553,6 +553,7 @@ mod implementation {
     pub(crate) struct EngineLifetime {
         closed: Cell<bool>,
         callbacks: RefCell<Vec<Box<dyn FnOnce()>>>,
+        view_once: RefCell<Vec<std::rc::Weak<RefCell<Option<ViewOnceSecret>>>>>,
     }
 
     impl EngineLifetime {
@@ -565,6 +566,9 @@ mod implementation {
         }
         fn close(&self) {
             if !self.closed.replace(true) {
+                for weak in self.view_once.take() {
+                    if let Some(secret) = weak.upgrade() { secret.borrow_mut().take(); }
+                }
                 let callbacks = std::mem::take(&mut *self.callbacks.borrow_mut());
                 for callback in callbacks {
                     callback();
@@ -578,6 +582,8 @@ mod implementation {
         inner: RefCell<EngineInner>,
         lifetime: Rc<EngineLifetime>,
     }
+
+    include!("engine/view_once.rs");
 
     #[wasm_bindgen]
     impl BrowserEngine {
@@ -1243,6 +1249,38 @@ mod implementation {
             challenge: &[u8],
             sig: &[u8],
         ) -> bool {
+            Self::verify_relay_auth(sign_hex, destination, challenge, sig, None)
+        }
+
+        pub fn sign_framed_auth(&self, destination: &str, challenge: &[u8], nonce: &[u8]) -> Result<Vec<u8>, JsValue> {
+            let hash = destination_hash(destination).ok_or_else(|| JsValue::from_str("invalid terminal address"))?;
+            let challenge=challenge.try_into().map_err(|_| JsValue::from_str("invalid challenge"))?;
+            let nonce=nonce.try_into().map_err(|_| JsValue::from_str("invalid nonce"))?;
+            Ok(self.inner.borrow().committed_state()?.identity.sign(&framed_auth_message(&hash, challenge, nonce)).to_vec())
+        }
+
+        pub fn terminal_proof(&self, requester: &str, challenge: &[u8], nonce: &[u8]) -> Result<Vec<u8>, JsValue> {
+            let requester=parse_hex32(requester)?;
+            let challenge=challenge.try_into().map_err(|_| JsValue::from_str("invalid challenge"))?;
+            let nonce=nonce.try_into().map_err(|_| JsValue::from_str("invalid nonce"))?;
+            let inner=self.inner.borrow();
+            let state=inner.committed_state()?;
+            let client=ClientIdentity::from_bytes(&state.client_identity_bytes).map_err(|_|JsValue::from_str("invalid personal destination"))?;
+            let hash=Sha256::digest(client.destination().serialize()).into();
+            Ok(state.identity.sign(&terminal_proof_message(&hash, &requester, challenge, nonce)).to_vec())
+        }
+
+        pub fn verify_terminal_proof(owner: &str, destination: &str, requester: &str, challenge: &[u8], nonce: &[u8], proof: &[u8]) -> bool {
+            let (Some(sign_pk), Some(hash), Some(requester), Ok(challenge), Ok(nonce), Ok(proof))=(parse_hex32_opt(owner),destination_hash(destination),parse_hex32_opt(requester),challenge.try_into(),nonce.try_into(),proof.try_into()) else { return false };
+            crypto::IdentityCard{sign_pk,dh_pk:[0;32]}.verify(&terminal_proof_message(&hash,&requester,challenge,nonce),proof)
+        }
+
+        pub fn verify_framed_auth(sign_hex: &str, destination: &str, challenge: &[u8], nonce: &[u8], sig: &[u8]) -> bool {
+            let Ok(nonce)=nonce.try_into() else {return false};
+            Self::verify_relay_auth(sign_hex, destination, challenge, sig, Some(nonce))
+        }
+
+        fn verify_relay_auth(sign_hex: &str, destination: &str, challenge: &[u8], sig: &[u8], nonce: Option<&[u8;32]>) -> bool {
             let sign_bytes = match parse_hex32_opt(sign_hex) {
                 Some(b) => b,
                 None => return false,
@@ -1259,7 +1297,7 @@ mod implementation {
                 Some(h) => h,
                 None => return false,
             };
-            let msg = auth_v2_message(&dest_hash, &challenge_arr);
+            let msg = if let Some(nonce)=nonce { framed_auth_message(&dest_hash, &challenge_arr, nonce) } else { auth_v2_message(&dest_hash, &challenge_arr) };
             let card = crypto::IdentityCard {
                 sign_pk: sign_bytes,
                 dh_pk: [0u8; 32],
@@ -1285,6 +1323,12 @@ mod implementation {
                 .vault
                 .verify_password(pass)
                 .map_err(|e| JsValue::from_str(&e))
+        }
+
+        /// Reauthenticate the open view with an already enrolled user-verified passkey.
+        pub fn verify_passkey(&self, credential_id: &[u8], prf: &[u8]) -> Result<(), JsValue> {
+            self.inner.borrow().committed_state()?.vault.verify_passkey(credential_id, prf)
+                .map_err(|error| JsValue::from_str(&error))
         }
 
         /// Enrolls a WebAuthn passkey in candidate vault (transaction required).

@@ -21,10 +21,7 @@ fn ack(message_id: i64, group_id: &[u8]) -> WirePayload {
     payload
 }
 
-async fn enqueue(db: &Db, message_id: i64, recipient: i64, relay: &PeerRelay) -> Result<()> {
-    let PeerRelay::Ready(tx) = relay else {
-        panic!("expected a fake connected relay")
-    };
+async fn enqueue(db: &Db, message_id: i64, recipient: i64, tx: &mpsc::Sender<ClientToRelay>) -> Result<()> {
     attempt_group_delivery(db, message_id, recipient, async {
         tx.send(ClientToRelay::Send {
             to: [1; 32],
@@ -61,7 +58,7 @@ async fn group_enqueue_survives_lost_frame_restart_and_partial_ack() {
         .unwrap();
 
     let (tx, rx) = mpsc::channel(4);
-    let relay = PeerRelay::Ready(tx);
+    let relay = tx;
     enqueue(&db, message_id, bob, &relay).await.unwrap();
     enqueue(&db, message_id, carol, &relay).await.unwrap();
     assert_eq!(
@@ -94,7 +91,7 @@ async fn group_enqueue_survives_lost_frame_restart_and_partial_ack() {
     assert_eq!(pending(&db, carol), vec![message_id]);
 
     let (tx, rx) = mpsc::channel(4);
-    let relay = PeerRelay::Ready(tx);
+    let relay = tx;
     enqueue(&db, message_id, bob, &relay).await.unwrap();
     assert_eq!(
         pending(&db, bob),
@@ -166,7 +163,7 @@ async fn unacknowledged_group_retries_are_bounded_by_retention() {
         .unwrap();
     db.queue_group_recipients(message_id, &[recipient]).unwrap();
     let (tx, _rx) = mpsc::channel(1);
-    enqueue(&db, message_id, recipient, &PeerRelay::Ready(tx))
+    enqueue(&db, message_id, recipient, &tx)
         .await
         .unwrap();
 
@@ -193,7 +190,7 @@ async fn unacknowledged_group_retries_are_bounded_by_retention() {
         )
         .unwrap()
         .is_empty());
-    assert_eq!(db.purge_expired_group_outbound(expired).unwrap(), 1);
+    assert_eq!(db.expire_outgoing_delivery(expired).unwrap().len(), 1);
     assert!(pending(&db, recipient).is_empty());
     assert!(
         !db.get_message(message_id).unwrap().unwrap().delivered,

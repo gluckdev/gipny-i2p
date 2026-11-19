@@ -196,7 +196,6 @@ fn open_bot_db(data_dir: &std::path::Path, db_path: &std::path::Path, passphrase
 
 pub struct Bot {
     data_dir: PathBuf,
-    relay_address: Option<String>,
     display_name: Option<String>,
     vault_passphrase: Option<String>,
     on_message: Option<MessageHandler>,
@@ -208,7 +207,6 @@ impl Bot {
     pub fn builder() -> BotBuilder {
         BotBuilder {
             data_dir: None,
-            relay_address: None,
             display_name: None,
             vault_passphrase: None,
             on_message: None,
@@ -231,19 +229,14 @@ impl Bot {
         let node = Arc::new(I2pNode::start(&self.data_dir, Default::default()).await?);
         let (session, mut events) = SessionManager::start(self.data_dir.clone(), db, node).await?;
 
-        if let Some(i2p_address) = &self.relay_address {
-            session.set_relay_address(i2p_address)?;
-        }
         if let Some(name) = &self.display_name {
             session.set_display_name(name)?;
         }
 
         let card = session.my_card();
-        eprintln!("============================================");
-        eprintln!("[bot] Identity card (share with users):");
-        eprintln!("  sign_pk: {}", hex(&card.sign_pk));
-        eprintln!("  dh_pk:   {}", hex(&card.dh_pk));
-        eprintln!("============================================");
+        let published = gipny_libcore::ContactCard { i2p_address: session.terminal_address(),
+            sign_pk: card.sign_pk, dh_pk: card.dh_pk, relay: None, name: self.display_name.clone() }.encode()?;
+        eprintln!("[bot] Identity card: {published}");
 
         let handlers = Arc::new(Handlers {
             on_message: self.on_message,
@@ -280,6 +273,7 @@ impl Bot {
                     SessionEvent::ContactUpdated { contact_id } => gipny_libcore::debug_trace!("[bot] contact updated id={}", contact_id),
                     SessionEvent::ContactWiped { contact_id } => gipny_libcore::debug_trace!("[bot] contact {} deleted us; chat removed", contact_id),
                     SessionEvent::MessageDelivered { message_id } => gipny_libcore::debug_trace!("[bot] delivered mid={}", message_id),
+                    SessionEvent::MessageDeliveryExpired(notice) => gipny_libcore::debug_error!("[bot] message {} expired without delivery confirmation", notice.message_id),
                     SessionEvent::MessageFailed { message_id, reason } => gipny_libcore::debug_error!("[bot] not sent mid={}: {}", message_id, reason),
                     SessionEvent::FileProgress { .. } => {}
                     SessionEvent::FileReceived { message_id, attachment_id } => gipny_libcore::debug_trace!("[bot] file whole mid={} att={}", message_id, attachment_id),
@@ -543,7 +537,6 @@ pub struct RunningBot {
 
 pub struct BotBuilder {
     data_dir: Option<PathBuf>,
-    relay_address: Option<String>,
     display_name: Option<String>,
     vault_passphrase: Option<String>,
     on_message: Option<MessageHandler>,
@@ -554,9 +547,6 @@ pub struct BotBuilder {
 impl BotBuilder {
     pub fn data_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.data_dir = Some(path.into()); self
-    }
-    pub fn relay(mut self, i2p_address: impl Into<String>) -> Self {
-        self.relay_address = Some(i2p_address.into()); self
     }
     pub fn display_name(mut self, name: impl Into<String>) -> Self {
         self.display_name = Some(name.into()); self
@@ -594,7 +584,6 @@ impl BotBuilder {
     pub fn build(self) -> anyhow::Result<Bot> {
         Ok(Bot {
             data_dir: self.data_dir.ok_or_else(|| anyhow::anyhow!("data_dir required"))?,
-            relay_address: self.relay_address,
             display_name: self.display_name,
             vault_passphrase: self.vault_passphrase,
             on_message: self.on_message,

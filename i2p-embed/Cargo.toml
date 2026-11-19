@@ -6,8 +6,6 @@ publish = false
 description = "The i2pd router inside the process: no SAM, no local port."
 
 [dependencies]
-# Explicit rather than `workspace = true`: core/relay, a workspace of its own,
-# depends on this crate too.
 tokio = { version = "1", features = ["io-util", "sync", "time"] }
 zeroize = "1"
 libc = "0.2"

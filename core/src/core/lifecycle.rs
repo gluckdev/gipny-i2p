@@ -7,7 +7,6 @@ impl Core {
         data_dir: PathBuf,
         db: Arc<Db>,
         node: Arc<I2pNode>,
-        prebuilt_relay: Option<PrebuiltRelay>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<CoreEvent>)> {
         // A staged Windows update is applied earlier than this, in `lib.rs`'s
         // `boot()` — before the vault unlock and the router wait below, not
@@ -20,6 +19,10 @@ impl Core {
         let updater = Arc::new(Updater::new(node.clone(), UpdateComponent::App));
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let core = Arc::new(Self {
+            view_once_outbox: Default::default(),
+            view_once_kick: Default::default(),
+            view_once: std::sync::Mutex::new(Some(HashMap::new())),
+            view_once_locked: tokio::sync::watch::channel(false).0,
             db: db.clone(),
             node: node.clone(),
             identity,
@@ -37,10 +40,7 @@ impl Core {
             heard: Arc::new(std::sync::Mutex::new(HashMap::new())),
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-            part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             flows: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             updater,
@@ -50,10 +50,10 @@ impl Core {
             tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
             agent_tx,
             hosted_relay: Arc::new(std::sync::Mutex::new(None)),
+            personal_address: gipny_libcore::EphemeralRelay::personal_address(&db)?,
             hosted_state: Arc::new(std::sync::RwLock::new(HostedRelayState::Off)),
             relay_dial: Arc::new(std::sync::RwLock::new(DialState::default())),
             hosted_task: Arc::new(std::sync::Mutex::new(None)),
-            prebuilt_relay: std::sync::Mutex::new(prebuilt_relay),
             announce_pending: Arc::new(Mutex::new(HashSet::new())),
             announce_sent_at: Arc::new(Mutex::new(HashMap::new())),
             relay_down_since: Arc::new(Mutex::new(HashMap::new())),
@@ -62,29 +62,23 @@ impl Core {
             dht_addr_asked: Arc::new(Mutex::new(HashMap::new())),
             rtt: Arc::new(Mutex::new(HashMap::new())),
         });
+        // A crash can skip the orderly logout hook. Apply the persisted chat
+        // choices before exposing last session's history to any client.
+        core.db.expire_outgoing_delivery(now_ms())?;
+        core.clear_history_if_asked()?;
         core.ensure_prekeys().await?;
         let _ = core.db.cleanup_orphan_pins();
         core.clone().spawn_relay_loop();
-        core.clone().spawn_collect_lanes();
         core.clone().spawn_resume_acks();
         core.clone().spawn_send_loop();
+        core.spawn_view_once_expiry();
+        core.spawn_view_once_outbox();
         core.clone().spawn_purge_loop();
         let _ = core.db.delete_setting(RETIRED_UI_DATA);
         core.clone().spawn_update_loop();
         core.clone().spawn_agent_worker(agent_rx);
         core.clone().spawn_dht_loop();
-        if core.relay_mode() == RelayMode::Builtin {
-            core.start_hosted_relay();
-        } else if let Some(task) = core
-            .prebuilt_relay
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
-            // Built before unlock on the chance it was wanted; it was not, and
-            // a relay left running keeps a destination published for nothing.
-            task.abort();
-        }
+        core.start_hosted_relay();
         core.clone().warm_peer_relays();
         if let Some(m) = core.agent_master() {
             // Commands that arrived while the app was closed are on disk with
@@ -102,6 +96,25 @@ impl Core {
     }
 
     pub fn shutdown(&self) {
+        self.view_once_locked.send_replace(true);
+        self.view_once_outbox.close();
+        if let Some(task) = self
+            .hosted_task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            task.abort();
+        }
+        self.hosted_relay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        self.set_hosted_state(HostedRelayState::Off);
+        self.view_once
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         let mut v = self.tasks.lock().unwrap();
         for h in v.drain(..) {
             h.abort();
@@ -142,7 +155,6 @@ impl Core {
                 tokio::select! {
                     _ = inbox_retry.tick() => this.drain_inbox().await,
                     _ = tick.tick() => {
-                        let _ = this.db.purge_expired(now_ms());
                         this.gc_files();
                         let _ = this.db.purge_old_deferred_pins(now_ms() - 7 * 24 * 3600 * 1000);
                     }

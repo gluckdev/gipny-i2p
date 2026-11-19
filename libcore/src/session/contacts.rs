@@ -12,11 +12,8 @@ impl SessionManager {
         self.add_contact_via(card, i2p_address, name, None).await
     }
 
-    /// Add a contact, recording the relay their card named.
-    ///
-    /// `relay` is where *they* receive: messages to this contact are deposited
-    /// there, not on whatever relay this client happens to use. `None` keeps the
-    /// old behaviour of falling back to this client's configured relay.
+    /// A historical card may name a second candidate. A fresh personal
+    /// terminal proof is required before sending to either address.
     pub async fn add_contact_via(
         self: &Arc<Self>,
         card: &crate::crypto::IdentityCard,

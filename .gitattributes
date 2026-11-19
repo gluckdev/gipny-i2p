@@ -5,7 +5,6 @@ i2p-embed/patches/*.patch -whitespace
 # Release provenance compares exact committed lockfile bytes on every OS.
 # Do not let a Windows core.autocrlf setting rewrite reviewed build inputs.
 /Cargo.lock text eol=lf
-/core/relay/Cargo.lock text eol=lf
 /ui/package-lock.json text eol=lf
 
 # Vendored upstream sources are checked byte for byte against pinned hashes

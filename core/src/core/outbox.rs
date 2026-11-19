@@ -2,6 +2,20 @@ use super::*;
 
 impl Core {
     pub(super) fn spawn_send_loop(self: Arc<Self>) {
+        // A slow relay or DHT lookup must not delay local expiry or offline notices.
+        let maintenance = self.clone();
+        let handle = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(3));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if let Err(error) = maintenance.maintain_message_expiry().await {
+                    gipny_libcore::debug_error!("[delivery] message expiry: {error:?}");
+                }
+            }
+        });
+        self.tasks.lock().unwrap().push(handle);
+
         let this = self.clone();
         let handle = tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(3));
@@ -20,19 +34,19 @@ impl Core {
         self.tasks.lock().unwrap().push(handle);
     }
 
-    pub(super) async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
-        for deleted in self.db.delete_expired_dm(now_ms())? { self.emit_dm_deleted(&deleted)?; }
+    async fn maintain_message_expiry(&self) -> Result<()> {
+        let now = now_ms();
+        for notice in self.db.expire_outgoing_delivery(now)? {
+            let _ = self.events.send(CoreEvent::MessageDeliveryExpired(notice)).await;
+        }
+        for deleted in self.db.delete_expired_dm(now)? { self.emit_dm_deleted(&deleted)?; }
+        self.db.purge_expired(now)?;
         self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
-        self.db.purge_expired_group_outbound(now_ms())?;
-        // Sending needs *their* relay, not ours: a letter is deposited where the
-        // recipient collects it. Ours is where replies come back to, and it takes
-        // a minute or two of tunnel building — waiting for it held every outgoing
-        // message hostage for no reason (owner, 2026-09-18). A contact who has no
-        // relay of their own still needs ours as the fallback, and `relay_for`
-        // already returns nothing in that case, so that contact is skipped rather
-        // than everyone.
-        //
-        // Announcing our address obviously waits for it to exist.
+        Ok(())
+    }
+
+    pub(super) async fn flush_all_pending(self: &Arc<Self>) -> Result<()> {
+        // Address announcements start once our own personal terminal is ready.
         if self.relay_out.read().await.is_some() {
             self.flush_relay_announcements().await;
         }
@@ -65,10 +79,12 @@ impl Core {
             let deletions = self.db.pending_dm_deletes(contact.id, now_ms())?;
             let notice_acks=self.db.pending_dm_notice_acks(contact.id,now_ms())?;
             let peer_events = self.db.pending_peer_events(contact.id, now_ms())?;
+            let receipts = self.db.pending_delivery_receipts(contact.id, now_ms())?;
             let file_work = !self.db.file_peers_for(contact.id)?.is_empty();
             if pending.is_empty()
                 && unacked.is_empty()
                 && group_pending.is_empty()
+                && receipts.is_empty()
                 && deletions.is_empty()
                 && notice_acks.is_empty()
                 && peer_events.is_empty()
@@ -90,28 +106,23 @@ impl Core {
             let out = match self.relay_for(&contact).await {
                 Some(tx) => {
                     self.note_reachability(&contact, true, has_mail).await;
-                    Route::Relay(tx)
+                    tx
                 }
-                // Still dialling: the next round sends it there, in order.
-                None if self.peer_relay_settling(&contact).await => continue,
-                // Their relay is away. Leave it in the network, where it waits
-                // for them — and keep the contact marked unreachable, because
-                // nothing has been handed over yet.
                 None => {
-                    self.note_reachability(&contact, false, has_mail).await;
-                    if self.dht.peer_count() == 0 {
-                        gipny_libcore::debug_trace!("[send] contact {}: relay silent and the network is empty — mail stays queued", contact.id);
-                        continue;
-                    }
-                    gipny_libcore::debug_trace!("[send] contact {}: relay silent, going through the network", contact.id);
-                    // They may simply have restarted onto a new address; ask
-                    // the network in the background, and meanwhile leave the
-                    // letter where they will find it either way.
+                    self.note_reachability(&contact,false,has_mail).await;
                     self.maybe_look_up_address(&contact).await;
-                    Route::Dht
+                    continue;
                 }
             };
             if self.ensure_session_for(&contact, &out).await.is_err() { continue; }
+            for receipt in receipts {
+                let mut payload = receipt.payload(now_ms(), &groups_by_id, &members_by_group,
+                    &self.identity.card().sign_pk, &contact.identity_sign);
+                if self.send_payload_via_relay(&contact, &mut payload, &out).await.is_err() {
+                    break;
+                }
+                self.db.finish_delivery_receipt(contact.id, receipt.message_id)?;
+            }
             for reference in deletions {
                 let at=self.db.dm_local_delete_time(contact.id,&reference)?;
                 let mut payload=WirePayload::simple(0,String::new(),vec![],at,None);
@@ -163,7 +174,7 @@ impl Core {
             }
             // Parts only to their relay: the relay network holds too little
             // per key for a file (dht/src/store.rs); they wait for it.
-            if file_work && matches!(out, Route::Relay(_)) {
+            if file_work {
                 if let Err(e) = self.send_file_parts(&contact, &out).await {
                     gipny_libcore::debug_trace!("[files] parts to contact {}: {:?}", contact.id, e);
                 }
@@ -174,15 +185,9 @@ impl Core {
                     continue;
                 } };
                 let mut payload = self.build_payload_from_db(&msg)?;
-                if let Some(gid) = &msg.group_id {
-                    let gname = groups_by_id.get(gid).cloned().unwrap_or_default();
-                    let gref_members: Vec<WireMember> = members_by_group.get(gid).map(|v| v.iter().map(|m| WireMember {
-                        sign_pk: m.sign_pk.clone(), dh_pk: m.dh_pk.clone(),
-                        i2p_address: m.i2p_address.clone(), name: m.display_name.clone(),
-                    }).collect()).unwrap_or_default();
-                    payload.group = Some(WireGroupRef { id: gid.clone(), name: gname, members: gref_members });
+                if let Some(id) = &msg.group_id {
+                    payload.group = Some(WireGroupRef::from_stored_members(id, &groups_by_id, &members_by_group));
                 }
-                gipny_libcore::debug_trace!("[relay-client] retry group msg {} to contact {}", msg_id, contact.id);
                 if let Err(e) = Self::attempt_group_delivery(
                     &self.db, msg_id, contact.id,
                     self.send_payload_via_relay(&contact, &mut payload, &out),
@@ -201,8 +206,10 @@ impl Core {
     pub(super) async fn attempt_group_delivery<F>(db: &Db, message_id: i64, contact_id: i64, send: F) -> Result<()>
     where F: std::future::Future<Output = Result<()>>,
     {
-        db.pending_outbound_record_attempt(message_id, contact_id)?;
-        send.await
+        if db.pending_outbound_record_attempt(message_id, contact_id)? {
+            send.await?;
+        }
+        Ok(())
     }
 
     /// `contact_id` comes from the authenticated, decrypted session. A group
@@ -221,9 +228,8 @@ impl Core {
             if !matches!(db.acknowledge_group_delivery(local_id, contact_id)?, gipny_libcore::db::GroupDeliveryAck::Complete) {
                 return Ok(None);
             }
-        } else {
-            let _ = db.pending_outbound_remove(local_id, contact_id);
-            db.mark_delivered(local_id)?;
+        } else if !db.acknowledge_dm_delivery(local_id, contact_id)? {
+            return Ok(None);
         }
         Ok(Some(msg))
     }
@@ -240,6 +246,10 @@ impl Core {
         contact: &gipny_libcore::db::Contact,
         route: &Route,
     ) -> Result<()> {
+        if let Some(blob) = self.db.pending_initial(contact.id)? {
+            self.deliver(contact, blob.clone(), route, None).await?;
+            self.db.confirm_initial(contact.id, &blob)?;
+        }
         if self.sessions.lock().await.contains_key(&contact.id) {
             gipny_libcore::debug_trace!("[relay-client] ensure_session: contact {} already in cache, no-op", contact.id);
             return Ok(());
@@ -263,9 +273,8 @@ impl Core {
             let mut cache = self.bundle_cache.lock().await;
             cache.remove(&pk).filter(|(_, at)| at.elapsed() < BUNDLE_PREFETCH_TTL).map(|(b, _)| b)
         };
-        let bundle_bytes = match route {
-            _ if prefetched.is_some() => prefetched,
-            Route::Relay(out) => {
+        let bundle_bytes = if prefetched.is_some() { prefetched } else {
+                let out = route;
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 self.bundle_waiters.lock().await.entry(pk).or_default().push(tx);
                 if out.send(ClientToRelay::GetBundle { pk }).await.is_err() {
@@ -284,13 +293,7 @@ impl Core {
                     Ok(Ok(v)) => v,
                 }
             }
-            // Their relay is away, so their bundle comes from the network,
-            // where they publish it for exactly this case.
-            Route::Dht => {
-                let their_dh = to_arr32(contact.identity_dh.clone())?;
-                dht_client::find_bundle(&self.dht, &pk, &their_dh).await
-            }
-        };
+        ;
         let bundle_bytes = match bundle_bytes {
             Some(b) => b,
             None => {
@@ -317,16 +320,18 @@ impl Core {
         }
         let pt = pad_payload(&encode_payload(&empty_payload)?);
         let (state, init) = crypto::x3dh_initiate(&self.identity, &bundle, &pt, &ad)?;
-        self.own_inits.lock().await.insert(contact.id, init.header.dh);
-        self.lost_inits.lock().await.remove(&contact.id);
-        self.db.put_session(contact.id, &state.to_bytes()?)?;
-        self.sessions.lock().await.insert(contact.id, state);
-        self.session_created_at.lock().await.insert(contact.id, now_ms());
-
-        let envelope = EnvelopeBlob::X3dhInit(init);
-        let blob = bincode::serialize(&envelope)?;
-        self.deliver(contact, blob, route, true).await?;
-        gipny_libcore::debug_trace!("[relay-client] x3dh sent to contact {}", contact.id);
+        let own_dh = init.header.dh;
+        let blob = bincode::serialize(&EnvelopeBlob::X3dhInit(init))?;
+        if self.db.install_outbound_initial(contact.id, &state.to_bytes()?, &blob)? {
+            self.own_inits.lock().await.insert(contact.id, own_dh);
+            self.lost_inits.lock().await.remove(&contact.id);
+            self.sessions.lock().await.insert(contact.id, state);
+            self.session_created_at.lock().await.insert(contact.id, now_ms());
+        }
+        if let Some(pending) = self.db.pending_initial(contact.id)? {
+            self.deliver(contact, pending.clone(), route, None).await?;
+            self.db.confirm_initial(contact.id, &pending)?;
+        }
         Ok(())
     }
 
@@ -353,33 +358,42 @@ impl Core {
         if raw.len() > MAX_PAYLOAD_BYTES {
             gipny_libcore::debug_error!("[relay-client] payload too large ({}B), dropping msg id={}", raw.len(), payload.origin_msg_id);
             if payload.origin_msg_id > 0 {
-                let _ = self.db.mark_sent(payload.origin_msg_id as i64);
                 let _ = self.events.try_send(CoreEvent::MessageFailed { message_id: payload.origin_msg_id as i64, reason: "too large for one letter".into() });
             }
             return Err(CoreError::State);
         }
-        let pt = pad_payload(&raw);
-        let (header, ct) = {
-            let mut sess = self.sessions.lock().await;
-            let state = sess.get_mut(&contact.id).ok_or(CoreError::State)?;
-            let r = state.encrypt(&pt, &ad)?;
-            self.db.put_session(contact.id, &state.to_bytes()?)?;
-            r
-        };
-        let envelope = EnvelopeBlob::Ratchet { header, ciphertext: ct };
-        let blob = bincode::serialize(&envelope)?;
-        self.deliver(contact, blob, route, false).await?;
-
-        self.incoming_since_send.lock().await.insert(contact.id, 0);
-
-        if payload.origin_msg_id > 0
+        let message_offer = payload.origin_msg_id > 0
             && payload.edit_of.is_none()
             && payload.pin.is_none()
             && payload.callback_data.is_none()
-            && payload.ack_for.is_none()
-        {
-            self.db.mark_sent(payload.origin_msg_id as i64)?;
-            let _ = self.events.try_send(CoreEvent::MessageSent { message_id: payload.origin_msg_id as i64 });
+            && payload.ack_for.is_none();
+        let pt = pad_payload(&raw);
+        let msg_id = message_offer.then_some(payload.origin_msg_id as i64);
+        let blob = {
+            let mut sess = self.sessions.lock().await;
+            if message_offer && !self.db.may_send_message(payload.origin_msg_id as i64, contact.id, now_ms())? {
+                return Ok(());
+            }
+            if let Some(part) = &payload.file_chunk {
+                if !self.db.may_send_file_part(&part.file_id, contact.id, now_ms())? { return Ok(()); }
+            }
+            let state = sess.get_mut(&contact.id).ok_or(CoreError::State)?;
+            let Some(blob) = self.db.seal_for_deposit(contact.id, msg_id, state, &pt, &ad)? else { return Ok(()); };
+            blob
+        };
+        let remaining = message_offer.then(|| {
+            let limit = payload.ttl_ms.unwrap_or(i64::MAX).min(7 * 86_400_000);
+            let ms = payload.sent_at.saturating_add(limit).saturating_sub(now_ms()).max(0);
+            Duration::from_millis(ms as u64)
+        });
+        self.deliver(contact, blob.clone(), route, remaining).await?;
+
+        self.incoming_since_send.lock().await.insert(contact.id, 0);
+
+        if let Some(id) = msg_id {
+            if self.db.confirm_deposit(contact.id, id, &blob)? {
+                let _ = self.events.try_send(CoreEvent::MessageSent { message_id: id });
+            }
         }
         Ok(())
     }
@@ -396,7 +410,7 @@ impl Core {
             let data = AttachmentCipher::from_key(key).decrypt_chunk(0, &[], &enc)?;
             wire_atts.push(WireAttachment { name: a.name, data });
         }
-        let ttl_ms = msg.expires_at.map(|e| e - msg.sent_at);
+        let ttl_ms = gipny_libcore::db::MessageLifetime::wire_ttl_ms(msg.sent_at,msg.expires_at);
         let mut p = WirePayload::simple(msg.id as u64, msg.body.clone(), wire_atts, msg.sent_at, ttl_ms);
         if let Some(rt) = msg.reply_to {
             p.reply_to = self.build_wire_reply(rt)?;
@@ -412,34 +426,8 @@ impl Core {
     }
 
     pub(super) async fn send_ack(self: &Arc<Self>, contact: &gipny_libcore::db::Contact, original: &WirePayload) -> Result<()> {
-        if original.origin_msg_id == 0 { return Ok(()); }
-        let mut payload = WirePayload {
-            origin_msg_id: 0,
-            body: String::new(),
-            attachments: vec![],
-            sent_at: now_ms(),
-            ttl_ms: None,
-            group: original.group.clone(),
-            buttons: None,
-            callback_data: None,
-            edit_of: None,
-            pin: None,
-            ack_for: Some(original.origin_msg_id),
-            sender_name: None,
-            reply_to: None,
-            typing: None,
-            notify_sound: None,
-            console: None,
-            relay_address: None, wipe: None, files: Vec::new(), file_chunk: None, file_ack: None, file_cancel: None, dm: None,
-        };
-        let out = match self.route_for(contact).await {
-            Some(x) => x,
-            None => return Ok(()),
-        };
-        if self.ensure_session_for(contact, &out).await.is_err() {
-            return Ok(());
-        }
-        let _ = self.send_payload_via_relay(contact, &mut payload, &out).await;
+        self.db.queue_delivery_receipt(contact.id, original, now_ms())?;
+        self.send_kick.notify_one();
         Ok(())
     }
 

@@ -46,38 +46,8 @@ impl Core {
     /// Automatic cleanup honours explicit per-chat choices; an explicit
     /// clear-all continues to use `clear_message_history`.
     pub fn clear_unsaved_history(&self) -> Result<usize> {
-        let prefs = self
-            .ui_data("chat_prefs")?
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
-        let saved = prefs
-            .as_ref()
-            .and_then(|prefs| prefs.get("saveHistory"))
-            .and_then(|saved| saved.as_object());
-        let Some(saved) =
-            saved.filter(|saved| saved.values().any(|value| value.as_bool() == Some(true)))
-        else {
-            return self.clear_message_history();
-        };
-        let mut dropped = 0;
-        for contact in self.db.list_contacts()? {
-            if saved
-                .get(&format!("contact:{}", contact.id))
-                .and_then(|value| value.as_bool())
-                != Some(true)
-            {
-                dropped += self.clear_dm_contact(contact.id)?;
-            }
-        }
-        for group in self.db.list_groups()? {
-            if saved
-                .get(&format!("group:{}", to_hex(&group.id)))
-                .and_then(|value| value.as_bool())
-                != Some(true)
-            {
-                dropped += self.db.purge_group_messages(&group.id)?;
-            }
-        }
-        self.db.cleanup_orphan_pins()?;
+        let dropped = self.db.clear_unsaved_transcripts()?;
+        self.db.cleanup_deleted_files(&self.data_dir.join(ATTACHMENTS_DIR))?;
         Ok(dropped)
     }
 
@@ -279,7 +249,7 @@ impl Core {
             if payload.dm.is_some() {
                 return Err(CoreError::State);
             }
-            return Ok(false);
+            return Ok(payload.content_expired(now_ms()));
         }
         let contact = self
             .db
@@ -324,11 +294,7 @@ impl Core {
             let _ = self.send_ack(&contact, payload).await;
             return Ok(true);
         }
-        if ordinary
-            && payload
-                .ttl_ms
-                .is_some_and(|ttl| ttl > 0 && payload.sent_at.saturating_add(ttl) <= now_ms())
-        {
+        if payload.content_expired(now_ms()) {
             let deletion = self.db.expire_incoming_dm(contact_id, &reference)?;
             self.db
                 .reject_deleted_dm_files(contact_id, &reference, &files)?;
@@ -343,20 +309,8 @@ impl Core {
     ///
     /// Quitting from the tray never reaches the interface, so the preference has
     /// to be read on this side of the wall: by the time a quit arrives the
-    /// window is already gone and there is nobody left to ask. A missing or
-    /// unreadable preference means "off" — this is a setting nobody should ever
-    /// be opted into by accident.
+    /// window is already gone and there is nobody left to ask. New chats clear their local transcript on logout by default.
     pub fn clear_history_if_asked(&self) -> Result<bool> {
-        let Some(json) = self.ui_data("chat_prefs")? else {
-            return Ok(false);
-        };
-        let Ok(prefs) = serde_json::from_str::<serde_json::Value>(&json) else {
-            return Ok(false);
-        };
-        if prefs.get("clearOnLock").and_then(|v| v.as_bool()) != Some(true) {
-            return Ok(false);
-        }
-        self.clear_unsaved_history()?;
-        Ok(true)
+        Ok(self.clear_unsaved_history()? > 0)
     }
 }

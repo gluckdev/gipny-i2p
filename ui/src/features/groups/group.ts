@@ -1,3 +1,4 @@
+import { chatPreferences } from '../messaging/chat-preferences';
 import { errorText } from '../../app/error-text';
 import { t as tr } from '../localization/i18n';
 import { Api } from '../../app/api';
@@ -115,6 +116,7 @@ export class GroupModal {
         h('button', { class: 'icon-btn', title: tr('common.close'), onClick: closeWrapped }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
+        chatPreferences(targetKey({ kind: 'group', id: groupId }), () => store.showToast(tr('chat.ttl_save_failed'), true)),
         h('div', { class: 'card-label' }, 'id'),
         h('div', { class: 'card-block' }, g.id),
         h('label', { class: 'cb-row', style: { marginTop: '10px' } }, muteCb, h('span', null, tr('contact.mute_notifications'))),

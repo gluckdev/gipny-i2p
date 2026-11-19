@@ -312,9 +312,7 @@ jobs:
           cargo rustc --release -p i2p-embed --crate-type cdylib
           ls -l target/release/libi2p_embed.so
 
-  # Two bots with their built-in relays, all on the router inside the harness
-  # process: no i2pd process, no SAM, no port. The same scenario as
-  # "e2e (relays inside the bots)" in e2e-i2pd.yml.
+  # Each test profile owns its terminal on the router inside the harness process.
   e2e:
     name: e2e on the in-process router (${{ matrix.what }})
     runs-on: ubuntu-latest
@@ -353,7 +351,6 @@ jobs:
         run: cargo build --locked --release -p e2e-harness
       - name: run
         env:
-          E2E_IN_PROCESS_RELAYS: '1'
           E2E_BOTH_FIRST: ${{ matrix.both_first }}
           E2E_BIG_FILE: ${{ matrix.big_file }}
           E2E_BIG_FILE_RESTART: ${{ matrix.restart }}
@@ -370,7 +367,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-in-process-logs-${{ matrix.key }}
+          name: e2e-personal-terminal-logs-${{ matrix.key }}
           retention-days: 5
           path: |
             harness.log

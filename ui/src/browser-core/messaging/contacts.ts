@@ -16,6 +16,9 @@ export function addContact(state: BrowserState, identity: PublicIdentity, log: C
   const existing = state.contacts.find(value => value.sign_pk === sign);
   if (existing) {
     if (existing.dh_pk !== dh) throw new Error('Contact identity key changed');
+    const primary = text(args, 'i2pAddress');
+    if (!isValidI2pAddress(primary)) throw new Error('Invalid I2P destination');
+    existing.i2p_address = primary;
     if (typeof args.relay === 'string') { if (!isValidI2pAddress(args.relay)) throw new Error('Invalid I2P destination'); existing.relay = args.relay; }
     return existing;
   }
@@ -38,6 +41,7 @@ export function removeContact(state: BrowserState, log: ContactLog, id: number):
   const ids = new Set(state.messages.filter(value => value.contact_id === id).map(value => value.id));
   state.contacts = state.contacts.filter(value => value.id !== id);
   state.messages = state.messages.filter(value => value.contact_id !== id);
+  state.delivery_expiry_notices = state.delivery_expiry_notices.filter(notice => notice.contact_id !== id);
   state.attachments = state.attachments.filter(value => !ids.has(value.message_id));
   state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk);
 }

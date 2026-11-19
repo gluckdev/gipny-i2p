@@ -1,4 +1,4 @@
-import type { Attachment, Contact, Group, GroupMember, Message } from '../../app/api';
+import type { Attachment, Contact, DeliveryExpiryNotice, Group, GroupMember, Message } from '../../app/api';
 
 export type PublicIdentity = { card: string; sign_pk: string; dh_pk: string; destination: string; i2p_address: string; fingerprint: string };
 export type WireMember = { sign_pk: number[]; dh_pk: number[]; i2p_address: string; name: string };
@@ -44,6 +44,8 @@ export type StoredMessage = Message & { origin: number; author: string; deletion
 };
   /** Reports (kinds 5/6/7) still to send to the contact about this message. */
   peer_reports?: number[];
+  /** Group recipients still owing an ACK, including peers removed from contacts. */
+  pending_recipients?: string[];
 };
 export type StoredAttachment = Attachment & { data?: string; storage?: StoredBlob };
 /** One queued letter. `blob` is ratchet ciphertext (base64) that the peer's
@@ -55,8 +57,10 @@ export type StoredAttachment = Attachment & { data?: string; storage?: StoredBlo
 export type Outbox = {
   key: string; peer: string; row: number | null; payload: WirePayload | null; blob: string | null;
   at: number; attempts: number; deposited: boolean;
-  /** The ciphertext opened an X3DH session: deliver it, never drop it. */
+  /** Discarding this unsent X3DH opener requires resetting the peer ratchet. */
   initial?: boolean;
+  /** Keep the original send deadline even if erasure detaches the ciphertext. */
+  send_until?: number;
   /** New encryptions of a deposited letter still waiting for its answer. */
   resends?: number;
   file?: { id: string; index: number; message_id: number };
@@ -65,16 +69,21 @@ export type SeenEnvelope = { hash: string; peer: string; ack: WirePayload | null
 export type BrowserState = {
   version: 2; nextId: number; displayName: string; contacts: Contact[];
   messages: StoredMessage[]; attachments: StoredAttachment[];
+  /** Undelivered notices survive ordinary history pruning and profile closure. */
+  delivery_expiry_notices: DeliveryExpiryNotice[];
+  /** Replay markers only. Envelopes and opening keys never enter a profile. */
+  view_once_tracking?: import('../messaging/view-once-delivery').ViewOnceTracking;
+  view_once_seen?: Record<string, import('../messaging/view-once').ReplayMarker>;
   groups: (Group & { members: GroupMember[] })[];
   /** `seen`: recent envelopes only (duplicate deliveries get their receipt
-   * again). `initials`: lifetime X3DH hashes per peer, checked before decrypt. */
+   * again). `initials`: recent X3DH hashes per peer, checked before decrypt. */
   outbox: Outbox[]; seen: SeenEnvelope[]; initials: Record<string, string[]>; tombstones: string[];
   transfers: FileTransfer[]; closedFiles: ClosedFile[];
   earlyParts: EarlyPart[];
   ui: Record<string, string>; muted: string[]; pinnedMessages: number[];
 };
 export function newState(displayName: string): BrowserState {
-  return { version: 2, nextId: 1, displayName, contacts: [], messages: [], attachments: [], groups: [], outbox: [], seen: [], initials: {}, tombstones: [], transfers: [], closedFiles: [], earlyParts: [], ui: {}, muted: [], pinnedMessages: [] };
+  return { version: 2, nextId: 1, displayName, contacts: [], messages: [], attachments: [], delivery_expiry_notices: [], groups: [], outbox: [], seen: [], initials: {}, tombstones: [], transfers: [], closedFiles: [], earlyParts: [], ui: {}, muted: [], pinnedMessages: [] };
 }
 export { loadState } from './state-format';
 
@@ -130,7 +139,7 @@ export function lastSet(bits: Uint8Array, total: number): number {
  * ciphertext after a lost `Deposited` frame. Older entries are forgotten; the
  * ratchet itself refuses a second decryption of an ordinary letter. */
 export const RECENT_ENVELOPES = 1024;
-/** Lifetime X3DH initials per peer. Only the authenticated peer can deposit
+/** Recent X3DH initials per peer. Only the authenticated peer can deposit
  * its initials, so per-peer eviction cannot be used against other contacts. */
 export const INITIALS_PER_PEER = 64;
 const INITIAL_PEERS = 1024;
@@ -161,8 +170,44 @@ export const OUTBOX_LIMIT = 2048;
 export const RECEIPT_RESERVE = 256;
 /** Encrypted file parts waiting for their relay, across all recipients. */
 export const SEALED_PART_LIMIT = 16;
-/** A deposited ordinary message is re-encrypted for 7 days without a receipt. */
+/** Maximum time to obtain all receipts, starting at message creation. */
 export const RESEND_TTL_MS = 7 * 24 * 3600 * 1000;
+function deliveryDeadline(sentAt: number, expiresAt?: number | null): number {
+  return Math.min(sentAt + RESEND_TTL_MS, expiresAt ?? Infinity);
+}
+export function deliveryDue(row: StoredMessage, now: number): boolean {
+  // Legacy automatic group erasure retained its TTL, whereas manual group erasure removed the row.
+  const expiredGroup = row.group_id != null && row.expires_at != null && row.deleted_at != null && row.expires_at <= row.deleted_at;
+  return !!row.outgoing && !row.delivered && (row.deleted_at == null || expiredGroup) && row.delivery_expired_at == null
+    && now >= deliveryDeadline(row.sent_at, row.expires_at);
+}
+export function listDeliveryExpiryNotices(state: BrowserState): DeliveryExpiryNotice[] {
+  return [...state.delivery_expiry_notices].sort((a, b) => a.expired_at - b.expired_at || a.message_id - b.message_id);
+}
+export function acknowledgeDeliveryExpiryNotices(state: BrowserState, ids: number[]): void {
+  const displayed = new Set(ids);
+  state.delivery_expiry_notices = state.delivery_expiry_notices.filter(notice => !displayed.has(notice.message_id));
+}
+/** Consume a stale ordinary envelope without creating a contact, a file offer,
+ * an incoming notification or a delivery receipt. Delayed direct parts also
+ * consult its tombstone. The caller still commits the receive ratchet. */
+export function discardExpiredIncoming(state: BrowserState, peer: string, p: WirePayload, now: number): boolean {
+  if (p.origin_msg_id <= 0 || p.ttl_ms == null || now < p.sent_at + p.ttl_ms || p.ack_for !== null || p.typing !== null ||
+      p.edit_of !== null || p.pin || p.wipe || p.file_chunk || p.file_ack || p.file_cancel || (p.dm && p.dm.kind !== 0)) return false;
+  if (p.dm && (p.group || hex(p.dm.reference.author) !== peer || p.dm.reference.origin !== p.origin_msg_id || p.dm.reference.sent_at !== p.sent_at)) {
+    throw new Error('Forged direct-message reference');
+  }
+  if (!p.group && state.contacts.some(contact => contact.sign_pk === peer)) {
+    const key = `${peer}:${p.origin_msg_id}:${p.sent_at}`;
+    if (!state.tombstones.includes(key)) state.tombstones.push(key);
+  }
+  return true;
+}
+export function letterDeadline(item: Outbox): number {
+  if (item.send_until !== undefined) return item.send_until;
+  const p = item.payload;
+  return item.row !== null && p ? deliveryDeadline(p.sent_at, p.ttl_ms == null ? null : p.sent_at + p.ttl_ms) : Infinity;
+}
 export const retryDelay = (attempts: number): number => Math.min(60_000, 2000 * 2 ** Math.min(attempts, 5));
 export const resendDelay = (resends: number): number => Math.min(3_600_000, 120_000 * 2 ** Math.min(resends, 5));
 
@@ -185,6 +230,7 @@ function supersedes(letter: WirePayload): string | null {
 export function queueLetter(state: BrowserState, peer: string, letter: WirePayload | null, row: number | null, file?: Outbox['file']): Outbox {
   if (state.outbox.length >= OUTBOX_LIMIT - RECEIPT_RESERVE) throw new Error('Outbox is full');
   const item: Outbox = { key: crypto.randomUUID(), peer, row, payload: letter, blob: null, at: 0, attempts: 0, deposited: false };
+  if (row !== null && letter) item.send_until = letterDeadline(item);
   if (file) item.file = file;
   state.outbox.push(item);
   return item;
@@ -248,7 +294,7 @@ export function dueLetters(state: BrowserState, now: number, limit = 8, busy: { 
   const order = [...state.outbox].sort((a, b) => Number(!!a.file) - Number(!!b.file));
   for (const item of order) {
     if (picked.length >= limit) break;
-    if (silent.has(item.peer) || busy.has(item.key)) continue;
+    if (silent.has(item.peer) || busy.has(item.key) || now >= letterDeadline(item)) continue;
     if (item.deposited) {
       if (!retained(item) || now - item.at < resendDelay(item.resends ?? 0)) continue;
     } else if (now - item.at < retryDelay(wake?.has(item) ? 0 : item.attempts)) continue;
@@ -274,10 +320,66 @@ export function reopenForResend(item: Outbox): boolean {
   return true;
 }
 
-/** Stop re-encrypting ordinary messages that never got a receipt. Deletion
- * requests stay: they are durable obligations until kind 2/4. */
-export function expireResends(state: BrowserState, now: number): void {
-  state.outbox = state.outbox.filter(item => !(item.deposited && item.row !== null && item.payload && now - item.payload.sent_at > RESEND_TTL_MS));
+/** Match an ACK to an outstanding obligation of this authenticated recipient.
+ * An empty outbox alone cannot distinguish delivery from a discarded retry. */
+export function acknowledgeDelivery(state: BrowserState, row: StoredMessage, peer: string, now: number): boolean {
+  if (!row.outgoing || row.delivered || row.deleted_at != null || row.delivery_expired_at != null || deliveryDue(row, now)) return false;
+  const queued = state.outbox.filter(item => item.row === row.id);
+  const pending = row.pending_recipients ?? [...new Set(queued.map(item => item.peer))];
+  if (!pending.includes(peer)) return false;
+  state.outbox = state.outbox.filter(item => {
+    if (item.row !== row.id || item.peer !== peer) return true;
+    if (!item.blob || !item.initial) return false;
+    item.send_until = deliveryDeadline(row.sent_at, row.expires_at);
+    item.row = null; item.payload = null;
+    return true;
+  });
+  const remaining = pending.filter(other => other !== peer);
+  if (remaining.length) { row.pending_recipients = remaining; return false; }
+  delete row.pending_recipients;
+  row.sent = true; row.delivered = true;
+  return true;
+}
+
+/** Drop ciphertext from an abandoned ratchet. In-flight calls still hold
+ * the old keys, so give surviving plaintext obligations fresh outbox keys. */
+export function resetPeerOutbox(state: BrowserState, peer: string): void {
+  state.outbox = state.outbox.flatMap(item => {
+    if (item.peer !== peer) return [item];
+    if (!item.payload && !item.file) return [];
+    return [{ ...item, key: crypto.randomUUID(), blob: null, initial: undefined, deposited: false, at: 0, attempts: 0 }];
+  });
+  for (const file of state.transfers) if (file.peer === peer && !file.incoming) file.flight = {};
+}
+
+/** Persist expiry even for older profiles that already discarded every retry.
+ * Reset each abandoned session in the same transaction as its outbox. */
+export function expireResends(state: BrowserState, now: number, forgetPeer: (peer: string) => void): DeliveryExpiryNotice[] {
+  const expired = state.messages.filter(row => deliveryDue(row, now));
+  const ids = new Set(expired.map(row => row.id));
+  const stopped = new Set<string>();
+  const notices: DeliveryExpiryNotice[] = [];
+  for (const row of expired) {
+    row.delivery_expired_at = deliveryDeadline(row.sent_at, row.expires_at);
+    const notice = { message_id: row.id, contact_id: row.contact_id, group_id: row.group_id, expired_at: row.delivery_expired_at };
+    notices.push(notice); state.delivery_expiry_notices.push(notice);
+    for (const file of state.transfers) {
+      if (file.message_id !== row.id || file.incoming || file.status !== 'sending' ||
+          (row.pending_recipients && !row.pending_recipients.includes(file.peer))) continue;
+      file.status = 'failed'; file.flight = {}; file.held = '';
+      stopped.add(file.peer + ':' + hex(file.file_id));
+    }
+    delete row.pending_recipients;
+  }
+  const reset = new Set<string>();
+  state.outbox = state.outbox.filter(item => {
+    if ((item.row === null || !ids.has(item.row)) && now < letterDeadline(item) &&
+        (!item.file || !stopped.has(item.peer + ':' + item.file.id))) return true;
+    if (item.initial && item.blob && !item.deposited) reset.add(item.peer);
+    return false;
+  });
+  for (const peer of reset) { resetPeerOutbox(state, peer); forgetPeer(peer); }
+  return notices;
 }
 export function allocate(state: BrowserState): number {
   if (state.nextId >= Number.MAX_SAFE_INTEGER) throw new Error('Profile sequence exhausted');
@@ -346,28 +448,67 @@ export function pruneMessageOutbox(state: BrowserState, ids: ReadonlySet<number>
   state.outbox = state.outbox.filter(item => {
     if (item.row === null || !ids.has(item.row)) return true;
     if (item.blob === null) return false;
+    const deadline = letterDeadline(item);
+    if (Number.isFinite(deadline)) item.send_until = deadline;
     item.payload = null; item.row = null;
     return true;
   });
 }
 
+const historyChat = (row: StoredMessage): string => row.group_id != null ? `group:${row.group_id}` : `contact:${row.contact_id}`;
+
 /** Automatic clearing preserves saved chats, including files and pins. */
 export function clearHistory(state: BrowserState, options: { contactId?: number; preserveSaved?: boolean } = {}): number {
   let saved: Record<string, unknown> = {};
+  let clearDefault = true;
   if (options.preserveSaved) {
+    let value: Record<string, unknown>;
     try {
-      const value: unknown = JSON.parse(state.ui.chat_prefs ?? '{}');
-      const choices = value && typeof value === 'object' ? (value as Record<string, unknown>).saveHistory : null;
-      if (choices && typeof choices === 'object' && !Array.isArray(choices)) saved = choices as Record<string, unknown>;
-    } catch { /* Invalid preferences do not opt a chat into retention. */ }
+      value = JSON.parse(state.ui.chat_prefs ?? '{}');
+    } catch { return 0; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 0;
+    const choices = value.saveHistory;
+    if (choices && typeof choices === 'object' && !Array.isArray(choices)) saved = choices as Record<string, unknown>;
+    if (typeof value.clearOnLock === 'boolean') clearDefault = value.clearOnLock;
+    else {
+      // Older profiles retained history by default. Protect existing conversations
+      // on the first open, then use the new default for each newly started chat.
+      const extended = { ...saved };
+      for (const row of state.messages) {
+        if (row.deleted_at != null) continue;
+        const key = historyChat(row);
+        if (typeof extended[key] !== 'boolean') extended[key] = true;
+      }
+      const initialized = JSON.stringify({ ...value, clearOnLock: true, saveHistory: extended });
+      // Keep a large existing profile editable within the common UI settings limit.
+      if (new TextEncoder().encode(initialized).length <= 64 * 1024) {
+        state.ui.chat_prefs = initialized;
+        saved = extended;
+      } else {
+        state.ui.chat_prefs = JSON.stringify({ ...value, clearOnLock: false });
+        clearDefault = false;
+      }
+    }
+    if (!clearDefault && !Object.values(saved).includes(false)) return 0;
   }
   const ids = new Set(state.messages.filter(row => {
     if (row.deleted_at != null) return false;
+    if (options.preserveSaved && ((row.outgoing && !row.delivered && row.delivery_expired_at == null)
+        || state.transfers.some(file => file.message_id === row.id && ['sending', 'receiving', 'offered', 'verifying'].includes(file.status)))) return false;
     if (options.contactId !== undefined && (row.contact_id !== options.contactId || row.group_id !== null)) return false;
-    const key = row.group_id !== null ? `group:${row.group_id}` : `contact:${row.contact_id}`;
-    return !Object.hasOwn(saved, key) || saved[key] !== true;
+    const choice = saved[historyChat(row)];
+    return typeof choice === 'boolean' ? !choice : clearDefault;
   }).map(row => row.id));
-  for (const row of state.messages) if (ids.has(row.id) && row.group_id === null) redactMessage(state, row, true, Date.now());
+  if (!ids.size) return 0;
+  for (const row of state.messages) if (ids.has(row.id)) {
+    if (row.group_id === null) {
+      redactMessage(state, row, true, Date.now());
+      if (options.preserveSaved) { delete row.deletion; row.deletion_notice = null; row.delete_pending = false; }
+    } else if (options.preserveSaved) {
+      const key = `${row.author}:${row.origin}:${row.sent_at}`;
+      if (!state.tombstones.includes(key)) state.tombstones.push(key);
+    }
+  }
   state.messages = state.messages.filter(row => row.group_id === null || !ids.has(row.id));
   state.attachments = state.attachments.filter(file => !ids.has(file.message_id));
   state.pinnedMessages = state.pinnedMessages.filter(id => !ids.has(id));

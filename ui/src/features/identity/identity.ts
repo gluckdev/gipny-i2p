@@ -87,10 +87,9 @@ export class IdentityModal {
       paintQr(card);
     };
     const paintRelay = (info: RelayInfo | null): void => {
-      const builtin = info?.mode === 'builtin';
-      if (builtin) myRelay = info.hosted.state === 'ready' ? info.hosted.address.trim() : '';
+      if (info) myRelay = info.hosted.state === 'ready' ? info.hosted.address.trim() : '';
       waiting = !myRelay;
-      cardNote.textContent = builtin && myRelay
+      cardNote.textContent = myRelay
         ? tr('identity.the_relay_address_in_this_card_is_valid')
         : '';
       updateCard();

@@ -36,7 +36,7 @@ use crate::db::{
 use crate::dht_client;
 use crate::net::{NetError, I2pNode};
 use crate::relay::{
-    self, ClientToRelay, EnvelopeBlob, RelayClient, RelayError, RelayToClient, DEFAULT_RELAY,
+    self, ClientToRelay, EnvelopeBlob, RelayClient, RelayError, RelayToClient,
 };
 use crate::relay_server::DhtHandler;
 
@@ -78,7 +78,7 @@ impl From<bincode::Error> for SessionError {
 /// State of a connection to somebody else's relay. Mirrors Core::PeerRelay —
 /// `Connecting` and `Failed` are what let the send loop check instead of dial.
 enum PeerRelay {
-    Ready(mpsc::Sender<ClientToRelay>),
+    Ready(relay::RelaySender),
     Connecting,
     /// `failures` in a row: the next wait is [`peer_relay_backoff`] of it.
     Failed {
@@ -117,20 +117,11 @@ pub fn peer_relay_redial_after(failures: u32) -> Option<std::time::Duration> {
 /// The common policy also supports bounded, fixed-concurrency measurements.
 pub use crate::files::lanes::desired as lanes_for;
 
-/// Open one more receive stream only for an active, external relay.
-pub fn collect_lane_wanted(external: bool, part_seen_ms: i64, now_ms: i64, open: usize) -> bool {
-    external && open + 1 < crate::files::lanes::limit() && collect_lane_holds(part_seen_ms, now_ms)
-}
 
-/// Whether extra connections for parts are still worth holding.
-pub fn collect_lane_holds(part_seen_ms: i64, now_ms: i64) -> bool {
-    part_seen_ms > 0 && now_ms - part_seen_ms < COLLECT_LANE_IDLE_MS
-}
 
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
-const SETTING_RELAY_ADDRESS: &str = "relay_address";
 const SETTING_DISPLAY_NAME: &str = "display_name";
 const ATTACHMENTS_DIR: &str = "attachments";
 const TARGET_OPK: usize = 20;
@@ -157,23 +148,12 @@ const MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 4;
 /// held while parts keep coming and closed this long after the last one. A
 /// minute closed and reopened them every two or three while a slow path
 /// brought a part a minute; each close pushed what they held elsewhere again.
-const COLLECT_LANE_IDLE_MS: i64 = 5 * 60_000;
 /// Unfinished incoming transfers are dropped after the relay's letter TTL.
 const FILE_IN_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 const RETRY_BASE_BACKOFF_MS: i64 = 5_000;
 const RETRY_MAX_BACKOFF_MS: i64 = 300_000;
 const DHT_ADDRESS_LOOKUP_EVERY: Duration = Duration::from_secs(10 * 60);
-const DHT_COLLECT_EVERY: Duration = Duration::from_secs(10 * 60);
-const DHT_SEEN_TTL_MS: i64 = 8 * 24 * 3600 * 1000;
-const DHT_COLLECT_DAYS_FIRST: u32 = 7;
-const DHT_COLLECT_DAYS: u32 = 2;
-
-/// Where an outgoing envelope goes. A live relay is preferred; the relay
-/// network is the store-and-forward fallback when that relay is unavailable.
-enum Route {
-    Relay(mpsc::Sender<ClientToRelay>),
-    Dht,
-}
+type Route = relay::RelaySender;
 
 include!("message_wire.rs");
 
@@ -195,6 +175,7 @@ pub enum SessionEvent {
         payload: WirePayload,
         message_id: i64,
     },
+    MessageDeliveryExpired(crate::db::DeliveryExpiryNotice),
     MessageDelivered {
         message_id: i64,
     },
@@ -272,7 +253,7 @@ pub struct SessionManager {
     data_dir: PathBuf,
     sessions: Arc<Mutex<HashMap<i64, RatchetState>>>,
     /// Connection to our own relay — where we receive and publish our bundle.
-    relay_out: Arc<RwLock<Option<mpsc::Sender<ClientToRelay>>>>,
+    relay_out: Arc<RwLock<Option<relay::RelaySender>>>,
     /// Connections to other people's relays, keyed by destination.
     peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
     bundle_waiters:
@@ -296,28 +277,24 @@ pub struct SessionManager {
     /// Extra connections to a contact's relay, for file parts only (by relay
     /// destination). One i2p stream carries at most its window per round
     /// trip; parts spread over several go that many times faster.
-    file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
+    file_lanes: Arc<Mutex<HashMap<String, Vec<relay::RelaySender>>>>,
     file_metrics: crate::files::metrics::FileMetrics,
     /// Relays a lane is being dialled to, so one is dialled at a time.
     file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// When the last file part came (ms), and how many extra connections to
-    /// our own relay are open to take them: the relay deals new mail round
-    /// every connection of a key, so parts come down several streams at once.
-    part_seen: Arc<std::sync::atomic::AtomicI64>,
     /// How parts go to each contact (window, round trip), by contact.
     flows: Arc<std::sync::Mutex<HashMap<i64, crate::files::Flow>>>,
-    collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
-    collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     dht: Arc<dht_client::Node>,
     /// Our own relay when it runs in this process: reached over a pipe.
-    local_relay: std::sync::Mutex<Option<Arc<crate::EphemeralRelay>>>,
+    local_relay: std::sync::Mutex<Option<crate::EphemeralRelay>>,
     dht_addr_asked: Arc<Mutex<HashMap<i64, Instant>>>,
     dht_kick: Arc<tokio::sync::Notify>,
     send_kick: Arc<tokio::sync::Notify>,
     events: mpsc::Sender<SessionEvent>,
-    tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
+    tasks: std::sync::Mutex<Option<Vec<JoinHandle<()>>>>,
+    runtime: tokio::runtime::Handle,
+    shutdown_done: tokio::sync::watch::Sender<bool>,
 }
 
 impl SessionManager {
@@ -349,10 +326,7 @@ impl SessionManager {
             file_lanes: Arc::new(Mutex::new(HashMap::new())),
             file_metrics: Default::default(),
             file_lanes_dialling: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-            part_seen: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             flows: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            collect_lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            collect_kick: Arc::new(tokio::sync::Notify::new()),
             session_created_at: Arc::new(Mutex::new(HashMap::new())),
             incoming_since_send: Arc::new(Mutex::new(HashMap::new())),
             dht,
@@ -361,11 +335,14 @@ impl SessionManager {
             dht_kick: Arc::new(tokio::sync::Notify::new()),
             send_kick: Arc::new(tokio::sync::Notify::new()),
             events: events_tx,
-            tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            tasks: std::sync::Mutex::new(Some(Vec::new())),
+            runtime: tokio::runtime::Handle::current(),
+            shutdown_done: tokio::sync::watch::channel(false).0,
         });
         this.ensure_prekeys().await?;
+        let terminal = crate::EphemeralRelay::start_personal(&db, this.identity.clone(), Some(this.dht_handler())).await?;
+        *this.local_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(terminal);
         this.clone().spawn_relay_loop();
-        this.clone().spawn_collect_lanes();
         this.clone().spawn_resume_acks();
         this.clone().spawn_send_loop();
         this.clone().spawn_bundle_refresh_loop();
@@ -374,36 +351,53 @@ impl SessionManager {
         Ok((this, events_rx))
     }
 
-    /// Keep a task to stop with the rest at shutdown; finished ones go.
-    fn track(&self, handle: JoinHandle<()>) {
-        let mut v = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
-        v.retain(|h| !h.is_finished());
-        v.push(handle);
+    /// Closing the registry and spawning a task are mutually exclusive. In
+    /// particular an interrupted dial cannot start a redial after shutdown.
+    fn spawn_task(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut registry = self.tasks.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(handles) = registry.as_mut() {
+            handles.retain(|handle| !handle.is_finished());
+            handles.push(self.runtime.spawn(task));
+        }
+    }
+
+    /// Wait for all session tasks and the personal listener to release their
+    /// connections and published destination before a same-profile restart.
+    pub async fn shutdown_and_wait(&self) {
+        self.shutdown();
+        let mut done = self.shutdown_done.subscribe();
+        let _ = done.wait_for(|finished| *finished).await;
     }
 
     pub fn shutdown(&self) {
-        let mut v = self.tasks.lock().unwrap();
-        for h in v.drain(..) {
-            h.abort();
+        let Some(handles) = self.tasks.lock().unwrap_or_else(|p| p.into_inner()).take() else {
+            return;
+        };
+        for handle in &handles {
+            handle.abort();
         }
-        drop(v);
-        // The last sender of a connection gone is what closes it. Held here,
-        // a stopped instance kept every connection open, and its relays went
-        // on dealing mail to them until they fell silent (90 s).
-        if let Ok(mut out) = self.relay_out.try_write() {
-            *out = None;
-        }
-        if let Ok(mut peers) = self.peer_relays.try_lock() {
-            peers.clear();
-        }
-        if let Ok(mut lanes) = self.file_lanes.try_lock() {
-            lanes.clear();
-        }
+        let terminal = self.local_relay.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let relay = self.relay_out.clone();
+        let peers = self.peer_relays.clone();
+        let lanes = self.file_lanes.clone();
+        let done = self.shutdown_done.clone();
+        self.runtime.spawn(async move {
+            for handle in handles {
+                let _ = handle.await;
+            }
+            *relay.write().await = None;
+            peers.lock().await.clear();
+            lanes.lock().await.clear();
+            if let Some(terminal) = terminal {
+                terminal.shutdown().await;
+            }
+            done.send_replace(true);
+        });
     }
 
     fn spawn_bundle_refresh_loop(self: Arc<Self>) {
         let this = self.clone();
-        let handle = tokio::spawn(async move {
+        self.spawn_task(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(BUNDLE_REFRESH_SECS));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             tick.tick().await;
@@ -420,7 +414,6 @@ impl SessionManager {
                 }
             }
         });
-        self.tasks.lock().unwrap().push(handle);
     }
 }
 

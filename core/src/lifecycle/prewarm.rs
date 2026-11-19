@@ -3,39 +3,40 @@
 use super::{
     boot_progress, boot_status, read_router_hint, resolve_bundled_router, router_settings_match,
 };
-use crate::{core, profile_dir, AppCtx};
+use crate::{profile_dir, AppCtx};
 use gipny_libcore::{net::I2pNode, security::Vault};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
-pub(super) mod builders;
-
-#[cfg(test)]
-#[path = "prewarm_tests.rs"]
-mod tests;
-
-/// A node started before any profile was opened, held for the profile it was
-/// started for. Exactly one of these exists at a time: its destination and
-/// its relay's are dropped when another profile is picked.
+/// The outgoing destination can be prepared before unlock. The stable personal
+/// terminal can only be constructed once its private key is available in the vault.
+pub struct Preparation(pub(super) tokio::task::JoinHandle<Result<Arc<I2pNode>, String>>);
+impl Drop for Preparation {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+impl Preparation {
+    async fn finish(mut self) -> Option<Arc<I2pNode>> {
+        (&mut self.0).await.ok()?.ok()
+    }
+    async fn cancel(mut self) {
+        self.0.abort();
+        let _ = (&mut self.0).await;
+    }
+}
 pub enum Prewarm {
     Building {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
         generation: u64,
-        builders: builders::Builders<
-            Arc<I2pNode>,
-            Result<gipny_libcore::EphemeralRelay, gipny_libcore::net::NetError>,
-            String,
-        >,
+        builder: Preparation,
     },
     Ready {
         profile: String,
         settings: gipny_libcore::router::RouterSettings,
         generation: u64,
         node: Arc<I2pNode>,
-        /// The built-in relay's tunnels, building as soon as the router is up
-        /// (serving nobody until the core claims it after unlock).
-        relay: core::PrebuiltRelay,
     },
 }
 
@@ -124,29 +125,19 @@ pub(crate) async fn prewarm_network(
     }
     resolve_bundled_router(&app);
     let progress = Some(boot_progress(&app));
-    let router_progress = progress.clone();
-    let builders = builders::spawn(
-        move || {
-            I2pNode::prepare_router(&dir, settings, &router_progress).map_err(|e| format!("{e:?}"))
-        },
-        move |router| async move {
-            I2pNode::start_on_router_with_progress(router, progress)
-                .await
-                .map(Arc::new)
-                .map_err(|e| format!("{e:?}"))
-        },
-        |router| async move {
-            // The channel opens only after the single router bootstrap. The
-            // relay stays unclaimed and owns no profile identity/prekeys.
-            let _router = router.ok_or(gipny_libcore::net::NetError::Closed)?;
-            gipny_libcore::EphemeralRelay::start_unclaimed().await
-        },
-    );
+    let builder = Preparation(tokio::spawn(async move {
+        let router =
+            I2pNode::prepare_router(&dir, settings, &progress).map_err(|e| format!("{e:?}"))?;
+        I2pNode::start_on_router_with_progress(router, progress)
+            .await
+            .map(Arc::new)
+            .map_err(|e| format!("{e:?}"))
+    }));
     *slot = Some(Prewarm::Building {
         profile,
         settings,
         generation,
-        builders,
+        builder,
     });
     Ok(())
 }
@@ -168,27 +159,26 @@ pub(super) async fn prewarm_state(ctx: &AppCtx) -> Result<&'static str, String> 
     }
     // A finished build is only noticed when someone looks; do that here so the
     // state this reports is the real one.
-    if let Some(Prewarm::Building { builders, .. }) = slot.as_ref() {
-        if !builders.client_finished() {
+    if let Some(Prewarm::Building { builder, .. }) = slot.as_ref() {
+        if !builder.0.is_finished() {
             return Ok("building");
         }
         let Some(Prewarm::Building {
             profile,
             settings,
             generation,
-            builders,
+            builder,
         }) = slot.take()
         else {
             unreachable!()
         };
-        match builders.finish(close_prepared_relay).await {
-            Some((node, relay)) => {
+        match builder.finish().await {
+            Some(node) => {
                 *slot = Some(Prewarm::Ready {
                     profile,
                     settings,
                     generation,
                     node,
-                    relay,
                 });
             }
             // A failed prewarm is not an error the person has to act on: the
@@ -222,59 +212,10 @@ fn destination_ready(directions: (bool, bool), is_ready: bool) -> bool {
     directions.0 && directions.1 && is_ready
 }
 
-/// Stop and join the relay builder before dropping the client destination.
-/// Dropping a running JoinHandle alone would detach its relay construction.
-async fn drop_prepared<Node, Relay, Cleanup: std::future::Future<Output = ()>>(
-    node: Node,
-    relay: tokio::task::JoinHandle<Relay>,
-    cleanup: impl FnOnce(Relay) -> Cleanup,
-) {
-    relay.abort();
-    if let Ok(output) = relay.await {
-        cleanup(output).await;
-    }
-    drop(node);
-}
-
-async fn close_prepared_relay(
-    output: Result<gipny_libcore::EphemeralRelay, gipny_libcore::net::NetError>,
-) {
-    if let Ok(relay) = output {
-        relay.shutdown().await;
-    }
-}
-
-/// A historical "ready" state is insufficient after sleep or a network
-/// change. Reject the whole prepared pair unless the live destination still
-/// has both directions and its lease/outbound readiness.
-async fn reuse_ready_destination<Node, Relay, Cleanup: std::future::Future<Output = ()>>(
-    prepared: (Node, tokio::task::JoinHandle<Relay>),
-    directions: (bool, bool),
-    is_ready: bool,
-    cleanup: impl FnOnce(Relay) -> Cleanup,
-) -> Option<(Node, tokio::task::JoinHandle<Relay>)> {
-    if destination_ready(directions, is_ready) {
-        Some(prepared)
-    } else {
-        drop_prepared(prepared.0, prepared.1, cleanup).await;
-        None
-    }
-}
-
-/// Drop only this prewarm's destinations and await its owned builders. The
-/// embedded router is process-global and remains alive with its original data
-/// directory/settings until the application exits.
 pub(super) async fn drop_prewarm(p: Prewarm) {
-    match p {
-        Prewarm::Building { builders, .. } => {
-            builders.cancel(close_prepared_relay).await;
-        }
-        Prewarm::Ready { node, relay, .. } => {
-            drop_prepared(node, relay, close_prepared_relay).await;
-        }
+    if let Prewarm::Building { builder, .. } = p {
+        builder.cancel().await;
     }
-    // No timer is needed after the owned tasks and synchronous destination
-    // destructors have completed. The process-global router keeps running.
 }
 
 /// The prewarmed node, if it fits this profile. Anything else is torn down
@@ -284,7 +225,7 @@ pub(super) async fn take_prewarmed(
     app: &AppHandle,
     profile: &str,
     settings: gipny_libcore::router::RouterSettings,
-) -> Option<(Arc<I2pNode>, core::PrebuiltRelay)> {
+) -> Option<Arc<I2pNode>> {
     let taken = ctx.prewarm.lock().await.take()?;
     if taken.profile() != profile
         || !router_settings_match(taken.settings(), settings)
@@ -306,20 +247,18 @@ pub(super) async fn take_prewarmed(
         return None;
     }
     let ready = match taken {
-        Prewarm::Ready { node, relay, .. } => (node, relay),
-        Prewarm::Building { builders, .. } => {
+        Prewarm::Ready { node, .. } => node,
+        Prewarm::Building { builder, .. } => {
             // Still building: wait for it rather than start a second router.
             // Its progress is already reaching the same boot screen.
-            match builders.finish(close_prepared_relay).await {
+            match builder.finish().await {
                 Some(ready) => ready,
                 _ => return None,
             }
         }
     };
-    let (directions, is_ready) = current_readiness(&ready.0).await;
-    let Some(ready) =
-        reuse_ready_destination(ready, directions, is_ready, close_prepared_relay).await
-    else {
+    let (directions, is_ready) = current_readiness(&ready).await;
+    if !destination_ready(directions, is_ready) {
         boot_status(
             app,
             "tunnels",
@@ -352,3 +291,7 @@ pub(super) async fn take_prewarmed(
     );
     Some(ready)
 }
+
+#[cfg(test)]
+#[path = "prewarm_tests.rs"]
+mod tests;

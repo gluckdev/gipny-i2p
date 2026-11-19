@@ -5,6 +5,12 @@ use std::time::SystemTime;
 use image::{ImageFormat, Rgba, RgbaImage};
 
 fn main() {
+    if matches!(std::env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("ios" | "macos")) {
+        cc::Build::new().file("src/screen/apple.m").flag("-fobjc-arc").flag("-fblocks").compile("gipny_screen");
+        println!("cargo:rerun-if-changed=src/screen/apple.m");
+        println!("cargo:rustc-link-lib=framework=LocalAuthentication");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+    }
     generate_icons();
     generate_sounds_table();
     ensure_ui_built();

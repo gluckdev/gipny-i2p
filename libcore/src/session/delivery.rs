@@ -10,8 +10,10 @@ pub(super) async fn attempt_group_delivery(
     recipient_contact_id: i64,
     send: impl std::future::Future<Output = Result<()>>,
 ) -> Result<()> {
-    db.pending_outbound_record_attempt(message_id, recipient_contact_id)?;
-    send.await
+    if db.pending_outbound_record_attempt(message_id, recipient_contact_id)? {
+        send.await?;
+    }
+    Ok(())
 }
 
 /// `contact_id` is the peer authenticated by the incoming ratchet session.
@@ -35,8 +37,7 @@ pub(super) fn acknowledge_delivery(
     }
     match (message.contact_id, &message.group_id, &payload.group) {
         (Some(cid), None, None) if cid == contact_id => {
-            db.mark_delivered(local_id)?;
-            Ok(Some(local_id))
+            Ok(db.acknowledge_dm_delivery(local_id, contact_id)?.then_some(local_id))
         }
         (None, Some(gid), Some(group)) if gid == &group.id => {
             match db.acknowledge_group_delivery(local_id, contact_id)? {

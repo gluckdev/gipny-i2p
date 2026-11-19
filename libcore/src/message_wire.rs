@@ -233,6 +233,11 @@ pub struct WireFileAck {
 }
 
 impl WirePayload {
+    pub fn content_expired(&self, now: i64) -> bool {
+        self.origin_msg_id > 0 && self.edit_of.is_none() && self.ack_for.is_none() &&
+            self.callback_data.is_none() && self.ttl_ms.is_some_and(|ttl| self.sent_at.saturating_add(ttl) <= now)
+    }
+
     pub fn simple(origin: u64, body: String, attachments: Vec<WireAttachment>, sent_at: i64, ttl_ms: Option<i64>) -> Self {
         Self {
             origin_msg_id: origin, body, attachments, sent_at, ttl_ms,

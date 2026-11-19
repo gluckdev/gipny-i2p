@@ -4,25 +4,25 @@ use super::inbox::is_transient;
 use super::*;
 
 impl SessionManager {
-    /// The relay this process hosts for us. While `relay_address` names it, we
-    /// collect from it over a pipe instead of out through i2p and back.
-    pub fn set_local_relay(&self, relay: Arc<crate::EphemeralRelay>) {
-        *self.local_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(relay);
+    pub fn terminal_address(&self) -> String {
+        self.local_relay
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|r| r.address().to_owned())
+            .unwrap_or_default()
+    }
+
+    pub fn terminal_hops(&self) -> Option<u8> {
+        self.local_relay
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|r| r.hops())
     }
 
     pub(super) fn relay_address(&self) -> String {
-        self.db
-            .get_setting(SETTING_RELAY_ADDRESS)
-            .ok()
-            .flatten()
-            .and_then(|v| String::from_utf8(v).ok())
-            .unwrap_or_else(|| DEFAULT_RELAY.to_string())
-    }
-
-    pub fn set_relay_address(&self, i2p_address: &str) -> Result<()> {
-        self.db.set_setting(SETTING_RELAY_ADDRESS, i2p_address.as_bytes())?;
-        self.dht_kick.notify_one();
-        Ok(())
+        self.terminal_address()
     }
 
     /// Dial the relays of the most recent contacts now, in the background.
@@ -39,9 +39,7 @@ impl SessionManager {
         contacts.retain(|c| {
             c.trust != TrustLevel::Blocked
                 && c.request_state != crate::db::RequestState::Incoming
-                && c.relay_address
-                    .as_deref()
-                    .is_some_and(|r| !r.trim().is_empty())
+                && (crate::is_valid_i2p_address(&c.i2p_address) || c.relay_address.as_deref().is_some_and(crate::is_valid_i2p_address))
         });
         contacts.sort_by_key(|c| std::cmp::Reverse(c.last_message_at));
         contacts.truncate(WARM);
@@ -49,19 +47,18 @@ impl SessionManager {
             return;
         }
         let this = self.clone();
-        let handle = tokio::spawn(async move {
+        self.spawn_task(async move {
             for contact in &contacts {
                 let _ = this.relay_for(contact).await;
             }
         });
-        self.tasks.lock().unwrap().push(handle);
     }
 
     /// As [`Self::warm_peer_relays`], for one contact whose relay just became
     /// known: added, or a letter or the network named a new one.
     pub(super) fn warm_relay_of(self: &Arc<Self>, contact_id: i64) {
         let this = self.clone();
-        let handle = tokio::spawn(async move {
+        self.spawn_task(async move {
             let Ok(Some(contact)) = this.db.get_contact(contact_id) else {
                 return;
             };
@@ -72,22 +69,15 @@ impl SessionManager {
             }
             let _ = this.relay_for(&contact).await;
         });
-        self.tasks.lock().unwrap().push(handle);
     }
 
     pub(super) fn spawn_relay_loop(self: Arc<Self>) {
         let this = self.clone();
-        let handle = tokio::spawn(async move {
+        self.spawn_task(async move {
             let mut backoff = RECONNECT_INITIAL_MS;
             loop {
                 let i2p_address = this.relay_address();
                 if i2p_address.is_empty() {
-                    // No relay address yet: nothing saved in Settings
-                    // (SETTING_RELAY_ADDRESS) and DEFAULT_RELAY is empty.
-                    // Look again soon; the backoff is for
-                    // failed dials, and growing it here made the first real one
-                    // start late and its retry wait the full 15 s (e2e run
-                    // 36042483601: 20 s from the relay being set to connected).
                     tokio::time::sleep(Duration::from_millis(RECONNECT_INITIAL_MS)).await;
                     continue;
                 }
@@ -106,7 +96,7 @@ impl SessionManager {
                 let connected = match tokio::time::timeout(PEER_RELAY_CONNECT_TIMEOUT, async {
                     match local {
                         Some(stream) => relay::connect_local(stream, &i2p_address, &this.identity).await,
-                        None => relay::connect(&this.node, &i2p_address, &this.identity).await,
+                        None => Err(RelayError::Closed),
                     }
                 })
                 .await
@@ -143,62 +133,74 @@ impl SessionManager {
                 backoff = (backoff * 2).min(RECONNECT_MAX_MS);
             }
         });
-        self.tasks.lock().unwrap().push(handle);
     }
 
-    /// The connection to deposit this contact's mail on: the relay their card
-    /// named, or ours when they named none. Mirrors Core::relay_for — see there
-    /// for why the future is boxed.
+    /// A legacy card can contain two candidates. Neither receives a payload
+    /// until its live terminal proves ownership of this contact's pinned key.
     pub(super) fn relay_for<'a>(
         self: &'a Arc<Self>,
         contact: &'a Contact,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<mpsc::Sender<ClientToRelay>>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<relay::RelaySender>> + Send + 'a>>
+    {
         Box::pin(async move {
-            let theirs = contact
-                .relay_address
-                .as_deref()
-                .map(str::trim)
-                .filter(|r| !r.is_empty());
-            let Some(theirs) = theirs else {
-                return self.relay_out.read().await.clone();
-            };
-            if relay::same_destination(theirs, &self.relay_address()) {
-                return self.relay_out.read().await.clone();
+            let owner = to_arr32(contact.identity_sign.clone()).ok()?;
+            let mut candidates = Vec::new();
+            for address in [
+                Some(contact.i2p_address.as_str()),
+                contact.relay_address.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if crate::is_valid_i2p_address(address)
+                    && !candidates
+                        .iter()
+                        .any(|other: &String| relay::same_destination(other, address))
+                {
+                    candidates.push(address.to_owned());
+                }
             }
+            let first = candidates.first()?;
+            let key = format!("{}:{}:{}", contact.id, first, candidates.last()?);
             // Never dial on this path — see Core::relay_for. It runs inside the
             // send loop, and an unreachable relay has no timeout of its own, so
             // blocking here would stall delivery to every other contact.
             let failures = {
                 let mut pool = self.peer_relays.lock().await;
-                match pool.get(theirs) {
-                    Some(PeerRelay::Ready(tx)) if !tx.is_closed() => return Some(tx.clone()),
+                match pool.get(&key) {
+                    Some(PeerRelay::Ready(tx)) if !tx.is_closed() && tx.belongs_to(&owner) => {
+                        return Some(tx.clone())
+                    }
                     Some(PeerRelay::Ready(_)) | Some(PeerRelay::Connecting) => return None,
                     Some(PeerRelay::Failed { until, .. }) if std::time::Instant::now() < *until => {
                         return None
                     }
                     _ => {}
                 }
-                let failures = match pool.get(theirs) {
+                let failures = match pool.get(&key) {
                     Some(PeerRelay::Failed { failures, .. }) => *failures,
                     _ => 0,
                 };
-                pool.insert(theirs.to_string(), PeerRelay::Connecting);
+                pool.insert(key.clone(), PeerRelay::Connecting);
                 failures
             };
 
             let this = self.clone();
-            let key = theirs.to_string();
             let (contact_id, contact_pk) =
                 (contact.id, to_arr32(contact.identity_sign.clone()).ok());
-            let handle = tokio::spawn(async move {
+            self.spawn_task(async move {
                 let short = &key[..16.min(key.len())];
-                let dial = tokio::time::timeout(
-                    PEER_RELAY_CONNECT_TIMEOUT,
-                    crate::relay::connect_peer(&this.node, &key, &this.identity),
-                )
-                .await;
+                let mut dial = Ok(Err(RelayError::AuthFailed));
+                for address in &candidates {
+                    dial = tokio::time::timeout(
+                        PEER_RELAY_CONNECT_TIMEOUT,
+                        crate::relay::connect_peer(&this.node, address, &this.identity, &owner),
+                    )
+                    .await;
+                    if matches!(dial, Ok(Ok(_))) {
+                        break;
+                    }
+                }
                 let client = match dial {
                     Ok(Ok(c)) => c,
                     other => {
@@ -225,13 +227,12 @@ impl SessionManager {
                         // dial of its own (e2e run 36042483601: 7 s of a 16 s echo).
                         if let Some(wait) = peer_relay_redial_after(failures) {
                             let again = this.clone();
-                            let handle = tokio::spawn(async move {
+                            this.spawn_task(async move {
                                 tokio::time::sleep(wait).await;
                                 if let Ok(Some(c)) = again.db.get_contact(contact_id) {
                                     let _ = again.relay_for(&c).await;
                                 }
                             });
-                            this.track(handle);
                         }
                         return;
                     }
@@ -252,39 +253,12 @@ impl SessionManager {
                 this.clone().run_recv_loop(client, None, None).await;
                 this.peer_relays.lock().await.remove(&key);
             });
-            self.tasks.lock().unwrap().push(handle);
             None
         })
     }
 
     pub(super) async fn route_for(self: &Arc<Self>, contact: &Contact) -> Option<Route> {
-        if let Some(tx) = self.relay_for(contact).await {
-            return Some(Route::Relay(tx));
-        }
-        if self.peer_relay_settling(contact).await {
-            return None;
-        }
-        (self.dht.peer_count() > 0).then_some(Route::Dht)
-    }
-
-    /// Their relay is being dialled (or its old connection is still closing):
-    /// the letter waits in the queue for it rather than going to the network.
-    /// Otherwise the first letters of a burst would take the slow network
-    /// path while the later ones overtake them on the relay, and an agent
-    /// runs commands in the order they arrive.
-    pub(super) async fn peer_relay_settling(&self, contact: &Contact) -> bool {
-        let Some(theirs) = contact
-            .relay_address
-            .as_deref()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-        else {
-            return false;
-        };
-        matches!(
-            self.peer_relays.lock().await.get(theirs),
-            Some(PeerRelay::Connecting) | Some(PeerRelay::Ready(_))
-        )
+        self.relay_for(contact).await
     }
 
     pub(super) async fn deliver(
@@ -292,36 +266,12 @@ impl SessionManager {
         contact: &Contact,
         blob: Vec<u8>,
         route: &Route,
-        first_letter: bool,
+        _first_letter: bool,
+        remaining: Option<Duration>,
     ) -> Result<()> {
-        let their_sign = to_arr32(contact.identity_sign.clone())?;
-        let their_dh = to_arr32(contact.identity_dh.clone())?;
-        match route {
-            Route::Relay(out) => out
-                .send(ClientToRelay::Send {
-                    to: their_sign,
-                    blob,
-                })
-                .await
-                .map_err(|_| SessionError::State),
-            Route::Dht => {
-                let stored = if first_letter {
-                    dht_client::put_intro(&self.dht, &their_sign, &their_dh, &blob).await
-                } else {
-                    dht_client::put_mail(&self.dht, &self.identity, &their_sign, &their_dh, &blob)
-                        .await
-                };
-                if stored {
-                    crate::debug_trace!(
-                        "[dht/session] letter for contact {} left in the network",
-                        contact.id
-                    );
-                    Ok(())
-                } else {
-                    Err(SessionError::State)
-                }
-            }
-        }
+        let owner = to_arr32(contact.identity_sign.clone())?;
+        route.deposit(owner, blob, remaining).await?;
+        Ok(())
     }
 
     /// `collecting_from` is set on the connection to our own relay: once the
@@ -377,7 +327,7 @@ impl SessionManager {
     pub(super) async fn handle_relay_frame(
         self: &Arc<Self>,
         frame: RelayToClient,
-        out_tx: &mpsc::Sender<ClientToRelay>,
+        out_tx: &relay::RelaySender,
     ) -> Result<()> {
         match frame {
             RelayToClient::Incoming { id, from, blob } => {

@@ -8,10 +8,7 @@ use super::*;
 pub enum LinkRoute {
     /// Straight to the relay they collect from.
     Relay,
-    /// Their relay is silent; the network holds the letter until they return.
-    Archive,
-    /// Nowhere to put it — their relay is unknown and we are not in the
-    /// network either.
+    /// Their personal terminal is unavailable.
     None,
 }
 
@@ -71,8 +68,7 @@ impl Core {
     pub async fn link_stats(self: &Arc<Self>, contact_id: i64) -> LinkStats {
         let route = match self.db.get_contact(contact_id).ok().flatten() {
             Some(contact) => match self.route_for(&contact).await {
-                Some(Route::Relay(_)) => LinkRoute::Relay,
-                Some(Route::Dht) => LinkRoute::Archive,
+                Some(_) => LinkRoute::Relay,
                 None => LinkRoute::None,
             },
             None => LinkRoute::None,

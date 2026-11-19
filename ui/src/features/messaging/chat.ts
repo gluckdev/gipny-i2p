@@ -1,3 +1,6 @@
+import { ViewOnceChat } from './view-once';
+import { lifetimeControls } from './chat-preferences';
+import { DEFAULT_TTL_SECS } from '../../app/message-lifetime';
 import { errorText } from '../../app/error-text';
 import { t as tr } from '../localization/i18n';
 import { open, save } from '@tauri-apps/plugin-dialog';
@@ -26,31 +29,10 @@ import { recordClip } from '../voice/clip';
 
 interface PendingFile { name: string; path: string; size: number }
 
-/** What the disappearing-message timer starts at, in seconds.
- *
- * A day, not an hour: this is the floor under a messenger that has no server
- * copy of anything, so a wrong guess costs the conversation rather than a
- * glance. Anyone who wants it shorter has one tap away, and the choice sticks. */
-const DEFAULT_TTL_SECS = 86_400;
 /** How a row with no files known yet, or none at all, is drawn. */
 const NO_FILES = JSON.stringify({ attachments: [], progress: [] });
 
-/** The picker offers the same steps in both directions; the label next to it is
- * what a person reads, so the seconds get said in words. */
-const TTL_OPTIONS: Array<[string, number | null]> = [
-  ['off', null], ['5m', 300], ['1h', 3600], ['1d', 86_400], ['7d', 604_800],
-];
 
-/** The chips say "5m" and "1d"; the note has to say what that is, in the
- * language the rest of the window is in. Units are keys rather than literals
- * because a half-translated sentence ("disappear after 5 мин") reads as a bug,
- * and a wholly untranslated one is at least honest about being untranslated. */
-function ttlSpoken(secs: number | null): string {
-  if (secs === null) return tr('chat.ttl_off');
-  if (secs < 3600) return tr('chat.ttl_on', { time: tr('chat.ttl_minutes', { n: Math.round(secs / 60) }) });
-  if (secs < 86_400) return tr('chat.ttl_on', { time: tr('chat.ttl_hours', { n: Math.round(secs / 3600) }) });
-  return tr('chat.ttl_on', { time: tr('chat.ttl_days', { n: Math.round(secs / 86_400) }) });
-}
 
 /** One reminder per launch, not one per chat opened. */
 let ttlNoticeShown = false;
@@ -64,6 +46,7 @@ export class ChatView extends View {
   private pending: PendingFile[] = [];
   private fileChips: HTMLElement;
   private ttlSecs: number | null = DEFAULT_TTL_SECS;
+  private viewOnce?: ViewOnceChat;
   private ttlPicker: HTMLElement;
   private ttlNote: HTMLElement;
   private ttlRow: HTMLElement;
@@ -169,7 +152,7 @@ export class ChatView extends View {
       const contact = store.contacts.get().find((c) => c.id === cid);
       const lost = contact ? store.lostForDays(contact) : null;
       statusEl.textContent = lost != null
-        ? tr('chat.no_contact_for_days_messages_are_queued_if', { p0: (lost) })
+        ? tr('sidebar.unreachable_for_days', { p0: (lost) })
         : ls != null ? tr('chat.last_seen', { p0: (fmtAgo(ls)) }) : tr('chat.offline');
     };
     renderStatus();
@@ -275,15 +258,15 @@ export class ChatView extends View {
 
     this.fileChips = h('div', { class: 'msg-attachments', style: { marginTop: '0' } });
     this.replyChip = h('div', { class: 'reply-chip', style: { display: 'none' } });
+    if (target.kind === 'contact') {
+      this.viewOnce = new ViewOnceChat(this.app, store, target.id, () => this.ttlSecs ?? DEFAULT_TTL_SECS);
+      this.sub(store.viewOnceChanged, () => void this.viewOnce?.refresh(), true);
+    }
     this.ttlPicker = h('div', { class: 'ttl-picker' });
     // Both exist before the first paint of the picker: it writes the note's text.
     this.ttlNote = h('span', { class: 'ttl-note' });
     this.ttlRow = h('div', { class: 'ttl-row' }, this.ttlNote, this.ttlPicker);
-    // A group's messages never carry a timer (see `send`), so there is nothing
-    // there to show or set — the row is not even in the layout for one.
-    if (!isGroup) {
-      this.renderTtlPicker();
-    }
+    this.renderTtlPicker();
 
     // Icon and label both; the stylesheet shows the label where the chat pane
     // has room for it and the icon alone where it does not.
@@ -337,6 +320,7 @@ export class ChatView extends View {
       this.promptEl.textContent = consoleMode ? '$' : '>';
       this.input.placeholder = placeholderFor(consoleMode);
       this.ttlRow.classList.toggle('hidden', consoleMode);
+      if (this.viewOnce) this.viewOnce.compose.hidden = consoleMode || !peer || peer.request !== 'none' || peer.trust === 2;
       this.replyChip.classList.toggle('hidden', consoleMode);
     };
     renderAgentControls();
@@ -371,11 +355,8 @@ export class ChatView extends View {
       headerAvatar.replaceChildren(avatar(title, avatarSeed, (isGroup ? 'avatar-group ' : '') + 'chat-avatar', !isGroup));
     }));
 
-    // With built-in relays a contact's address lasts until they restart. If it
-    // has been silent for a while with mail queued, say so and say what helps —
-    // the alternative is messages that wait forever with no explanation.
     this.unreachableNote = h('div', { class: 'chat-notice hidden' },
-      tr('chat.this_contact_has_been_unreachable_for_a_while'));
+      tr('chat.waiting_for_peer'));
     this.sub(store.unreachable, (set) => {
       const hit = target.kind === 'contact' && set.has(target.id as number);
       this.unreachableNote.classList.toggle('hidden', !hit);
@@ -395,6 +376,8 @@ export class ChatView extends View {
     this.subs.push(Api.onChatPrefsChanged((prefs) => {
       this.prefsRevision++;
       this.updateHistoryPrompt(prefs);
+      const ttl = prefs.chatTtlSecs?.[targetKey(this.target)] ?? prefs.ttlSecs ?? DEFAULT_TTL_SECS;
+      if (ttl !== this.ttlSecs) { this.ttlSecs = ttl; this.renderTtlPicker(); }
     }));
     void this.loadPrefs();
 
@@ -417,6 +400,7 @@ export class ChatView extends View {
       this.unreachableNote,
       this.historyPrompt,
       this.peerHistoryNote,
+      this.viewOnce?.inbox ?? null,
       this.peerNote,
       this.pinnedBanner.el,
       this.logWrap,
@@ -428,6 +412,7 @@ export class ChatView extends View {
           this.input,
           supportsCapture() && h('button', { class: 'icon-btn voice-clip', title: tr('voice.clip'), 'aria-label': tr('voice.clip'), onClick: () => {
             recordClip(this.app, async file => {
+              if (!this.ttlPicker.querySelector('input')?.reportValidity()) return;
               const epoch = this.draftEpoch;
               const data = await new Promise<string>((resolve, reject) => {
                 const reader = new FileReader();
@@ -438,10 +423,11 @@ export class ChatView extends View {
               if (this.disposed || epoch !== this.draftEpoch || !sameTarget(store.selectedChat.get(), target)) return;
               const attachments = [{ name: file.name, data }];
               if (target.kind === 'contact') await Api.sendMessage(target.id, '', attachments, this.ttlSecs, this.replyTo?.id);
-              else await Api.sendGroupMessage(target.id, '', attachments, null, this.replyTo?.id);
+              else await Api.sendGroupMessage(target.id, '', attachments, this.ttlSecs, this.replyTo?.id);
               await store.loadMessages(target);
             });
           } }, icon('microphone')),
+          this.viewOnce?.compose ?? null,
           h('button', { class: 'icon-btn chat-attach', title: tr('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
           h('button', { class: 'btn chat-send', title: tr('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, tr('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
         ),
@@ -582,7 +568,7 @@ export class ChatView extends View {
     this.renderLog();
     this.renderFileChips();
     this.renderReplyChip();
-    if (this.target.kind !== 'group') this.renderTtlPicker();
+    this.renderTtlPicker();
     this.stickyBottom = draft.stickyBottom;
     requestAnimationFrame(() => { this.log.scrollTop = draft.stickyBottom ? this.log.scrollHeight : draft.scrollTop; });
   }
@@ -590,6 +576,7 @@ export class ChatView extends View {
   destroy(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.viewOnce?.destroy();
     setChatLayouts([]);
     this.draftEpoch++;
     this.composerObserver?.disconnect();
@@ -850,7 +837,7 @@ export class ChatView extends View {
     const consoleFrame = m.console ? JSON.stringify(m.console) : '';
     const peerEvents = m.peer_events?.length ? JSON.stringify(m.peer_events) : '';
     const deletion = m.deleted_at != null ? JSON.stringify((this.deletionGroups.get(m.id) ?? [m]).map(row => [row.id, row.deletion_notice])) : '';
-    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${deletion}|${this.editingId === m.id ? 'e' : ''}|${peerEvents}`;
+    return `${m.body}|${m.sent ? 1 : 0}${m.delivered ? 1 : 0}|${m.delivery_expired_at}|${pinned}|${btns}|${consoleFrame}|${m.dm_seq}|${m.deleted_at}|${deletion}|${this.editingId === m.id ? 'e' : ''}|${peerEvents}`;
   }
 
   private renderLog(): void {
@@ -1050,15 +1037,18 @@ export class ChatView extends View {
   }
 
   private renderMessage(m: Message): HTMLElement {
+    if (m.deleted_at != null && m.delivery_expired_at != null) {
+      return h('div', { class: 'msg out delivery-expired', 'data-mid': m.id }, tr('chat.delivery_expired'), ' · ', fmtTime(m.sent_at));
+    }
     if (m.deleted_at != null) {
       return this.renderDeletionNotice(this.deletionGroups.get(m.id) ?? [m]);
     }
     if (m.console) return this.renderConsoleMessage(m);
     if (this.editingId === m.id) return this.renderEditing(m);
     const meta = m.outgoing
-      ? (m.delivered ? '✓✓' : (m.sent ? '✓' : '🕓'))
+      ? (m.delivery_expired_at != null ? tr('chat.delivery_expired') : m.delivered ? '✓✓' : (m.sent ? '✓' : '🕓'))
       : '';
-    const metaTitle = m.delivered ? tr('chat.delivered') : m.sent ? tr('chat.sent') : tr('chat.queued');
+    const metaTitle = m.delivery_expired_at != null ? tr('chat.delivery_expired') : m.delivered ? tr('chat.delivered') : m.sent ? tr('chat.sent') : tr('chat.queued');
     const sender = this.senderNameFor(m);
     const pinned = this.isPinned(m);
     const fromBot = !m.outgoing && this.isFromBot(m);
@@ -1075,7 +1065,7 @@ export class ChatView extends View {
             m.dm_seq != null && h('span', { class: 'msg-number', title: tr('chat.local_message_number') }, `#${m.dm_seq} `),
             pinned && h('span', { class: 'msg-pin-indicator', title: tr('chat.pinned') }, '📌'),
             h('span', { class: 'msg-ts' }, fmtTime(m.sent_at)),
-            meta && h('span', { class: 'msg-meta' + (m.delivered ? ' delivered' : ''), title: metaTitle }, meta),
+            meta && h('span', { class: 'msg-meta' + (m.delivery_expired_at != null ? ' delivery-expired' : m.delivered ? ' delivered' : ''), title: metaTitle }, meta),
           ),
         ),
       ),
@@ -1391,7 +1381,7 @@ export class ChatView extends View {
     const progress = files.progress.filter(file => file.status !== 'complete' || !attachments.some(card => card.name === file.name));
     if (!attachments.length && !progress.length) return;
     container.classList.toggle('attachment-only', !message?.body.trim());
-    const sending = progress.some(file => file.status === 'sending') || (!!message?.outgoing && !message.delivered && attachments.length > 0 && progress.length === 0);
+    const sending = progress.some(file => file.status === 'sending') || (!!message?.outgoing && message.delivery_expired_at == null && !message.delivered && attachments.length > 0 && progress.length === 0);
     container.classList.toggle('file-sending', sending);
     // Metadata ACK never substitutes for file-part ACK in the displayed status.
     if (progress.some(file => !file.incoming && file.status !== 'complete')) container.querySelector('.msg-meta')?.remove();
@@ -1623,28 +1613,16 @@ export class ChatView extends View {
   }
 
   private renderTtlPicker(): void {
-    this.ttlPicker.replaceChildren();
-    for (const [label, secs] of TTL_OPTIONS) {
-      this.ttlPicker.appendChild(h('div', {
-        class: 'ttl-chip' + (this.ttlSecs === secs ? ' active' : ''),
-        title: tr('chat.ttl_title'),
-        onClick: () => this.setTtl(secs),
-      }, label));
-    }
-    this.ttlNote.textContent = ttlSpoken(this.ttlSecs);
+    this.ttlPicker.replaceChildren(...lifetimeControls(this.ttlSecs ?? DEFAULT_TTL_SECS, secs => this.setTtl(secs)));
+    this.ttlNote.textContent = tr('chat.ttl_label');
+    this.ttlRow.title = tr('chat.ttl_title');
   }
 
-  /** Change the timer and remember it.
-   *
-   * The pick is per profile rather than per chat: a person who wants their
-   * messages to disappear means it of the people they talk to, and a timer that
-   * reset on every new conversation would be a timer nobody could rely on. It
-   * still only ever applies to what is sent from now on. */
+  /** Keep the choice with this chat for future messages. */
   private setTtl(secs: number | null): void {
     this.prefsRevision++;
     this.ttlSecs = secs;
-    this.renderTtlPicker();
-    void Api.updateChatPrefs({ ttlSecs: secs, ttlChosen: true }).catch(() => {
+    void Api.updateChatPrefs({ chatTtlSecs: { [targetKey(this.target)]: secs ?? DEFAULT_TTL_SECS } }).catch(() => {
       // A preference that will not persist is worth saying out loud: the person
       // would otherwise find the timer back where it started after a restart.
       this.store.showToast(tr('chat.ttl_save_failed'), true);
@@ -1658,13 +1636,7 @@ export class ChatView extends View {
     const prefs = await Api.getChatPrefs();
     if (this.disposed || revision !== this.prefsRevision) return;
     this.updateHistoryPrompt(prefs);
-    if (this.target.kind === 'group') return;
-    // null is a choice, not an absence: picking "off" stores null, and testing
-    // ttlSecs on its own cannot tell that from a profile that never chose.
-    // It would leave the default sitting in this.ttlSecs and put the timer back
-    // on a day later, with the picker showing "off" — the one state the person
-    // had explicitly ruled out. ttlChosen is what separates the two.
-    if (prefs.ttlChosen || prefs.ttlSecs !== null) this.ttlSecs = prefs.ttlSecs;
+    this.ttlSecs = prefs.chatTtlSecs?.[targetKey(this.target)] ?? prefs.ttlSecs ?? DEFAULT_TTL_SECS;
     this.renderTtlPicker();
     if (prefs.ttlChosen || ttlNoticeShown) return;
     ttlNoticeShown = true;
@@ -1699,6 +1671,7 @@ export class ChatView extends View {
       }
       return;
     }
+    if (!this.ttlPicker.querySelector('input')?.reportValidity()) return;
     const replyToId = this.replyTo?.id ?? null;
     this.input.value = '';
     this.input.style.height = 'auto';
@@ -1706,7 +1679,7 @@ export class ChatView extends View {
     this.replyTo = null;
     this.renderFileChips();
     this.renderReplyChip();
-    const ttl = this.target.kind === 'group' ? null : this.ttlSecs;
+    const ttl = this.ttlSecs;
     try {
       await this.store.sendMessage(this.target, body, paths, ttl, replyToId);
     } catch (e) {

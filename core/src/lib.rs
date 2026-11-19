@@ -3,6 +3,7 @@ mod commands;
 pub mod core;
 mod diagnostics;
 mod platform;
+mod screen;
 use commands::files::PASTE_DIR;
 #[cfg(unix)]
 use diagnostics::{install_log_capture, log_enabled};
@@ -41,6 +42,7 @@ pub struct AppCtx {
     pub(crate) prewarm_generation: std::sync::atomic::AtomicU64,
     pub profile: Mutex<Option<String>>,
     pub vault: Mutex<Option<Arc<Vault>>>,
+    pub(crate) decoy_session: std::sync::atomic::AtomicBool,
     pub core: Mutex<Option<Arc<Core>>>,
     /// The i2p node built ahead of the password, or being built right now.
     ///
@@ -58,6 +60,7 @@ impl AppCtx {
             prewarm_generation: std::sync::atomic::AtomicU64::new(0),
             profile: Mutex::new(None),
             vault: Mutex::new(None),
+            decoy_session: std::sync::atomic::AtomicBool::new(false),
             core: Mutex::new(None),
             prewarm: Mutex::new(None),
         }
@@ -103,6 +106,10 @@ pub fn run() {
             commands::profiles::vault_create,
             commands::profiles::vault_unlock,
             commands::vault::vault_lock,
+            commands::vault::verify_screen_password,
+            screen::device_screen_auth_available,
+            screen::verify_device_screen_auth,
+            commands::vault::close_locked_app,
             commands::vault::change_passphrase,
             commands::vault::set_duress,
             commands::vault::set_max_attempts,
@@ -115,11 +122,9 @@ pub fn run() {
             commands::identity::get_display_name,
             commands::identity::set_display_name,
             commands::network::get_relay_address,
-            commands::network::set_relay_address,
             commands::network::get_relay_info,
             commands::network::get_dht_status,
             commands::network::link_stats,
-            commands::network::set_relay_mode,
             commands::messages::get_ui_data,
             commands::messages::set_ui_data,
             commands::messages::clear_message_history,
@@ -143,6 +148,8 @@ pub fn run() {
             commands::agent::send_console_command,
             commands::agent::send_agent_off,
             commands::messages::list_messages,
+            commands::messages::list_delivery_expiry_notices,
+            commands::messages::acknowledge_delivery_expiry_notices,
             commands::messages::message_position,
             commands::messages::unread_count,
             commands::messages::mark_read,
@@ -151,6 +158,11 @@ pub fn run() {
             commands::messages::report_peer_event,
             commands::messages::clear_dm_chat,
             commands::messages::send_message,
+            commands::messages::send_view_once,
+            commands::messages::list_view_once_deliveries,
+            commands::messages::acknowledge_view_once_deliveries,
+            commands::messages::list_view_once,
+            commands::messages::open_view_once,
             commands::messages::send_message_paths,
             commands::messages::send_edit,
             commands::messages::send_edit_group,
@@ -246,8 +258,17 @@ pub fn run() {
             }
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             install_tray(app)?;
+            screen::install(app);
             Ok(())
         });
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let builder = builder.on_window_event(|window, event| {
+        if matches!(event, tauri::WindowEvent::Suspended) {
+            use tauri::Emitter;
+            let _ = window.emit("app_hidden", ());
+        }
+    });
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.on_window_event(|window, event| match event {

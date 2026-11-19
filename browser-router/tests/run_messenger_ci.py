@@ -140,6 +140,24 @@ def rpc(cdp, command, **args):
     return evaluate(cdp, f'__coreCall({json.dumps(command)}, {json.dumps(args)})')
 
 
+def recovery_metrics(client):
+    # A returned peer has a new router. The continuing peer's counters include
+    # earlier successful calls and files, so take baselines for both timelines.
+    try:
+        counters = rpc(client, 'browser_diagnostics')['counters']
+        names = (
+            'client_stream_syn_created', 'client_stream_syn_received',
+            'client_stream_syn_ack_queued', 'client_stream_syn_ack_received',
+            'client_stream_syn_rejected', 'client_lease_refresh_requested',
+            'client_lease_query_success', 'client_newer_lease_received',
+            'client_lease_encryption_key_changed', 'client_stale_lease_query_ignored',
+            'client_stale_encryption_key_ignored', 'client_stale_garlic_lease_ignored',
+        )
+        return {name: int(counters.get(name, 0)) for name in names}
+    except Exception:
+        return None
+
+
 def wait_for(check, seconds, label):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -271,6 +289,34 @@ def unlock_ui(cdp, profile, password, wrong_password='incorrect password'):
     wait_for(lambda: rpc(cdp, 'vault_status', profile=profile)['unlocked'], 30, 'production unlock form')
 
 
+def check_view_once(alice, bob, alice_contact, bob_contact):
+    body = secrets.token_hex(5200)  # Over two 4 KiB parts even before authenticated encryption.
+    # A fresh I2P stream may spend longer in connect/auth than CDP's receive
+    # deadline. Poll the real RPC result without repeating the live send.
+    args = json.dumps(dict(contactId=alice_contact, body=body, ttlSecs=300))
+    evaluate(alice, f"""void (__coreCall('send_view_once', {args}).then(
+      id => {{ globalThis.__viewOnceSent = {{id}}; }},
+      () => {{ globalThis.__viewOnceSent = {{failed:true}}; }}))""")
+    result = wait_for(lambda: evaluate(alice, 'globalThis.__viewOnceSent || null'), 230, 'direct view-once exchange')
+    if result.get('failed'):
+        raise RuntimeError('peer did not confirm the direct view-once exchange')
+    item = result['id']
+    pending = rpc(bob, 'list_view_once', contactId=bob_contact)
+    if not any(entry.get('id') == item and set(entry) == {'id', 'contact_id', 'sent_at', 'expires_at'} for entry in pending):
+        raise RuntimeError('view-once receiver did not list a metadata-only notice')
+    for client, contact in [(alice, alice_contact), (bob, bob_contact)]:
+        if any(body in row.get('body', '') for row in rpc(client, 'list_messages', contactId=contact)):
+            raise RuntimeError('view-once text entered ordinary message history')
+    # Keep contents in the browser; return only the concurrent-open assertion.
+    checked = evaluate(bob, f"""(async () => {{
+      const outcomes = await Promise.allSettled([1,2].map(() => __coreCall('open_view_once', {{id:{json.dumps(item)}}})));
+      return outcomes.filter(x => x.status === 'rejected').length === 1 &&
+        outcomes.some(x => x.status === 'fulfilled' && x.value === {json.dumps(body)});
+    }})()""")
+    if not checked or any(entry['id'] == item for entry in rpc(bob, 'list_view_once', contactId=bob_contact)):
+        raise RuntimeError('view-once concurrent opens did not consume the message exactly once')
+
+
 def check_voice(alice, bob):
     def click_voice(cdp, selector):
         return evaluate(cdp, "(() => {const b=document.querySelector(" + json.dumps(selector) + ");if(!b || b.hidden)return false;b.click();return true})()")
@@ -363,6 +409,10 @@ def main():
             evaluate(alice, 'new Promise((resolve,reject)=>window.dispatchEvent(new CustomEvent("gipny-unlock-passkey",{detail:{profile:"alice",done:error=>error?reject(error):resolve(true)}})))')
             receipt['assertions'].append('actual WebAuthn PRF helper enrollment and unlock with a virtual CTAP2 authenticator')
             create_ui(bob, 'bob', password_b)
+            # This scenario verifies saved history after process loss. Both fixture
+            # accounts opt in; ordinary profiles default to clearing local history.
+            for client in (alice, bob):
+                rpc(client, 'set_ui_data', key='chat_prefs', json=json.dumps({'clearOnLock': False}))
             for client in clients:
                 wait_for(lambda: ready(client), STARTUP_WAIT, 'client destination tunnels')
             receipt['assertions'].append('two independent WASM client destinations ready over live I2P')
@@ -416,6 +466,11 @@ def main():
                 raise RuntimeError('attachment bytes changed during delivery')
             receipt['assertions'].append('bidirectional shared X3DH/Double Ratchet, end-to-end delivery receipts and authenticated multipart attachment')
             print('MESSENGER_PROGRESS bidirectional messages delivered', flush=True)
+            try:
+                check_view_once(alice, bob, alice_contact, bob_contact)
+                receipt['assertions'].append('live view-once I2P exchange, metadata-only notification and single successful concurrent open')
+            except (RuntimeError, TimeoutError) as error:
+                receipt['view_once_error'] = str(error)[:500]
             # A media failure still fails this run, while healthy profiles can
             # exercise the independent file, outbox and host-recovery checks.
             try:
@@ -492,6 +547,9 @@ def main():
             })()''')
             if not mirrored:
                 raise RuntimeError('password change left an old credential wrapper in a live OPFS slot')
+            recovery = receipt['outbox_recovery_metrics'] = {
+                'before_send': {'bob': recovery_metrics(bob)}
+            }
             offline = rpc(bob, 'send_message', contactId=bob_contact, body='durable offline outbox', attachments=[], ttlSecs=None, replyTo=None)
             time.sleep(3)
             unlock_ui(alice, 'alice', password_new, wrong_password=password_a)
@@ -500,10 +558,15 @@ def main():
             receipt['assertions'].append('password rotation mirrored across OPFS slots; old password rejected; identity and destination restored after page/worker restart')
             wait_for(lambda: ready(alice), STARTUP_WAIT, 'restored client destination')
             print('MESSENGER_PROGRESS restored client destination ready', flush=True)
+            end = time.monotonic() + 300
+            recovery['destination_ready'] = {'alice': recovery_metrics(alice), 'bob': recovery_metrics(bob)}
             # Alice's new router publishes new tunnels; Bob's copy of her old
             # lease set fails first (dead streams, CANT_REACH_PEER) and his
             # retries back off up to 60 s between attempts.
-            wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact)), 300, 'offline outbox recovered recipient')
+            try:
+                wait_for(lambda: any(row['body'] == 'durable offline outbox' for row in rpc(alice, 'list_messages', contactId=alice_contact)), end - time.monotonic(), 'offline outbox recovered recipient')
+            finally:
+                recovery['recipient_wait_end'] = {'alice': recovery_metrics(alice), 'bob': recovery_metrics(bob)}
             wait_for(lambda: any(row['id'] == offline and row['delivered'] for row in rpc(bob, 'list_messages', contactId=bob_contact)), 120, 'offline message delivery receipt')
             rows = rpc(alice, 'list_messages', contactId=alice_contact)
             if len([row for row in rows if row['body'] == 'durable offline outbox']) != 1:
@@ -560,8 +623,9 @@ def main():
             for client in clients:
                 rpc(client, 'vault_lock')
             receipt['assertions'].append('application host stopped: root navigation, cached WASM, decrypted history, two fresh routers, message and end-to-end receipt through independent transport using revalidated local bootstrap')
-            if 'voice_error' in receipt:
-                raise RuntimeError(receipt['voice_error'])
+            deferred_errors = [receipt[key] for key in ('voice_error', 'view_once_error') if key in receipt]
+            if deferred_errors:
+                raise RuntimeError(' / '.join(deferred_errors))
             receipt['stage'] = 'passed'
             print('MESSENGER_PASS live browser exchange and restart recovery', flush=True)
     except Exception as error:

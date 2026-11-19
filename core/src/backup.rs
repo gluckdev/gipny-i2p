@@ -137,10 +137,14 @@ impl From<BackupAttachment> for BackupAttachmentV3 {
 
 pub(crate) fn export_raw_backup_data(db: &gipny_libcore::db::Db) -> Result<Vec<u8>, String> {
     let mut settings = db.list_all_settings().map_err(err)?;
-    settings.retain(|(key, _)| key != gipny_libcore::db::Db::DM_BACKUP_KEY);
+    settings.retain(|(key, _)| key != gipny_libcore::db::Db::DM_BACKUP_KEY && key != gipny_libcore::db::Db::DELIVERY_BACKUP_KEY);
     settings.push((
         gipny_libcore::db::Db::DM_BACKUP_KEY.into(),
         db.export_dm_state().map_err(err)?,
+    ));
+    settings.push((
+        gipny_libcore::db::Db::DELIVERY_BACKUP_KEY.into(),
+        db.export_delivery_state().map_err(err)?,
     ));
     let contacts = db
         .list_contacts()
@@ -370,6 +374,7 @@ pub(crate) async fn restore_raw_backup_data(
             last_attempt_at: m.last_attempt_at,
             send_attempts: m.send_attempts as i64,
             reply_to: m.reply_to,
+            delivery_expired_at: None,
             dm_seq: None,
             deleted_at: None,
         })
@@ -396,6 +401,7 @@ pub(crate) async fn restore_raw_backup_data(
     db.bulk_insert_attachments(&attachments_db).map_err(err)?;
     db.bulk_insert_pinned(&backup.pinned).map_err(err)?;
     db.restore_dm_state().map_err(err)?;
+    db.restore_delivery_state().map_err(err)?;
     db.cleanup_deleted_files(&attach_dir).map_err(err)?;
     Ok(())
 }

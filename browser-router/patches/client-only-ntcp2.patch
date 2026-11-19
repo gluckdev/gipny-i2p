@@ -1064,6 +1064,66 @@ index cd3b4a4..8d613f9 100644
  /// Logging target for the file.
  const LOG_TARGET: &str = "emissary::sam";
  
+diff --git a/emissary-core/src/sam/protocol/streaming/mod.rs b/emissary-core/src/sam/protocol/streaming/mod.rs
+index 3e6dc23..174635c 100644
+--- a/emissary-core/src/sam/protocol/streaming/mod.rs
++++ b/emissary-core/src/sam/protocol/streaming/mod.rs
+@@ -423,6 +423,7 @@ impl<R: Runtime> StreamManager<R> {
+             ..
+         }) = self.pending_outbound.remove(&send_stream_id)
+         {
++            R::client_event("client_stream_syn_ack_received", 1);
+             tracing::trace!(
+                 target: LOG_TARGET,
+                 local = %self.destination_id,
+@@ -478,6 +479,7 @@ impl<R: Runtime> StreamManager<R> {
+             return Err(StreamingError::ReplayProtectionCheckFailed);
+         }
+ 
++        R::client_event("client_stream_syn_received", 1);
+         tracing::info!(
+             target: LOG_TARGET,
+             local = %self.destination_id,
+@@ -522,7 +524,7 @@ impl<R: Runtime> StreamManager<R> {
+                     &self.signing_key,
+                 );
+ 
+-                let _ = self.outbound_tx.try_send((
++                let queued = self.outbound_tx.try_send((
+                     DeliveryStyle::Unspecified {
+                         destination_id: destination_id.clone(),
+                     },
+@@ -530,6 +532,9 @@ impl<R: Runtime> StreamManager<R> {
+                     dst_port,
+                     src_port,
+                 ));
++                if queued.is_ok() {
++                    R::client_event("client_stream_syn_ack_queued", 1);
++                }
+ 
+                 self.pending_inbound.insert(recv_stream_id, pending);
+                 self.destination_streams
+@@ -980,6 +985,7 @@ impl<R: Runtime> StreamManager<R> {
+         // the first packet
+         //
+         // `SYN` is retried 3 times before the remote destination is considered unreachable
++        R::client_event("client_stream_syn_created", 1);
+         self.pending_outbound.insert(
+             recv_stream_id,
+             PendingOutboundStream {
+diff --git a/emissary-core/src/sam/protocol/streaming/stream/active.rs b/emissary-core/src/sam/protocol/streaming/stream/active.rs
+index f439d2f..7648e01 100644
+--- a/emissary-core/src/sam/protocol/streaming/stream/active.rs
++++ b/emissary-core/src/sam/protocol/streaming/stream/active.rs
+@@ -616,6 +616,8 @@ impl<R: Runtime> Stream<R> {
+                             ?error,
+                             "failed to send initial SYN reply",
+                         );
++                    } else {
++                        R::client_event("client_stream_syn_ack_queued", 1);
+                     }
+ 
+                     (
 diff --git a/emissary-core/src/sam/session.rs b/emissary-core/src/sam/session.rs
 index 76ba296..2f7553f 100644
 --- a/emissary-core/src/sam/session.rs

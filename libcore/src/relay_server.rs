@@ -1,25 +1,7 @@
-//! A relay that runs inside a client process.
-//!
-//! Same protocol as the standalone relay in `core/relay`, ported down to this
-//! workspace's dependency majors: that crate cannot be linked as a library,
-//! because its libsqlite3-sys is a different major declaring the same
-//! `links = "sqlite3"`. The frames are the enums in [`crate::relay`], and the
-//! golden tests there pin their bytes to what `core/relay` puts on the wire.
-//!
-//! Two deliberate differences from the standalone relay:
-//!
-//! * **Memory only.** [`MemStore`] never touches disk. The keys of the people a
-//!   relay serves, their ciphertext, and the record of who got something when
-//!   stay out of this user's files entirely and are gone when the app closes.
-//! * **A new destination every start**, never written down. There is no stable
-//!   LeaseSet whose appearances would trace this user's online hours.
-//!
-//! So this is a fast path for whoever is online now, not a mailbox. The app
-//! starts one for itself at every launch unless an external relay is chosen
-//! (`core/src/core.rs`, `run_hosted_relay`). Contacts learn the address of the
-//! day from the relay field every message carries, and from the empty
-//! announcement sent to each of them once the relay is up; see
-//! docs/relay-independence.md for what that does and does not cover.
+//! Each unlocked device hosts a published I2P terminal. The protected
+//! profile database retains its inbound destination key across restarts.
+//! Contacts verify the profile owner's signature before transmitting.
+//! Queued envelopes and partial uploads use bounded memory in this process.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -33,12 +15,16 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::net::NetError;
-use crate::relay::{recv, send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
+#[cfg(test)]
+use crate::relay::recv;
+use crate::relay::{send, ClientToRelay, RelayError, RelayToClient, ERR_NEEDS_AUTH_V2};
 
 /// Answers one relay-network request, given the connection's challenge and the
 /// request's bytes; returns the response's bytes. The node behind it lives in
 /// [`crate::dht_client`]; the relay only carries the frames.
 pub type DhtHandler = Arc<dyn Fn(&[u8; 32], Vec<u8>) -> Vec<u8> + Send + Sync>;
+pub type ViewOnceAccept = Box<dyn FnOnce(Vec<u8>) -> bool + Send>;
+pub type ViewOnceHandler = Arc<dyn Fn([u8; 32], crate::view_once::Request) -> Option<(Vec<u8>, ViewOnceAccept)> + Send + Sync>;
 
 /// Requests one anonymous relay-network connection may make, and how long it
 /// may sit idle between them.
@@ -175,7 +161,7 @@ impl Lanes {
     }
 }
 
-/// Most messages one push batch carries; core/relay's `PENDING_LIMIT`.
+/// Maximum number of pending envelopes in one push batch.
 const PENDING_LIMIT: usize = 200;
 /// How often a connected client is re-offered messages it has not acked.
 const PUSH_REFRESH: Duration = Duration::from_secs(30);
@@ -266,12 +252,10 @@ fn accounted_message_bytes(blob_len: usize) -> usize {
 
 /// Budget for a relay held in RAM.
 ///
-/// core/relay keeps up to 50 000 messages per recipient for 14 days — a
-/// server's disk budget. Here every byte is the host user's memory, so the caps
-/// are bytes, and when one is hit the oldest message goes first. Losing it is
-/// recoverable: the sender still holds it unacked and sends it again.
+/// Memory quota includes message metadata. Evicted, unacknowledged envelopes
+/// can be retried by the sender.
 #[derive(Clone, Debug)]
-pub struct MemStoreLimits {
+struct MemStoreLimits {
     /// Global message budget including a fixed per-record metadata charge.
     pub max_total_bytes: usize,
     /// Held message bytes for one recipient, so one busy inbox cannot starve
@@ -289,7 +273,7 @@ pub struct MemStoreLimits {
     /// refuse everyone else's. What a relay inside somebody's app is for — it
     /// is that person's inbox, not a public mailbox that strangers can fill
     /// with up to `max_total_bytes` of the host's memory. `None` serves
-    /// anyone, as a standalone relay does.
+    /// any identity in multi-recipient store tests.
     pub only_for: Option<[u8; 32]>,
 }
 
@@ -373,15 +357,18 @@ impl Inner {
 
 /// In-memory relay storage with the semantics `client_loop` relies on:
 /// ids are unique and increasing, `pending_above` returns them in order.
-pub struct MemStore {
+struct MemStore {
     inner: std::sync::Mutex<Inner>,
     limits: MemStoreLimits,
     serving: std::sync::RwLock<Serving>,
+    terminal_identity: std::sync::RwLock<Option<Arc<crate::crypto::Identity>>>,
+    view_once: std::sync::RwLock<Option<ViewOnceHandler>>,
 }
 
 /// Whose mail a store takes.
 #[derive(Clone, Copy)]
 enum Serving {
+    #[cfg(test)]
     Anyone,
     Only([u8; 32]),
     /// Built before its owner is known (tunnels built while the password is
@@ -397,25 +384,31 @@ impl MemStore {
         limits.max_total_messages = limits.max_total_messages.max(1);
         let serving = match limits.only_for {
             Some(owner) => Serving::Only(owner),
+            #[cfg(test)]
             None => Serving::Anyone,
+            #[cfg(not(test))]
+            None => Serving::Nobody,
         };
-        Self { inner: std::sync::Mutex::new(Inner::default()), limits, serving: std::sync::RwLock::new(serving) }
+        Self { inner: std::sync::Mutex::new(Inner::default()), limits, terminal_identity: Default::default(), serving: std::sync::RwLock::new(serving), view_once: Default::default() }
     }
 
     /// A personal store whose owner is not known yet: refuses everything.
-    pub fn unclaimed(limits: MemStoreLimits) -> Self {
+    #[cfg(test)]
+    fn unclaimed(limits: MemStoreLimits) -> Self {
         let store = Self::new(limits);
         *store.serving.write().unwrap_or_else(|p| p.into_inner()) = Serving::Nobody;
         store
     }
 
     /// From now on serve `owner` alone.
-    pub fn claim(&self, owner: [u8; 32]) {
+    #[cfg(test)]
+    fn claim(&self, owner: [u8; 32]) {
         *self.serving.write().unwrap_or_else(|p| p.into_inner()) = Serving::Only(owner);
     }
 
     fn serves(&self, pk: &[u8; 32]) -> bool {
         match *self.serving.read().unwrap_or_else(|p| p.into_inner()) {
+            #[cfg(test)]
             Serving::Anyone => true,
             Serving::Only(owner) => owner == *pk,
             Serving::Nobody => false,
@@ -508,8 +501,6 @@ impl MemStore {
 
     /// Drop message `id`, but only if it is addressed to `pk`.
     ///
-    /// core/relay deleted by id alone, so any authenticated client could erase
-    /// anyone's mail by walking the ids. An ack is the recipient's to give.
     pub fn ack(&self, pk: &[u8; 32], id: u64) -> bool {
         let mut g = self.lock();
         match g.messages.get(&id) {
@@ -547,18 +538,6 @@ impl MemStore {
     }
 }
 
-/// Serve one client connection until it closes.
-///
-/// Mirrors `handle_client` in core/relay/src/main.rs, with three fixes carried
-/// here and not there: the connection is registered before `AuthOk`, so a
-/// message sent the instant a recipient authenticates is pushed rather than
-/// waiting for the next refresh; on exit it unregisters only itself, not a newer
-/// connection from the same key; and acks are checked against the recipient.
-///
-/// `destination_hash` is this relay's own ([`crate::relay::destination_hash`]),
-/// which an `AuthV2` signature must cover. A client that logs in with plain
-/// `Auth` may deposit and fetch bundles and nothing else: its signature could
-/// have been lifted from a login to some other relay.
 /// A relay-network connection: request, answer, until the other side is done.
 /// It never logs in, so nothing here touches the mailbox or `Connections`.
 async fn serve_dht<S>(mut stream: S, challenge: [u8; 32], first: Vec<u8>, dht: Option<DhtHandler>) -> Result<(), RelayError>
@@ -592,7 +571,7 @@ where
     Ok(())
 }
 
-pub async fn handle_client<S>(
+async fn handle_client<S>(
     mut stream: S,
     store: Arc<MemStore>,
     connections: Connections,
@@ -608,8 +587,17 @@ where
 
     let first = tokio::time::timeout(FIRST_FRAME_DEADLINE, recv_server_frame::<_, ClientToRelay>(&mut stream)).await
         .map_err(|_| RelayError::Proto("no first frame in time".into()))??;
+    let terminal_proof = if let ClientToRelay::AuthFramedV1 { sign_pk, nonce, .. } = &first {
+        let owner=store.terminal_identity.read().unwrap_or_else(|p|p.into_inner());
+        let owner=owner.as_ref().ok_or(RelayError::AuthFailed)?;
+        Some(owner.sign(&crate::relay::terminal_proof_message(&destination_hash,sign_pk,&challenge,nonce)))
+    } else { None };
+    let framed=terminal_proof.is_some();
     let (sign_pk, signature, signed, owner) = match first {
         ClientToRelay::Dht(first) => return serve_dht(stream, challenge, first, dht).await,
+        ClientToRelay::AuthFramedV1 { sign_pk, signature, nonce } => {
+            (sign_pk, signature, crate::relay::framed_auth_message(&destination_hash, &challenge, &nonce), true)
+        }
         ClientToRelay::AuthV2 { sign_pk, signature } => {
             (sign_pk, signature, crate::relay::auth_v2_message(&destination_hash, &challenge), true)
         }
@@ -629,7 +617,7 @@ where
         let cursor = Arc::new(Mutex::new(Pushed::default()));
         let mut given = std::collections::HashSet::new();
         let result = match send(&mut stream, &RelayToClient::AuthOk).await {
-            Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, &store, &connections, &cursor, &mut given, &Default::default()).await,
+            Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, false, false, &store, &connections, &cursor, &mut given, &Default::default()).await,
             Err(e) => Err(e),
         };
         return result;
@@ -689,8 +677,9 @@ where
     });
 
     let mut given = std::collections::HashSet::new();
-    let result = match send(&mut stream, &RelayToClient::AuthOk).await {
-        Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, &store, &connections, &cursor, &mut given, &unacked).await,
+    let authenticated = if let Some(proof) = terminal_proof { RelayToClient::AuthFramedOkV1 { proof } } else { RelayToClient::AuthOk };
+    let result = match send(&mut stream, &authenticated).await {
+        Ok(()) => client_loop(&mut stream, &mut push_rx, &push_tx, sign_pk, true, framed, &store, &connections, &cursor, &mut given, &unacked).await,
         Err(e) => Err(e),
     };
 
@@ -740,6 +729,7 @@ async fn client_loop<S>(
     push_tx: &mpsc::Sender<RelayToClient>,
     sign_pk: [u8; 32],
     owner: bool,
+    framed: bool,
     store: &Arc<MemStore>,
     connections: &Connections,
     cursor: &Arc<Mutex<Pushed>>,
@@ -756,6 +746,9 @@ where
     // pushed again — e2e run 36047667974 under a file in parts).
     let (rd, mut wr) = tokio::io::split(stream);
     let mut reading = Box::pin(read_frame::<_, ClientToRelay>(rd));
+    let mut offer: Option<([u8; 16], ViewOnceAccept)> = None;
+    let mut parts = crate::view_once::PartBuffer::default();
+    let mut deposit = crate::relay_deposit::Assembly::default();
     let silent = tokio::time::sleep(CLIENT_SILENT);
     tokio::pin!(silent);
     loop {
@@ -767,7 +760,57 @@ where
             (rd, frame) = &mut reading => {
                 reading = Box::pin(read_frame(rd));
                 silent.as_mut().reset(tokio::time::Instant::now() + CLIENT_SILENT);
-                match frame? {
+                let frame = match frame? {
+                    ClientToRelay::SendPartV1 { to, index, total, bytes } if owner => {
+                        match deposit.push(to, index, total, &bytes, std::time::Instant::now()).map_err(|e| RelayError::Proto(e.into()))? {
+                            Some(blob) => ClientToRelay::Send { to, blob },
+                            None => {
+                                let end = tokio::time::Instant::from_std(deposit.deadline().unwrap());
+                                silent.as_mut().reset(end.min(tokio::time::Instant::now() + CLIENT_SILENT));
+                                send(&mut wr, &RelayToClient::SendPartAckV1 { index }).await?;
+                                continue;
+                            }
+                        }
+                    }
+                    _ if deposit.deadline().is_some() => return Err(RelayError::Proto("interrupted fragmented deposit".into())),
+                    other => other,
+                };
+                match frame {
+                    ClientToRelay::Reserved11 | ClientToRelay::Reserved12 | ClientToRelay::Reserved13 | ClientToRelay::Reserved14 => {
+                        send(&mut wr, &RelayToClient::Error("One-time message unavailable".into())).await?;
+                    }
+                    ClientToRelay::SendPartV1 { .. } => send(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?,
+                    ClientToRelay::ViewOnceOfferV1(req) => {
+                        let handler = store.view_once.read().unwrap_or_else(|e| e.into_inner()).clone();
+                        offer = None;
+                        parts = Default::default();
+                        let ready = if owner && store.serves(&req.to) { handler.and_then(|issue| issue(sign_pk, req)) } else { None };
+                        let frame = match ready {
+                            Some((public, accept)) => {
+                                offer = Some((req.id, accept));
+                                RelayToClient::ViewOnceReadyV1 { offer: public }
+                            }
+                            None => RelayToClient::Error("One-time message unavailable".into()),
+                        };
+                        send(&mut wr, &frame).await?;
+                    }
+                    ClientToRelay::ViewOncePartV1 { index, total, bytes } => {
+                        let frame = match offer.as_ref().map(|_| parts.push(index, total, &bytes)) {
+                            Some(Ok(None)) => RelayToClient::ViewOncePartAckV1 { index },
+                            Some(Ok(Some(envelope))) => {
+                                match offer.take().and_then(|(id, accept)| accept(envelope).then_some(id)) {
+                                    Some(id) => RelayToClient::ViewOnceStoredV1 { id },
+                                    None => RelayToClient::Error("One-time message unavailable".into()),
+                                }
+                            }
+                            _ => {
+                                offer = None;
+                                parts = Default::default();
+                                RelayToClient::Error("One-time message unavailable".into())
+                            }
+                        };
+                        send(&mut wr, &frame).await?;
+                    }
                     ClientToRelay::Publish { .. } | ClientToRelay::Ack { .. } if !owner => {
                         send(&mut wr, &RelayToClient::Error(ERR_NEEDS_AUTH_V2.into())).await?;
                     }
@@ -813,7 +856,7 @@ where
                         }
                     }
                     ClientToRelay::Ping => send(&mut wr, &RelayToClient::Pong).await?,
-                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::Dht(_) => {}
+                    ClientToRelay::Auth { .. } | ClientToRelay::AuthV2 { .. } | ClientToRelay::AuthFramedV1 { .. } | ClientToRelay::Dht(_) => {}
                 }
             }
             push = push_rx.recv() => {
@@ -821,6 +864,20 @@ where
                 if let RelayToClient::Incoming { id, .. } = &msg {
                     if given.insert(*id) {
                         unacked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                if framed {
+                    if let RelayToClient::Incoming { id, from, blob } = &msg {
+                        let pieces = crate::relay_deposit::push_parts(blob).map_err(|e| RelayError::Proto(e.into()))?;
+                        let total = pieces.len() as u16;
+                        let write = async {
+                            for (index, bytes) in pieces.enumerate() {
+                                send(&mut wr, &RelayToClient::IncomingPartV1 { id: *id, from: *from, index: index as u16, total, bytes }).await?;
+                            }
+                            Ok::<(), RelayError>(())
+                        };
+                        tokio::time::timeout(crate::relay_deposit::TIME_LIMIT, write).await.map_err(|_| RelayError::Proto("fragmented push timed out".into()))??;
+                        continue;
                     }
                 }
                 send(&mut wr, &msg).await?;
@@ -857,12 +914,13 @@ pub struct EphemeralRelay {
     /// What [`Self::connect_local`] serves its connections with.
     connections: Connections,
     destination_hash: [u8; 32],
-    /// Read for every connection, so a handler set after start (see
-    /// [`EphemeralRelay::claim`]) serves the next one.
-    dht: Arc<std::sync::RwLock<Option<DhtHandler>>>,
+    dht: Option<DhtHandler>,
 }
 
 impl EphemeralRelay {
+    pub fn set_view_once_handler(&self, handler: ViewOnceHandler) {
+        *self.store.view_once.write().unwrap_or_else(|e| e.into_inner()) = Some(handler);
+    }
     /// Stop and join the owned accept/GC tasks before releasing this relay.
     /// The accept task drops its destination and aborts its nested client
     /// JoinSet. This does not join those client tasks or stop the global router.
@@ -875,42 +933,35 @@ impl EphemeralRelay {
         }
     }
 
-    /// Hand a relay from [`Self::start_unclaimed`] to its owner.
-    pub fn claim(&self, owner: [u8; 32], dht: Option<DhtHandler>) {
-        self.store.claim(owner);
-        *self.dht.write().unwrap_or_else(|p| p.into_inner()) = dht;
+    /// Public address for cards and group invitations, available even before
+    /// the incoming tunnels are ready. Private key bytes stay in the vault.
+    pub fn personal_address(db:&crate::Db) -> Result<String,NetError> {
+        let key=db.terminal_key(i2p_embed::generate_keys).map_err(|_|NetError::I2p("personal terminal key unavailable".into()))?;
+        let bytes=key.expose().map_err(|_|NetError::I2p("personal terminal key unavailable".into()))?;
+        let key=std::str::from_utf8(&bytes).map_err(|_|NetError::I2p("invalid personal terminal key".into()))?;
+        i2p_embed::public_of(key).map_err(|_|NetError::I2p("invalid personal terminal key".into()))
     }
 
-    /// Generate a fresh destination and start serving it, published, on the
-    /// router in this process (started by the first node, or by
-    /// [`crate::embedded::router`]).
-    ///
-    /// It returns once the destination's tunnels are built and its LeaseSet
-    /// is up, commonly a minute or two. Run it in a spawned task; never on a
-    /// path anything user-facing waits on.
-    ///
-    /// `dht` answers relay-network requests arriving here; `None` refuses them.
-    pub async fn start(limits: MemStoreLimits, dht: Option<DhtHandler>) -> Result<Self, NetError> {
-        Self::start_embedded(MemStore::new(limits), dht).await
+    /// The profile's published terminal reopens with the same I2P private
+    /// destination. Its identity proof is ready before the listener starts.
+    pub async fn start_personal(
+        db: &crate::Db,
+        identity: Arc<crate::crypto::Identity>,
+        dht: Option<DhtHandler>,
+    ) -> Result<Self, NetError> {
+        let key = db
+            .terminal_key(i2p_embed::generate_keys)
+            .map_err(|_| NetError::I2p("personal terminal key unavailable".into()))?;
+        let store = MemStore::new(MemStoreLimits::personal(identity.card().sign_pk));
+        *store
+            .terminal_identity
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(identity);
+        Self::start_embedded(store, dht, key).await
     }
 
-    /// Build the relay's tunnels before knowing whose it is — while the
-    /// profile's password is being typed — serving nobody until
-    /// [`Self::claim`]. Saves the 20–40 s of tunnel building after unlock.
-    pub async fn start_unclaimed() -> Result<Self, NetError> {
-        Self::start_embedded(MemStore::unclaimed(MemStoreLimits::default()), None).await
-    }
-
-    /// The relay as a published destination on the router inside this
-    /// process: no port. Same store, same `handle_client` as `connect_local`.
-    async fn start_embedded(store: MemStore, dht: Option<DhtHandler>) -> Result<Self, NetError> {
+    async fn start_embedded(store: MemStore, dht: Option<DhtHandler>, private_key: crate::memory::SealedBlob) -> Result<Self, NetError> {
         let router = crate::embedded::running().ok_or(NetError::Closed)?;
-        // Kept in memory only, for rebuilding on the same address.
-        let private_key = {
-            let raw = zeroize::Zeroizing::new(i2p_embed::generate_keys());
-            crate::memory::SealedBlob::from_slice(raw.as_bytes())
-                .map_err(|error| NetError::I2p(format!("protected relay key: {error}")))?
-        };
         let hops = Arc::new(AtomicU8::new(crate::net::start_hops()));
         let rebuild = Arc::new(tokio::sync::Notify::new());
         let open = |hops: u8| {
@@ -920,7 +971,6 @@ impl EphemeralRelay {
         first.ready(Duration::from_secs(600)).await.map_err(|e| NetError::I2p(format!("relay tunnels: {e}")))?;
         let address = first.address().to_string();
         let store = Arc::new(store);
-        let dht = Arc::new(std::sync::RwLock::new(dht));
         let connections: Connections = Arc::default();
         let destination_hash = crate::relay::destination_hash(&address)
             .ok_or_else(|| NetError::I2p("relay destination does not decode".into()))?;
@@ -944,7 +994,7 @@ impl EphemeralRelay {
                                     continue;
                                 }
                                 let (store, connections) = (store.clone(), connections.clone());
-                                let dht = dht.read().unwrap_or_else(|p| p.into_inner()).clone();
+                                let dht = dht.clone();
                                 clients.spawn(async move {
                                     if let Err(e) = handle_client(stream, store, connections, destination_hash, dht).await {
                                         crate::debug_trace!("[relay-server] client gone: {e}");
@@ -1000,7 +1050,7 @@ impl EphemeralRelay {
     pub fn connect_local(&self) -> std::pin::Pin<Box<dyn crate::net::DuplexStream>> {
         let (client, server) = tokio::io::duplex(1 << 20);
         let (store, connections) = (self.store.clone(), self.connections.clone());
-        let dht = self.dht.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let dht = self.dht.clone();
         let destination_hash = self.destination_hash;
         tokio::spawn(async move {
             if let Err(e) = handle_client(server, store, connections, destination_hash, dht).await {
@@ -1088,7 +1138,7 @@ mod tests {
             rebuild: Arc::new(tokio::sync::Notify::new()),
             connections: Arc::default(),
             destination_hash: [0; 32],
-            dht: Arc::new(std::sync::RwLock::new(None)),
+            dht: None,
         };
         relay.shutdown().await;
         assert_eq!(dropped.load(Ordering::SeqCst), 2);
@@ -1267,6 +1317,223 @@ mod tests {
 
     async fn next(c: &mut DuplexStream) -> RelayToClient {
         tokio::time::timeout(Duration::from_secs(5), recv(c)).await.expect("frame within 5s").unwrap()
+    }
+
+    #[tokio::test]
+    async fn partial_deposit_is_invisible_and_confirmed_ciphertext_reaches_framed_and_legacy_receivers(
+    ) {
+        let rig = Rig::new();
+        let sender = Arc::new(Identity::generate());
+        let receiver = Arc::new(Identity::generate());
+        let to = receiver.card().sign_pk;
+        *rig.store.terminal_identity.write().unwrap() = Some(receiver.clone());
+        let mut interrupted = rig.login(&sender).await;
+        send(
+            &mut interrupted,
+            &ClientToRelay::SendPartV1 {
+                to,
+                index: 0,
+                total: 2,
+                bytes: vec![4; 128],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            next(&mut interrupted).await,
+            RelayToClient::SendPartAckV1 { index: 0 }
+        ));
+        assert_eq!(rig.store.stats().messages, 0);
+        drop(interrupted);
+
+        // The receiver can still collect malformed opaque items left by an old
+        // sender and proceed to the next deposit on that same signed stream.
+        let mut legacy = rig.login(&sender).await;
+        send(&mut legacy, &ClientToRelay::Send { to, blob: vec![42] })
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut legacy).await, RelayToClient::Deposited { id } if id > 0));
+        drop(legacy);
+        let address = "ljnfuws2ljnfuws2ljnfuws2ljnfuws2ljnfuws2ljnfuws2ljna.b32.i2p";
+        let recipient = crate::relay::connect_local(Box::pin(rig.open().0), address, &receiver)
+            .await
+            .unwrap();
+        async fn incoming(client: &crate::relay::RelayClient) -> (u64, Vec<u8>) {
+            let mut rx = client.in_rx.lock().await;
+            let item = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let RelayToClient::Incoming { id, blob, .. } = item else {
+                panic!("expected reconstructed deposit")
+            };
+            (id, blob)
+        }
+        let (id, tiny) = incoming(&recipient).await;
+        assert_eq!(tiny, [42]);
+        recipient
+            .out_tx
+            .send(ClientToRelay::Ack { id })
+            .await
+            .unwrap();
+        let mut stream = rig.open().0;
+        assert!(crate::relay::authenticate_terminal(
+            &mut stream,
+            address,
+            &sender,
+            &sender.card().sign_pk
+        )
+        .await
+        .is_err());
+        let mut stream = rig.open().0;
+        crate::relay::authenticate_terminal(&mut stream, address, &sender, &to)
+            .await
+            .unwrap();
+        let client = crate::relay::sender::start(Box::pin(stream), to, address);
+        let blob = vec![17; crate::relay_deposit::PART_BYTES * 2 + 5];
+        client.out_tx.deposit(to, blob.clone(), None).await.unwrap();
+        let (_, collected) = incoming(&recipient).await;
+        assert_eq!(collected, blob);
+        assert!(client
+            .out_tx
+            .deposit(sender.card().sign_pk, vec![8, 9], None)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn guarded_outgoing_letter_waits_for_the_pinned_personal_terminal_and_fresh_offer() {
+        use crate::view_once::{Offer,QueuedText,Request};
+        let address="ljnfuws2ljnfuws2ljnfuws2ljnfuws2ljnfuws2ljnfuws2ljna.b32.i2p";
+        let rig=Rig::new();
+        let alice=Identity::generate();
+        let bob=Arc::new(Identity::generate());
+        let peer=bob.card();
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        let request=Request::new(peer.sign_pk,now+60_000);
+        let initial=vec![b'z';crate::view_once::MAX_TEXT];
+        let queued=QueuedText::wrap(&request.id,&initial).unwrap();
+        let releases=std::sync::atomic::AtomicUsize::new(0);
+        let expose=|| { releases.fetch_add(1,std::sync::atomic::Ordering::SeqCst); queued.open(&request.id).ok() };
+        let attempt=||crate::relay::send_view_once_on(rig.open().0,address,&alice,&peer,request.fresh_attempt(),expose);
+        // Unavailable recipient, then a terminal at the expected address that
+        // belongs to another profile. Neither can release the sender's buffer.
+        assert!(attempt().await.is_err());
+        *rig.store.terminal_identity.write().unwrap()=Some(Arc::new(Identity::generate()));
+        assert!(attempt().await.is_err());
+        *rig.store.terminal_identity.write().unwrap()=Some(bob.clone());
+        *rig.store.view_once.write().unwrap()=Some(Arc::new(|_,_|Some((vec![0;50],Box::new(|_|false)))));
+        assert!(attempt().await.is_err());
+        assert_eq!(releases.load(std::sync::atomic::Ordering::SeqCst),0);
+        let unseen=Arc::new(std::sync::Mutex::new(None));
+        *rig.store.view_once.write().unwrap()=Some(Arc::new({
+            let bob=bob.clone();let sender=alice.card();let unseen=unseen.clone();
+            move |from,req|{
+                if from!=sender.sign_pk || req.id!=request.id || req.nonce==request.nonce {return None;}
+                let (offer,cert)=Offer::issue(&bob,sender.clone(),req,now).ok()?;
+                let unseen=unseen.clone();
+                Some((cert,Box::new(move|bytes|{
+                    let Ok(letter)=offer.accept(&bytes,now) else{return false;};
+                    *unseen.lock().unwrap()=Some(letter);
+                    true
+                })))
+            }
+        }));
+        attempt().await.unwrap();
+        assert_eq!(releases.load(std::sync::atomic::Ordering::SeqCst),1);
+        assert_eq!(rig.store.stats().messages,0);
+        let received=unseen.lock().unwrap().take().unwrap().open(&bob,now).unwrap();
+        assert_eq!(&**received,&initial);
+    }
+
+    #[tokio::test]
+    async fn view_once_personal_relay_consumes_the_authenticated_offer_without_deposit() {
+        let rig = Rig::new();
+        let sender = Identity::generate();
+        let receiver = Arc::new(Identity::generate());
+        let req = crate::view_once::Request::new(receiver.card().sign_pk, 5_000);
+        let mut c = rig.login(&sender).await;
+        send(&mut c, &ClientToRelay::ViewOnceOfferV1(req))
+            .await
+            .unwrap();
+        assert!(matches!(next(&mut c).await, RelayToClient::Error(_)));
+        let mailbox = Arc::new(std::sync::Mutex::new(None));
+        *rig.store.view_once.write().unwrap() = Some(Arc::new({
+            let peer = sender.card();
+            let receiver = receiver.clone();
+            let mailbox = mailbox.clone();
+            move |from, req| {
+                if from != peer.sign_pk {
+                    return None;
+                }
+                let (offer, bytes) =
+                    crate::view_once::Offer::issue(&receiver, peer.clone(), req, 1000).ok()?;
+                let mailbox = mailbox.clone();
+                Some((
+                    bytes,
+                    Box::new(move |payload| {
+                        let Ok(letter) = offer.accept(&payload, 2000) else {
+                            return false;
+                        };
+                        *mailbox.lock().unwrap() = Some(letter);
+                        true
+                    }),
+                ))
+            }
+        }));
+        send(&mut c, &ClientToRelay::ViewOnceOfferV1(req))
+            .await
+            .unwrap();
+        let RelayToClient::ViewOnceReadyV1 { offer } = next(&mut c).await else {
+            panic!("no certified offer");
+        };
+        let body = vec![b'x'; crate::view_once::MAX_TEXT];
+        let cipher =
+            crate::view_once::seal(&sender, &receiver.card(), &req, &offer, &body, 1500).unwrap();
+        let parts = crate::view_once::parts(&cipher);
+        let total = parts.len() as u16;
+        for (i, part) in parts.enumerate() {
+            let index = i as u16;
+            send(
+                &mut c,
+                &ClientToRelay::ViewOncePartV1 {
+                    index,
+                    total,
+                    bytes: part.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+            let ack = next(&mut c).await;
+            if index + 1 == total {
+                assert!(matches!(ack,RelayToClient::ViewOnceStoredV1{id} if id==req.id));
+            } else {
+                assert!(matches!(ack,RelayToClient::ViewOncePartAckV1{index:i} if i==index));
+            }
+        }
+        assert_eq!(rig.store.stats().messages, 0);
+        assert_eq!(
+            mailbox
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .open(&receiver, 3000)
+                .unwrap()
+                .as_slice(),
+            body
+        );
+        send(
+            &mut c,
+            &ClientToRelay::ViewOncePartV1 {
+                index: 0,
+                total: 2,
+                bytes: vec![1; 20],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(next(&mut c).await, RelayToClient::Error(_)));
     }
 
     /// Every `Incoming` a connection has within `wait`, by id.

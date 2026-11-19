@@ -3,6 +3,42 @@
 use super::*;
 use crate::files::{self, Received};
 use crate::session::{WirePayload, CONSOLE_COMMAND};
+use std::time::Duration;
+
+const DEFAULT_MESSAGE_TTL: Duration = Duration::from_secs(30 * 86_400);
+const MAX_MESSAGE_TTL: Duration = Duration::from_secs(90 * 86_400);
+
+/// The composer supplies a duration. A forwarded message can instead carry
+/// the source's absolute expiry so that preparing its files cannot extend it.
+#[derive(Clone, Copy)]
+pub enum MessageLifetime {
+    For(Duration),
+    Until(i64),
+}
+
+impl From<Option<Duration>> for MessageLifetime {
+    fn from(ttl: Option<Duration>) -> Self {
+        Self::For(ttl.unwrap_or(DEFAULT_MESSAGE_TTL))
+    }
+}
+
+impl MessageLifetime {
+    pub fn wire_ttl_ms(sent_at:i64, expires_at:Option<i64>)->Option<i64>{
+        expires_at.map(|until|until.saturating_sub(sent_at).clamp(0, MAX_MESSAGE_TTL.as_millis() as i64))
+    }
+    pub fn expiry(self, sent_at: i64) -> Result<Option<i64>> {
+        match self {
+            Self::For(ttl) if ttl <= MAX_MESSAGE_TTL => sent_at
+                .checked_add(ttl.as_millis() as i64)
+                .map(Some)
+                .ok_or(DbError::State),
+            Self::Until(until) if until > sent_at => {
+                Ok(Some(until.min(sent_at.saturating_add(MAX_MESSAGE_TTL.as_millis() as i64))))
+            }
+            _ => Err(DbError::State),
+        }
+    }
+}
 
 pub struct NewOutgoingDm<'a> {
     pub contact_id: i64,
@@ -149,7 +185,21 @@ impl Db {
             if let Some((id, deleted)) = existing {
                 // New records are already complete. Replays never add files to
                 // an old/deleted message, reset keys, or re-run a command.
+                if !deleted {
+                    Self::queue_stored_receipt(tx, contact_id, id, now_ms())?;
+                }
                 return Ok(IncomingCommit { id, inserted: false, pending, deleted });
+            }
+            // A replay after automatic history clearing must restore only its
+            // receipt. The receiver already committed and cleared the body.
+            if origin > 0 {
+                if let Some(id) = Self::requeue_received_origin(tx, contact_id, origin, group, now_ms())? {
+                    return Ok(IncomingCommit { id, inserted: false, pending, deleted: true });
+                }
+            }
+            // Attachment staging and waiting for the DB lock can cross the TTL.
+            if payload.content_expired(now_ms()) {
+                return Err(DbError::State);
             }
             let expires_at = payload.ttl_ms.map(|ttl| payload.sent_at.saturating_add(ttl));
             if group.is_none() {
@@ -173,6 +223,9 @@ impl Db {
                 VALUES(?1,?2,?3,0,?4,?5,?6,?7,?8)", params![group.is_none().then_some(contact_id),group,sender,
                 payload.body,payload.sent_at,expires_at,origin,reply])?;
             let id = tx.last_insert_rowid();
+            if origin > 0 {
+                Self::queue_stored_receipt(tx, contact_id, id, now_ms())?;
+            }
             insert_attachments(tx, id, attachments)?;
             for (prefix, value) in [("buttons", buttons.as_deref()), ("console", console.as_deref()),
                 ("sound", payload.notify_sound.as_ref().map(|s| s.as_bytes()))] {
@@ -239,6 +292,38 @@ mod tests {
     use crate::files::StagedAttachments;
     use crate::session::{WireAttachment, WireConsole, WireFileChunk, WireFileOffer};
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn message_lifetime_defaults_range_and_forwarded_deadline() {
+        let sent = 1000;
+        assert_eq!(MessageLifetime::from(None).expiry(sent).unwrap(), Some(sent + 30 * 86_400_000));
+        assert_eq!(MessageLifetime::For(Duration::ZERO).expiry(sent).unwrap(), Some(sent));
+        assert_eq!(MessageLifetime::For(MAX_MESSAGE_TTL).expiry(sent).unwrap(), Some(sent + 90 * 86_400_000));
+        assert!(MessageLifetime::For(MAX_MESSAGE_TTL + Duration::from_secs(1)).expiry(sent).is_err());
+        assert!(MessageLifetime::For(Duration::MAX).expiry(sent).is_err());
+        assert_eq!(MessageLifetime::wire_ttl_ms(i64::MIN,Some(i64::MAX)), Some(90*86_400_000));
+        assert_eq!(MessageLifetime::wire_ttl_ms(i64::MAX,Some(i64::MIN)), Some(0));
+        assert_eq!(MessageLifetime::wire_ttl_ms(sent,None),None);
+        assert_eq!(MessageLifetime::Until(sent + 1234).expiry(sent).unwrap(), Some(sent + 1234));
+        assert!(MessageLifetime::Until(sent).expiry(sent).is_err());
+        let letter = WirePayload::simple(7, String::from("message"), vec![], sent, Some(1234));
+        assert!(!letter.content_expired(sent + 1233));
+        assert!(letter.content_expired(sent + 1234));
+        let control = WirePayload::simple(0, String::new(), vec![], sent, None);
+        assert!(!control.content_expired(i64::MAX));
+    }
+
+    #[test]
+    fn expired_inbound_file_offer_cannot_publish_message_or_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let (db, peer) = database(&directory.path().join("history.db"));
+        let mut payload = incoming("expired");
+        payload.sent_at = now_ms() - 60_000;
+        payload.ttl_ms = Some(60_000);
+        assert!(matches!(db.commit_incoming_message(peer, &payload, &[]), Err(DbError::State)));
+        assert_eq!(count(&db, "messages"), 0);
+        assert_eq!(count(&db, "file_in"), 0);
+    }
 
     fn database(path: &Path) -> (Db, i64) {
         let db = Db::open_plain(path).unwrap();

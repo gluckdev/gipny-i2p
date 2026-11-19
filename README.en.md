@@ -70,9 +70,7 @@ some implementation pieces exist. See
 
 ## Privacy
 
-Content is encrypted before reaching a relay. Relays and transport intermediaries
-observe some metadata. Delivery depends on I2P, relays and bootstrap availability;
-relay acceptance is different from recipient delivery or reading.
+Each client receives messages through its personal I2P terminal. The sender verifies the terminal owner before transmitting encrypted parts. While a contact is offline, an ordinary message stays in the sender’s queue for up to seven days or until its content expires, whichever comes first. The recipient confirms delivery with a receipt.
 Native NTCP2/SSU2 is not automatically wrapped in WebRTC/CDN traffic.
 Browser WSS and WebRTC change the outer transport without proving traffic
 indistinguishability. A compatible CDN can proxy WSS; WebRTC may need a separate
@@ -105,7 +103,7 @@ Hop counts, transit settings and timeouts need comparable measurements.
 | Crypto, delivery and storage | [libcore](libcore/README.md) |
 | UI and localization | [ui](ui/README.md), [RU/EN](docs/localization.md) |
 | WASM and transport bridge | [browser-router](browser-router/README.md), [forwarder](browser-router/forwarder/README.md) |
-| DHT and relay | [dht](dht/README.md), [relay](core/relay/README.md) |
+| Peer discovery and personal I2P terminals | [DHT](dht/README.md), [terminal](libcore/src/relay_server.rs) |
 | Remote command agent and bot API | [agent](agent/README.md), [bot-sdk](bot-sdk/README.md) |
 | Native router library | [android-router](android-router/README.md), [JNI](docs/android-jni-build.md) |
 | Website and integration tests | [site](site/README.md), [e2e](tests/e2e-harness/README.md) |

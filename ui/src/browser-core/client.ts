@@ -195,11 +195,11 @@ export class BrowserCoreClient implements BrowserBackend {
     if (!this.unlocked || generation !== this.generation) return;
     await this.invoke('retry_network');
   }
-  async unlockPasskey(profile: string, totpCode?: string): Promise<void> {
+  async unlockPasskey(profile: string, totpCode?: string, screenOnly = false): Promise<void> {
     const entries = await this.invoke<{ credentialId: number[]; rpId: string; salt: number[] }[]>('passkey_entries', { profile });
     const result = await unlockBrowserPasskey(entries.map(entry => ({ credentialId: new Uint8Array(entry.credentialId), rpId: entry.rpId, salt: new Uint8Array(entry.salt) })));
     const prf = [...result.prf];
-    try { await this.invoke('vault_unlock_passkey', { profile, credentialId: [...result.credentialId], prf, ...(totpCode ? { totpCode } : {}) }); }
+    try { await this.invoke(screenOnly ? 'verify_screen_passkey' : 'vault_unlock_passkey', { profile, credentialId: [...result.credentialId], prf, ...(totpCode ? { totpCode } : {}) }); }
     finally { prf.fill(0); result.prf.fill(0); }
   }
 }

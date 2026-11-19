@@ -568,6 +568,10 @@ export class SettingsModal {
             await store.lock();
           },
         }, tr('settings.lock_now')),
+        h('button', { class: 'btn btn-ghost', onClick: () => {
+          closeWrapped();
+          void store.lockAndClose().catch(error => store.showToast(errorText(error), true));
+        } }, tr('auth.lock_and_close')),
       ),
       h('div', { class: 'modal-footer' },
         h('button', { class: 'btn btn-ghost', onClick: closeWrapped }, tr('common.close')),
@@ -616,7 +620,7 @@ function remoteAgentModal(store: Store, close: () => void): HTMLElement {
     if (disposed) return;
     const id = store.identity.get();
     const info = store.relayInfo.get();
-    const currentRelay = info?.mode === 'builtin'
+    const currentRelay = info
       ? (info.hosted.state === 'ready' ? info.hosted.address.trim() : '')
       : (relayLoaded ? relay : '');
     command = '';

@@ -148,7 +148,6 @@ upstream i2pd и vendored miniupnpc не менялись. Common wire codec н�
 | `browser-router/src/engine.rs` | 1389 | Доменные части движка и адаптеры |
 | `libcore/src/update.rs` | 1303 | Metadata, download, verification, install, тесты |
 | `libcore/src/files.rs` | 1244 | Staging, transfer state, flow control, тесты |
-| `core/relay/src/main.rs` | 1014 | Startup/config, server lifecycle, обработчики |
 
 - [ ] Разбить оставшиеся перечисленные файлы на логически цельные модули.
 - [ ] Отдельно устранить дублирование общей логики между Core и SessionManager;

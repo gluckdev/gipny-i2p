@@ -2,7 +2,7 @@ name: release
 
 # Full release pipeline on GitHub Actions — no local docker/build.sh needed.
 # Builds every desktop artifact (Linux AppImage/deb for amd64 and arm64,
-# Windows NSIS, macOS dmg for Apple Silicon and Intel), the relay server and
+# Windows NSIS, macOS dmg for Apple Silicon and Intel) and
 # the agent for Linux amd64/arm64, static OpenWrt musl agents, and Android
 # arm64 and armv7. Each runs the
 # i2p router inside its own process (i2p-embed; android-router/jni on
@@ -38,12 +38,7 @@ concurrency:
 permissions:
   contents: read
 
-# The relay network's seed nodes, baked into every client at compile time
-# (`option_env!` in libcore/src/dht_client.rs). A repository variable, not a
-# secret: the destinations are public, and each client ships them anyway.
-# Set it from the destination relay-testnet prints once it runs with `--dht`.
 env:
-  GIPNY_DHT_SEEDS: ${{ vars.GIPNY_DHT_SEEDS }}
   # The shipping pipeline must never accept a check-only or stub router.
   I2P_EMBED_STUB: '0'
   I2P_EMBED_SKIP_NATIVE: '0'
@@ -444,26 +439,19 @@ jobs:
             i2pd-netdb-seed.tar.gz  known i2p routers for a quick first start (keep it next to gipny-agent)
             gipny-agent.service   systemd unit
 
-          The agent hosts a personal relay for itself at every start, the same
-          way the desktop app does for its own inbox — no relay to set up.
+          The agent hosts its own personal terminal. The published terminal
+          address persists across restarts in the agent profile.
           The router still uses IP transports. The agent database is SQLCipher
           bound to protected OS credentials. Linux requires an unlocked Secret
           Service session; unattended services need explicit provider/session
           provisioning before startup. No raw-key or plaintext fallback exists.
           It needs a minute or two to come up before the agent prints its own
-          card. --relay is only for pointing the agent at an external relay
-          instead (the gipny-relay archive from the same release page), for
-          anyone who wants mail held while the agent is stopped.
+          card.
 
           Run by hand:
             ./gipny-agent --data <dir> --master <gipny:v3:... card of the master>
           --master is needed once: it is kept in <dir>/master.card and later
-          runs read it from there (pass it again to change it). Same for the
-          optional --relay, in <dir>/relay.txt.
-          Copy the master's card right before the first start: with the
-          built-in relay the address in it is good until the master's app is
-          restarted. After the first contact the agent follows the master's
-          address by itself.
+          runs read it from there (pass it again to change it).
           --data can also come from the GIPNY_AGENT_DATA environment variable.
 
           Install as a service (Linux, as root; provision OS credentials first):
@@ -483,8 +471,6 @@ jobs:
 
           Options:
             --name <name>      display name for this agent (default: saved cat name)
-            --relay <dest>     external relay to collect from instead of the agent's own
-                               built-in one
             --cwd <dir>        working directory for commands (default: home directory)
             --timeout <secs>   per-command timeout (default: 120)
           EOF

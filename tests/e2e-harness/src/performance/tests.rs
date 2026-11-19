@@ -8,7 +8,6 @@ fn fixture(directory: &Path) -> (Config, Report) {
         probe_timeout_secs: 60,
         max_in_flight: 4,
         requested_file_lanes: Some(4),
-        in_process_relays: false,
         work_dir: directory.into(),
         report_path: directory.join("performance.json"),
     };
@@ -147,23 +146,6 @@ fn limits_reject_invalid_values_instead_of_mislabeling_an_experiment() {
     }
     assert_eq!(bounded(None, 4, 1, 16, "inflight").unwrap(), 4);
     assert!(bounded(Some("249"), 2000, 250, 60_000, "interval").is_err());
-}
-
-#[test]
-fn relay_manifest_must_bind_the_actual_destination_and_both_hop_counts() {
-    let valid = br#"{"destination":"test-destination","inbound_hops":3,"outbound_hops":3}"#;
-    assert!(validate_relay_policy(valid, "test-destination").is_ok());
-    assert!(validate_relay_policy(valid, "another-destination").is_err());
-    assert!(validate_relay_policy(
-        br#"{"destination":"test-destination","inbound_hops":2,"outbound_hops":3}"#,
-        "test-destination"
-    )
-    .is_err());
-    assert!(validate_relay_policy(
-        br#"{"destination":"test-destination","inbound_hops":3}"#,
-        "test-destination"
-    )
-    .is_err());
 }
 
 #[test]

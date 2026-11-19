@@ -76,8 +76,8 @@ impl Db {
 
     pub fn list_unsent_outgoing(&self, contact_id: i64, limit: i64) -> Result<Vec<Message>> {
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
-            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 0 AND deleted_at IS NULL ORDER BY id ASC LIMIT ?2"))?
-            .query_map(params![contact_id, limit], Self::map_message)?.collect_rows())
+            " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 0 AND id IN (SELECT id FROM awaiting_delivery WHERE contact_id=?1 AND deadline>?3) ORDER BY id ASC LIMIT ?2"))?
+            .query_map(params![contact_id, limit, now_ms()], Self::map_message)?.collect_rows())
     }
 
     /// Bounded by age, not by attempts: a recipient who closed the app right
@@ -93,10 +93,10 @@ impl Db {
     ) -> Result<Vec<Message>> {
         self.with_conn(|c| c.prepare_cached(concat!("SELECT ", message_cols!(),
             " FROM messages WHERE contact_id = ?1 AND direction = 1 AND sent = 1 AND delivered = 0 AND deleted_at IS NULL
-               AND sent_at > ?2 - ?6
+               AND id IN (SELECT id FROM awaiting_delivery WHERE contact_id=?1 AND deadline>?2)
                AND (last_attempt_at IS NULL OR (?2 - last_attempt_at) >= MIN(?4, ?3 * (1 << MIN(send_attempts, 16))))
              ORDER BY id ASC LIMIT ?5"))?
-            .query_map(params![contact_id, now_ms, base_backoff_ms, max_backoff_ms, limit, RETRY_TTL_MS], Self::map_message)?
+            .query_map(params![contact_id, now_ms, base_backoff_ms, max_backoff_ms, limit], Self::map_message)?
             .collect_rows())
     }
 
@@ -127,8 +127,8 @@ impl Db {
         self.with_tx(|tx| {
             let removed = tx.execute(
                 "DELETE FROM pending_outbound WHERE msg_id = ?1 AND recipient_contact_id = ?2
-                 AND EXISTS (SELECT 1 FROM messages WHERE id = ?1 AND direction = 1 AND group_id IS NOT NULL)",
-                params![msg_id, recipient_contact_id],
+                 AND EXISTS (SELECT 1 FROM awaiting_delivery WHERE id = ?1 AND group_id IS NOT NULL AND deadline>?3)",
+                params![msg_id, recipient_contact_id, now_ms()],
             )?;
             if removed == 0 { return Ok(GroupDeliveryAck::NotPending); }
             let remaining: bool = tx.query_row(
@@ -144,22 +144,6 @@ impl Db {
         })
     }
 
-    /// Bound undeliverable group queue state to the same seven days as retry.
-    /// Expire the whole message if any recipient is stale, including legacy
-    /// rows queued at different times. Otherwise a late ACK could turn partial
-    /// expiry into apparent complete delivery. Never erase history or mark it delivered.
-    pub fn purge_expired_group_outbound(&self, now_ms: i64) -> Result<usize> {
-        self.with_conn(|c| {
-            Ok(c.execute(
-                "DELETE FROM pending_outbound WHERE msg_id IN (
-                 SELECT p.msg_id FROM pending_outbound p JOIN messages m ON m.id = p.msg_id
-                 WHERE p.created_at <= ?1 AND m.group_id IS NOT NULL AND m.direction = 1
-             )",
-                params![now_ms.saturating_sub(RETRY_TTL_MS)],
-            )?)
-        })
-    }
-
     pub fn pending_outbound_for_recipient(
         &self,
         recipient_contact_id: i64,
@@ -171,10 +155,10 @@ impl Db {
         self.with_conn(|c| c.prepare_cached(
             "SELECT msg_id FROM pending_outbound
              WHERE recipient_contact_id = ?1
-               AND created_at > ?2 - ?5
+               AND msg_id IN (SELECT id FROM awaiting_delivery WHERE deadline>?2)
                AND (last_attempt_at IS NULL OR (?2 - last_attempt_at) >= MIN(?4, ?3 * (1 << MIN(send_attempts, 16))))
-             ORDER BY msg_id ASC LIMIT ?6")?
-            .query_map(params![recipient_contact_id, now_ms, base_backoff_ms, max_backoff_ms, RETRY_TTL_MS, limit], |r| r.get(0))?
+             ORDER BY msg_id ASC LIMIT ?5")?
+            .query_map(params![recipient_contact_id, now_ms, base_backoff_ms, max_backoff_ms, limit], |r| r.get(0))?
             .collect_rows())
     }
 
@@ -182,13 +166,14 @@ impl Db {
         &self,
         msg_id: i64,
         recipient_contact_id: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.with_conn(|c| {
-            c.execute(
+            let changed = c.execute(
             "UPDATE pending_outbound SET last_attempt_at = ?3, send_attempts = send_attempts + 1
-             WHERE msg_id = ?1 AND recipient_contact_id = ?2",
+             WHERE msg_id = ?1 AND recipient_contact_id = ?2 AND msg_id IN
+                (SELECT id FROM awaiting_delivery WHERE id=?1 AND deadline>?3)",
             params![msg_id, recipient_contact_id, now_ms()])?;
-            Ok(())
+            Ok(changed != 0)
         })
     }
 
@@ -231,14 +216,12 @@ impl Db {
             params![id, now_ms()])?; Ok(()) })
     }
 
-    pub fn mark_delivered(&self, id: i64) -> Result<()> {
-        self.with_conn(|c| {
-            c.execute(
-                "UPDATE messages SET sent = 1, delivered = 1 WHERE id = ?1",
-                params![id],
-            )?;
-            Ok(())
-        })
+    pub fn acknowledge_dm_delivery(&self, id: i64, contact_id: i64) -> Result<bool> {
+        self.with_conn(|c| Ok(c.execute(
+            "UPDATE messages SET sent=1, delivered=1 WHERE id IN (SELECT id FROM awaiting_delivery
+                WHERE id=?1 AND contact_id=?2 AND group_id IS NULL AND deadline>?3)",
+            params![id, contact_id, now_ms()],
+        )? != 0))
     }
 }
 

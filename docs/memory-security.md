@@ -108,7 +108,7 @@ min/max и hard/soft flags сохраняются. Успех всё равно 
 не закрепление всего процесса и не гарантия блокировки SQLCipher workspace.
 
 Общий `i2p_embed::process_security::harden_process` вызывают GUI (включая
-Android), агент, bot SDK, standalone relay и e2e harness. На Unix ошибки
+Android), агент, bot SDK и e2e harness. Личный терминал работает в процессе клиента. На Unix ошибки
 `setrlimit` передаются вызывающему коду; на Linux/Android так же проверяется
 `prctl`. Эти настройки относятся к соответствующему процессу. Для WebView и
 native libi2pd требуется отдельная проверка их копий и процессов.

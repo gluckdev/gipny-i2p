@@ -13,7 +13,7 @@ impl SessionManager {
         notify_sound: Option<String>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let expires_at = ttl.map(|d| sent_at + d.as_millis() as i64);
+        let expires_at = crate::db::MessageLifetime::from(ttl).expiry(sent_at)?;
         let buttons = buttons.as_ref().map(bincode::serialize).transpose()?;
         let staged = self.store_outgoing(&attachments)?;
         let msg_id = staged.publish_dm(
@@ -143,7 +143,20 @@ impl SessionManager {
         buttons: Option<Vec<Vec<WireButton>>>,
         notify_sound: Option<String>,
     ) -> Result<i64> {
+        self.send_to_group_with_ttl(group_id, body, attachments, None, buttons, notify_sound).await
+    }
+
+    pub async fn send_to_group_with_ttl(
+        self: &Arc<Self>,
+        group_id: &[u8],
+        body: String,
+        attachments: Vec<(String, Vec<u8>)>,
+        ttl: Option<Duration>,
+        buttons: Option<Vec<Vec<WireButton>>>,
+        notify_sound: Option<String>,
+    ) -> Result<i64> {
         let sent_at = now_ms();
+        let expires_at = crate::db::MessageLifetime::from(ttl).expiry(sent_at)?;
         let members = self.db.list_group_members(group_id)?;
         let mut contacts = Vec::new();
         for member in members.iter().filter(|member| !member.is_self) {
@@ -190,7 +203,7 @@ impl SessionManager {
                 sender_sign_pk: &sender_sign_pk,
                 body: &body,
                 sent_at,
-                expires_at: None,
+                expires_at,
                 reply_to: None,
                 buttons: buttons_bytes.as_deref(),
                 notify_sound: notify_sound.as_ref().map(|sound| sound.as_bytes()),
@@ -213,7 +226,7 @@ impl SessionManager {
                 body.clone(),
                 wire_atts.clone(),
                 sent_at,
-                None,
+                expires_at.map(|end| end - sent_at),
             );
             payload.files = offers.clone();
             payload.group = Some(gref.clone());

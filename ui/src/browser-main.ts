@@ -9,9 +9,6 @@ configureBrowserBackend(client);
 void client.prepare().catch(() => { /* The ordinary auth path reports failures. */ });
 window.addEventListener('online', () => { void client.reconnect().catch(() => {}); });
 window.addEventListener('pagehide', () => { client.terminate(); clearBrowserFiles(); document.getElementById('app')?.replaceChildren(); });
-let resumeLocked = false;
-document.addEventListener('freeze', () => { client.terminate(); clearBrowserFiles(); document.getElementById('app')?.replaceChildren(); resumeLocked = true; });
-document.addEventListener('resume', () => { if (resumeLocked) window.dispatchEvent(new Event('gipny-browser-locked')); });
 window.addEventListener('pageshow', event => { if (event.persisted) window.dispatchEvent(new Event('gipny-browser-locked')); });
 window.addEventListener('gipny-browser-locked', () => { window.location.reload(); });
 // The shared authentication/settings views call these after a user gesture,
@@ -21,8 +18,8 @@ window.addEventListener('gipny-enroll-passkey', event => {
   void client.enrollPasskey(detail.profile).then(() => detail.done(), error => detail.done(error));
 });
 window.addEventListener('gipny-unlock-passkey', event => {
-  const detail = (event as CustomEvent<{ profile: string; totpCode?: string; done(error?: unknown): void }>).detail;
-  void client.unlockPasskey(detail.profile, detail.totpCode).then(() => detail.done(), error => detail.done(error));
+  const detail = (event as CustomEvent<{ profile: string; totpCode?: string; screenOnly?: boolean; done(error?: unknown): void }>).detail;
+  void client.unlockPasskey(detail.profile, detail.totpCode, detail.screenOnly).then(() => detail.done(), error => detail.done(error));
 });
 await import('./main');
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register(new URL('browser-sw.js', document.baseURI), { scope: './' });

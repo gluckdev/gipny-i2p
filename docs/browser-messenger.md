@@ -113,6 +113,12 @@ bootstrap и соответствующая конфигурация. Сохра
 DHT-узел, duress и аппаратная привязка ОС не перенесены.
 WebRTC DataChannel — транспорт данных, не функция звонков.
 
+### Одноразовые сообщения
+
+В личном чате с принятым контактом кнопка ① открывает отдельное поле для текста до 16 КиБ в UTF-8. Текст не попадает в черновики, историю или резервную копию. Клиент шифрует его для одноразового ключа получателя и передаёт конверт частями. При первом открытии клиент забирает ключ и конверт из очереди в памяти до расшифрования. Даже два одновременных запроса могут получить текст только один раз. Если экран заблокировался во время открытия, приложение закрывает окно и отбрасывает результат.
+
+Если получатель офлайн, отправитель держит зашифрованные части и ключ только в оперативной памяти. Когда личный терминал получателя доступен, отправитель проверяет ключ владельца и шифрует письмо для одноразового ключа получателя. Выход из профиля или перезапуск процесса очищает очередь этого устройства. Блокировка экрана сохраняет очередь, пока процесс жив. Идентификатор, срок и состояние доставки сохраняются отдельно, чтобы исключить повторное открытие и показать уведомление об истечении срока. Получатель может самостоятельно скопировать уже показанный текст.
+
 ### Хранение и граница доверия
 
 Ключи личности, prekeys, ключи destination и ratchet принадлежат Rust-ядру.
@@ -129,7 +135,7 @@ XChaCha20-Poly1305 записи; Argon2id использует 64 МиБ, 3 ит
 получателя, удаляется из профиля и повторно не отправляется; повтор — это новое
 шифрование (см. [передачу файлов](file-transfer.md)). Это отдельный от SQLCipher механизм.
 
-Блокировка, уход со страницы и freeze останавливают Worker и транспорт.
+Выход из профиля и уход со страницы останавливают Worker и транспорт. При скрытии или заморозке страницы клиент закрывает переписку защитным экраном. Если браузер сохранил процесс, повторная проверка владельца возвращает в ту же сессию. Если процесс выгружен, требуется обычная разблокировка профиля.
 Service Worker кэширует оболочку, WASM и статические ресурсы, без профиля.
 Отдельные кэши приложения хранят публичные настройки и проверенный netDb;
 профили и байты переписки туда не попадают. Обновление ждёт закрытия старых окон.
@@ -346,7 +352,7 @@ flushed before network send; incoming state is flushed before ACK. Ciphertext
 accepted by the recipient's relay leaves the profile and is never sent again;
 a retry is a new encryption (see [file transfer](file-transfer.md)).
 
-Lock, navigation and freeze stop the Worker and transport. The Service Worker
+Signing out and leaving the page stop the Worker and transport. Hiding or freezing the page covers the chat with a locked screen. Authentication resumes the same session if the browser kept the process alive. A discarded process requires a fresh vault unlock. The Service Worker
 caches the shell, WASM and static assets, excluding profiles. Separate app caches
 hold public configuration and verified netDb; they never hold conversation data.
 Updates wait for old windows to close. Browser memory lacks native

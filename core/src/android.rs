@@ -111,3 +111,80 @@ mod android {
 #[cfg(target_os = "android")]
 pub use android::configure;
 pub use android::install_apk;
+
+pub async fn finish_locked_app(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let window = app.get_webview_window("main").ok_or("Android window unavailable")?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window.with_webview(move |view| {
+        view.jni_handle().exec(move |env, activity, _| {
+            let result = env.call_method(activity, "closeLockedApp", "()V", &[])
+                .map(|_| ()).map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+    }).map_err(|error| error.to_string())?;
+    rx.await.map_err(|error| error.to_string())?
+}
+
+static AUTH_SERIAL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+type DeviceAuthRequest = (i64, tokio::sync::oneshot::Sender<bool>);
+static DEVICE_AUTH: std::sync::Mutex<Option<DeviceAuthRequest>> = std::sync::Mutex::new(None);
+
+async fn activity_call(
+    call: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<bool> + Send + 'static,
+) -> Result<bool, String> {
+    use tauri::Manager;
+    let window = super::screen::app_handle().and_then(|app| app.get_webview_window("main")).ok_or("Android window unavailable")?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    window.with_webview(move |view| view.jni_handle().exec(move |env, activity, _| {
+        let result = call(env, activity).map_err(|error| error.to_string());
+        if result.is_err() { let _ = env.exception_clear(); }
+        let _ = tx.send(result);
+    })).map_err(|error| error.to_string())?;
+    rx.await.map_err(|error| error.to_string())?
+}
+
+pub async fn device_auth_available() -> Result<bool, String> {
+    activity_call(|env, activity| env.call_method(activity, "deviceAuthAvailable", "()Z", &[])?.z()).await
+}
+
+pub async fn verify_device_auth(reason: &str) -> Result<bool, String> {
+    let id = AUTH_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    {
+        let mut active = DEVICE_AUTH.lock().map_err(|_| "credential prompt unavailable")?;
+        if active.is_some() { return Err("authentication already in progress".into()); }
+        *active = Some((id, tx));
+    }
+    let reason = reason.to_owned();
+    let started = activity_call(move |env, activity| {
+        let prompt = env.new_string(reason)?;
+        env.call_method(activity, "verifyDeviceAuth", "(JLjava/lang/String;)Z",
+            &[jni::objects::JValue::Long(id), jni::objects::JValue::Object(&prompt)])?.z()
+    }).await;
+    if !matches!(started, Ok(true)) {
+        finish_device_auth(id, false);
+        return started;
+    }
+    rx.await.map_err(|_| "credential prompt cancelled".into())
+}
+
+fn finish_device_auth(id: i64, success: bool) {
+    if let Ok(mut active) = DEVICE_AUTH.lock() {
+        if active.as_ref().is_some_and(|(expected, _)| *expected == id) {
+            if let Some((_, tx)) = active.take() { let _ = tx.send(success); }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_gipny_MainActivity_deviceAuthFinished(
+    _: jni::JNIEnv, _: jni::objects::JObject, id: jni::sys::jlong, success: jni::sys::jboolean,
+) {
+    finish_device_auth(id, success != 0);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_gipny_MainActivity_screenHidden(_: jni::JNIEnv, _: jni::objects::JObject) {
+    crate::screen::cover();
+}

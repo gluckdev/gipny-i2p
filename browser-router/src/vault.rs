@@ -256,23 +256,32 @@ impl Vault {
         if record.header.profile != profile {
             return Err("profile name mismatch".into());
         }
-        let entry = record
-            .header
+        let key = Self::unwrap_passkey(&record.header, credential_id, prf)?;
+        Self::open_record(key, record)
+    }
+
+    fn unwrap_passkey(header: &Header, credential_id: &[u8], prf: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+        let entry = header
             .passkeys
             .iter()
             .find(|entry| entry.credential_id == credential_id)
             .ok_or("passkey is not enrolled for this profile")?;
-        let kek = passkey_key(profile, credential_id, &entry.salt, prf)?;
+        let kek = passkey_key(&header.profile, credential_id, &entry.salt, prf)?;
         let aad = bincode::serialize(&(
             PASSKEY_CONTEXT,
-            profile,
+            &header.profile,
             credential_id,
             entry.rp_id.as_str(),
             entry.salt,
         ))
         .map_err(|_| "passkey context")?;
-        let key = unwrap(&kek, &entry.wrapped, &aad)?;
-        Self::open_record(key, record)
+        unwrap(&kek, &entry.wrapped, &aad)
+    }
+
+    pub fn verify_passkey(&self, credential_id: &[u8], prf: &[u8]) -> Result<(), String> {
+        let candidate = Self::unwrap_passkey(&self.header, credential_id, prf)?;
+        if *candidate != *self.key { return Err("wrong passkey".into()); }
+        Ok(())
     }
 
     fn open_record(

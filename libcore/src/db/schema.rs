@@ -2,7 +2,7 @@
 
 use super::*;
 
-const MIGRATE_TABLES: &[&str] = &["messages", "contacts", "groups", "attachments"];
+const MIGRATE_TABLES: &[&str] = &["view_once_seen","messages", "contacts", "groups", "attachments", "sessions"];
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE contacts (
@@ -101,6 +101,21 @@ impl Db {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_column(conn, "messages", "reply_to", "INTEGER")?;
+        Self::ensure_column(conn, "messages", "delivery_expired_at", "INTEGER")?;
+        Self::ensure_column(conn, "sessions", "pending_initial", "BLOB")?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS personal_terminal_key (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), private_key BLOB NOT NULL
+        )")?;
+        conn.execute_batch("
+            CREATE INDEX IF NOT EXISTS idx_delivery_pending ON messages(sent_at)
+                WHERE direction=1 AND delivered=0 AND delivery_expired_at IS NULL;
+            CREATE TABLE IF NOT EXISTS delivery_expiry_notices (
+                message_id INTEGER PRIMARY KEY,
+                contact_id INTEGER REFERENCES contacts(id) ON DELETE CASCADE,
+                group_id BLOB REFERENCES groups(id) ON DELETE CASCADE,
+                expired_at INTEGER NOT NULL
+            );
+        ")?;
 
         let has_fts: i64 = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'",
@@ -236,6 +251,14 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_pending_outbound_recipient ON pending_outbound(recipient_contact_id);
             CREATE INDEX IF NOT EXISTS idx_pending_outbound_age ON pending_outbound(created_at);
+
+            CREATE TABLE IF NOT EXISTS prepared_deposits (
+                contact_id INTEGER NOT NULL REFERENCES sessions(contact_id) ON DELETE CASCADE,
+                msg_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                envelope BLOB NOT NULL, PRIMARY KEY(contact_id, msg_id)
+            );
+            CREATE TRIGGER IF NOT EXISTS tr_stop_prepared_group_deposit AFTER DELETE ON pending_outbound
+            BEGIN DELETE FROM prepared_deposits WHERE msg_id=OLD.msg_id AND contact_id=OLD.recipient_contact_id; END;
 
             -- Relay network (gipny-dht): items held for others, opaque
             -- ciphertext under opaque keys, and nodes that answered us.
@@ -433,6 +456,32 @@ impl Db {
         ",
         )?;
         Self::migrate_dm(conn)?;
+        conn.execute_batch("
+            CREATE TRIGGER IF NOT EXISTS tr_stop_prepared_deposit
+            AFTER UPDATE OF delivered, deleted_at, delivery_expired_at ON messages
+            WHEN NEW.delivered != 0 OR NEW.deleted_at IS NOT NULL OR NEW.delivery_expired_at IS NOT NULL
+            BEGIN DELETE FROM prepared_deposits WHERE msg_id=NEW.id; END;
+        ")?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS view_once_seen (
+            id BLOB PRIMARY KEY CHECK(length(id)=16), expires_at INTEGER NOT NULL, contact_id INTEGER
+        );
+            CREATE INDEX IF NOT EXISTS idx_view_once_seen_expiry ON view_once_seen(expires_at);
+            CREATE TABLE IF NOT EXISTS view_once_delivery (
+                id BLOB PRIMARY KEY CHECK(length(id)=16), contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                deadline INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','relayed','received','unconfirmed'))
+            );
+            CREATE TABLE IF NOT EXISTS view_once_receipt (
+                id BLOB PRIMARY KEY CHECK(length(id)=16), contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                deadline INTEGER NOT NULL, retry_at INTEGER NOT NULL
+            );")?;
+        conn.execute_batch(&format!("
+            CREATE VIEW IF NOT EXISTS awaiting_delivery AS
+                SELECT id, contact_id, group_id,
+                    CAST(MIN(COALESCE(expires_at, 9223372036854775807), sent_at + {RETRY_TTL_MS}) AS INTEGER) AS deadline
+                FROM messages WHERE direction=1 AND delivered=0 AND delivery_expired_at IS NULL AND deleted_at IS NULL;
+        "))?;
+        Self::ensure_column(conn,"view_once_seen","contact_id","INTEGER")?;
+        Self::migrate_delivery_receipts(conn)?;
         Self::migrate_inbox(conn)?;
         Ok(())
     }

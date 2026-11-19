@@ -13,7 +13,7 @@ impl SessionManager {
     /// its timeout. Tried every 10 s for five minutes, until each went.
     pub(super) fn spawn_resume_acks(self: Arc<Self>) {
         let this = self.clone();
-        let handle = tokio::spawn(async move {
+        self.spawn_task(async move {
             let Ok(files) = this.db.files_in_stale(i64::MAX) else {
                 return;
             };
@@ -52,72 +52,6 @@ impl SessionManager {
                 left = still;
             }
         });
-        self.track(handle);
-    }
-
-    /// Keep extra connections to our own relay while file parts come, when it
-    /// runs elsewhere (one in this process is a pipe, no faster for more).
-    pub(super) fn spawn_collect_lanes(self: Arc<Self>) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let this = self.clone();
-        let handle = tokio::spawn(async move {
-            loop {
-                let _ = tokio::time::timeout(Duration::from_secs(5), this.collect_kick.notified())
-                    .await;
-                let i2p_address = this.relay_address();
-                let external = !i2p_address.is_empty()
-                    && this.relay_out.read().await.is_some()
-                    && !this
-                        .local_relay
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .as_ref()
-                        .is_some_and(|r| relay::same_destination(r.address(), &i2p_address));
-                if !collect_lane_wanted(
-                    external,
-                    this.part_seen.load(Relaxed),
-                    now_ms(),
-                    this.collect_lanes.load(Relaxed),
-                ) {
-                    continue;
-                }
-                // One dial at a time; the next tick dials the next.
-                let dial = tokio::time::timeout(
-                    PEER_RELAY_CONNECT_TIMEOUT,
-                    relay::connect(&this.node, &i2p_address, &this.identity),
-                )
-                .await;
-                let Ok(Ok(client)) = dial else { continue };
-                let n = this.collect_lanes.fetch_add(1, Relaxed) + 1;
-                this.file_metrics.receiving_lanes(n + 1);
-                crate::debug_trace!(
-                    "[files] another connection to our relay for parts ({n} extra)"
-                );
-                let lane = this.clone();
-                // Tracked like every task of ours: one left running after
-                // shutdown kept reading mail on the old instance, with its own
-                // copy of the ratchet, and wrote it over the new one's (e2e
-                // run 36056788336, the recipient restarting midway).
-                let handle = tokio::spawn(async move {
-                    // Ends when parts stop coming or our relay changes; what it was
-                    // given and did not ack the relay deals to the others.
-                    let quiet = {
-                        let lane = lane.clone();
-                        let i2p_address = i2p_address.clone();
-                        move || {
-                            !collect_lane_holds(lane.part_seen.load(Relaxed), now_ms())
-                                || !relay::same_destination(&lane.relay_address(), &i2p_address)
-                        }
-                    };
-                    lane.clone()
-                        .run_recv_loop(client, Some(i2p_address.clone()), Some(&quiet))
-                        .await;
-                    lane.collect_lanes.fetch_sub(1, Relaxed);
-                });
-                this.track(handle);
-            }
-        });
-        self.tasks.lock().unwrap().push(handle);
     }
 
     /// Seal outgoing attachments: small ones whole (they ride inside the
@@ -207,12 +141,6 @@ impl SessionManager {
         sent_at: i64,
         reference: Option<&crate::db::DmReference>,
     ) -> Result<()> {
-        let before = self
-            .part_seen
-            .swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
-        if !collect_lane_holds(before, now_ms()) {
-            self.collect_kick.notify_one();
-        }
         let Some(update) = self.db.apply_file_chunk(
             contact_id,
             chunk,
@@ -400,23 +328,16 @@ impl SessionManager {
     pub(super) async fn file_lanes(
         self: &Arc<Self>,
         contact: &Contact,
-        main: &mpsc::Sender<ClientToRelay>,
+        main: &relay::RelaySender,
         want: usize,
-    ) -> Vec<mpsc::Sender<ClientToRelay>> {
+    ) -> Vec<relay::RelaySender> {
         let mut out = vec![main.clone()];
-        let Some(relay) = contact
-            .relay_address
-            .as_deref()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-        else {
-            return out;
-        };
-        let relay = relay.to_string();
+        let Ok(owner)=to_arr32(contact.identity_sign.clone()) else {return out};
+        let relay=main.terminal_address().to_owned();
         let (live, dial) = {
             let mut lanes = self.file_lanes.lock().await;
             let v = lanes.entry(relay.clone()).or_default();
-            v.retain(|tx| !tx.is_closed());
+            v.retain(|tx| !tx.is_closed() && tx.belongs_to(&owner));
             // Count and reserve together: a completed dial cannot make this
             // snapshot stale before we claim the next one.
             let dial = v.len() + 1 < want.min(crate::files::lanes::limit())
@@ -430,10 +351,10 @@ impl SessionManager {
         out.extend(live.into_iter().take(want.saturating_sub(1)));
         if dial {
             let this = self.clone();
-            let handle = tokio::spawn(async move {
+            self.spawn_task(async move {
                 let dial = tokio::time::timeout(
                     PEER_RELAY_CONNECT_TIMEOUT,
-                    crate::relay::connect_peer(&this.node, &relay, &this.identity),
+                    crate::relay::connect_peer(&this.node, &relay, &this.identity, &owner),
                 )
                 .await;
                 if let Ok(Ok(client)) = dial {
@@ -461,7 +382,6 @@ impl SessionManager {
                         .remove(&relay);
                 }
             });
-            self.tasks.lock().unwrap().push(handle);
         }
         out
     }
@@ -473,9 +393,7 @@ impl SessionManager {
         route: &Route,
     ) -> Result<()> {
         let now = now_ms();
-        let Route::Relay(main) = route else {
-            return Ok(());
-        };
+        let main=route;
         let wanted = self
             .flows
             .lock()
@@ -556,7 +474,7 @@ impl SessionManager {
                     .entry(contact.id)
                     .or_default()
                     .next_lane(lanes.len());
-                let via = Route::Relay(lanes[lane].clone());
+                let via = lanes[lane].clone();
                 if let Err(e) = self
                     .send_payload_via_relay(contact, &mut payload, &via)
                     .await

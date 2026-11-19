@@ -28,11 +28,48 @@ pub enum ClientToRelay {
     /// `gipny_dht`. Only as a connection's first frame, and never followed by
     /// a login: whoever sends it stays anonymous to the relay.
     Dht(Vec<u8>),
+    ViewOnceOfferV1(crate::view_once::Request),
+    ViewOncePartV1 { index: u16, total: u16, bytes: Vec<u8> },
+    SendPartV1 { to: [u8;32], index:u16, total:u16, bytes:Vec<u8> },
+    // Reserved discriminants from the pre-release wire. Always rejected.
+    Reserved11, Reserved12, Reserved13, Reserved14,
+    AuthFramedV1 { sign_pk: [u8; 32], nonce: [u8;32], #[serde(with = "BigArray")] signature: [u8; 64] },
 }
 
 const AUTH_V2_CONTEXT: &[u8] = b"gipny-relay-auth-v2";
 
-/// What an `AuthV2` signature covers.
+/// Authenticates the destination, challenge and the request for fragmented mailbox pushes.
+pub fn framed_auth_message(
+    destination_hash: &[u8; 32],
+    challenge: &[u8; 32],
+    nonce: &[u8; 32],
+) -> Vec<u8> {
+    [
+        b"gipny-terminal-login-v1".as_slice(),
+        destination_hash,
+        challenge,
+        nonce,
+    ]
+    .concat()
+}
+
+pub fn terminal_proof_message(
+    destination_hash: &[u8; 32],
+    requester: &[u8; 32],
+    challenge: &[u8; 32],
+    nonce: &[u8; 32],
+) -> Vec<u8> {
+    [
+        b"gipny-terminal-owner-v1".as_slice(),
+        destination_hash,
+        requester,
+        challenge,
+        nonce,
+    ]
+    .concat()
+}
+
+/// Signed context for ordinary AuthV2.
 pub fn auth_v2_message(destination_hash: &[u8; 32], challenge: &[u8; 32]) -> Vec<u8> {
     [AUTH_V2_CONTEXT, destination_hash, challenge].concat()
 }
@@ -123,6 +160,13 @@ pub enum RelayToClient {
     Error(String),
     /// The answer to a [`ClientToRelay::Dht`].
     Dht(Vec<u8>),
+    ViewOnceReadyV1 { offer: Vec<u8> },
+    ViewOnceStoredV1 { id: [u8; 16] },
+    ViewOncePartAckV1 { index: u16 },
+    SendPartAckV1 { index:u16 },
+    Reserved13, Reserved14, Reserved15, Reserved16,
+    AuthFramedOkV1 { #[serde(with="BigArray")] proof: [u8;64] },
+    IncomingPartV1 { id: u64, from: [u8; 32], index: u16, total: u16, bytes: Vec<u8> },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -133,8 +177,3 @@ pub enum EnvelopeBlob {
 
 pub const RELAY_PORT: u16 = 443;
 pub const MAX_FRAME: u32 = 16 * 1024 * 1024;
-/// Default external relay: empty on purpose. Every app runs its own relay inside
-/// its process (RelayMode::Builtin); users can paste an external relay destination
-/// in Settings (SETTING_RELAY_ADDRESS), and contact cards plus the DHT seeds baked
-/// in from GIPNY_DHT_SEEDS at release time tell clients where to find each other.
-pub const DEFAULT_RELAY: &str = "";

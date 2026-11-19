@@ -3,6 +3,38 @@
 use super::*;
 
 impl Db {
+    /// Stable published destination, kept apart from exportable settings. The
+    /// separate outbound I2P destination remains ephemeral on each startup.
+    pub(crate) fn terminal_key(
+        &self,
+        generate: impl FnOnce() -> String,
+    ) -> Result<crate::memory::SealedBlob> {
+        self.with_tx(|tx| {
+            let key: Option<Vec<u8>> = tx
+                .query_row(
+                    "SELECT private_key FROM personal_terminal_key WHERE singleton=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let raw = match key {
+                Some(bytes) => zeroize::Zeroizing::new(bytes),
+                None => {
+                    let generated = zeroize::Zeroizing::new(generate().into_bytes());
+                    if generated.is_empty() {
+                        return Err(DbError::State);
+                    }
+                    tx.execute(
+                        "INSERT INTO personal_terminal_key(singleton,private_key) VALUES(1,?1)",
+                        [generated.as_slice()],
+                    )?;
+                    generated
+                }
+            };
+            crate::memory::SealedBlob::from_slice(&raw).map_err(|_| DbError::State)
+        })
+    }
+
     pub fn get_setting(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.with_conn(|c| {
             c.prepare_cached("SELECT v FROM settings WHERE k = ?1")?
@@ -93,5 +125,24 @@ impl Db {
             c.execute("DELETE FROM settings WHERE k = ?1", params![key])?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+    #[test]
+    fn stable_terminal_private_key_survives_reopen_without_entering_portable_settings() {
+        let dir=tempfile::tempdir().unwrap();
+        let path=dir.path().join("profile.db");
+        let db=Db::open_plain(&path).unwrap();
+        assert!(db.terminal_key(String::new).is_err());
+        let key=db.terminal_key(||"synthetic terminal key".into()).unwrap();
+        assert_eq!(&*key.expose().unwrap(),b"synthetic terminal key");
+        drop(db);
+        let db=Db::open_plain(&path).unwrap();
+        let key=db.terminal_key(||panic!("must reuse existing destination")).unwrap();
+        assert_eq!(&*key.expose().unwrap(),b"synthetic terminal key");
+        assert!(db.list_all_settings().unwrap().iter().all(|(_,v)|v!=b"synthetic terminal key"));
     }
 }

@@ -2,7 +2,7 @@
 > из публичных исходников. GitLab относится к AiBlow. Полный контракт source archive,
 > provenance, SDK и границ проверки: [docs/build-release.md](../../docs/build-release.md).
 
-# .github/workflows — CI, релизы, e2e по живой i2p и тестовый релей
+# .github/workflows — CI, релизы, e2e по живой i2p
 
 Всё собирается только здесь, на раннерах GitHub: локальных сборок у проекта нет. Этот файл описывает и соседей: `.github/scripts/`, `.github/codeql/`, `.github/dependabot.yml`.
 
@@ -23,10 +23,9 @@ workflow `publish=true` само по себе не разрешает публ�
 | `build.yml` | push в `main`, любой PR, вручную | `rust workspace`, `macos (app + libcore tests)`, `rust tests (crypto/vault/kdf)`, `ui typecheck` (включая UI unit tests), `android APK`, `android emulator smoke` | Наш код компилируется и тесты проходят. Роутер вкомпилирован в каждый бинарь (`i2p-embed`), поэтому десктопные и тестовые джобы собирают и libi2pd — против boost из дистрибутива (macOS — Homebrew). APK собираются с заглушкой прослойки (`I2P_EMBED_STUB=1`) и `ORG_GRADLE_PROJECT_skipRouter`: они проверяют сборку, упаковку и запуск, а не связь. Тайминги KDF попадают в summary джобы. |
 | `cleanup.yml` | воскресной ночью и вручную | `delete stale artifacts and caches` | Хранилище Actions не растёт бесконечно: удаляет артефакты старше 7 дней и кеши, к которым не обращались 21 день. К 0.4.6 накопилось 1132 артефакта на 29,6 ГБ, а кеши упёрлись в потолок 10 ГБ и начали вытеснять друг друга — вместе с кешем роутера, ради которого всё и затевалось. |
 | `codeql.yml` | push/PR в `main`, раз в неделю (пн) | `analyze (actions / javascript-typescript / rust)` | Статический анализ, `build-mode: none`; Rust lane подготавливает pinned emissary source с проверкой патча для path dependency `browser-router`. Настройки — `.github/codeql/codeql-config.yml` (тесты не сканируются: в фикстурах ключи зашиты намеренно). |
-| `e2e-i2pd.yml` | каждую ночь, вручную, PR с изменениями router/workflow | `i2pd revision under test` → четыре live e2e jobs → `record the proven revision` | PR и обычный manual проверяют **committed pin**; schedule и явный `test_upstream=true` разрешают upstream probe. Один SHA передаётся всем четырём сценариям через `.github/scripts/i2pd-under-test.sh`: внешние релеи/боты, встроенные релеи, agent, DHT с уходом сторон и новыми адресами. Отдельного i2pd/SAM/local listener нет. Успех — `[e2e] SUCCESS`; подтверждение shipping pin отличается от успеха upstream probe. Bump допустим только upstream-режиму после успеха всех четырёх сценариев; pinned checks не меняют pin. |
+| `e2e-i2pd.yml` | каждую ночь, вручную, PR с изменениями router/workflow | `i2pd revision under test` → четыре live e2e jobs → `record the proven revision` | PR и обычный manual проверяют **committed pin**; schedule и явный `test_upstream=true` разрешают upstream probe. Один SHA передаётся всем четырём сценариям через `.github/scripts/i2pd-under-test.sh`: файл через личные терминалы, встречные первые сообщения, agent, очередь при уходе сторон и возврате обоих клиентов. Отдельного i2pd/SAM/local listener нет. Успех — `[e2e] SUCCESS`; подтверждение shipping pin отличается от успеха upstream probe. Bump допустим только upstream-режиму после успеха всех четырёх сценариев; pinned checks не меняют pin. |
 | `i2p-embed.yml` | push/PR, меняющие `i2p-embed/**`, `libcore/**`, `tests/e2e-harness/**`, `android-router/**` и скрипты сборки роутера | `live` (Linux), `jammy` (boost 1.74, static), `macos` (arm64 и intel), `windows` (MSVC, vcpkg), `android` (arm64: `libi2pd.so` + линковка), `e2e` (релеи внутри ботов, одновременная первая запись), `updater` (обновлятор через аутпрокси) | Роутер внутри процесса собирается и работает на всех платформах релиза: live-тест поднимает две destination и гоняет эхо по живой i2p. e2e выкладывает `i2pd.log` артефактом. `updater` — живая проверка обновлений: список релизов и файл с GitHub через аутпрокси; аутпрокси чужой, так что его падение ничего больше не блокирует. Пока на GitHub только пре-релизы, job красный с «no stable release yet»: GitHub ответил, обновлятор так это и назвал, но скачивать нечего. На ветку — один прогон, последний (`concurrency` по имени ветки): push и pull_request одной ветки больше не гоняют всё дважды. |
-| `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `network database snapshot`, `router (i2pd, android …)` → `desktop (…)`, `relay (linux …)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует один раз. Ручной запуск по умолчанию — превью; явный `publish=true` только с `main` продолжает неопубликованную версию через ту же полную матрицу и строгие draft/asset guards. Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
-| `relay-testnet.yml` | push в `main`, меняющий `core/relay/**`, `libcore/**`, `third_party/i2pd`, `scripts/**` или сам workflow; по расписанию каждые 5 ч; вручную | `relay` | **Временный** публичный `gipny-relay --dht` на раннере GitHub (~5,5 ч на запуск): и тестовый релей, и **сид сети релеев**. Идентичность, очередь, узел сети и роутер переносятся между запусками через `actions/cache` (`dht-seed-state-*`) **только зашифрованными `age`** (секрет `DHT_SEED_AGE_KEY`; без него сервис работает, но ничего не сохраняет, и адрес меняется каждый запуск). Адрес — в summary и в артефакте `relay-destination`; его вписывают в переменную `GIPNY_DHT_SEEDS`. |
+| `release.yml` | push в `main`, меняющий `core/tauri.conf.json` (подъём версии); вручную | `versions agree` → `network database snapshot`, `router (i2pd, android …)` → `desktop (…)`, `agent (linux …)`, `android` → `release page` | Все артефакты релиза и страница релиза. На подъёме версии в `main` собирает, **сам ставит тег `vX.Y.Z`** на собранный коммит и публикует один раз. Ручной запуск по умолчанию — превью; явный `publish=true` только с `main` продолжает неопубликованную версию через ту же полную матрицу и строгие draft/asset guards. Холодная сборка ~30 мин, роутер Android с нуля — до часа. |
 
 `i2p-embed.yml` также запускается при изменении корневых `Cargo.toml` и
 `Cargo.lock`, чтобы обновление TLS-зависимости не пропустило native проверки.
@@ -53,17 +52,17 @@ Build/CodeQL badges README явно обозначают `main`; статус о
 - `.github/scripts/release-notes.sh <tag> <assets-dir> <owner/repo> [<git-ref>]` пишет текст страницы релиза. Сверху кладёт `docs/releases/<version>.md`, если файл есть, затем таблицу загрузок и changelog от предыдущего тега. Падает, если какого-то платформенного файла нет или среди файлов есть лишний.
 - `.github/scripts/release-guard.py` проверяет main-only eligibility, отличие отсутствующего тега от ошибки запроса, актуальность собранного SHA, точную привязку draft и полный remote asset set. `test-release-guard.py` исполняется в GitHub CI на Linux/Windows и перед release matrix; API mutations тестам не нужны. Восстановление неопубликованной версии — [контракт](../../docs/build-release.md#как-запускать-и-проверять).
 - `.github/scripts/vcpkg-i2p-deps.sh` собирает boost и OpenSSL из pinned public vcpkg ports для Windows (MSVC) одинаково в `i2p-embed.yml` и `release.yml`; проверяет commit object/HEAD, binary registry отключён.
-- `.github/scripts/boost-po-pic.sh` собирает `boost_program_options` 1.74 статически с `-fPIC` для Linux-десктопа в `release.yml` (и проверки в `i2p-embed.yml` → `jammy`): крейт приложения — ещё и cdylib, а статическая boost из Ubuntu 22.04 на x86_64 собрана без `-fPIC` и в разделяемый объект не линкуется. Ключ `rust-cache` в релизных джобах — образ раннера: build-скрипты, собранные на 24.04 (`relay-testnet.yml`), на 22.04 не запускаются (GLIBC_2.39).
+- `.github/scripts/boost-po-pic.sh` собирает `boost_program_options` 1.74 статически с `-fPIC` для Linux-десктопа в `release.yml` (и проверки в `i2p-embed.yml` → `jammy`): крейт приложения — ещё и cdylib, а статическая boost из Ubuntu 22.04 на x86_64 собрана без `-fPIC` и в разделяемый объект не линкуется. Ключ `rust-cache` в релизных джобах — образ раннера: build-скрипты, собранные на 24.04, на 22.04 не запускаются (GLIBC_2.39).
 - `.github/scripts/i2pd-under-test.sh <sha>` ставит сабмодуль на проверяемую ревизию для всех джоб `e2e-i2pd.yml`.
-- `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e, `relay-testnet.yml`), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.
+- `scripts/fresh-i2p-certs.sh` кладёт текущие сертификаты reseed из апстрима; каждая джоба, которая компилирует роутер (релиз, `build.yml`, `i2p-embed.yml`, e2e), вкомпилирует их (`I2P_EMBED_CERTS_DIR`); без сертификатов сборка `i2p-embed` падает, даже с заглушкой.
 - `.github/codeql/codeql-config.yml`: `paths-ignore: '**/tests/**'`.
-- `.github/dependabot.yml`: еженедельные PR для cargo (корень и `core/relay`), npm (`ui`), github-actions и сабмодулей. Правила `ignore`: `dtolnay/rust-toolchain` (версия Rust закреплена вручную, тег действия — это версия Rust), мажорные bincode в обоих cargo-каталогах (смена wire-формата, не обновление зависимости) и minor-версии `jni` 0.x (ломающее изменение API — поднимать вместе с портом кода).
+- `.github/dependabot.yml`: еженедельные PR для корневого cargo workspace, npm (`ui`), github-actions и сабмодулей. Правила `ignore`: `dtolnay/rust-toolchain` (версия Rust закреплена вручную, тег действия — это версия Rust), мажорные версии bincode (смена wire-формата, не обновление зависимости) и minor-версии `jni` 0.x (ломающее изменение API — поднимать вместе с портом кода).
 
 ## Куда вносить правки
 
 | Задача | Файл |
 |---|---|
-| Выпустить версию | Поднять версию в `core/Cargo.toml`, `agent/Cargo.toml`, `core/tauri.conf.json`, `ui/package.json` (и `ui/package-lock.json`), `Cargo.lock` (`gipny`, `gipny-agent`); строка в таблице версий `README.md`; написать `docs/releases/<версия>.md`; закоммитить в `main` и запушить — дальше `release.yml` всё делает сам, **тег руками не ставить**. Сиды сети релеев вшиваются из переменной репозитория `GIPNY_DHT_SEEDS` (весь `release.yml`, `env:`) |
+| Выпустить версию | Поднять версию в `core/Cargo.toml`, `agent/Cargo.toml`, `core/tauri.conf.json`, `ui/package.json` (и `ui/package-lock.json`), `Cargo.lock` (`gipny`, `gipny-agent`); строка в таблице версий `README.md`; написать `docs/releases/<версия>.md`; закоммитить в `main` и запушить — дальше `release.yml` всё делает сам, **тег руками не ставить** |
 | Текст страницы релиза | `docs/releases/<версия>.md` (свободный текст); общий шаблон, таблица загрузок, changelog — `.github/scripts/release-notes.sh` |
 | Добавить или переименовать артефакт релиза | Джоба в `release.yml` + таблица платформ в `release-notes.sh` (иначе публикация упадёт) + имена ассетов, которые ищет автообновление (`libcore/src/update.rs`, `target_suffix`) |
 | Пререлиз | Версия с дефисом (`0.5.0-rc1`) во всех файлах из строки «Выпустить версию»: `release.yml` ставит `prerelease`, не делает его «Latest» и собирает все бинарники с журналом (`GIPNY_RELEASE_LOGS=full`, [docs/release-diagnostics.md](../../docs/release-diagnostics.md)). Автообновление пре-релизы не предлагает; стабильная версия того же номера приходит rc-сборке как обновление |
@@ -71,15 +70,14 @@ Build/CodeQL badges README явно обозначают `main`; статус о
 | Поменять, как двигается пин i2pd | Джоба `bump` («record the proven revision») в `e2e-i2pd.yml` |
 | Сборка роутера под платформу | `i2p-embed/build.rs` (переменные `I2P_EMBED_*`), зависимости — шаги в `release.yml` и `i2p-embed.yml`; Android — `android-router/jni` и джоба `android-router` в `release.yml` |
 | Проверки на каждый push | `build.yml` |
-| Правила dependabot | `.github/dependabot.yml` (пример: `bincode` в основном workspace не поднимается выше 1.x, в `core/relay` — до 3.x) |
-| Тестовый релей | `relay-testnet.yml` |
+| Правила dependabot | `.github/dependabot.yml` (пример: `bincode` в основном workspace не поднимается выше 1.x) |
 | Что сканирует CodeQL | `codeql.yml` (языки), `.github/codeql/codeql-config.yml` (пути) |
 | Подпись Android | Секреты `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`; шаг `configure Android signing` в `release.yml` |
 
 ## Время сборки
 
 Релиз собирает снимок netDb, две библиотеки для Android, пять десктопных
-сборок, APK, релей и агента. Отдельных бинарей i2pd нет: каждый бинарь
+сборок, APK и агента. Отдельных бинарей i2pd нет: каждый бинарь
 вкомпилирует роутер. Что сделано, чтобы это не длилось час:
 
 - **boost и OpenSSL для Windows (vcpkg) и Android (`android-deps-*`)
@@ -136,11 +134,8 @@ pre-release ассет, который не вытесняет ничто.
 - **Права GitHub проверяются по текущему API-ответу.** Старые 403 относились к прежнему token/session. В сессии интеграции `gh api` успешно обновлял PR, запускал manual preview и отменял устаревшие runs. Не переносите старый отказ на новый токен и не обещайте доступ к secrets без отдельной проверки. Запуск доступен также через Actions → Run workflow; merge/publish выполняются в пределах задачи владельца.
 - **Сборка релиза для Android требует секретов подписи.** Без них шаг `configure Android signing` падает на `test -n`.
 - **`release-notes.sh` строгий:** новый файл в `dist/` без строки в таблице, как и строка без файла, валят публикацию.
-- **Кэш `relay-testnet` читается из PR-workflow** (особенность скоупа кэша), поэтому состояние сида лежит там только зашифрованным `age`. Старые кэши `relay-testnet-state-*` держали ключ открытым — сид начинает с нового ключа. Две копии одного адреса одновременно — конфликт LeaseSet, поэтому стоит `concurrency: relay-testnet`.
-- **`GIPNY_DHT_SEEDS` читается только при сборке** (`option_env!` в `libcore/src/dht_client.rs`): клиенты не берут сиды из окружения при запуске. e2e передаёт свой сид ботам через их таблицу узлов.
 - **В роутер входит только `libi2pd`**: ни `libi2pd_client` (SAM, прокси, BitTorrent с `boost_json`), ни демон. Поэтому `TORRENTS=no` больше не нужен.
 - **Боевые APK с роутером — только из `release.yml`.** APK из `build.yml` линкуют заглушку прослойки и не подключаются к сети по построению.
-- **Секреты и переменные Actions токену `gh` на этой машине недоступны** (403): `DHT_SEED_AGE_KEY` и `GIPNY_DHT_SEEDS` вписывает владелец.
 
 ## Как проверить
 

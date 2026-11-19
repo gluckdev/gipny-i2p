@@ -7,7 +7,7 @@ struct Directory(PathBuf);
 impl Drop for Directory { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
 
 #[test]
-fn validation_is_quiet_checks_checksum_and_relay_and_never_creates_data() {
+fn validation_accepts_personal_cards_and_rejects_invalid_encodings_without_writing_data() {
     let root = Directory(std::env::temp_dir().join(format!("gipny-card-cli-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())));
     std::fs::create_dir(&root.0).unwrap();
@@ -27,7 +27,9 @@ fn validation_is_quiet_checks_checksum_and_relay_and_never_creates_data() {
     assert!(good.status.success(), "{}", String::from_utf8_lossy(&good.stderr));
     assert!(good.stdout.is_empty() && good.stderr.is_empty());
     card.relay = None;
-    for bad in [encoded.clone() + "=", card.encode().unwrap(), "not a contact card".into()] {
+    let personal = invoke(&card.encode().unwrap());
+    assert!(personal.status.success() && personal.stdout.is_empty() && personal.stderr.is_empty());
+    for bad in [encoded.clone() + "=", "not a contact card".into()] {
         let output = invoke(&bad);
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());

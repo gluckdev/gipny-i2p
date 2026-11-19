@@ -59,8 +59,10 @@ test('all eight About views distinguish browser JS/WASM from native C++ transpor
       const browser = new ui.AboutModal(() => {}).el.textContent;
       assert.match(browser, /JavaScript/); assert.match(browser, /WebAssembly/); assert.match(browser, /I2P/);
       assert.doesNotMatch(browser, /C\+\+/);
+      assert.ok(browser.includes(ui.t('about.personal_delivery')) && browser.includes(ui.t('about.delivery_window')));
       ui.configureBrowserBackend(null);
       const native = new ui.AboutModal(() => {}).el.textContent;
+      for (const key of ['about.personal_delivery', 'about.delivery_window', 'about.message_lifetime']) assert.ok(native.includes(ui.t(key)));
       assert.match(native, /C\+\+/); assert.match(native, /i2pd/); assert.match(native, /I2P/);
     }
   } finally { ui.setLang('en'); ui.configureBrowserBackend({ invoke: async () => null, listen: async () => () => {} }); }
@@ -107,10 +109,27 @@ test('paste auto-adds once as unverified; arbitrary input and a typed legacy URI
 test('manual fields require Add and use the same validation', async () => {
   const h = fixture();
   const fields = h.modal.el.querySelectorAll('input.input');
-  for (const [index, value] of [card.i2p_address, '', card.signPk, card.dhPk].entries()) fields[index].value = value;
+  assert.equal(fields.length, 3);
+  for (const [index, value] of [card.i2p_address, card.signPk, card.dhPk].entries()) fields[index].value = value;
   await tick(); assert.equal(h.calls.length, 0);
   h.modal.el.querySelector('.modal-footer .btn:last-child').click(); await tick();
   assert.equal(h.calls.length, 1); h.close();
+});
+
+test('only an intact imported legacy card supplies its additional terminal candidate', async () => {
+  const other = 'a'.repeat(52) + '.b32.i2p';
+  const legacy = `gipny:v2:${card.i2p_address}:${card.signPk}:${card.dhPk}:${other}`;
+  const imported = fixture();
+  imported.paste(legacy); await tick();
+  assert.equal(imported.calls[0][4], other);
+  imported.close();
+  const manual = fixture();
+  manual.paste(legacy, 'insertText');
+  const fields = manual.modal.el.querySelectorAll('input.input');
+  fields[2].value = '42'.repeat(32);
+  manual.modal.el.querySelector('.modal-footer .btn:last-child').click(); await tick();
+  assert.equal(manual.calls[0][4], undefined);
+  manual.close();
 });
 
 test('camera callbacks use the import path, stop scanning and ignore late results after close', async () => {

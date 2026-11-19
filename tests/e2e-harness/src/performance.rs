@@ -7,7 +7,7 @@ mod worker;
 
 use anyhow::{bail, ensure, Context, Result};
 use gipny_libcore::{SessionEvent, SessionManager};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     future::Future,
@@ -17,7 +17,7 @@ use std::{
 };
 use tokio::sync::mpsc::Receiver;
 
-use super::{file_transfer, no_local_ports, start_bot, start_in_process_relays, BotHandle};
+use super::{file_transfer, no_local_ports, start_bot, BotHandle};
 use stats::{millis, Probes};
 use worker::{Job, Worker};
 
@@ -37,7 +37,6 @@ struct Config {
     probe_timeout_secs: u64,
     max_in_flight: usize,
     requested_file_lanes: Option<usize>,
-    in_process_relays: bool,
     #[serde(skip)]
     work_dir: PathBuf,
     #[serde(skip)]
@@ -71,7 +70,7 @@ fn validate_environment(present: impl Fn(&str) -> bool) -> Result<()> {
     }
     for name in [
         "E2E_AGENT_BIN",
-        "E2E_DHT_OFFLINE",
+        "E2E_OFFLINE_RETURN",
         "E2E_UPDATE_CHECK",
         "E2E_BIG_FILE_RESTART",
         "E2E_BOTH_FIRST",
@@ -103,7 +102,6 @@ impl Config {
             probe_timeout_secs: env_number("E2E_PERF_PROBE_TIMEOUT_SECS", 60, 1, 300)?,
             max_in_flight: env_number("E2E_PERF_MAX_IN_FLIGHT", 4, 1, 16)? as usize,
             requested_file_lanes,
-            in_process_relays: std::env::var("E2E_IN_PROCESS_RELAYS").is_ok_and(|v| v == "1"),
             work_dir: std::env::var_os("E2E_WORK_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| "/tmp/e2e-harness".into()),
@@ -220,11 +218,7 @@ pub(super) async fn run() -> Result<()> {
         measurement_started: false,
         run_id,
         source_sha: std::env::var("GITHUB_SHA").ok(),
-        topology: if config.in_process_relays {
-            "shared_router_personal_relays"
-        } else {
-            "shared_client_router_external_relays"
-        },
+        topology: "shared_router_personal_terminals",
         configured_file_lanes: gipny_libcore::files::lanes::limit(),
         participant_hops: None,
         padded: true,
@@ -256,43 +250,6 @@ pub(super) async fn run() -> Result<()> {
     outcome
 }
 
-#[derive(Deserialize)]
-struct RelayPolicy {
-    destination: String,
-    inbound_hops: u8,
-    outbound_hops: u8,
-}
-
-fn validate_relay_policy(bytes: &[u8], destination: &str) -> Result<()> {
-    let policy: RelayPolicy =
-        serde_json::from_slice(bytes).context("parse relay destination policy")?;
-    ensure!(
-        policy.destination == destination,
-        "relay policy belongs to a different destination"
-    );
-    ensure!(
-        policy.inbound_hops == 3 && policy.outbound_hops == 3,
-        "relay must use three hops in both directions"
-    );
-    Ok(())
-}
-
-fn external_relay(name: &str, fallback: Option<&str>) -> Result<String> {
-    let address_key = format!("E2E_RELAY_DEST_{name}");
-    let address = std::env::var(&address_key)
-        .ok()
-        .or_else(|| fallback.map(str::to_owned))
-        .with_context(|| format!("{address_key} or E2E_RELAY_DEST is required"))?;
-    ensure!(!address.trim().is_empty(), "{address_key} is empty");
-    let manifest_key = format!("E2E_PERF_RELAY_{name}_MANIFEST");
-    let path = std::env::var_os(&manifest_key)
-        .with_context(|| format!("{manifest_key} is required for an external relay"))?;
-    let bytes = std::fs::read(path).with_context(|| format!("read {manifest_key}"))?;
-    ensure!(bytes.len() <= 16 * 1024, "relay policy is too large");
-    validate_relay_policy(&bytes, &address)?;
-    Ok(address)
-}
-
 async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Result<()> {
     let setup = Instant::now();
     // E2E_TIMEOUT_SECS is the remaining total harness budget supplied by the
@@ -305,25 +262,16 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
         .join(format!("performance-{}", report.run_id));
     std::fs::create_dir_all(&config.work_dir)?;
     std::fs::create_dir(&work_dir).context("create fresh performance profiles")?;
-    let fallback = std::env::var("E2E_RELAY_DEST").ok();
-    let (relay_a, relay_b) = if config.in_process_relays {
-        (String::new(), String::new())
-    } else {
-        (
-            external_relay("A", fallback.as_deref())?,
-            external_relay("B", fallback.as_deref())?,
-        )
-    };
     let (a, mut a_events) = within(
         deadline,
         "bot-a startup",
-        start_bot("bot-a", &work_dir, &relay_a, &[]),
+        start_bot("bot-a", &work_dir),
     )
     .await?;
     let (b, mut b_events) = match within(
         deadline,
         "bot-b startup",
-        start_bot("bot-b", &work_dir, &relay_b, &[]),
+        start_bot("bot-b", &work_dir),
     )
     .await
     {
@@ -334,45 +282,23 @@ async fn execute(config: &Config, report: &mut Report, nonce: [u8; 16]) -> Resul
         }
     };
     let result = async {
-        let owned_relays = if config.in_process_relays {
-            let (ra, rb) = within(
-                deadline,
-                "personal relay startup",
-                start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk),
-            )
-            .await?;
-            ensure!(
-                ra.hops() == 3 && rb.hops() == 3,
-                "personal relays must have three-hop tunnels"
-            );
-            a.session.set_relay_address(ra.address())?;
-            b.session.set_relay_address(rb.address())?;
-            Some((ra, rb))
-        } else {
-            None
-        };
-        ensure!(
-            a.session.node.hops() == 3 && b.session.node.hops() == 3,
-            "both clients must have three-hop tunnels"
-        );
-        report.participant_hops = Some([3, 3, 3, 3]);
-        let relay_a = owned_relays
-            .as_ref()
-            .map(|r| r.0.address())
-            .unwrap_or(&relay_a);
-        let relay_b = owned_relays
-            .as_ref()
-            .map(|r| r.1.address())
-            .unwrap_or(&relay_b);
+        let hops = [
+            a.session.node.hops(), b.session.node.hops(),
+            a.session.terminal_hops().context("bot-a terminal unavailable")?,
+            b.session.terminal_hops().context("bot-b terminal unavailable")?,
+        ];
+        ensure!(hops == [3; 4], "both clients and both personal terminals must have three-hop tunnels");
+        ensure!(a.i2p_address != b.i2p_address, "the two terminals must be distinct");
+        report.participant_hops = Some(hops);
         let b_in_a = within(deadline, "bot-a contact setup", async {
             Ok(a.session
-                .add_contact_via(&b.card, &b.i2p_address, "bot-b", Some(relay_b))
+                .add_contact(&b.card, &b.i2p_address, "bot-b")
                 .await?)
         })
         .await?;
         let a_in_b = within(deadline, "bot-b contact setup", async {
             Ok(b.session
-                .add_contact_via(&a.card, &a.i2p_address, "bot-a", Some(relay_a))
+                .add_contact(&a.card, &a.i2p_address, "bot-a")
                 .await?)
         })
         .await?;

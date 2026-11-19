@@ -10,7 +10,18 @@ declare module '*gipny_browser_router.js' {
   export function application_tunnel_hops(): Uint8Array;
   export function public_network_metrics(): string;
   export default function init(): Promise<unknown>;
+  export class ViewOnceOffer {
+    bytes(): Uint8Array;
+    free(): void;
+  }
+  export class ViewOnceLetter {
+    free(): void;
+  }
   export class BrowserEngine {
+    view_once_offer(peer: string, dh: string, id: Uint8Array, nonce: Uint8Array, expiresAt: number): ViewOnceOffer;
+    view_once_accept(offer: ViewOnceOffer, envelope: Uint8Array): ViewOnceLetter;
+    view_once_seal(peer: string, dh: string, id: Uint8Array, nonce: Uint8Array, expiresAt: number, offer: Uint8Array, body: Uint8Array): Uint8Array;
+    view_once_open(letter: ViewOnceLetter): Uint8Array;
     new_attachment_key(id: string): Uint8Array;
     seal_attachment_part(id: string, key: Uint8Array, index: number, data: Uint8Array): Uint8Array;
     open_attachment_part(id: string, key: Uint8Array, index: number, data: Uint8Array): Uint8Array;
@@ -32,8 +43,13 @@ declare module '*gipny_browser_router.js' {
     encrypt(sign: string, dh: string, bundle: Uint8Array, payload: string): Uint8Array;
     decrypt(sign: string, dh: string, envelope: Uint8Array): string;
     sign_auth(destination: string, challenge: Uint8Array): Uint8Array;
+    sign_framed_auth(destination: string, challenge: Uint8Array, nonce: Uint8Array): Uint8Array;
+    terminal_proof(requester: string, challenge: Uint8Array, nonce: Uint8Array): Uint8Array;
+    static verify_terminal_proof(owner: string, destination: string, requester: string, challenge: Uint8Array, nonce: Uint8Array, proof: Uint8Array): boolean;
+    static verify_framed_auth(sign: string, destination: string, challenge: Uint8Array, nonce: Uint8Array, signature: Uint8Array): boolean;
     static verify_auth(sign: string, destination: string, challenge: Uint8Array, signature: Uint8Array): boolean;
     verify_password(pass: string): void;
+    verify_passkey(id: Uint8Array, prf: Uint8Array): void;
     change_password(old: string, pass: string): void;
     enroll_passkey(id: Uint8Array, rp: string, salt: Uint8Array, prf: Uint8Array): void;
     start_network(config: string, event: (event: string) => void): Promise<BrowserNetwork>;

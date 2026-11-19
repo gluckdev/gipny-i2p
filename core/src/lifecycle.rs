@@ -247,24 +247,13 @@ pub(crate) async fn boot(
     // Ephemeral per-session i2p address: the node regenerates its destination
     // every launch (identity is the vault keypair, and the relay routes by that
     // key, not by address — so nothing about the address needs persisting).
-    let (node, prebuilt_relay) = match take_prewarmed(ctx, &app, profile, settings).await {
-        Some((node, relay)) => (node, Some(relay)),
-        // start_with_progress has already named the step that failed — the
-        // router, the address, or the tunnels — so nothing is reported here.
-        // It used to call every failure of this call "router failed", which put
-        // a ten-minute tunnel failure under a step that was long since done.
-        None => (
-            Arc::new(
-                I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app)))
-                    .await
-                    .map_err(err)?,
-            ),
-            None,
-        ),
+    let node = match take_prewarmed(ctx, &app, profile, settings).await {
+        Some(node) => node,
+        None => Arc::new(I2pNode::start_with_progress(dir, settings, Some(boot_progress(&app))).await.map_err(err)?),
     };
     let warning: Option<String> = None;
     boot_status(&app, "core", "active", "starting the messenger core");
-    let (core, mut events) = Core::start(dir.to_path_buf(), db, node, prebuilt_relay)
+    let (core, mut events) = Core::start(dir.to_path_buf(), db, node)
         .await
         .map_err(|e| {
             boot_status(&app, "core", "failed", format!("{e:?}"));
@@ -302,28 +291,8 @@ pub(crate) async fn boot(
                     crate::core::HostedRelayState::Starting => {
                         boot_status(&app2, "relay", "active", "building the relay's tunnels");
                     }
-                    // Not a failure and not a success: in external mode there is
-                    // no built-in relay to raise. It said nothing at all, and a
-                    // step left empty is back-filled to a green tick by the next
-                    // stage that speaks, so a person was told a relay had been
-                    // built when we never tried.
                     crate::core::HostedRelayState::Off => {
-                        boot_status(
-                            &app2,
-                            "relay",
-                            "skipped",
-                            "not our relay to raise — an external one is configured",
-                        );
-                        // Nothing announces this node, so no join follows and
-                        // no verdict ever arrives. Without a line of its own the
-                        // step would stay empty on a screen where every other
-                        // step has a state.
-                        boot_status(
-                            &app2,
-                            "dht",
-                            "skipped",
-                            "no relay of ours to announce — the external one handles it",
-                        );
+                        boot_status(&app2,"relay","skipped","personal terminal is stopped");
                     }
                 },
                 crate::core::CoreEvent::DhtJoined { peers, reached } => {
@@ -353,6 +322,7 @@ pub(crate) async fn boot(
         }
     });
     *ctx.profile.lock().await = Some(profile.to_string());
+    ctx.decoy_session.store(db_name == "decoy.db", std::sync::atomic::Ordering::Release);
     *ctx.vault.lock().await = Some(vault);
     *ctx.core.lock().await = Some(core);
     Ok(warning)

@@ -324,13 +324,21 @@ impl Db {
     }
 
     pub fn purge_expired(&self, now: i64) -> Result<usize> {
-        self.with_conn(|c| Ok(c.execute(
-            "DELETE FROM messages WHERE id IN (
-                SELECT m.id FROM messages m
-                LEFT JOIN pinned_messages p ON p.message_id = m.id
-                WHERE m.group_id IS NOT NULL AND m.expires_at IS NOT NULL AND m.expires_at > m.sent_at
-                  AND m.expires_at <= ?1 AND p.message_id IS NULL
-            )", params![now])?))
+        let _files = self.file_mutations.lock().map_err(|_| DbError::State)?;
+        self.with_tx(|tx| {
+            tx.execute("DELETE FROM delivery_receipts WHERE deadline<=?1", [now])?;
+            let ids = tx.prepare(
+                "SELECT id FROM messages WHERE group_id IS NOT NULL AND expires_at <= ?1"
+            )?.query_map(params![now], |row| row.get::<_, i64>(0))?.collect_rows()?;
+            for id in &ids {
+                tx.execute("INSERT OR IGNORE INTO deleted_file_cleanup(path)
+                    SELECT path FROM attachments WHERE message_id=?1
+                    UNION SELECT path FROM file_in WHERE message_id=?1", params![id])?;
+                tx.execute("DELETE FROM settings WHERE k='sound_' || ?1", params![id])?;
+                tx.execute("DELETE FROM messages WHERE id=?1", params![id])?;
+            }
+            Ok(ids.len())
+        })
     }
 
     /// Preserve the existing local group-history cleanup, including pins.
@@ -368,6 +376,7 @@ impl Db {
             reply_to: r.get(13)?,
             dm_seq: r.get(14)?,
             deleted_at: r.get(15)?,
+            delivery_expired_at: r.get(16)?,
         })
     }
 
@@ -417,6 +426,29 @@ impl Db {
 #[cfg(test)]
 mod history_retention_tests {
     use super::*;
+
+    #[test]
+    fn group_ttl_expires_pins_and_preserves_attachment_cleanup_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let db = Db::open_plain(&path).unwrap();
+        db.create_group(b"group", "group").unwrap();
+        let attachment = NewAttachment {
+            name: "photo".into(), size: 1, key: vec![1; 32], path: "part.bin".into(), chunk_size: None,
+        };
+        std::fs::write(dir.path().join(&attachment.path), [1]).unwrap();
+        let msg = db.insert_group_message(b"group", Some(&[3; 32]), Direction::In,
+            "photo", 100, Some(200), &[attachment]).unwrap();
+        db.pin_group_message(b"group", msg).unwrap();
+        assert_eq!(db.purge_expired(199).unwrap(), 0);
+        assert_eq!(db.purge_expired(200).unwrap(), 1);
+        assert!(db.get_message(msg).unwrap().is_none());
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        assert_eq!(db.cleanup_deleted_files(dir.path()).unwrap(), 1);
+        assert!(!dir.path().join("part.bin").exists());
+        assert_eq!(db.purge_expired(200).unwrap(), 0);
+    }
 
     #[test]
     fn clearing_one_group_preserves_other_chats_and_existing_group_pins() {

@@ -27,8 +27,7 @@ CI-артефакт не означает публичное развёртыв�
 [руководство и проверенные результаты](browser-messenger.md) описывают границы.
 
 `release.yml` компилирует код текущего публичного commit, pinned submodules и
-зависимости из публичных исходников. Готовые внешние `gipny`, `gipny-agent`,
-`gipny-relay`, `i2pd` или `libi2pd.so` как замена source build не скачиваются.
+зависимости из публичных исходников. Личный терминал собирается из `libcore` в составе клиента. Роутер и агент также собираются из исходников.
 
 | Платформа | GitHub runner | Результат |
 |---|---|---|
@@ -68,10 +67,8 @@ Rust закреплён на `1.93.1`, Android NDK — `27.3.13750724`. `tauri-c
 это не проверка установки NSIS на компьютере пользователя.
 
 Windows memory-security CI также выявил upstream SQLCipher logger recursion
-при `VirtualLock` quota failure. Workspace и отдельный relay manifest/lock
-обновлены на rusqlite 0.41.1 / libsqlite3-sys 0.39.1; SQLCipher 4.19.0 приходит
-как публичный source crate `sqlcipher-src`, не готовая DLL. Обе lockfile должны
-оставаться согласованными. Отдельный Windows child-process regression
+при `VirtualLock` quota failure. Workspace использует rusqlite 0.41.1 / libsqlite3-sys 0.39.1; SQLCipher 4.19.0 приходит
+из публичного source crate `sqlcipher-src` по корневому lockfile. Отдельный Windows child-process regression
 форсирует lock failure при включённом `cipher_memory_security`.
 
 После Tauri build `verify-macos-bundle.sh` проверяет Info.plist, единственный

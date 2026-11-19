@@ -33,7 +33,7 @@ def digest(path):
 def reviewed_lockfiles():
     """Require exact source bytes before and after a build, without normalization."""
     locks = {}
-    for name in ('Cargo.lock', 'core/relay/Cargo.lock', 'ui/package-lock.json'):
+    for name in ('Cargo.lock', 'ui/package-lock.json'):
         path = ROOT / name
         if not path.is_file():
             raise ValueError(f'reviewed dependency lockfile is missing: {name}')
@@ -201,7 +201,7 @@ def record(output, target, patterns, input_manifests, inputs):
                          'GIPNY_VCPKG_COMMIT', 'GIPNY_VCPKG_TRIPLET', 'GIPNY_VCPKG_HOST_TRIPLET',
                          'GIPNY_WINDOWS_TARGET', 'GIPNY_WINDOWS_ARCH', 'GIPNY_WINDOWS_HOST_ARCH',
                          'GIPNY_MSVC_TOOLSET', 'I2PD_REV', 'MACOSX_DEPLOYMENT_TARGET',
-                         'I2P_EMBED_STATIC_LIBS', 'GIPNY_RESEED_SOURCE_SHA', 'GIPNY_DHT_SEEDS') if key in os.environ},
+                         'I2P_EMBED_STATIC_LIBS', 'GIPNY_RESEED_SOURCE_SHA') if key in os.environ},
         'downloaded_inputs': inputs_list,
         'artifacts': [{'name': path.name, 'sha256': digest(path), 'size': path.stat().st_size} for path in files],
     })

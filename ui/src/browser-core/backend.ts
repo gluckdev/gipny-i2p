@@ -1,5 +1,6 @@
+import { DEFAULT_TTL_SECS, MAX_TTL_SECS, messageLifetimeSeconds } from '../app/message-lifetime';
 import { BrowserEngine, PublicBootstrap, application_tunnel_hops, AttachmentHasher, attachment_passed_name, attachment_passes_through, contact_qr_svg, envelope_is_initial, public_network_metrics, type BrowserNetwork } from '../../../browser-router/pkg/gipny_browser_router.js';
-import type { BootStatus, CoreEvent, GroupMember, PendingAttachment, RelayInfo } from '../app/api';
+import type { BootStatus, CoreEvent, DeliveryExpiryNotice, GroupMember, PendingAttachment, RelayInfo } from '../app/api';
 import { isValidI2pAddress } from '../features/contacts/contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './profiles/storage';
 import { publicIdentity } from './profiles/public-identity';
@@ -9,19 +10,23 @@ import { acknowledgeBrowserDeletion, deletionEvent, forgetRequestObligations, qu
 import { addContact, getContact, removeContact } from './messaging/contacts';
 import { groupWire, ingestGroup } from './messaging/groups';
 import { validatePayload } from './messaging/validation';
+import { oweReceipt, receiveViewOnceControl, sweepViewOnce, trackViewOnce, viewOnceDue } from './messaging/view-once-delivery';
+import type { ViewOnceDelivery } from '../app/api';
+import { markerEnd, pruneViewOnceMarkers, VIEW_ONCE_BODY_LIMIT, ViewOnceInbox, type ViewOnceOfferReply, type ViewOnceRequest } from './messaging/view-once';
+import { ViewOnceOutbox, type WaitingLetter } from './messaging/view-once-outbox';
 import { fileIds, messageFiles } from './files/history';
 import { prepareFiles, storeBytes, type PreparedFile } from './files/preparation';
 import {
   acceptFileOffers, acceptPendingFiles, buildChunkLetter, cancelBrowserFiles, chunkSource, failOutgoingFile, failStalledFiles,
-  fileWorkDue, finishFileVerification, forgetFlight, inlinePart, isRequestContent, offerOutgoingFile, pendingInlineAllowed, pruneFiles, queueFileChunks, receiveFileControl,
+  fileWorkDue, finishFileVerification, inlinePart, isRequestContent, offerOutgoingFile, pendingInlineAllowed, pruneFiles, queueFileChunks, receiveFileControl,
   repeatFileReceipt, resumeFiles, settleDeposit,
 } from './files/transfers';
 import { FileStorage, FILE_PREVIEW_LIMIT, StorageBusy } from './files/storage';
 import { ActionLog, LOG_LOCATION } from './diagnostics/log';
 import {
-  allocate, base64, canSendControls, clearHistory, dueLetters, expireHistory, expireResends, fromBase64, hex, inHistory, redactMessage, loadState, newState, payload, pruneMessageOutbox,
-  queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, wakePeerRetries, unbase64, unhex, visible,
-  type BrowserState, type Outbox, type PublicIdentity, type SeenEnvelope, type StoredBlob, type StoredMessage, type WirePayload,
+  acknowledgeDelivery, allocate, base64, canSendControls, clearHistory, deliveryDue, discardExpiredIncoming, dueLetters, expireHistory, expireResends, fromBase64, hex, inHistory, letterDeadline, redactMessage, loadState, newState, payload, pruneMessageOutbox, resetPeerOutbox,
+  queueLetter, queueReceipt, recentEnvelope, rememberEnvelope, rememberInitial, reopenForResend, replayedInitial, sameScope, listDeliveryExpiryNotices, acknowledgeDeliveryExpiryNotices, wakePeerRetries, unbase64, unhex, visible,
+  RESEND_TTL_MS, type BrowserState, type Outbox, type PublicIdentity, type SeenEnvelope, type StoredBlob, type StoredMessage, type WirePayload,
 } from './profiles/model';
 
 type Args = Record<string, unknown>;
@@ -52,6 +57,8 @@ export class BrowserBackend {
   private identity: PublicIdentity | null = null;
   private queue: Promise<unknown> = Promise.resolve();
   private relay: BrowserRelay | null = null;
+  private viewOnce = new ViewOnceInbox();
+  private viewOnceOutbox = new ViewOnceOutbox();
   private network: BrowserNetwork | null = null;
   private generation = 0;
   private closing = false;
@@ -205,7 +212,7 @@ export class BrowserBackend {
     this.emit('boot_status', { stage, state, detail });
     this.log.debug(`boot:${stage}`, `${state}${detail ? ' · ' + detail : ''}`);
   }
-  private info(): RelayInfo { return { mode: 'builtin', external: '', hosted: this.hosted, dial: { attempts: 0, last_error: this.hosted.state === 'failed' ? this.hosted.reason : null, unreachable_checks: 0, unreachable_error: null } }; }
+  private info(): RelayInfo { return { hosted: this.hosted, dial: { attempts: 0, last_error: this.hosted.state === 'failed' ? this.hosted.reason : null, unreachable_checks: 0, unreachable_error: null } }; }
   private relayChanged(): void { this.event({ RelayInfoChanged: { info: this.info() } }); }
 
   private transact<T>(action: (state: BrowserState, engine: BrowserEngine) => T | Promise<T>, mirrorRecovery: boolean | (() => boolean) = false): Promise<T> {
@@ -215,26 +222,30 @@ export class BrowserBackend {
       const backup = structuredClone(state);
       engine.begin();
       let writing = false;
+      let undelivered: DeliveryExpiryNotice[];
+      let changedViewOnce: ViewOnceDelivery[];
+      let result: T;
       try {
-        const result = await action(state, engine);
+        result = await action(state, engine);
         if (this.engine !== engine || this.closing) throw new Error('Profile is locked');
         const now = Date.now();
+        pruneViewOnceMarkers(state, now);
+        changedViewOnce = sweepViewOnce(state, this.identity!, now);
+        undelivered = expireResends(state, now, peer => engine.forget_peer(peer));
         const expired = expireHistory(state, now);
         queueDeletionControls(state, this.identity!);
         pruneFiles(state, this.identity!, now);
         // Refill per-recipient file windows in this same snapshot write.
         queueFileChunks(state, this.identity!, now);
-        expireResends(state, now);
         const oldFiles = fileIds(backup), newFiles = fileIds(state);
         const removedFiles = [...oldFiles].filter(id => !newFiles.has(id));
         const ciphertext = engine.seal(JSON.stringify(state));
         const next = engine.pending_generation();
         writing = true;
-        await storage.persist(ciphertext, next, expired || removedFiles.length > 0 || (typeof mirrorRecovery === 'function' ? mirrorRecovery() : mirrorRecovery));
+        await storage.persist(ciphertext, next, expired || undelivered.length > 0 || removedFiles.length > 0 || (typeof mirrorRecovery === 'function' ? mirrorRecovery() : mirrorRecovery));
         if (this.engine !== engine || this.closing) throw new Error('Profile is locked');
         engine.commit();
         for (const id of removedFiles) void this.files?.remove(id).catch(() => {});
-        return result;
       } catch (error) {
         if (this.engine !== engine || this.closing) throw error;
         if (writing) {
@@ -251,6 +262,13 @@ export class BrowserBackend {
         }
         throw error;
       }
+      this.viewOnce.prune(Date.now(), id => state.contacts.some(contact => contact.id === id && contact.trust !== 2 && contact.request === 'none'));
+      this.viewOnceOutbox.prune(item => item.deadline > Date.now()
+        && (!item.committed || state.view_once_tracking?.deliveries.some(row => row.id === item.id && row.contact_id === item.contactId && row.status === 'pending') === true)
+        && state.contacts.some(peer => peer.id === item.contactId && peer.sign_pk === item.peer && peer.dh_pk === item.dh && peer.trust !== 2 && peer.request === 'none'));
+      for (const item of changedViewOnce) this.event({ ViewOnceDeliveryChanged: item });
+      for (const notice of undelivered) this.event({ MessageDeliveryExpired: notice });
+      return result;
     };
     const pending = this.queue.then(async () => {
       this.transactSince = Date.now();
@@ -284,6 +302,8 @@ export class BrowserBackend {
    * this worker; no long network operation is held inside the state queue. */
   closeNow(): void {
     this.closing = true;
+    this.viewOnce.clear();
+    this.viewOnceOutbox.clear();
     this.prewarm.cancel();
     this.verificationRetry.clear();
     this.retryOnReturn = new WeakSet();
@@ -334,17 +354,23 @@ export class BrowserBackend {
       // No transfer or upload is running during open. Remove only unreferenced
       // encrypted remnants; a normal transaction removes named obsolete files.
       await this.files.collect(fileIds(state));
-      const needsExpiry = (): boolean => !!this.state?.messages.some(row => row.deleted_at == null && row.expires_at !== null && row.expires_at <= Date.now());
+      const needsExpiry = (): boolean => {
+        const state = this.state, now = Date.now();
+        return !!state && (viewOnceDue(state, now) || state.messages.some(row => deliveryDue(row, now) || (row.deleted_at == null && row.expires_at != null && row.expires_at <= now))
+          || state.outbox.some(item => now >= letterDeadline(item)));
+      };
+      let clearedHistory = false;
       const inlineHistory = state.attachments.some(file => file.data !== undefined);
       await this.transact(async next => {
+        clearedHistory = clearHistory(next, { preserveSaved: true }) > 0;
         for (const file of next.attachments) if (file.data !== undefined) {
           file.storage = await this.storeBytes(new Uint8Array(unbase64(file.data, FILE_PREVIEW_LIMIT)));
           delete file.data;
         }
         resumeFiles(next, this.identity!, Date.now());
-      }, inlineHistory);
+      }, () => inlineHistory || clearedHistory);
       this.verifyReadyFiles();
-      this.sweepTimer = setInterval(() => { this.reportStalls(); if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
+      this.sweepTimer = setInterval(() => { this.reportStalls(); this.viewOnce.prune(Date.now()); if (needsExpiry() && !this.closing) void this.transact(() => {}).catch(() => {}); }, 10000);
       this.boot('vault', 'done', 'Profile opened; keys remain in the WASM worker');
       this.startup.mark('vault_opened');
       const attempt = ++this.generation;
@@ -389,7 +415,10 @@ export class BrowserBackend {
       this.network = network;
       this.startup.mark('application_destination_ready');
       this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error),
-        peer => this.resumePeerRetries(peer, attempt));
+        peer => this.resumePeerRetries(peer, attempt), (peer, request) => this.receiveViewOnceOffer(peer, request), peer => {
+          const contact = this.state?.contacts.find(c => c.sign_pk === peer && c.trust !== 2);
+          return contact ? [contact.i2p_address, contact.relay].filter((address): address is string => !!address && isValidI2pAddress(address)) : [];
+        });
       this.relay.start();
       this.hosted = { state: 'ready', address: this.identity!.i2p_address };
       this.boot('core', 'done', 'In-process client destination is ready');
@@ -408,7 +437,8 @@ export class BrowserBackend {
 
   private resumePeerRetries(peer: string, generation: number): void {
     if (generation !== this.generation || this.closing || !this.state) return;
-    if (wakePeerRetries(this.state, peer, this.sending, this.retryOnReturn)) {
+    const waiting = this.viewOnceOutbox.wake(peer);
+    if (wakePeerRetries(this.state, peer, this.sending, this.retryOnReturn) || waiting) {
       this.log.debug('outbox_peer_returned', this.who(peer));
       this.schedule(0);
     }
@@ -438,7 +468,7 @@ export class BrowserBackend {
           this.relayProbes.attempted++;
           this.log.debug('relay_probe', this.who(peer.key));
           try {
-            await this.relay!.ping(peer.address);
+            await this.relay!.ping(peer.address, peer.key);
           } catch {
             if (!active()) return;
             this.relayProbes.failed++;
@@ -515,6 +545,9 @@ export class BrowserBackend {
       // One slow stream (connect, write and read deadlines add up to minutes)
       // holds only its own slot: a freed slot refills at once, so receipts and
       // further parts never wait for the slowest send.
+      const waiting = this.viewOnceOutbox.due(Date.now());
+      if (waiting) void this.sendQueuedViewOnce(waiting).catch(() => { /* Retried with the same id until its deadline. */ })
+        .finally(() => { waiting.sending = false; });
       const free = SEND_STREAMS - this.sending.size;
       if (free <= 0) return;
       for (const item of dueLetters(this.state, Date.now(), free, this.sending, this.retryOnReturn)) {
@@ -564,7 +597,7 @@ export class BrowserBackend {
       await this.transact((state, engine) => {
         if (attempt !== this.generation) return;
         const current = state.outbox.find(value => value.key === item.key);
-        if (!current || !canSendControls(state, item.peer) || !reopenForResend(current)) return;
+        if (!current || Date.now() >= letterDeadline(current) || !canSendControls(state, item.peer) || !reopenForResend(current)) return;
         if (current.blob === null) {
           const letter = current.file ? buildChunkLetter(state, this.identity!, current, part) : current.payload;
           if (!letter) { state.outbox = state.outbox.filter(value => value !== current); return; }
@@ -579,7 +612,8 @@ export class BrowserBackend {
       const current = this.state?.outbox.find(value => value.key === item.key);
       if (!current?.blob || !this.relay || attempt !== this.generation || !this.state || !canSendControls(this.state, item.peer)) return;
       step('deposit');
-      await this.relay.deposit(address, current.peer, fromBase64(current.blob));
+      await this.relay.deposit(address, current.peer, fromBase64(current.blob), () =>
+        attempt === this.generation && Date.now() < letterDeadline(current) && !!this.state?.outbox.some(value => value.key === current.key));
       if (attempt !== this.generation || !this.relay) return;
       this.lastDeposit = Date.now(); this.stallReports = 0;
       this.relayAnswered = true;
@@ -604,6 +638,7 @@ export class BrowserBackend {
           if (!current.deposited) current.attempts = Math.max(1, current.attempts);
         });
       } catch { /* Locked or storage fault: nothing more to record. */ }
+      if (!this.state?.outbox.some(value => value.key === item.key)) return;
       this.event({ ContactReachability: { contact_id: contact.id, unreachable: true } });
       this.log.debug('outbox_retry', `to ${this.who(item.peer)} · attempts ${(this.state?.outbox.find(value => value.key === item.key))?.attempts ?? item.attempts} · ${reason(error)}`);
       // Keep the exact ciphertext for a later retry (until the relay confirms it), including restart.
@@ -642,8 +677,7 @@ export class BrowserBackend {
         if (ack) queueReceipt(state, peer, ack);
         return;
       }
-      // An X3DH initial is never accepted twice, however old: a replay could
-      // otherwise re-open a superseded session through the OTK-free fallback.
+      // The per-peer replay window also covers initials without a one-time key.
       if (initial && replayedInitial(state, peer, hash)) { this.log.info('replay_dropped', `initial letter from ${this.who(peer)}`); return; }
       let contact = state.contacts.find(value => value.sign_pk === peer);
       const decoded = JSON.parse(engine.decrypt(peer, contact?.dh_pk || '', bytes)) as { sign_pk: string; dh_pk: string; payload: WirePayload };
@@ -651,6 +685,16 @@ export class BrowserBackend {
       if (initial) rememberInitial(state, peer, hash);
       const incoming = decoded.payload;
       validatePayload(incoming);
+      const receipt = receiveViewOnceControl(state, this.identity!, peer, incoming);
+      if (receipt) {
+        if (receipt !== true) events.push({ ViewOnceDeliveryChanged: receipt });
+        rememberEnvelope(state, { hash, peer, ack: null });
+        return;
+      }
+      if (discardExpiredIncoming(state, peer, incoming, Date.now())) {
+        rememberEnvelope(state, { hash, peer, ack: null });
+        return;
+      }
       if (incoming.typing === false && incoming.body.startsWith('gipny-call/1 ')) {
         const frame = incoming.body.slice('gipny-call/1 '.length);
         if (contact?.request === 'none' && !incoming.group && incoming.origin_msg_id === 0
@@ -685,18 +729,9 @@ export class BrowserBackend {
         ack = receiveDeletionControl(state, own, contact.id, peer, incoming, events);
       } else if (incoming.ack_for !== null) {
         const row = state.messages.find(value => value.outgoing && value.origin === incoming.ack_for && sameScope(value, contactId, groupId));
-        if (row) {
-          state.outbox = state.outbox.filter(value => {
-            if (value.row !== row.id || value.peer !== peer) return true;
-            if (value.blob === null || !value.initial) return false;
-            value.row = null; value.payload = null; // Deliver the session opener only.
-            return true;
-          });
-          if (!state.outbox.some(value => value.row === row.id)) {
-            row.sent = true; row.delivered = true;
-            events.push({ MessageDelivered: { message_id: row.id } });
-            this.log.info('message_ack', `message ${row.id} delivered to ${this.who(peer)}`);
-          }
+        if (row && acknowledgeDelivery(state, row, peer, Date.now())) {
+          events.push({ MessageDelivered: { message_id: row.id } });
+          this.log.info('message_ack', `message ${row.id} delivered to ${this.who(peer)}`);
         }
       } else if (incoming.typing !== null) {
         if (contact.request !== 'incoming') events.push({ Typing: { contact_id: contactId, group_id: groupId, sender_sign_pk: groupId ? peer : null, typing: incoming.typing } });
@@ -747,7 +782,7 @@ export class BrowserBackend {
     this.schedule(0);
   }
 
-  private send(state: BrowserState, args: Args, group: boolean, attachments: PreparedFile[]): number {
+  private send(state: BrowserState, args: Args, group: boolean, attachments: PreparedFile[], sourceExpiresAt?: number | null): number {
     const contact = group ? null : getContact(state, number(args, 'contactId'));
     if (contact?.trust === 2) throw new Error('Contact is blocked');
     if (contact?.request === 'incoming') throw new Error('Accept the contact request first');
@@ -756,9 +791,11 @@ export class BrowserBackend {
     if (body.length > 128 * 1024 || attachments.length > 16) throw new Error('Message size limit');
     const letter = payload(this.identity!, state.displayName);
     letter.origin_msg_id = allocate(state); letter.body = body;
-    const ttl = args.ttlSecs;
-    if (ttl != null && (!Number.isSafeInteger(ttl) || (ttl as number) < 0 || (ttl as number) > 365 * 86400)) throw new Error('Invalid message lifetime');
-    letter.ttl_ms = typeof ttl === 'number' ? ttl * 1000 : null;
+    letter.ttl_ms = messageLifetimeSeconds(args.ttlSecs) * 1000;
+    if (sourceExpiresAt != null) {
+      if (sourceExpiresAt <= letter.sent_at) throw new Error('Message expired');
+      letter.ttl_ms = Math.min(MAX_TTL_SECS * 1000, sourceExpiresAt - letter.sent_at);
+    }
     if (groupId) letter.group = groupWire(state, groupId);
     if (typeof args.replyTo === 'number') {
       const reply = state.messages.find(value => value.id === args.replyTo && sameScope(value, contact?.id || null, groupId));
@@ -782,6 +819,7 @@ export class BrowserBackend {
     }) : [contact!];
     const recipients = peers.filter(peer => peer.trust !== 2);
     if (!recipients.length) throw new Error('No active recipients');
+    if (groupId) row.pending_recipients = recipients.map(peer => peer.sign_pk);
     for (const peer of recipients) {
       queueLetter(state, peer.sign_pk, structuredClone(letter), row.id); peer.last_message_at = row.sent_at;
       for (const file of chunked) offerOutgoingFile(state, row.id, peer.sign_pk, file.offer, file.attachment);
@@ -789,6 +827,57 @@ export class BrowserBackend {
     if (groupId) state.groups.find(value => value.id === groupId)!.last_message_at = row.sent_at;
     this.log.info('message_send', `message ${row.id} to ${recipients.length} recipient(s)`);
     return row.id;
+  }
+
+  private async sendQueuedViewOnce(entry: WaitingLetter): Promise<void> {
+    const relay = this.relay, engine = this.engine;
+    const target = this.state?.contacts.find(contact => contact.id === entry.contactId && contact.sign_pk === entry.peer && contact.dh_pk === entry.dh);
+    if (!relay || !engine || !target) return;
+    const allowed = (): boolean => relay === this.relay && engine === this.engine && entry.deadline > Date.now()
+      && this.state?.contacts.some(peer => peer.id === entry.contactId && peer.sign_pk === entry.peer && peer.dh_pk === entry.dh && peer.trust !== 2 && peer.request === 'none') === true
+      && this.state?.view_once_tracking?.deliveries.some(row => row.id === entry.id && row.status === 'pending') === true;
+    if (!allowed()) return;
+    await relay.sendViewOnce(target.relay || target.i2p_address, target.sign_pk, target.dh_pk,
+      async () => this.viewOnceOutbox.open(engine, entry), entry.expiresAt, allowed, new Uint8Array(unhex(entry.id, 16)));
+    if (this.engine !== engine) return;
+    await this.transact((next, current) => {
+      if (engine !== current) return;
+      const row = next.view_once_tracking?.deliveries.find(row => row.id === entry.id);
+      if (row?.status === 'pending') row.status = 'relayed';
+    }, true);
+  }
+
+  private receiveViewOnceOffer(peer: string, request: ViewOnceRequest): ViewOnceOfferReply {
+    const { state, engine } = this.require();
+    const contact = state.contacts.find(value => value.sign_pk === peer && value.trust !== 2 && value.request === 'none');
+    const id = hex(request.id), contactId = contact?.id, dh = contact?.dh_pk;
+    const end = request.expires_at;
+    const pinned = (next: BrowserState): boolean => !!contact && next.contacts.some(value => value.id === contactId
+      && value.sign_pk === peer && value.dh_pk === dh && value.request === 'none' && value.trust !== 2);
+    if (!contact || hex(request.to) !== this.identity!.sign_pk || request.id.length !== 16 || request.nonce.length !== 32
+        || !Number.isSafeInteger(end) || end <= Date.now() || end > Date.now() + MAX_TTL_SECS * 1000) throw new Error('View-once offer unavailable');
+    if (markerEnd(state.view_once_seen?.[id]) > Date.now()) {
+      const matches = (next: BrowserState): boolean => {
+        const marker = next.view_once_seen?.[id];
+        const original = typeof marker === 'number' ? next.view_once_tracking?.receipts[id]?.peer : marker?.peer;
+        return original === peer && markerEnd(marker) === end && end > Date.now() && pinned(next);
+      };
+      if (!matches(state)) throw new Error('View-once offer unavailable');
+      return { recorded: this.transact((next, current) => {
+        if (current !== engine || !matches(next)) throw new Error('View-once offer unavailable');
+        oweReceipt(next, peer, id, end);
+      }, true) };
+    }
+    return this.viewOnce.offer(engine, peer, contact.dh_pk, contact.id, request, async (id, end) => {
+      await this.transact((next, currentEngine) => {
+        const now = Date.now();
+        if (currentEngine !== engine || end <= now || !pinned(next)) throw new Error('View-once offer unavailable');
+        const seen = next.view_once_seen ??= {};
+        if (markerEnd(seen[id]) > now) throw new Error('View-once offer already received');
+        seen[id] = { peer, expires_at: end };
+        oweReceipt(next, peer, id, end);
+      }, true);
+    }, info => this.event({ ViewOnceAvailable: info }));
   }
 
   async invoke(command: string, args: Args = {}): Promise<unknown> {
@@ -840,6 +929,10 @@ export class BrowserBackend {
     if (command === 'vault_unlock_passkey') return this.open(args, false, true);
     if (command === 'vault_lock') { this.closeNow(); return null; }
     if (command === 'passkey_entries') {
+      if (this.storage && this.storage.name === args.profile) {
+        const [a, b] = this.storage.readSlots();
+        return JSON.parse(BrowserEngine.passkey_entries(a, b));
+      }
       const storage = await ProfileStorage.open(text(args, 'profile'), false);
       try { const [a, b] = storage.readSlots(); return JSON.parse(BrowserEngine.passkey_entries(a, b)); }
       finally { storage.close(); }
@@ -866,6 +959,61 @@ export class BrowserBackend {
     if (command === 'read_previous_log') return this.log.previous();
     if (command === 'clear_debug_log') { await this.log.clear(); this.log.info('log_cleared', 'action log and its stored copy erased'); return null; }
     const { state, engine, identity } = this.require();
+    if (command === 'list_view_once_deliveries') return state.view_once_tracking?.deliveries ?? [];
+    if (command === 'acknowledge_view_once_deliveries') {
+      if (!Array.isArray(args.ids) || !args.ids.every(id => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id))) throw new Error('Invalid view-once IDs');
+      const ids = new Set(args.ids);
+      await this.transact(next => {
+        if (next.view_once_tracking) next.view_once_tracking.deliveries = next.view_once_tracking.deliveries.filter(row => row.status !== 'unconfirmed' || !ids.has(row.id));
+      }, true);
+      return null;
+    }
+    if (command === 'send_view_once' || command === 'list_view_once') {
+      const contact = getContact(state, number(args, 'contactId'));
+      if (contact.request !== 'none' || contact.trust === 2) throw new Error('View-once messages require an accepted contact');
+      if (command === 'list_view_once') return this.viewOnce.list(contact.id);
+      const { id: contactId, sign_pk: sign, dh_pk: dh } = contact;
+      const body = new TextEncoder().encode(text(args, 'body'));
+      try {
+        if (!body.length || body.length > VIEW_ONCE_BODY_LIMIT) throw new Error('View-once text must be 1 to 16384 UTF-8 bytes');
+        const now = Date.now(), end = now + messageLifetimeSeconds(args.ttlSecs) * 1000;
+        const deadline = Math.min(end, now + RESEND_TTL_MS);
+        const id = hex(crypto.getRandomValues(new Uint8Array(16)));
+        try {
+          if (end > now) this.viewOnceOutbox.add(engine, id, contactId, sign, dh, end, deadline, body);
+          body.fill(0);
+          await this.transact((next, current) => {
+            const target = getContact(next, contactId);
+            if (current !== engine || target.sign_pk !== sign || target.dh_pk !== dh
+                || target.trust === 2 || target.request !== 'none') throw new Error('Contact unavailable');
+            trackViewOnce(next, contactId, id, end, now);
+          }, true);
+          if (this.engine !== engine || this.closing) throw new Error('Profile is locked');
+          this.viewOnceOutbox.activate(id);
+        } catch (error) { this.viewOnceOutbox.remove(id); throw error; }
+        this.schedule(0);
+        return id;
+      } finally { body.fill(0); }
+    }
+    if (command === 'open_view_once') return this.viewOnce.open(engine, text(args, 'id'), (id, sign, dh) =>
+      state.contacts.some(value => value.id === id && value.sign_pk === sign && value.dh_pk === dh && value.request === 'none' && value.trust !== 2));
+    if (command === 'verify_screen_passkey') {
+      if (this.storage?.name !== text(args, 'profile')) throw new Error('profile changed');
+      const prf = new Uint8Array(args.prf as number[]);
+      try { engine.verify_passkey(new Uint8Array(args.credentialId as number[]), prf); }
+      finally { prf.fill(0); (args.prf as number[]).fill(0); }
+      return null;
+    }
+    if (command === 'verify_screen_password') {
+      if (this.storage?.name !== text(args, 'profile')) throw new Error('profile changed');
+      engine.verify_password(text(args, 'pass'));
+      return null;
+    }
+    if (command === 'list_delivery_expiry_notices' || command === 'acknowledge_delivery_expiry_notices') {
+      if (this.storage?.name !== text(args, 'profile')) throw new Error('profile changed');
+      if (command === 'list_delivery_expiry_notices') return listDeliveryExpiryNotices(state);
+      return this.transact(next => acknowledgeDeliveryExpiryNotices(next, args.messageIds as number[]), true);
+    }
     if (command === 'get_attachment_privacy') return state.ui.attachment_privacy !== 'false';
     if (command === 'my_card') return { sign_pk: identity.sign_pk, dh_pk: identity.dh_pk };
     if (command === 'my_bundle') return JSON.parse(engine.bundle_info());
@@ -920,7 +1068,7 @@ export class BrowserBackend {
           if (command === 'forward_message') {
             const source = next.messages.find(row => row.id === args.sourceMessageId && visible(row));
             if (!source) throw new Error('Message not found');
-            return this.send(next, { ...args, body: source.body, ttlSecs: null, replyTo: null }, typeof args.groupId === 'string', prepared);
+            return this.send(next, { ...args, body: source.body, ttlSecs: DEFAULT_TTL_SECS, replyTo: null }, typeof args.groupId === 'string', prepared, source.expires_at);
           }
           return this.send(next, args, command === 'send_group_message', prepared);
         });
@@ -979,12 +1127,8 @@ export class BrowserBackend {
     if (command === 'reset_contact_session') {
       const contact = getContact(state, number(args, 'id'));
       this.log.info('contact_session_reset', `contact ${contact.id}`);
-      // File parts and one-shot controls are rebuilt from current state.
-      state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk || value.row !== null || value.payload !== null);
-      const pending = state.outbox.filter(value => value.peer === contact.sign_pk);
-      if (pending.some(value => !value.payload)) throw new Error('An older queued letter cannot be re-encrypted');
-      for (const item of pending) { item.key = crypto.randomUUID(); item.blob = null; item.initial = undefined; item.deposited = false; item.at = 0; item.attempts = 0; }
-      forgetFlight(state, contact.sign_pk);
+      if (state.outbox.some(item => item.peer === contact.sign_pk && item.row !== null && !item.payload)) throw new Error('An older queued letter cannot be re-encrypted');
+      resetPeerOutbox(state, contact.sign_pk);
       engine.forget_peer(contact.sign_pk); return null;
     }
     if (command === 'cancel_files') { cancelBrowserFiles(state, this.identity!, number(args, 'messageId'), []); return null; }
@@ -1051,10 +1195,19 @@ export class BrowserBackend {
       for (const peer of peers) queueLetter(state, peer, structuredClone(letter), null);
       return null;
     }
-    if (command === 'delete_group') { const id = text(args, 'groupId'); const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id)); state.groups = state.groups.filter(value => value.id !== id); state.messages = state.messages.filter(value => value.group_id !== id); pruneMessageOutbox(state, rows); state.pinnedMessages = state.pinnedMessages.filter(id => !rows.has(id)); state.attachments = state.attachments.filter(value => !rows.has(value.message_id)); return null; }
+    if (command === 'delete_group') {
+      const id = text(args, 'groupId');
+      const rows = new Set(state.messages.filter(value => value.group_id === id).map(value => value.id));
+      state.groups = state.groups.filter(value => value.id !== id);
+      state.messages = state.messages.filter(value => value.group_id !== id);
+      state.delivery_expiry_notices = state.delivery_expiry_notices.filter(notice => notice.group_id !== id);
+      pruneMessageOutbox(state, rows);
+      state.pinnedMessages = state.pinnedMessages.filter(id => !rows.has(id));
+      state.attachments = state.attachments.filter(value => !rows.has(value.message_id));
+      return null;
+    }
     if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
     if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; this.log.debug('settings_update', 'attachment_privacy'); return null; }
-    if (command === 'set_relay_mode') { if (args.mode !== 'builtin') throw new Error('This browser uses its own I2P destination'); return null; }
     if (command === 'set_auto_update' && args.enabled === false) return null;
     if (command === 'send_typing') {
       if (typeof args.contactId !== 'number') return null;

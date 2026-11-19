@@ -30,6 +30,9 @@ impl SessionManager {
                 let (state, plaintext, opk_id) = self.accept_x3dh(&init, &ad).await?;
                 let plaintext = zeroize::Zeroizing::new(plaintext);
                 let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
+                if payload.content_expired(now_ms()) && known.as_ref().is_none_or(|c| c.request_state==crate::db::RequestState::Incoming) {
+                    return Ok(());
+                }
                 let contact = match known {
                     Some(c) => c,
                     None => {
@@ -92,7 +95,7 @@ impl SessionManager {
                     let mut sessions = self.sessions.lock().await;
                     let letter =
                         self.db
-                            .commit_received(contact.id, Some(&sb), opk_id, &plaintext)?;
+                            .commit_incoming_initial(contact.id, &sb, opk_id, &plaintext)?;
                     sessions.insert(contact.id, state);
                     letter
                 };
@@ -380,6 +383,21 @@ impl SessionManager {
         contact_id: i64,
         payload: WirePayload,
     ) -> Result<()> {
+        if let Some(receipt)=crate::view_once::Receipt::from_payload(&payload) {
+            if self.db.get_contact(contact_id)?.is_some_and(|c|c.request_state==crate::db::RequestState::None && c.trust!=crate::db::TrustLevel::Blocked) {
+                match receipt {
+                    crate::view_once::Receipt::Received(id)=>{
+                        if self.db.view_once_received(contact_id,&id)?.is_some() {
+                            let mut ack=crate::view_once::receipt_payload(&id,true,now_ms());
+                            let _=self.send_to_contact(contact_id,&mut ack).await;
+                        }
+                    }
+                    crate::view_once::Receipt::Confirmed(id)=>self.db.confirm_view_once_receipt(contact_id,&id)?,
+                    crate::view_once::Receipt::Invalid=>{}
+                }
+            }
+            return Ok(());
+        }
         // A headless session has no microphone or call UI. Consume live voice
         // controls before the message/agent dispatch and history paths.
         if payload.typing == Some(false) && payload.body.starts_with("gipny-call/1 ") {
@@ -754,43 +772,8 @@ impl SessionManager {
         contact: &Contact,
         original: &WirePayload,
     ) -> Result<()> {
-        if original.origin_msg_id == 0 {
-            return Ok(());
-        }
-        let mut payload = WirePayload {
-            origin_msg_id: 0,
-            body: String::new(),
-            attachments: vec![],
-            sent_at: now_ms(),
-            ttl_ms: None,
-            group: original.group.clone(),
-            buttons: None,
-            callback_data: None,
-            edit_of: None,
-            pin: None,
-            ack_for: Some(original.origin_msg_id),
-            sender_name: None,
-            reply_to: None,
-            typing: None,
-            notify_sound: None,
-            console: None,
-            relay_address: None,
-            wipe: None,
-            files: Vec::new(),
-            file_chunk: None,
-            file_ack: None,
-            file_cancel: None,
-            dm: None,
-        };
-        let Some(route) = self.route_for(contact).await else {
-            return Ok(());
-        };
-        if self.ensure_session_for(contact, &route).await.is_err() {
-            return Ok(());
-        }
-        let _ = self
-            .send_payload_via_relay(contact, &mut payload, &route)
-            .await;
+        self.db.queue_delivery_receipt(contact.id, original, now_ms())?;
+        self.send_kick.notify_one();
         Ok(())
     }
 }

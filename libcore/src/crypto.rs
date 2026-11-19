@@ -620,7 +620,10 @@ pub struct AttachmentCipher { key: Sealed<32> }
 
 impl AttachmentCipher {
     pub fn generate() -> Self {
-        Self { key: Sealed::random(SecretKind::Ratchet).expect("protected attachment memory unavailable") }
+        Self::try_generate().expect("protected attachment memory unavailable")
+    }
+    pub fn try_generate() -> Result<Self> {
+        Ok(Self { key: Sealed::random(SecretKind::Ratchet)? })
     }
     pub fn from_key(key: [u8; 32]) -> Self {
         let key = Zeroizing::new(key);

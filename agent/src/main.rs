@@ -14,9 +14,6 @@
 //!
 //! Optional flags:
 //!   --name <display name>   what the agent calls itself (default: saved cat name)
-//!   --relay <dest>          external relay to collect from, remembered in <data>/relay.txt;
-//!                           default: none — the agent hosts a personal relay for itself,
-//!                           the same way the app does for its own inbox
 //!   --cwd <dir>             working directory for commands (default: home dir)
 //!   --timeout <secs>        per-command timeout (default: 120 s)
 //!
@@ -41,7 +38,6 @@ use gipny_libcore::router::RouterSettings;
 use gipny_libcore::update::{UPDATE_CHECK_INITIAL_SECS, UPDATE_CHECK_INTERVAL_SECS};
 
 const MASTER_CARD_FILE: &str = "master.card";
-const RELAY_FILE: &str = "relay.txt";
 const OWN_CARD_FILE: &str = "card.txt";
 /// Same explicit dismissal key as the app. Automatic preparation never writes
 /// this preference; its per-process state is kept separately in the update loop.
@@ -56,7 +52,7 @@ mod bootstrap;
 fn usage() -> ! {
     eprintln!(
         "Usage: gipny-agent --data <dir> [--master <card>] [--name <name>] \
-        [--relay <dest>] [--cwd <dir>] [--timeout <secs>]\n\
+        [--cwd <dir>] [--timeout <secs>]\n\
         Validation only: gipny-agent --check-master-card <card>"
     );
     std::process::exit(1);
@@ -68,7 +64,6 @@ struct Args {
     master_card: Option<String>,
     check_master_card: Option<String>,
     name: Option<String>,
-    relay: Option<String>,
     cwd: Option<PathBuf>,
     timeout_secs: Option<u64>,
 }
@@ -82,7 +77,6 @@ fn parse_args() -> Args {
             "--master"  => a.master_card = it.next(),
             "--check-master-card" => a.check_master_card = Some(it.next().unwrap_or_else(|| usage())),
             "--name"    => a.name        = it.next(),
-            "--relay"   => a.relay       = it.next(),
             "--cwd"     => a.cwd         = it.next().map(PathBuf::from),
             "--timeout" => a.timeout_secs = it.next().and_then(|s| s.parse().ok()),
             "--help" | "-h" => usage(),
@@ -128,7 +122,7 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
 fn validate_master_card(raw: &str) -> Result<ContactCard> {
     // The card may be sensitive contact metadata: errors never echo its fields.
     let card = ContactCard::parse(raw).map_err(|_| anyhow::anyhow!("invalid GIPNY master contact card"))?;
-    if card.relay.is_none() { bail!("the master contact card must contain a relay"); }
+    if !gipny_libcore::is_valid_i2p_address(&card.i2p_address) { bail!("invalid master terminal address"); }
     Ok(card)
 }
 
@@ -149,20 +143,6 @@ fn load_master(args: &Args, data: &Path) -> Result<ContactCard> {
         ))?,
     };
     validate_master_card(&raw).with_context(|| format!("invalid master card in {}", path.display()))
-}
-
-/// `--relay` is remembered like `--master`: given once, read back afterwards.
-fn load_relay(args: &Args, data: &Path) -> Result<Option<String>> {
-    let path = data.join(RELAY_FILE);
-    match args.relay.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-        Some(r) => {
-            write_private(&path, r)?;
-            Ok(Some(r.to_string()))
-        }
-        None => Ok(std::fs::read_to_string(&path).ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())),
-    }
 }
 
 /// Load the encrypted attachments of an incoming command from the data dir.
@@ -249,17 +229,6 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
         Err(e) => { eprintln!("WARNING: {e} Continuing without the advisory lock."); None }
     };
     let master_card = load_master(&args, &data_dir)?;
-    // The agent's own relay is separate from the master's: this is only about
-    // reaching the master to deliver a message, which needs a relay-bearing card
-    // way.
-    if master_card.relay.is_none() {
-        bail!(
-            "the master's card is a v1 card without a relay, and the agent has no way to \
-            reach the master until it gets a relay-bearing v3/v2 card (Settings → my card)"
-        );
-    }
-    let relay_override = load_relay(&args, &data_dir)?;
-
     // OS-provider-bound SQLCipher supports unattended startup without a raw
     // key file or silently falling back to an unencrypted database.
     let db = Arc::new(
@@ -280,45 +249,12 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
     session.set_display_name(&display_name)?;
     let me = session.my_card();
 
-    // Where the agent collects its own mail: a personal relay it hosts for
-    // itself by default (exactly what the app does for its own inbox), or an
-    // external one if `--relay` names it — the escape hatch for an offline
-    // mailbox. Kept alive for the life of the process; dropping it releases
-    // the destination.
-    let (relay_address, _hosted_relay) = match relay_override {
-        Some(r) => {
-            session.set_relay_address(&r)?;
-            (r, None)
-        }
-        None => {
-            gipny_libcore::debug_trace!("[agent] starting the built-in relay (this can take a minute or two)…");
-            let relay = gipny_libcore::EphemeralRelay::start(
-                gipny_libcore::MemStoreLimits::personal(me.sign_pk),
-                Some(session.dht_handler()),
-            )
-            .await
-            .context("start the agent's built-in relay")?;
-            let relay = std::sync::Arc::new(relay);
-            let address = relay.address().to_string();
-            gipny_libcore::debug_trace!("[agent] built-in relay ready");
-            // Collect from it over a pipe, not out through i2p and back.
-            session.set_local_relay(relay.clone());
-            session.set_relay_address(&address)?;
-            let dht_session = session.clone();
-            let dht_address = address.clone();
-            tokio::spawn(async move {
-                dht_session.join_dht(&dht_address).await;
-            });
-            (address, Some(relay))
-        }
-    };
-
     // Our own card, for the record and for anyone reading the log.
     let own_card = ContactCard {
-        i2p_address: node.i2p_address().to_string(),
+        i2p_address: session.terminal_address(),
         sign_pk: me.sign_pk,
         dh_pk: me.dh_pk,
-        relay: Some(relay_address.clone()),
+        relay: None,
         name: Some(display_name.clone()),
     }.encode()?;
     write_private(&data_dir.join(OWN_CARD_FILE), &own_card)?;
@@ -447,19 +383,6 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
                             _ => {}
                         }
                     }
-                    SessionEvent::RelayError { reason } if reason == gipny_libcore::relay::ERR_NOT_SERVED => {
-                        // Not a fault that passes: this can only be the relay
-                        // named by --relay, and it is somebody else's
-                        // personal one, which will never hold our mail. The
-                        // agent's own built-in relay always serves itself.
-                        eprintln!(
-                            "[agent] the relay named by --relay refused this agent: it is somebody else's \
-                            personal relay and will never hold this agent's mail. Drop --relay so the agent \
-                            hosts its own relay, or point it at a standalone gipny-relay instead, and give \
-                            the master the new card from card.txt."
-                        );
-                        std::process::exit(2);
-                    }
                     // A command's files are in (or will not come): it may run.
                     SessionEvent::FileReceived { message_id, .. } | SessionEvent::FileFailed { message_id, .. } => {
                         if session.db.files_in_for_message(message_id).unwrap_or_default().is_empty() {
@@ -467,6 +390,9 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
                                 let _ = queue_tx.send(job);
                             }
                         }
+                    }
+                    SessionEvent::MessageDeliveryExpired(notice) => {
+                        eprintln!("[agent] message {} expired without delivery confirmation", notice.message_id);
                     }
                     SessionEvent::MessageDelivered { message_id } => {
                         if stopping.map(|(id, _)| id == message_id).unwrap_or(false) {
@@ -479,7 +405,7 @@ async fn run(args: Args, readiness: Option<bootstrap::Readiness>) -> Result<()> 
             }
         }
     }
-    session.shutdown();
+    session.shutdown_and_wait().await;
     Ok(())
 }
 

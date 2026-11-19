@@ -2,7 +2,7 @@ import type { CoreEvent, FileProgress } from '../../app/api';
 import { MAX_FILE_BYTES, type FileStorage } from './storage';
 import {
   allocate, base64, canSendControls, fileSendSlots, countBits, firstClear, fromBase64, hasBit, hex, lastSet, OUTBOX_LIMIT, payload, queueReceipt,
-  readBits, RECEIPT_RESERVE, retained, setBit, unbase64, unhex, visible, writeBits,
+  deliveryDue, readBits, RECEIPT_RESERVE, retained, setBit, unbase64, unhex, visible, writeBits,
   type BrowserState, type ClosedFile, type FileTransfer, type Outbox, type PublicIdentity, type StoredAttachment,
   type WireFileAck, type WireFileOffer, type WirePayload,
 } from '../profiles/model';
@@ -476,7 +476,7 @@ export function settleDeposit(state: BrowserState, key: string, now = Date.now()
   if (!retained(item)) { state.outbox = state.outbox.filter(value => value !== item); return null; }
   if (item.row === null || !state.outbox.filter(value => value.row === item.row).every(value => value.deposited)) return null;
   const row = state.messages.find(value => value.id === item.row);
-  if (!row || row.sent) return null;
+  if (!row || row.sent || row.delivery_expired_at != null || deliveryDue(row, now)) return null;
   row.sent = true;
   return row.id;
 }
@@ -510,11 +510,6 @@ export function resumeFiles(state: BrowserState, own: PublicIdentity, now = Date
     if (file.incoming && file.status === 'receiving') { const ack = payload(own, state.displayName); ack.file_ack = receipt(file, 0, 0, true); queueReceipt(state, file.peer, ack); }
     if (!file.incoming && file.status === 'sending') for (const key of Object.keys(file.flight ?? {})) file.flight![key] = now;
   }
-}
-
-/** A session reset loses whatever was in flight on the old session. */
-export function forgetFlight(state: BrowserState, peer: string): void {
-  for (const file of state.transfers) if (file.peer === peer && !file.incoming) file.flight = {};
 }
 
 export function cancelBrowserFiles(state: BrowserState, own: PublicIdentity, messageId: number, events: CoreEvent[]): void {

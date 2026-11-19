@@ -1,31 +1,18 @@
 //! End-to-end messaging harness.
 //!
 //! Boots two headless bot instances (A and B) on the i2p router inside this
-//! process (one per process, a destination per bot) against a relay,
+//! process using their own personal terminals,
 //! cross-adds them as contacts, sends N messages A→B with an attachment,
 //! verifies that B echoes every message back to A, and reports latency and
 //! resource metrics to stdout and to `$GITHUB_STEP_SUMMARY` when running in CI.
 //!
-//! # Required environment variables
-//! * `E2E_RELAY_DEST` — i2p destination of the running relay (contents of
-//!   `dest.pub` as printed by `gipny-relay` and `relay-testnet.yml`). Not
-//!   needed with `E2E_IN_PROCESS_RELAYS=1`.
-//!
 //! # Optional environment variables
-//! * `E2E_RELAY_DEST_A` / `E2E_RELAY_DEST_B` — a separate relay per bot.
-//! * `E2E_IN_PROCESS_RELAYS=1` — no standalone relay: each bot gets an
-//!   in-process `EphemeralRelay` on the router in this process, started
-//!   for that bot's key only (`MemStoreLimits::personal`) after the bot is up
-//!   — the app's built-in relay, in the order the app does it.
 //! * `E2E_AGENT_BIN=<path>` — a different test: bot-a is the master and the
 //!   far side is the real `gipny-agent` binary at that path, started with
-//!   bot-a's v3 card, on its own router in its own process, with no
-//!   `--relay` — proving the agent hosts a personal relay for itself, the
-//!   same as the app does. The master gets its own in-process relay too.
+//!   bot-a's v3 card, on its own router in its own process. Both peers host a personal terminal.
 //!   `E2E_N_MESSAGES` is the number of commands.
-//! * `E2E_DHT_OFFLINE=1` — a different test: delivery through the relay
-//!   network while each side is away in turn. Needs `E2E_DHT_SEED_DEST` (the
-//!   destination of a `gipny-relay --dht`). See [`run_dht_offline_mode`].
+//! * `E2E_OFFLINE_RETURN=1` — verify the sender retains its outbox while
+//!   the peers are online at disjoint times and delivers once both return.
 //! * `E2E_BOTH_FIRST=1` — bot-b writes to bot-a at the same moment bot-a
 //!   writes to bot-b: two sessions are opened at once and their X3dhInits
 //!   cross (session.rs `ours_stands`). Its letter must arrive too.
@@ -37,7 +24,7 @@
 //!   must still arrive whole — the transfer picks up where it was.
 //! * `E2E_PERFORMANCE=1` — separate controlled file/echo benchmark, writing
 //!   JSON to `E2E_PERF_REPORT`. Three-hop participants and bounded probes;
-//!   see README.md for relay policy manifests, controls, and metric definitions.
+//!   see README.md for transport controls and metric definitions.
 //! * `E2E_UPDATE_CHECK=1` — a different test: one router, and the updater
 //!   asks GitHub for the latest release through the i2p outproxy and fetches
 //!   its smallest file, as an installed app would. While GitHub has only
@@ -51,14 +38,13 @@
 //!   timing table is appended to this file.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use gipny_libcore::agent::BODY_OFF;
-use gipny_libcore::relay_server::{EphemeralRelay, MemStoreLimits};
 use gipny_libcore::{
     ContactCard, Db, IdentityCard, SessionEvent, SessionManager, I2pNode, WireConsole,
     CONSOLE_COMMAND, CONSOLE_GRANT, CONSOLE_OFF, CONSOLE_OUTPUT, CONSOLE_REVOKE,
@@ -110,9 +96,7 @@ struct BotHandle {
 
 async fn start_bot(
     name: &'static str,
-    work_dir: &PathBuf,
-    relay_dest: &str,
-    dht_seeds: &[String],
+    work_dir: &Path,
 ) -> Result<(BotHandle, tokio::sync::mpsc::Receiver<SessionEvent>)> {
     let data_dir = work_dir.join(name);
     std::fs::create_dir_all(&data_dir)
@@ -131,24 +115,16 @@ async fn start_bot(
     let router_ready_ms = t0.elapsed().as_millis() as u64;
     eprintln!("[e2e] {name}: router ready in {router_ready_ms} ms");
 
-    let i2p_address = node.i2p_address().to_string();
     let db_path = data_dir.join("bot.db");
     let db = Arc::new(
         Db::open_plain(&db_path)
             .with_context(|| format!("{name}: Db::open_plain failed"))?,
     );
-    if !dht_seeds.is_empty() {
-        put_seeds(&db, dht_seeds).with_context(|| format!("{name}: seed the node table"))?;
-    }
-
     let (session, events) = SessionManager::start(data_dir, db, node)
         .await
         .with_context(|| format!("{name}: SessionManager::start failed"))?;
 
-    // Persist relay destination before the relay loop first wakes up.
-    session
-        .set_relay_address(relay_dest)
-        .with_context(|| format!("{name}: set_relay_address"))?;
+    let i2p_address = session.terminal_address();
     session
         .set_display_name(name)
         .with_context(|| format!("{name}: set_display_name"))?;
@@ -159,65 +135,10 @@ async fn start_bot(
     Ok((BotHandle { session, card, i2p_address, router_ready_ms }, events))
 }
 
-/// Start one in-process relay per bot on the shared router.
-///
-/// A published destination is not usable until its tunnels exist, which is
-/// what `EphemeralRelay::start` waits for, so this can take a couple of
-/// minutes. It runs before the delivery clock starts and has its own deadline.
-///
-/// Each relay is a *personal* one, as the app starts it: it holds mail and a
-/// prekey bundle for its owner's key and refuses everyone else's. Delivery
-/// then proves two things the unit tests cannot: that a contact's deposit names
-/// the key the relay was started for, and that the refusal does not get in the
-/// way of the owner's own traffic.
-/// Clients take seeds only from the build. The e2e seed goes where a node
-/// that answered before would be: the saved table the node reads when it
-/// joins. Unlike a built-in seed it is ordinary there, so a join that fails
-/// (the seed's tunnels still building) saves a table without it and the node
-/// forgets it after three failures; hence written again before every join.
-fn put_seeds(db: &Db, seeds: &[String]) -> Result<()> {
-    let peers: Vec<gipny_dht::node::KnownPeer> = seeds
-        .iter()
-        .map(|d| gipny_dht::node::KnownPeer {
-            info: gipny_dht::proto::NodeInfo {
-                destination: d.clone(),
-                stores: true,
-                version: gipny_dht::proto::PROTOCOL_VERSION,
-            },
-            first_seen_ms: 0,
-            last_ok_ms: 0,
-        })
-        .collect();
-    db.dht_peers_save(&peers)?;
-    Ok(())
-}
-
 /// What bot-b writes first with E2E_BOTH_FIRST.
 const GREETING: &str = "hello from bot-b";
 /// The text of the letter carrying E2E_BIG_FILE; not echoed.
 const BIG_FILE_BODY: &str = "big file";
-
-async fn start_in_process_relays(node: &I2pNode, owner_a: [u8; 32], owner_b: [u8; 32]) -> Result<(EphemeralRelay, EphemeralRelay)> {
-    let _ = node; // up already: the relays share its router
-    eprintln!("[e2e] starting two in-process relays on the in-process router...");
-    let t0 = Instant::now();
-    let (a, b) = tokio::time::timeout(Duration::from_secs(300), async {
-        tokio::join!(
-            EphemeralRelay::start(MemStoreLimits::personal(owner_a), None),
-            EphemeralRelay::start(MemStoreLimits::personal(owner_b), None),
-        )
-    })
-    .await
-    .context("timeout: in-process relays did not come up in 300s")?;
-    let (a, b) = (a.context("in-process relay A")?, b.context("in-process relay B")?);
-    eprintln!(
-        "[e2e] in-process relays up in {} ms (A={}... B={}...)",
-        t0.elapsed().as_millis(),
-        &a.address()[..20.min(a.address().len())],
-        &b.address()[..20.min(b.address().len())],
-    );
-    Ok((a, b))
-}
 
 // ---------------------------------------------------------------------------
 // Timing summary
@@ -336,29 +257,14 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let budget = |t_start: Instant| timeout.saturating_sub(t_start.elapsed());
     eprintln!("[e2e] agent mode: {} · {n_commands} commands · timeout {timeout_secs}s", agent_bin.display());
 
-    // The master's own relay, for the agent to deposit its GRANT/replies on.
-    // No `--relay` is passed to the agent below: it hosts a personal relay
-    // for itself and tells the master the address through its GRANT message,
-    // exactly as any contact's relay is learned.
-    // The router first: the relay is a destination on it, and bot-a (below)
-    // takes the same one.
-    gipny_libcore::embedded::router(&work_dir.join("router"), Default::default()).context("i2p router")?;
-    eprintln!("[e2e] starting the master's in-process relay...");
-    let t0 = Instant::now();
-    let relay = tokio::time::timeout(Duration::from_secs(300), EphemeralRelay::start(MemStoreLimits::default(), None))
-        .await
-        .context("timeout: in-process relay did not come up in 300s")?
-        .context("in-process relay")?;
-    let relay_dest = relay.address().to_string();
-    let relay_ms = t0.elapsed().as_millis() as u64;
-    eprintln!("[e2e] relay up in {relay_ms} ms ({}...)", &relay_dest[..20.min(relay_dest.len())]);
-
-    let (a, mut a_events) = start_bot("bot-a", &work_dir, &relay_dest, &[]).await.context("bot-a start")?;
+    let terminal_start = Instant::now();
+    let (a, mut a_events) = start_bot("bot-a", &work_dir).await.context("master terminal startup")?;
+    let terminal_ms = terminal_start.elapsed().as_millis();
     let master_card = ContactCard {
         i2p_address: a.i2p_address.clone(),
         sign_pk: a.card.sign_pk,
         dh_pk: a.card.dh_pk,
-        relay: Some(relay_dest.clone()),
+        relay: None,
         name: Some("bot-a".into()),
     }
     .encode()?;
@@ -572,7 +478,7 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
     let table = format!(
         "| metric | value |\n\
          |---|---|\n\
-         | relay ready | {relay_ms} ms |\n\
+         | master session and terminal ready | {terminal_ms} ms |\n\
          | bot-a router ready | {} ms |\n\
          | agent GRANT received | {grant_ms} ms |\n\
          | commands sent | {expected} |\n\
@@ -601,7 +507,6 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
             .map_err(|e| eprintln!("[e2e] warning: could not write GITHUB_STEP_SUMMARY: {e}"));
     }
     a.session.shutdown();
-    drop(relay);
     if !failures.is_empty() {
         bail!("agent e2e failed:\n  {}", failures.join("\n  "));
     }
@@ -610,238 +515,167 @@ async fn run_agent_mode(agent_bin: PathBuf) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Relay-network mode: each side away in turn
+// Offline delivery across two session restarts.
 // ---------------------------------------------------------------------------
 
-/// A bot as the app runs it: session plus its personal in-process relay.
-struct LiveBot {
-    session: Arc<SessionManager>,
-    card: IdentityCard,
-    i2p_address: String,
-    relay_address: String,
-    events: tokio::sync::mpsc::Receiver<SessionEvent>,
-    _relay: EphemeralRelay,
-}
-
-impl LiveBot {
-    /// Start (or restart, on the same data dir) and wait until the relay
-    /// network has answered. Every start is a new relay address.
-    async fn start(name: &'static str, work_dir: &PathBuf, seeds: &[String], budget: Duration) -> Result<Self> {
-        let (bot, events) = start_bot(name, work_dir, "", seeds).await?;
-        // The agent's arrangement: the personal relay also answers for the
-        // session's own network node.
-        let relay = tokio::time::timeout(
-            Duration::from_secs(300),
-            EphemeralRelay::start(MemStoreLimits::personal(bot.card.sign_pk), Some(bot.session.dht_handler())),
-        )
-        .await
-        .with_context(|| format!("{name}: relay did not come up in 300s"))?
-        .with_context(|| format!("{name}: relay"))?;
-        let relay_address = relay.address().to_string();
-        bot.session.set_relay_address(&relay_address).with_context(|| format!("{name}: set_relay_address"))?;
-        eprintln!("[e2e] {name}: relay {}...", &relay_address[..20.min(relay_address.len())]);
-
-        // join_dht bootstraps, announces us, publishes our bundle and
-        // collects what waits for us. Repeated until the seed has answered,
-        // instead of waiting out the 45-minute maintenance tick.
-        let session = bot.session.clone();
-        let address = relay_address.clone();
-        let seeds = seeds.to_vec();
-        poll(budget, Duration::from_secs(10), || {
-            let (session, address, seeds) = (session.clone(), address.clone(), seeds.clone());
-            async move {
-                if session.dht_peer_count() == 0 {
-                    let _ = put_seeds(&session.db, &seeds);
-                }
-                session.join_dht(&address).await;
-                session.dht_peer_count() > 0
-            }
-        })
-        .await
-        .with_context(|| format!("{name}: the seed never answered"))?;
-        eprintln!("[e2e] {name}: in the relay network ({} nodes)", bot.session.dht_peer_count());
-        Ok(Self { session: bot.session, card: bot.card, i2p_address: bot.i2p_address, relay_address, events, _relay: relay })
-    }
-
-    /// Gone completely: tasks, relay and destination, as a closed app.
-    fn stop(self, name: &str) {
-        self.session.shutdown();
-        eprintln!("[e2e] {name}: offline (was at relay {}...)", &self.relay_address[..20.min(self.relay_address.len())]);
-    }
-
-    /// Until nothing to `contact` is waiting to go out: every letter is held
-    /// by some node of the network (or taken by a live relay).
-    async fn drain(&self, name: &str, contact: i64, budget: Duration) -> Result<()> {
-        let db = self.session.db.clone();
-        poll(budget, Duration::from_secs(3), || {
-            let db = db.clone();
-            async move { db.list_unsent_outgoing(contact, 1000).map(|v| v.is_empty()).unwrap_or(false) }
-        })
-        .await
-        .with_context(|| format!("{name}: letters to contact {contact} never left"))
-    }
-
-    /// Collect `n` bodies with `prefix` from incoming payloads.
-    async fn receive(&mut self, name: &str, prefix: &str, n: usize, budget: Duration) -> Result<Vec<(i64, String)>> {
-        let mut got: Vec<(i64, String)> = Vec::new();
-        tokio::time::timeout(budget, async {
-            while got.len() < n {
-                match self.events.recv().await {
-                    Some(SessionEvent::IncomingPayload { contact_id, payload, .. }) if payload.body.starts_with(prefix) => {
-                        eprintln!("[e2e] {name}: received '{}'", payload.body);
-                        if !got.iter().any(|(_, b)| *b == payload.body) {
-                            got.push((contact_id, payload.body));
-                        }
-                    }
-                    Some(_) => {}
-                    None => break,
-                }
-            }
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("{name}: {}/{n} '{prefix}' letters after {}s", got.len(), budget.as_secs()))?;
-        if got.len() < n {
-            bail!("{name}: event stream closed with {}/{n} letters", got.len());
-        }
-        Ok(got)
-    }
-}
-
-async fn poll<F, Fut>(budget: Duration, every: Duration, mut done: F) -> Result<()>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + budget;
-    loop {
-        if done().await {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            bail!("not within {}s", budget.as_secs());
-        }
-        tokio::time::sleep(every).await;
-    }
-}
-
-/// Delivery through the relay network while each side is away in turn, which
-/// no direct path can do:
-///
-/// 1. A and B come up, each with a personal relay, and join the network
-///    through the seed. B puts its prekey bundle there.
-/// 2. They add each other (B learns A's relay, A learns B's), then **B goes
-///    away** before any letter is written.
-/// 3. A writes N letters. B's relay is gone, so A opens the session from B's
-///    bundle in the network and leaves the letters there; then **A goes away**.
-/// 4. B comes back on a **new relay address**, collects the N letters from the
-///    network and answers each. A's relay is gone too, so the answers go to
-///    the network; then B goes away.
-/// 5. A comes back, also somewhere new, and collects the N answers.
-///
-/// Bots run as the agent does: their personal relays serve the network too.
-/// Whoever is away takes what it held along, so what arrives was held by the
-/// seed or by the side that stayed.
-async fn run_dht_offline_mode() -> Result<()> {
-    let n: usize = std::env::var("E2E_N_MESSAGES").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
-    let timeout_secs: u64 = std::env::var("E2E_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(1200);
-    let work_dir = PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
-    std::fs::create_dir_all(&work_dir).context("create work dir")?;
-    let seeds: Vec<String> = std::env::var("E2E_DHT_SEED_DEST")
-        .context("E2E_DHT_OFFLINE needs E2E_DHT_SEED_DEST, the seed's destination")?
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    if seeds.is_empty() {
-        bail!("E2E_DHT_SEED_DEST is empty");
-    }
-    eprintln!("[e2e] relay-network run: {} seed(s), n={n}, timeout={timeout_secs}s", seeds.len());
-
-    let t0 = Instant::now();
-    let step = Duration::from_secs(timeout_secs / 4);
-    let phase = |label: &str| eprintln!("[e2e] ── {label} (+{}s)", t0.elapsed().as_secs());
-
-    phase("1. both join the network");
-    let (a, b) = tokio::try_join!(
-        LiveBot::start("bot-a", &work_dir, &seeds, step),
-        LiveBot::start("bot-b", &work_dir, &seeds, step),
-    )?;
-    let session = b.session.clone();
-    poll(step, Duration::from_secs(10), || async { session.publish_bundle_to_dht().await })
-        .await
-        .context("bot-b: its prekey bundle never reached the network")?;
-    eprintln!("[e2e] bot-b: prekey bundle is in the network");
-
-    phase("2. contacts, then B goes away");
-    let a_in_b = b.session.add_contact_via(&a.card, &a.i2p_address, "bot-a", Some(&a.relay_address)).await.context("bot-b: add bot-a")?;
-    let (b_card, b_i2p_address, b_relay_before) = (b.card.clone(), b.i2p_address.clone(), b.relay_address.clone());
-    b.stop("bot-b");
-    let b_in_a = a.session.add_contact_via(&b_card, &b_i2p_address, "bot-b", Some(&b_relay_before)).await.context("bot-a: add bot-b")?;
-
-    phase("3. A writes to an absent B, then goes away");
-    for i in 1..=n {
-        a.session
-            .send_message(b_in_a, format!("dht-{i:03}"), vec![], None, None, None)
+// This scenario reads receipts from durable history, while the regular session
+// workers still need a live consumer for their bounded event channel.
+async fn start_offline_bot(name: &'static str, dir: &Path) -> Result<BotHandle> {
+    let (bot, mut events) = start_bot(name, dir).await?;
+    while !matches!(
+        events
+            .recv()
             .await
-            .with_context(|| format!("bot-a: send dht-{i:03}"))?;
-    }
-    a.drain("bot-a", b_in_a, step).await?;
-    eprintln!("[e2e] bot-a: all {n} letters are in the network");
-    let a_relay_before = a.relay_address.clone();
-    a.stop("bot-a");
+            .context("session closed before local terminal connected")?,
+        SessionEvent::Connected
+    ) {}
+    tokio::spawn(async move { while events.recv().await.is_some() {} });
+    Ok(bot)
+}
 
-    phase("4. B comes back elsewhere, reads, answers the absent A");
-    let mut b = LiveBot::start("bot-b", &work_dir, &seeds, step).await?;
-    if b.relay_address == b_relay_before {
-        bail!("bot-b came back on the same relay address; the run proves nothing about address change");
-    }
-    let letters = b.receive("bot-b", "dht-", n, step).await?;
-    for (contact_id, body) in &letters {
-        if *contact_id != a_in_b {
-            bail!("bot-b: '{body}' arrived from contact {contact_id}, expected bot-a ({a_in_b})");
-        }
-        b.session
-            .send_message(*contact_id, format!("re:{body}"), vec![], None, None, None)
-            .await
-            .with_context(|| format!("bot-b: answer {body}"))?;
-    }
-    b.drain("bot-b", a_in_b, step).await?;
-    eprintln!("[e2e] bot-b: all {n} answers are in the network");
-    let b_relay_after = b.relay_address.clone();
-    b.stop("bot-b");
-
-    phase("5. A comes back elsewhere and reads the answers");
-    let mut a = LiveBot::start("bot-a", &work_dir, &seeds, step).await?;
-    if a.relay_address == a_relay_before {
-        bail!("bot-a came back on the same relay address; the run proves nothing about address change");
-    }
-    let answers = a.receive("bot-a", "re:dht-", n, step).await?;
-
-    // Never "ask for a fresh card": A must have found where B is now.
-    let b_relay_now = b_relay_after.clone();
-    let db = a.session.db.clone();
-    poll(step, Duration::from_secs(10), || {
-        let (db, want) = (db.clone(), b_relay_now.clone());
-        async move {
-            db.get_contact(b_in_a).ok().flatten().and_then(|c| c.relay_address).as_deref() == Some(want.as_str())
+async fn stop_offline_bot(bot: BotHandle) -> Result<()> {
+    let session = Arc::downgrade(&bot.session);
+    bot.session.shutdown_and_wait().await;
+    drop(bot);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while session.strong_count() != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .context("bot-a never learned bot-b's new relay address")?;
-    eprintln!("[e2e] bot-a: knows bot-b's new relay address");
-    no_local_ports("harness", "self")?;
-    a.stop("bot-a");
+    .context("stopped session still owns live background work")?;
+    Ok(())
+}
 
-    let total = t0.elapsed().as_secs();
-    eprintln!("[e2e] SUCCESS — {n} letters and {} answers crossed the relay network with each side away in turn ({total}s)", answers.len());
-    if let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") {
-        use std::io::Write;
-        let content = format!(
-            "### e2e relay network, each side away in turn — ✅ PASS\n\n             {n} letters A→B while B was away, {n} answers B→A while A was away;              both came back on new relay addresses, and A found B's. Total {total} s.\n"
+async fn run_offline_return() -> Result<()> {
+    let count: usize = std::env::var("E2E_N_MESSAGES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    anyhow::ensure!(
+        (1..=100).contains(&count),
+        "offline scenario requires 1..100 messages"
+    );
+    let timeout_secs = std::env::var("E2E_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1200);
+    let root =
+        PathBuf::from(std::env::var("E2E_WORK_DIR").unwrap_or_else(|_| "/tmp/e2e-harness".into()));
+    std::fs::create_dir_all(&root)?;
+    // Preserve previous evidence and prevent an earlier success from satisfying this run.
+    let dir = tempfile::Builder::new()
+        .prefix("offline-")
+        .tempdir_in(&root)?
+        .keep();
+    tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        check_offline_return(&dir, count),
+    )
+    .await
+    .context("offline terminal return exceeded its deadline")?
+}
+
+async fn check_offline_return(dir: &Path, count: usize) -> Result<()> {
+    let a = start_offline_bot("bot-a", dir).await?;
+    let b = start_offline_bot("bot-b", dir).await?;
+    let to_b = a
+        .session
+        .add_contact(&b.card, &b.i2p_address, "bot-b")
+        .await?;
+    let from_a = b
+        .session
+        .add_contact(&a.card, &a.i2p_address, "bot-a")
+        .await?;
+    let (address_a, address_b) = (a.i2p_address.clone(), b.i2p_address.clone());
+    anyhow::ensure!(
+        address_a != address_b,
+        "two profiles share a personal terminal"
+    );
+    stop_offline_bot(b).await?;
+    eprintln!("[e2e] recipient offline; queuing {count} letters");
+
+    let mut ids = Vec::new();
+    for index in 0..count {
+        ids.push(
+            a.session
+                .send_message(to_b, format!("offline-{index}"), vec![], None, None, None)
+                .await?,
         );
-        let _ = std::fs::OpenOptions::new().create(true).append(true).open(&summary_path)
-            .and_then(|mut f| f.write_all(content.as_bytes()));
     }
+    stop_offline_bot(a).await?;
+    {
+        let saved = Db::open_plain(&dir.join("bot-a/bot.db"))?;
+        for id in &ids {
+            let letter = saved
+                .get_message(*id)?
+                .context("sender restart lost a queued letter")?;
+            anyhow::ensure!(
+                !letter.sent && !letter.delivered && letter.delivery_expired_at.is_none(),
+                "offline letter lost its pending status"
+            );
+        }
+    }
+    eprintln!("[e2e] sender queue persisted; recipient returns alone");
+    let b = start_offline_bot("bot-b", dir).await?;
+    anyhow::ensure!(
+        b.i2p_address == address_b,
+        "recipient terminal address changed on restart"
+    );
+    anyhow::ensure!(
+        b.session
+            .db
+            .list_messages(from_a, 200, None)?
+            .iter()
+            .all(|m| !m.body.starts_with("offline-")),
+        "recipient already has mail while the sender is offline"
+    );
+    eprintln!("[e2e] recipient authenticated with empty history; sender returns");
+    let a = start_offline_bot("bot-a", dir).await?;
+    anyhow::ensure!(
+        a.i2p_address == address_a,
+        "sender terminal address changed on restart"
+    );
+    let mut last_progress = None;
+    let incoming = loop {
+        let mut deposited = 0;
+        let mut acknowledged = 0;
+        for &id in &ids {
+            let letter = a.session.db.get_message(id)?.context("queued letter disappeared")?;
+            deposited += usize::from(letter.sent);
+            acknowledged += usize::from(letter.delivered);
+        }
+        let received = b.session.db.list_messages(from_a, 200, None)?;
+        let delivered = received.iter().filter(|row| row.body.starts_with("offline-")).count();
+        let progress = (deposited, delivered, acknowledged);
+        if last_progress != Some(progress) {
+            eprintln!("[e2e] peer return: {deposited}/{count} deposited, {delivered} in recipient history, {acknowledged} peer ACKs");
+            last_progress = Some(progress);
+        }
+        if acknowledged == count {
+            break received;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    anyhow::ensure!(
+        incoming
+            .iter()
+            .filter(|m| m.body.starts_with("offline-"))
+            .count()
+            == count,
+        "recipient history has missing or duplicate letters"
+    );
+    for index in 0..count {
+        let body = format!("offline-{index}");
+        anyhow::ensure!(
+            incoming.iter().filter(|m| m.body == body).count() == 1,
+            "invalid recipient history for {body}"
+        );
+    }
+    no_local_ports("harness", "self")?;
+    a.session.shutdown_and_wait().await;
+    b.session.shutdown_and_wait().await;
+    eprintln!("[e2e] SUCCESS — {count} offline letters survived restart, arrived once and received a peer ACK");
     Ok(())
 }
 
@@ -928,32 +762,13 @@ async fn run() -> Result<()> {
     if let Some(bin) = std::env::var_os("E2E_AGENT_BIN") {
         return run_agent_mode(PathBuf::from(bin)).await;
     }
-    if std::env::var("E2E_DHT_OFFLINE").is_ok_and(|v| v == "1") {
-        return run_dht_offline_mode().await;
+    if std::env::var("E2E_OFFLINE_RETURN").is_ok_and(|v| v == "1") {
+        return run_offline_return().await;
     }
     if std::env::var("E2E_UPDATE_CHECK").is_ok_and(|v| v == "1") {
         return run_update_check_mode().await;
     }
 
-    // One relay or two. Two is the interesting case: each bot collects from its
-    // own, and a message only arrives if the sender deposits on the *recipient's*
-    // relay rather than its own. With a single destination this degenerates to
-    // the old shared-relay run, which is still worth having.
-    //
-    // Or, with E2E_IN_PROCESS_RELAYS=1, no standalone relay at all: each bot's
-    // relay is an EphemeralRelay started inside this process, on a destination
-    // that exists only in memory. That is the relay every client can run, over
-    // real i2p, with the bots reaching it exactly as they would a remote one.
-    let in_process = std::env::var("E2E_IN_PROCESS_RELAYS").is_ok_and(|v| v == "1");
-    let standalone = if in_process {
-        None
-    } else {
-        let relay_dest = std::env::var("E2E_RELAY_DEST")
-            .context("E2E_RELAY_DEST env var is required (contents of dest.pub)")?;
-        let a = std::env::var("E2E_RELAY_DEST_A").unwrap_or_else(|_| relay_dest.clone());
-        let b = std::env::var("E2E_RELAY_DEST_B").unwrap_or_else(|_| relay_dest.clone());
-        Some((a, b))
-    };
     let n_messages: usize = std::env::var("E2E_N_MESSAGES")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -972,45 +787,10 @@ async fn run() -> Result<()> {
     // -----------------------------------------------------------------------
     // 1. Start both bots sequentially (sharing the same i2p router).
     // -----------------------------------------------------------------------
-    // With in-process relays the bots start with no relay at all and wait,
-    // which is the app's built-in mode exactly: the identity exists first, the
-    // relay is started for that identity, and only then does the client learn
-    // where it collects.
-    let first = standalone.clone().unwrap_or_default();
-    let a_result = start_bot("bot-a", &work_dir, &first.0, &[]).await;
-    let b_result = start_bot("bot-b", &work_dir, &first.1, &[]).await;
-    let (a, mut a_events) = a_result.context("bot-a start")?;
-    let (b, mut b_events) = b_result.context("bot-b start")?;
-
-    let (relay_a, relay_b, in_process_relays) = match standalone {
-        Some((ra, rb)) => (ra, rb, None),
-        None => {
-            let (ra, rb) = start_in_process_relays(&a.session.node, a.card.sign_pk, b.card.sign_pk).await?;
-            let (dest_a, dest_b) = (ra.address().to_string(), rb.address().to_string());
-            a.session.set_relay_address(&dest_a).context("bot-a: set_relay_address")?;
-            b.session.set_relay_address(&dest_b).context("bot-b: set_relay_address")?;
-            eprintln!("[e2e] personal relays: each holds mail for its own bot and refuses anyone else's");
-            (dest_a, dest_b, Some((ra, rb)))
-        }
-    };
-    let split_relays = relay_a != relay_b;
-
-    // The delivery clock starts here: router and relay start-up have their own
-    // deadlines above.
+    let (a, mut a_events) = start_bot("bot-a", &work_dir).await.context("bot-a start")?;
+    let (b, mut b_events) = start_bot("bot-b", &work_dir).await.context("bot-b start")?;
+    anyhow::ensure!(a.i2p_address != b.i2p_address, "bots must have distinct personal terminals");
     let t_start = Instant::now();
-
-    if split_relays {
-        eprintln!(
-            "[e2e] running (bot-a relay={}... bot-b relay={}... n={n_messages} timeout={timeout_secs}s)",
-            &relay_a[..20.min(relay_a.len())], &relay_b[..20.min(relay_b.len())]
-        );
-        eprintln!("[e2e] two relays: delivery proves messages follow the recipient's card");
-    } else {
-        eprintln!(
-            "[e2e] running (shared relay={}... n={n_messages} timeout={timeout_secs}s)",
-            &relay_a[..20.min(relay_a.len())]
-        );
-    }
 
     // -----------------------------------------------------------------------
     // 2. Cross-add contacts (writes to DB; relay loop will handle the rest).
@@ -1019,12 +799,12 @@ async fn run() -> Result<()> {
     // card carries in the app.
     let contact_b_in_a = a
         .session
-        .add_contact_via(&b.card, &b.i2p_address, "bot-b", Some(&relay_b))
+        .add_contact(&b.card, &b.i2p_address, "bot-b")
         .await
         .context("bot-a: add_contact(bot-b)")?;
     let contact_a_in_b = b
         .session
-        .add_contact_via(&a.card, &a.i2p_address, "bot-a", Some(&relay_a))
+        .add_contact(&a.card, &a.i2p_address, "bot-a")
         .await
         .context("bot-b: add_contact(bot-a)")?;
     eprintln!(
@@ -1381,18 +1161,6 @@ async fn run() -> Result<()> {
             "delivery assertion failed: received {}/{n_messages} echoes",
             echoes.len()
         );
-    }
-
-    // Delivery alone could in principle come from somewhere else; a bundle held
-    // in each in-process store shows each bot really authenticated to its relay
-    // over i2p and published there.
-    if let Some((ra, rb)) = &in_process_relays {
-        let (sa, sb) = (ra.stats(), rb.stats());
-        eprintln!("[e2e] in-process relay A: {sa:?}");
-        eprintln!("[e2e] in-process relay B: {sb:?}");
-        if sa.bundles == 0 || sb.bundles == 0 {
-            bail!("in-process relay assertion failed: a bot never published to its relay");
-        }
     }
 
     no_local_ports("harness", "self")?;

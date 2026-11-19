@@ -22,7 +22,7 @@ use gipny_libcore::db::{
 };
 use gipny_libcore::net::{NetError, I2pNode};
 use gipny_libcore::relay::{
-    self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient, DEFAULT_RELAY,
+    self, ClientToRelay, EnvelopeBlob, RelayClient, RelayToClient,
 };
 #[cfg(not(target_os = "android"))]
 use gipny_libcore::update::InstallOutcome;
@@ -50,6 +50,10 @@ pub enum CoreError {
     NotFound,
     #[error("state")]
     State,
+    #[error("one-time message unavailable or expired")]
+    ViewOnceUnavailable,
+    #[error("one-time message consumed")]
+    ViewOnceConsumed,
     #[error("stale opk")]
     StaleOpk,
     #[error("sealed drop")]
@@ -65,8 +69,6 @@ impl From<bincode::Error> for CoreError {
 const SETTING_IDENTITY_SIGN: &str = "identity_sign";
 const SETTING_IDENTITY_DH: &str = "identity_dh";
 const SETTING_SIGNED_PREKEY_ID: &str = "signed_prekey_id";
-const SETTING_RELAY_ADDRESS: &str = "relay_address";
-const SETTING_RELAY_MODE: &str = "relay_mode";
 /// A contact's relay that has not answered for this long, while mail for them
 /// is queued, is reported to the user: with built-in relays it most likely
 /// means the contact restarted and collects somewhere else now.
@@ -107,32 +109,15 @@ const ANNOUNCE_REPEAT_EVERY: Duration = Duration::from_secs(20 * 60);
 /// this interval; each one costs tunnels and tens of seconds.
 const DHT_ADDRESS_LOOKUP_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// How often to look in the network for letters left while we were away.
-const DHT_COLLECT_EVERY: Duration = Duration::from_secs(10 * 60);
-
-/// Letters are remembered as handled for as long as one can live in the
-/// network, plus a day.
-const DHT_SEEN_TTL_MS: i64 = 8 * 24 * 3600 * 1000;
-
-/// How far back the first pass after a launch looks; a letter lives a week.
-const DHT_COLLECT_DAYS_FIRST: u32 = 7;
-/// Later passes only need today and (around midnight) yesterday.
-const DHT_COLLECT_DAYS: u32 = 2;
-
-/// Where an outgoing letter goes. `Relay` is a live connection to the relay
-/// the contact collects from; `Dht` leaves it in the relay network, where it
-/// waits until they come back (see libcore/src/dht_client.rs).
-enum Route {
-    Relay(mpsc::Sender<ClientToRelay>),
-    Dht,
-}
+type Route = relay::RelaySender;
+type TerminalKey = (String, [u8; 32]);
 
 /// State of a connection to somebody else's relay.
 ///
 /// `Connecting` and `Failed` exist so the send loop never dials: it checks this
 /// map, and either gets a live sender or moves on to the next contact.
 enum PeerRelay {
-    Ready(mpsc::Sender<ClientToRelay>),
+    Ready(relay::RelaySender),
     Connecting,
     /// `failures` in a row: the next wait is [`peer_relay_backoff`] of it.
     Failed {
@@ -140,10 +125,6 @@ enum PeerRelay {
         failures: u32,
     },
 }
-
-/// The relay built before unlock, still coming up or up.
-pub type PrebuiltRelay =
-    JoinHandle<std::result::Result<gipny_libcore::EphemeralRelay, gipny_libcore::NetError>>;
 
 /// A delete request that has not reached a contact in this long is given up
 /// on, and the contact deleted here anyway.
@@ -203,6 +184,8 @@ mod identity;
 mod inbox;
 mod lifecycle;
 mod messages;
+mod view_once;
+pub use view_once::ViewOnceNotice;
 mod network;
 mod outbox;
 #[path = "core/relay.rs"]
@@ -212,7 +195,7 @@ mod updates;
 pub use agent_loop::AgentMaster;
 pub use events::CoreEvent;
 pub use files::PendingAttachment;
-pub use hosted_relay::{DialState, HostedRelayState, RelayInfo, RelayMode};
+pub use hosted_relay::{DialState, HostedRelayState, RelayInfo};
 pub use network::{LinkRoute, LinkStats, Rtt};
 
 fn hex_bytes(b: &[u8]) -> String {
@@ -223,7 +206,7 @@ fn hex_bytes(b: &[u8]) -> String {
     s
 }
 use gipny_libcore::session::{
-    collect_lane_holds, collect_lane_wanted, decode_payload, encode_payload,
+    decode_payload, encode_payload,
     ours_stands, pad_payload, peer_relay_backoff, peer_relay_redial_after, unpad_payload,
     WireFileAck, WireFileChunk, WireFileOffer, WirePin, WireReply,
 };
@@ -240,6 +223,10 @@ fn decode_with_padding_fallback(pt: &[u8]) -> std::result::Result<WirePayload, b
 type BundleWaiter = tokio::sync::oneshot::Sender<Option<Vec<u8>>>;
 
 pub struct Core {
+    view_once: view_once::Inbox,
+    view_once_outbox: view_once::Outbox,
+    view_once_kick:tokio::sync::Notify,
+    view_once_locked: tokio::sync::watch::Sender<bool>,
     db: Arc<Db>,
     node: Arc<I2pNode>,
     identity: Arc<Identity>,
@@ -248,10 +235,10 @@ pub struct Core {
     data_dir: PathBuf,
     /// Connection to our own relay — where we receive, and where our prekey
     /// bundle is published.
-    relay_out: Arc<RwLock<Option<mpsc::Sender<ClientToRelay>>>>,
+    relay_out: Arc<RwLock<Option<relay::RelaySender>>>,
     /// Connections to other people's relays, keyed by destination. A message
     /// goes to where its recipient collects it, which is usually not here.
-    peer_relays: Arc<Mutex<HashMap<String, PeerRelay>>>,
+    peer_relays: Arc<Mutex<HashMap<TerminalKey, PeerRelay>>>,
     bundle_waiters: Arc<Mutex<HashMap<[u8; 32], Vec<BundleWaiter>>>>,
     /// Bundles asked for ahead of a first letter (see `relay_for`), by signing
     /// key, with when they came: a new conversation then skips that round trip.
@@ -271,16 +258,11 @@ pub struct Core {
     heard: Arc<std::sync::Mutex<HashMap<i64, i64>>>,
     /// Extra connections to a contact's relay for file parts (by relay
     /// destination); see libcore's session.rs `file_lanes`.
-    file_lanes: Arc<Mutex<HashMap<String, Vec<mpsc::Sender<ClientToRelay>>>>>,
-    file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// When the last file part came (ms), and the extra connections to our
-    /// own relay taking them; see libcore's session.rs `spawn_collect_lanes`.
-    part_seen: Arc<std::sync::atomic::AtomicI64>,
+    file_lanes: Arc<Mutex<HashMap<TerminalKey, Vec<relay::RelaySender>>>>,
+    file_lanes_dialling: Arc<std::sync::Mutex<std::collections::HashSet<TerminalKey>>>,
     /// How parts go to each contact (window, round trip); see libcore's
     /// files.rs `Flow`.
     flows: Arc<std::sync::Mutex<HashMap<i64, gipny_libcore::files::Flow>>>,
-    collect_lanes: Arc<std::sync::atomic::AtomicUsize>,
-    collect_kick: Arc<tokio::sync::Notify>,
     session_created_at: Arc<Mutex<HashMap<i64, i64>>>,
     incoming_since_send: Arc<Mutex<HashMap<i64, u32>>>,
     updater: Arc<Updater>,
@@ -290,17 +272,15 @@ pub struct Core {
     tasks: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
     /// Ids of console commands to run, in order, by the single agent worker.
     agent_tx: mpsc::UnboundedSender<i64>,
-    /// The relay this process hosts for itself in built-in mode. Holding it is
+    /// The personal terminal for the unlocked profile. Holding it is
     /// what keeps it serving; dropping it takes the destination away.
     hosted_relay: Arc<std::sync::Mutex<Option<gipny_libcore::EphemeralRelay>>>,
+    personal_address: String,
     hosted_state: Arc<std::sync::RwLock<HostedRelayState>>,
     /// How our own relay connection is going, for the banner that used to say
     /// only that there was none.
     relay_dial: Arc<std::sync::RwLock<DialState>>,
     hosted_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
-    /// A relay whose tunnels were built before unlock (see `lib.rs`
-    /// `prewarm_network`), taken by the first `bring_up_hosted_relay`.
-    prebuilt_relay: std::sync::Mutex<Option<PrebuiltRelay>>,
     /// Contacts that have not been told this launch's relay address yet.
     announce_pending: Arc<Mutex<HashSet<i64>>>,
     /// When each of them was last told, so the repeat is paced.

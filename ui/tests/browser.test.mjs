@@ -20,14 +20,33 @@ for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'H
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
 
+test('changing one chat choice leaves the profile default and other choices alone', async () => {
+  const original = { getChatPrefs: ui.Api.getChatPrefs, updateChatPrefs: ui.Api.updateChatPrefs };
+  try {
+    for (const clearOnLock of [false, true]) {
+      const prefs = {clearOnLock, saveHistory: {'contact:7': false}}, writes = [];
+      ui.Api.getChatPrefs = async () => prefs;
+      ui.Api.updateChatPrefs = async patch => { writes.push(patch); };
+      const panel = ui.chatPreferences('contact:8', () => assert.fail('unexpected preference error'));
+      await Promise.resolve();
+      const box = panel.querySelector('[type=checkbox]');
+      assert.equal(box.checked, !clearOnLock);
+      box.checked = clearOnLock;
+      box.dispatchEvent(new win.Event('change'));
+      assert.deepEqual(writes, [{ saveHistory: { 'contact:8': clearOnLock } }]);
+    }
+  } finally { Object.assign(ui.Api, original); }
+});
+
 test('automatic browser history clearing preserves saved chats, files, pins and pending deliveries', () => {
   const state = ui.newBrowserState('Alice');
-  state.ui.chat_prefs = JSON.stringify({ saveHistory: { 'contact:1': true, 'contact:2': false, 'group:team': true } });
+  state.ui.chat_prefs = JSON.stringify({ clearOnLock: true, saveHistory: { 'contact:1': true, 'contact:2': false, 'group:team': true } });
   state.messages = [
     { id: 1, contact_id: 1, group_id: null, author: 'alice', origin: 1, sent_at: 100, body: 'saved direct' },
     { id: 2, contact_id: 2, group_id: null, author: 'bob', origin: 2, sent_at: 100, body: 'clear direct' },
     { id: 3, contact_id: null, group_id: 'team', author: 'alice', origin: 3, sent_at: 100, body: 'saved group' },
     { id: 4, contact_id: 3, group_id: null, author: 'alice', origin: 4, sent_at: 100, body: 'no choice' },
+    { id: 5, contact_id: 3, group_id: null, author: 'alice', origin: 5, sent_at: 100, outgoing: true, delivered: false, body: 'still delivering' },
   ];
   state.attachments = state.messages.map(message => ({ id: message.id, message_id: message.id, data: 'attachment' }));
   state.pinnedMessages = [1, 2, 3, 4];
@@ -37,24 +56,60 @@ test('automatic browser history clearing preserves saved chats, files, pins and 
     { key: 'prepared', row: 4, blob: [1, 2, 3], payload: { body: 'no choice' } },
   ];
   assert.equal(ui.clearHistory(state, { preserveSaved: true }), 2);
-  assert.deepEqual(state.messages.filter(message => message.deleted_at == null).map(message => message.id), [1, 3]);
-  assert.equal(state.messages.find(message => message.id === 2).deletion_notice.can_ack, false);
-  assert.deepEqual(state.attachments.map(file => file.message_id), [1, 3]);
+  assert.deepEqual(state.messages.filter(message => message.deleted_at == null).map(message => message.id), [1, 3, 5]);
+  assert.equal(state.messages.find(message => message.id === 2).deletion_notice, null);
+  assert.equal(state.messages.find(message => message.id === 2).delete_pending, false, 'logout does not request deletion on the other device');
+  assert.deepEqual(state.attachments.map(file => file.message_id), [1, 3, 5]);
   assert.deepEqual(state.pinnedMessages, [1, 3]);
   assert.deepEqual(state.outbox.map(item => item.key), ['saved', 'prepared']);
   assert.equal(state.outbox[1].payload, null);
   assert.equal(state.outbox[0].payload.body, 'saved direct');
-  assert.equal(ui.clearHistory(state), 2, 'an explicit clear-all ignores retention choices');
+  assert.equal(ui.clearHistory(state), 3, 'an explicit clear-all ignores retention choices');
   assert.equal(state.messages.filter(message => message.deleted_at == null).length, 0); assert.equal(state.attachments.length, 0); assert.equal(state.pinnedMessages.length, 0);
 });
 
-test('missing and malformed browser history preferences never imply consent to save', () => {
-  for (const raw of [undefined, '{', 'null', '[]', JSON.stringify({ saveHistory: { 'contact:1': 'true' } })]) {
+test('legacy transcripts survive first open and new conversations inherit clearing', () => {
+  for (const raw of [undefined, '{}', JSON.stringify({ ttlSecs: 600, saveHistory: { 'contact:1': 'true' } })]) {
     const state = ui.newBrowserState('Alice');
     if (raw !== undefined) state.ui.chat_prefs = raw;
-    state.messages = [{ id: 1, contact_id: 1, group_id: null, author: 'alice', origin: 1, sent_at: 100, body: 'clear' }];
+    state.messages = [{ id: 1, contact_id: 1, group_id: null, author: 'alice', origin: 1, sent_at: 100, body: 'existing' }];
+    assert.equal(ui.clearHistory(state, { preserveSaved: true }), 0);
+    const prefs = JSON.parse(state.ui.chat_prefs);
+    assert.equal(prefs.clearOnLock, true);
+    assert.equal(prefs.saveHistory['contact:1'], true);
+    if (raw?.includes('ttlSecs')) assert.equal(prefs.ttlSecs, 600);
+    state.messages.push({ id: 2, contact_id: 2, group_id: null, author: 'bob', origin: 2, sent_at: 101, body: 'new' });
     assert.equal(ui.clearHistory(state, { preserveSaved: true }), 1);
+    assert.equal(state.messages[0].body, 'existing');
   }
+});
+
+test('unreadable browser preferences leave existing transcripts and settings untouched', () => {
+  for (const raw of ['{', 'null', '[]']) {
+    const state = ui.newBrowserState('Alice');
+    state.ui.chat_prefs = raw;
+    state.messages = [{ id: 1, contact_id: 1, group_id: null, body: 'old' }];
+    assert.equal(ui.clearHistory(state, { preserveSaved: true }), 0);
+    assert.equal(state.messages[0].body, 'old');
+    assert.equal(state.ui.chat_prefs, raw);
+  }
+});
+
+test('individual clear overrides global keep, preserves pending work and ignores other chats', () => {
+  const state = ui.newBrowserState('Alice');
+  state.ui.chat_prefs = JSON.stringify({clearOnLock: false, saveHistory: { 'group:g': false, 'contact:1': false, 'contact:2': true }});
+  state.messages = [
+    {id: 1, contact_id: null, group_id: 'g'}, {id: 2, contact_id: 1, group_id: null},
+    {id: 3, contact_id: 2, group_id: null}, {id: 4, contact_id: 3, group_id: null},
+    {id: 5, contact_id: 1, group_id: null, outgoing: true}, {id: 6, contact_id: null, group_id: 'g'},
+  ].map(row => ({origin: row.id, author: 'bob', sent_at: 100, body: 'history', ...row}));
+  state.transfers = [{message_id: 6, status: 'verifying'}];
+  assert.equal(ui.clearHistory(state, { preserveSaved: true }), 2);
+  assert.deepEqual(state.messages.filter(m => m.deleted_at == null).map(m => m.id), [3, 4, 5, 6]);
+  state.messages.find(m => m.id === 5).delivered = true;
+  state.transfers[0].status = 'complete';
+  assert.equal(ui.clearHistory(state, { preserveSaved: true }), 2);
+  assert.deepEqual(state.messages.filter(m => m.deleted_at == null).map(m => m.id), [3, 4]);
 });
 
 test('browser expiry removes plaintext, attachments and pins while retaining unexpired history', () => {
@@ -594,6 +649,128 @@ test('ordinary messages and deletion requests are re-encrypted after deposit, ne
   assert.ok(!f.state.outbox.includes(old), 'no receipt for a week: stop re-encrypting');
 });
 
+test('offline expiry marks unsent and legacy queue-less messages once, even after restart', () => {
+  const f = outgoingFixture(1);
+  const row = f.state.messages[0];
+  const end = row.sent_at + ui.RESEND_TTL_MS;
+  const make = (state, label, id, at) => ui.queueLetter(state, f.peer, {
+    ...ui.payload(f.own, 'Alice'), origin_msg_id: id, sent_at: at, body: label,
+  }, id);
+  const initial = make(f.state, 'first', row.id, row.sent_at);
+  initial.blob = 'AA=='; initial.initial = true;
+  const next = make(f.state, 'next', 12, end - 1000);
+  f.state.messages.push({ ...row, id: 12, origin: 12, sent_at: end - 1000 });
+  next.blob = 'AQ==';
+  f.state.messages.push({ ...row, id: 13, origin: 13, body: 'legacy, already removed from outbox' });
+  const deletion = ui.queueLetter(f.state, f.peer, { ...ui.payload(f.own, 'Alice'), dm: { kind: 1 } }, null);
+  const reset = [];
+  assert.deepEqual(ui.expireResends(f.state, end - 1, peer => reset.push(peer)), []);
+  assert.ok(ui.dueLetters(f.state, end - 1).includes(initial));
+  assert.ok(!ui.dueLetters(f.state, end).includes(initial));
+  assert.equal(ui.acknowledgeDelivery(f.state, row, f.peer, end), false, 'even before the sweep');
+  assert.equal(ui.settleDeposit(f.state, next.key, end - 50), 12);
+  const restored = ui.loadBrowserState(JSON.stringify(f.state));
+  assert.deepEqual(ui.expireResends(restored, end + 100, peer => reset.push(peer)).map(r => r.message_id), [10, 13]);
+  assert.deepEqual(reset, [f.peer], 'dropping an unconfirmed X3DH opener retires its session');
+  assert.ok(!restored.outbox.some(item => [initial.key, next.key, deletion.key].includes(item.key)));
+  assert.deepEqual(restored.outbox.map(item => [item.row, item.payload.body, item.blob]), [[12, 'next', null], [null, '', null]]);
+  assert.equal(restored.transfers[0].status, 'failed');
+  ui.queueFileChunks(restored, f.own, end + 100);
+  assert.equal(refs(restored).length, 0, 'expiry cannot start an unacknowledged file offer');
+  const reopened = ui.loadBrowserState(JSON.stringify(restored));
+  assert.equal(ui.acknowledgeDelivery(reopened, reopened.messages[0], f.peer, end + 101), false);
+  assert.deepEqual(ui.expireResends(reopened, end + 101, assert.fail), []);
+  assert.deepEqual(ui.listDeliveryExpiryNotices(reopened), [10, 13].map(id => ({
+    message_id: id, contact_id: 1, group_id: null, expired_at: end,
+  })));
+  assert.equal(ui.listDeliveryExpiryNotices(ui.loadBrowserState(JSON.stringify(reopened))).length, 2);
+  ui.acknowledgeDeliveryExpiryNotices(reopened, [10]);
+  assert.deepEqual(ui.listDeliveryExpiryNotices(reopened).map(n => n.message_id), [13]);
+  ui.acknowledgeDeliveryExpiryNotices(reopened, [13]);
+  assert.deepEqual(ui.listDeliveryExpiryNotices(ui.loadBrowserState(JSON.stringify(reopened))), []);
+  assert.equal(reopened.messages[2].body, 'legacy, already removed from outbox', 'history survives delivery expiry');
+});
+
+test('group requires each original ACK and closes at its shorter TTL, including partial receipt after restart', () => {
+  const peers = ['02'.repeat(32), '04'.repeat(32)];
+  const f = outgoingFixture(1, peers), row = f.state.messages[0];
+  row.contact_id = null; row.group_id = 'team'; row.expires_at = 5000;
+  for (const peer of peers) ui.queueLetter(f.state, peer, { ...ui.payload(f.own, 'Alice'), sent_at: row.sent_at, ttl_ms: 4999 }, row.id);
+  const state = ui.loadBrowserState(JSON.stringify(f.state)), group = state.messages[0];
+  assert.deepEqual(group.pending_recipients, peers, 'capture older group queue before contact deletion');
+  state.outbox = state.outbox.filter(item => item.peer !== peers[1]);
+  assert.equal(ui.acknowledgeDelivery(state, group, peers[0], 4999), false);
+  assert.deepEqual(group.pending_recipients, [peers[1]]);
+  assert.equal(ui.acknowledgeDelivery(state, group, peers[0], 4999), false);
+  assert.equal(ui.acknowledgeDelivery(state, group, peers[1], 5000), false);
+  assert.equal(ui.expireResends(state, 5000, assert.fail).length, 1);
+  ui.expireHistory(state, 5000);
+  assert.equal(group.body, '');
+  assert.equal(state.transfers[0].status, 'sending', 'already-acknowledged recipient keeps its own transfer policy');
+  assert.equal(state.transfers[1].status, 'failed');
+  state.messages = []; // Clearing local group history does not silently consume a notice.
+  assert.deepEqual(ui.listDeliveryExpiryNotices(state), [{ message_id: 10, contact_id: null, group_id: 'team', expired_at: 5000 }]);
+  const delivered = ui.loadBrowserState(JSON.stringify(f.state));
+  for (const [i, peer] of peers.entries()) assert.equal(ui.acknowledgeDelivery(delivered, delivered.messages[0], peer, 4999), i === 1);
+  assert.equal(ui.acknowledgeDelivery(delivered, delivered.messages[0], peers[1], 4999), false);
+  assert.equal(ui.expireResends(delivered, 5000, assert.fail).length, 0);
+});
+
+test('erasure or an earlier ACK cannot leave a detached session opener sending beyond its TTL', () => {
+  for (const method of ['prune', 'ack']) {
+    const f = outgoingFixture(1), row = f.state.messages[0];
+    row.expires_at = 10;
+    const item = ui.queueLetter(f.state, f.peer, { ...ui.payload(f.own, 'Alice'), sent_at: 1, ttl_ms: 9 }, row.id);
+    item.blob = 'AA=='; item.initial = true;
+    if (method === 'prune') ui.redactMessage(f.state, row, true, 5);
+    else assert.ok(ui.acknowledgeDelivery(f.state, row, f.peer, 5));
+    assert.equal(item.row, null); assert.equal(item.payload, null);
+    const state = ui.loadBrowserState(JSON.stringify(f.state));
+    const resets = [];
+    assert.deepEqual(ui.expireResends(state, 10, peer => resets.push(peer)), []);
+    assert.deepEqual(resets, [f.peer]); assert.deepEqual(state.outbox, []);
+    assert.deepEqual(ui.listDeliveryExpiryNotices(state), [], method);
+  }
+  const f = outgoingFixture(1);
+  const item = ui.queueLetter(f.state, f.peer, null, null);
+  item.initial = true; item.blob = 'AA=='; // Legacy erased opener, original send time lost.
+  const state = ui.loadBrowserState(JSON.stringify(f.state)), resets = [];
+  assert.ok(!ui.dueLetters(state, 10000).some(next => next.key === item.key));
+  assert.deepEqual(ui.expireResends(state, 10000, peer => resets.push(peer)), []);
+  assert.deepEqual(resets, [f.peer]); assert.deepEqual(state.outbox, []);
+});
+
+test('late inbound ordinary messages do not create delivery receipts or file offers', () => {
+  const f = outgoingFixture(1);
+  const direct = { ...ui.payload(f.own, 'Bob'), sent_at: 50, origin_msg_id: 123, ttl_ms: 100, body: 'late', files: [f.offer] };
+  assert.equal(ui.discardExpiredIncoming(f.state, f.peer, direct, 149), false);
+  assert.equal(ui.discardExpiredIncoming(f.state, f.peer, direct, 150), true);
+  assert.equal(ui.discardExpiredIncoming(f.state, f.peer, direct, 151), true);
+  assert.deepEqual(f.state.tombstones, [`${f.peer}:123:50`]);
+  assert.equal(ui.discardExpiredIncoming(f.state, 'unknown', direct, 151), true);
+  assert.equal(ui.discardExpiredIncoming(f.state, f.peer, { ...direct, group: {}, origin_msg_id: 124 }, 151), true);
+  assert.equal(f.state.tombstones.length, 1);
+  assert.equal(ui.discardExpiredIncoming(f.state, f.peer, { ...direct, ack_for: 1 }, 151), false);
+});
+
+test('view-once fragments split even short letters, reject holes or changed declarations, and bound assembly', () => {
+  for (const length of [7, 4096, 8193, 16384 + 2048]) {
+    const original = Uint8Array.from({ length }, (_, i) => i % 251);
+    const parts = [...ui.viewOnceParts(original)];
+    assert.equal(parts.length, Math.max(2, Math.ceil(length / 4096)));
+    const assembly = new ui.ViewOnceParts();
+    for (const part of parts.slice(0, -1)) assert.equal(assembly.add(part), null);
+    assert.deepEqual(assembly.add(parts.at(-1)), original); assembly.clear();
+  }
+  const parts = [...ui.viewOnceParts(new Uint8Array(8200))];
+  for (const changed of [{ ...parts[1], index: 0 }, { ...parts[1], index: 2 },
+    { ...parts[1], total: 4 }, { ...parts[1], bytes: [] }, { ...parts[1], bytes: [1] }]) {
+    const assembly = new ui.ViewOnceParts(); assembly.add(parts[0]);
+    assert.throws(() => assembly.add(changed)); assembly.clear();
+  }
+  assert.throws(() => [...ui.viewOnceParts(new Uint8Array(16384 + 2049))]);
+});
+
 test('replay records stay bounded through a synthetic 12,000-part transfer; X3DH initials are kept per peer', async () => {
   const f = fileFixture(12_000);
   f.offer.chunk_size = 1;
@@ -1106,4 +1283,32 @@ test('preview backend covers update commands, statuses, staged application, Andr
   await assert.rejects(failed.invoke('check_update'), /could not be reached/);
   await assert.rejects(failed.invoke('install_update'), /download failed/);
   assert.match(events[events.length - 1].UpdateFailed.reason, /download failed/);
+});
+
+test('view-once delivery tracks only metadata and binds receipts to the receiving contact', () => {
+  const { state, own, peer, peers } = outgoingFixture(1, ['02'.repeat(32), '03'.repeat(32)]);
+  const first = 'ab'.repeat(16), overdue = 'cd'.repeat(16), now = Date.now();
+  const received = id => ({ ...ui.payload(own, 'Bob'), ack_for: 0, callback_data: 'gipny.viewonce.received.v1/' + id });
+  const confirmed = id => ({ ...received(id), callback_data: 'gipny.viewonce.confirmed.v1/' + id });
+  const row = ui.trackViewOnce(state, 1, first, now + 90 * 86400000);
+  assert.equal(row.status, 'pending');
+  assert.ok(row.deadline <= Date.now() + ui.RESEND_TTL_MS);
+  assert.deepEqual(Object.keys(row).sort(), ['contact_id', 'deadline', 'id', 'status']);
+  row.status = 'relayed';
+  ui.trackViewOnce(state, 1, overdue, now + 1000);
+  ui.receiveViewOnceControl(state, own, peers[1], received(first));
+  assert.equal(row.status, 'relayed');
+  assert.equal(ui.receiveViewOnceControl(state, own, peer, received(first)).status, 'received');
+  assert.equal(ui.receiveViewOnceControl(state, own, peer, received(first)), true);
+  assert.equal(state.outbox.filter(item => item.payload?.callback_data === confirmed(first).callback_data).length, 1);
+  const restored = structuredClone(state);
+  assert.deepEqual(ui.sweepViewOnce(restored, own, now + 1000).map(record => [record.id, record.status]), [[overdue, 'unconfirmed']]);
+  assert.deepEqual(ui.sweepViewOnce(restored, own, now + 1001), []);
+  ui.oweReceipt(restored, peer, first, now + 5000);
+  ui.sweepViewOnce(restored, own, now);
+  assert.ok(restored.outbox.some(item => item.peer === peer && item.payload?.callback_data === received(first).callback_data));
+  ui.receiveViewOnceControl(restored, own, peers[1], confirmed(first));
+  assert.ok(restored.view_once_tracking.receipts[first]);
+  ui.receiveViewOnceControl(restored, own, peer, confirmed(first));
+  assert.equal(restored.view_once_tracking.receipts[first], undefined);
 });

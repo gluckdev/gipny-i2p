@@ -31,7 +31,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const UNCONFIGURED = 'Network service is not configured; saved chats are available offline';
 const dial = { attempts: 0, last_error: null, unreachable_checks: 0, unreachable_error: null };
-const relayInfo = (hosted) => ({ mode: 'builtin', external: '', hosted, dial });
+const relayInfo = (hosted) => ({ hosted, dial });
 const step = (id, state, detail = '') => ({ id, state, startedAt: 0, ms: 0, detail });
 
 /** Stub what onUnlocked needs, with the core answering `info` about its relay. */
@@ -97,7 +97,6 @@ test('without a network service the chats open at once and the relay row says so
     assert.equal(row.querySelector('.boot-step-hint').textContent, t('boot.network_unconfigured'));
     assert.notEqual(t('boot.network_unconfigured'), t('boot.retrying_in_background'));
     assert.equal(view.backBtn.classList.contains('hidden'), true, 'not a reason to sign in again');
-    assert.equal(h.store.relayUnconfigured.get(), false, 'the native "no relay address" state is not borrowed');
   } finally { view.destroy(); h.restore(); }
 });
 
@@ -556,5 +555,125 @@ for (const [action, duringList] of [
     assert.equal(inputs[2].value, '');
   } finally {
     app.destroy(); store.endBoot(); Object.assign(Api, original); ui.setLang('en');
+  }
+});
+
+test('display lock removes message views, retains the session and requires fresh authentication', async () => {
+  const store = new Store();
+  store.currentProfile.set('alice');
+  store.view.set('main');
+  const app = new ui.App(store);
+  document.body.appendChild(app.el);
+  let refreshes = 0;
+  store.refreshAll = async () => { refreshes++; };
+  const originalLock = Api.vaultLock;
+  let vaultLocks = 0;
+  Api.vaultLock = async () => { vaultLocks++; };
+  try {
+    store.coverScreen();
+    assert.equal(store.screenLocked.get(), true);
+    assert.ok(app.el.querySelector('#screen-pass'));
+    assert.equal(app.el.querySelector('.sidebar'), null);
+    assert.equal(store.currentProfile.get(), 'alice');
+    assert.equal(vaultLocks, 0);
+    await assert.rejects(store.revealScreen(async () => { throw new Error('wrong password'); }), /wrong password/);
+    assert.equal(store.screenLocked.get(), true);
+
+    let accept;
+    const pending = store.revealScreen(() => new Promise(resolve => { accept = resolve; }));
+    store.coverScreen(true);
+    accept();
+    await pending;
+    assert.equal(store.screenLocked.get(), true, 'a fresh screen-off invalidates the pending password check');
+
+    await store.revealScreen(async profile => { assert.equal(profile, 'alice'); });
+    assert.equal(store.screenLocked.get(), false);
+    assert.equal(app.el.querySelector('#screen-pass'), null);
+    assert.equal(refreshes, 1);
+    assert.equal(vaultLocks, 0);
+  } finally {
+    Api.vaultLock = originalLock;
+    app.destroy();
+  }
+});
+
+test('provider sheet may suspend the view but an intervening hardware screen-off still wins', async () => {
+  const store = new Store();
+  store.currentProfile.set('alice');
+  store.refreshAll = async () => {};
+  store.view.set('main');
+  store.coverScreen();
+  await store.revealScreen(async () => { store.coverScreen(true); }, true);
+  assert.equal(store.screenLocked.get(), true);
+  await store.revealScreen(async () => { store.coverScreen(); }, true);
+  assert.equal(store.screenLocked.get(), false);
+});
+
+test('returning from display lock reloads messages and pins changed in the background', async () => {
+  const store = new Store(), target = { kind: 'contact', id: 12 }, key = 'contact:12';
+  const former = { id: 1, body: 'expired while locked' }, current = { id: 2, body: 'arrived while locked' };
+  const original = { listMessages: Api.listMessages, listPinnedContact: Api.listPinnedContact };
+  store.currentProfile.set('alice');
+  store.refreshAll = async () => {};
+  store.view.set('main');
+  store.selectedChat.set(target);
+  store.messages.set(new Map([[key, [former]]]));
+  store.pinned.set(new Map([[key, [former]]]));
+  Api.listMessages = async () => [current];
+  Api.listPinnedContact = async () => [];
+  try {
+    store.coverScreen();
+    assert.equal(store.messages.get().size, 0);
+    assert.equal(store.pinned.get().size, 0);
+    await store.revealScreen(async () => {});
+    assert.deepEqual(store.messages.get().get(key), [current]);
+    assert.deepEqual(store.pinned.get().get(key), []);
+  } finally { Object.assign(Api, original); }
+});
+
+test('explicit sign out and close waits for the vault to stop', async () => {
+  const store = new Store();
+  store.currentProfile.set('alice');
+  store.view.set('main');
+  let finish;
+  store.lock = async () => {
+    assert.equal(store.screenLocked.get(), true);
+    await new Promise(resolve => { finish = resolve; });
+  };
+  let done = false;
+  const closed = store.lockAndClose().then(() => { done = true; });
+  assert.equal(done, false);
+  finish();
+  await closed;
+  assert.equal(done, true);
+});
+
+test('the delivery notice remains pending if the view is covered while it is being read', async () => {
+  const original = { list: Api.listDeliveryExpiryNotices, ack: Api.acknowledgeDeliveryExpiryNotices };
+  const notice = { message_id: 12, contact_id: 1, group_id: null, expired_at: 100 };
+  let finish;
+  let shown = 0;
+  let acked = 0;
+  Api.listDeliveryExpiryNotices = () => new Promise(resolve => { finish = () => resolve([notice]); });
+  Api.acknowledgeDeliveryExpiryNotices = async (_profile, ids) => { assert.deepEqual(ids, [12]); acked++; };
+  const store = new Store();
+  store.currentProfile.set('alice');
+  store.showToast = () => { shown++; };
+  store.refreshAll = async () => {};
+  try {
+    store.view.set('main');
+    store.coverScreen();
+    finish();
+    await tick();
+    assert.equal(acked, 0);
+    assert.equal(shown, 0);
+    await store.revealScreen(async () => {});
+    finish();
+    await tick();
+    assert.equal(shown, 1);
+    assert.equal(acked, 1);
+  } finally {
+    Api.listDeliveryExpiryNotices = original.list;
+    Api.acknowledgeDeliveryExpiryNotices = original.ack;
   }
 });

@@ -176,30 +176,6 @@ fn an_unreachable_relay_is_dialled_again_for_a_few_minutes_then_left() {
 }
 
 #[test]
-fn extra_connections_to_our_relay_only_while_parts_come_to_one_elsewhere() {
-    let now = 1_000_000;
-    let limit = crate::files::lanes::limit();
-    assert!(!collect_lane_wanted(true, 0, now, 0), "no part yet");
-    assert_eq!(collect_lane_wanted(true, now - 1_000, now, 0), limit > 1);
-    assert!(
-        !collect_lane_wanted(false, now - 1_000, now, 0),
-        "a relay in this process is a pipe"
-    );
-    if limit > 1 {
-        assert!(collect_lane_wanted(true, now - 1_000, now, limit - 2));
-    }
-    assert!(
-        !collect_lane_wanted(true, now - 1_000, now, limit - 1),
-        "no more than the sender's lanes"
-    );
-    assert!(collect_lane_holds(now - COLLECT_LANE_IDLE_MS + 1, now));
-    assert!(
-        !collect_lane_holds(now - COLLECT_LANE_IDLE_MS, now),
-        "a quiet minute closes them"
-    );
-}
-
-#[test]
 fn unknown_console_kind_still_decodes() {
     let mut p = sample();
     p.console = Some(WireConsole::new(200));

@@ -6,6 +6,67 @@ include!("../dm_reference.rs");
 include!("deletion_notice.rs");
 include!("peer_events.rs");
 
+/// Read and initialize automatic retention inside the same transaction as the
+/// cleanup. Before the default changed, missing settings retained all history.
+fn history_policy(tx: &Transaction<'_>) -> Result<Option<(bool, serde_json::Value)>> {
+    use serde_json::{json, Value};
+    let raw: Option<Vec<u8>> = tx
+        .query_row("SELECT v FROM settings WHERE k='ui_chat_prefs'", [], |row| row.get(0))
+        .optional()?;
+    let Some(Value::Object(mut prefs)) = raw
+        .as_deref()
+        .map_or(Some(json!({})), |bytes| serde_json::from_slice(bytes).ok())
+    else { return Ok(None) };
+    let mut choices = prefs.get("saveHistory").and_then(Value::as_object).cloned().unwrap_or_default();
+    if let Some(clear) = prefs.get("clearOnLock").and_then(Value::as_bool) {
+        return Ok(Some((clear, Value::Object(choices))));
+    }
+    let mut chats = tx.prepare("SELECT DISTINCT CASE WHEN group_id IS NULL THEN 'contact:' || contact_id
+        ELSE 'group:' || lower(hex(group_id)) END FROM messages WHERE deleted_at IS NULL
+        AND (contact_id IS NOT NULL OR group_id IS NOT NULL)")?;
+    for chat in chats.query_map([], |r| r.get::<_, String>(0))? {
+        let chat = chat?;
+        if choices.get(&chat).and_then(Value::as_bool).is_none() {
+            choices.insert(chat, Value::Bool(true));
+        }
+    }
+    let original = prefs.insert("saveHistory".into(), Value::Object(choices));
+    prefs.insert("clearOnLock".into(), Value::Bool(true));
+    let mut bytes = Value::Object(prefs.clone()).to_string().into_bytes();
+    let clear = bytes.len() <= 64 * 1024; // Keep the setting editable through the UI.
+    if !clear {
+        if let Some(original) = original { prefs.insert("saveHistory".into(), original); }
+        else { prefs.remove("saveHistory"); }
+        prefs.insert("clearOnLock".into(), Value::Bool(false));
+        bytes = Value::Object(prefs.clone()).to_string().into_bytes();
+    }
+    tx.execute("INSERT OR REPLACE INTO settings(k,v) VALUES('ui_chat_prefs',?1)", [bytes])?;
+    Ok(Some((clear, prefs.remove("saveHistory").unwrap_or_else(|| json!({})))))
+}
+
+/// A backup restores contacts by signing identity and assigns fresh local IDs.
+/// Remap saved chat choices in the same transaction that consumes the ID map.
+fn restore_chat_choices(tx: &Transaction<'_>, contacts: &HashMap<i64, i64>) -> Result<()> {
+    let raw: Option<Vec<u8>> = tx.query_row("SELECT v FROM settings WHERE k='ui_chat_prefs'", [], |r| r.get(0)).optional()?;
+    let Some(mut prefs) = raw.as_deref().and_then(|v| serde_json::from_slice::<serde_json::Value>(v).ok()) else {
+        return Ok(());
+    };
+    for key in ["saveHistory", "chatTtlSecs"] {
+        let Some(choices) = prefs.get_mut(key).and_then(serde_json::Value::as_object_mut) else { continue };
+        for (old_key, value) in std::mem::take(choices) {
+            if let Some(old) = old_key.strip_prefix("contact:") {
+                if let Some(new) = old.parse::<i64>().ok().and_then(|id| contacts.get(&id)) {
+                    choices.insert(format!("contact:{new}"), value);
+                }
+            } else {
+                choices.insert(old_key, value);
+            }
+        }
+    }
+    tx.execute("UPDATE settings SET v=?1 WHERE k='ui_chat_prefs'", [prefs.to_string().into_bytes()])?;
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct DmDelete {
     pub message_id: i64,
@@ -86,6 +147,7 @@ impl Db {
         let contact=|old:&i64|contacts.get(old).copied().ok_or(DbError::State);
         let _files=self.file_mutations.lock().map_err(|_|DbError::State)?;
         self.with_tx(|tx| {
+            restore_chat_choices(tx, &contacts)?;
             for (id,old,author,origin,sequence,deleted_at) in &backup.messages {
                 tx.execute("UPDATE messages SET contact_id=?2,sender_sign_pk=?3,origin_msg_id=?4,dm_seq=?5
                     WHERE id=?1 AND group_id IS NULL",params![id,contact(old)?,author,origin,sequence])?;
@@ -346,8 +408,43 @@ impl Db {
     pub fn delete_expired_dm(&self, now: i64) -> Result<Vec<DmDelete>> {
         // Old backups omitted received origins. Keep those records explicit
         // rather than guessing a remote ID, without blocking other timers.
-        self.delete_matching_dm("expires_at IS NOT NULL AND expires_at <= ?1 AND expires_at > sent_at
+        self.delete_matching_dm("expires_at IS NOT NULL AND expires_at <= ?1
             AND origin_msg_id > 0 AND length(sender_sign_pk)=32", now)
+    }
+
+    /// Automatic local retention leaves the peer and outstanding transfers alone.
+    pub fn clear_unsaved_transcripts(&self) -> Result<usize> {
+        let _files = self.file_mutations.lock().map_err(|_| DbError::State)?;
+        self.with_tx(|tx| {
+            let Some((clear_by_default, choices)) = history_policy(tx)? else { return Ok(0) };
+            if !clear_by_default && !choices.as_object().is_some_and(|map| map.values().any(|v| v.as_bool() == Some(false))) {
+                return Ok(0);
+            }
+            let rows = tx.prepare("SELECT m.id, m.group_id IS NULL AND m.origin_msg_id > 0 AND length(m.sender_sign_pk)=32
+                FROM messages m WHERE m.deleted_at IS NULL
+                AND CASE json_type(?1, '$.' || CASE WHEN m.group_id IS NULL THEN 'contact:' || m.contact_id
+                    ELSE 'group:' || lower(hex(m.group_id)) END)
+                    WHEN 'true' THEN 0 WHEN 'false' THEN 1 ELSE ?2 END
+                AND NOT EXISTS (SELECT 1 FROM awaiting_delivery d WHERE d.id=m.id)
+                AND NOT EXISTS (SELECT 1 FROM file_in f WHERE f.message_id=m.id)
+                AND NOT EXISTS (SELECT 1 FROM file_out f JOIN file_out_peer p USING(file_id)
+                    JOIN attachments a ON a.id=f.attachment_id WHERE f.message_id=m.id AND f.cancelled=0
+                    AND p.failed=0 AND p.acked < ((a.size + a.chunk_size - 1) / a.chunk_size))")?
+                .query_map(params![choices.to_string(), clear_by_default], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<bool>>(1)?.unwrap_or(false))))?
+                .collect_rows()?;
+            let now = now_ms();
+            for &(id, direct_ref) in &rows {
+                if direct_ref {
+                    delete_dm_tx(tx, id, false, now)?;
+                    tx.execute("DELETE FROM dm_deletion_notices WHERE message_id=?1", params![id])?;
+                } else {
+                    tx.execute("INSERT OR IGNORE INTO deleted_file_cleanup(path) SELECT path FROM attachments WHERE message_id=?1", params![id])?;
+                    tx.execute("DELETE FROM settings WHERE k IN ('buttons_'||?1,'sound_'||?1,'console_'||?1,'console_pending_'||?1)", params![id])?;
+                    tx.execute("DELETE FROM messages WHERE id=?1", params![id])?;
+                }
+            }
+            Ok(rows.len())
+        })
     }
 
     pub fn clear_dm_history(&self) -> Result<Vec<DmDelete>> {
@@ -576,11 +673,87 @@ mod tests {
     use std::sync::{Arc,mpsc};
     use sha2::{Digest,Sha256};
 
+    #[test]
+    fn zero_ttl_and_legacy_earlier_expiry_erase_the_direct_message() {
+        let directory = tempfile::tempdir().unwrap();
+        let (db, contact) = database(&directory.path().join("zero.db"), [1; 32], [2; 32]);
+        let zero = db.insert_message(contact, Direction::Out, "immediate", 100, Some(100), &[]).unwrap();
+        let older = db.insert_message(contact, Direction::Out, "legacy", 100, Some(99), &[]).unwrap();
+        assert_eq!(db.delete_expired_dm(100).unwrap().len(), 2);
+        for id in [zero, older] {
+            let row = db.get_message(id).unwrap().unwrap();
+            assert!(row.deleted_at.is_some() && row.body.is_empty());
+        }
+    }
+
     fn database(path:&Path, own:[u8;32], peer:[u8;32]) -> (Db,i64) {
         let db=Db::open_plain(path).unwrap();
         db.configure_dm_identity(&own).unwrap();
         let contact=db.add_contact(&peer,&[7;32],"relay","peer",None).unwrap();
         (db,contact)
+    }
+
+    #[test]
+    fn automatic_logout_keeps_pending_mail_and_does_not_delete_the_peers_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let (db, contact) = database(&directory.path().join("logout.db"), [1; 32], [2; 32]);
+        let received = db.insert_message_with_origin(contact, Direction::In, "local history", 100, None, &[], Some(7)).unwrap();
+        let pending = db.insert_message(contact, Direction::Out, "pending", now_ms(), None, &[]).unwrap();
+        let saved = serde_json::json!({"clearOnLock":true, "saveHistory":{format!("contact:{contact}"): true}}).to_string();
+        db.set_setting("ui_chat_prefs", saved.as_bytes()).unwrap();
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 0);
+        db.set_setting("ui_chat_prefs", br#"{"clearOnLock":true}"#).unwrap();
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 1);
+        assert!(db.get_message(received).unwrap().unwrap().body.is_empty());
+        assert_eq!(db.get_message(pending).unwrap().unwrap().body, "pending");
+        assert!(db.pending_dm_deletes(contact, now_ms()).unwrap().is_empty());
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 0);
+    }
+
+    #[test]
+    fn automatic_logout_individual_clear_overrides_global_keep_and_waits_for_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, contact) = database(&dir.path().join("history.db"), [1;32], [2;32]);
+        let prefs = serde_json::json!({"clearOnLock":false, "saveHistory":{format!("contact:{contact}"):false, "group:01":false, "group:03":true}});
+        db.set_setting("ui_chat_prefs", prefs.to_string().as_bytes()).unwrap();
+        let pending = db.insert_message(contact, Direction::Out, "pending", now_ms(), None, &[]).unwrap();
+        for n in 1..=3 {
+            db.create_group(&[n], "group").unwrap();
+            db.insert_group_message(&[n], Some(&[8;32]), Direction::In, "group msg", 100, None, &[]).unwrap();
+        }
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 1);
+        assert_eq!(db.get_message(pending).unwrap().unwrap().body, "pending");
+        assert!(db.list_group_messages(&[1], 10, None).unwrap().is_empty());
+        for n in [2, 3] { assert_eq!(db.list_group_messages(&[n], 10, None).unwrap().len(), 1); }
+        assert!(db.acknowledge_dm_delivery(pending, contact).unwrap());
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 1);
+        assert!(db.get_message(pending).unwrap().unwrap().deleted_at.is_some());
+    }
+
+    #[test]
+    fn automatic_logout_respects_old_history_and_new_chat_defaults_after_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let (db, contact) = database(&path, [1;32], [2;32]);
+        let old = db.insert_message_with_origin(contact, Direction::In, "old", 100, None, &[], Some(11)).unwrap();
+        for invalid in [b"null".as_slice(), b"[", b"[]"] {
+            db.set_setting("ui_chat_prefs", invalid).unwrap();
+            assert_eq!(db.clear_unsaved_transcripts().unwrap(), 0);
+            assert_eq!(db.get_setting("ui_chat_prefs").unwrap().unwrap(), invalid);
+        }
+        db.set_setting("ui_chat_prefs", br#"{"ttlSecs":600,"saveHistory":{"group:09":false}}"#).unwrap();
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 0);
+        let prefs: serde_json::Value = serde_json::from_slice(&db.get_setting("ui_chat_prefs").unwrap().unwrap()).unwrap();
+        assert_eq!(prefs["clearOnLock"], true);
+        assert_eq!(prefs["ttlSecs"], 600);
+        assert_eq!(prefs["saveHistory"][format!("contact:{contact}")], true);
+        assert_eq!(prefs["saveHistory"]["group:09"], false);
+        drop(db);
+        let db = Db::open_plain(&path).unwrap();
+        db.create_group(&[1], "fresh").unwrap();
+        db.insert_group_message(&[1], Some(&[3;32]), Direction::In, "new", 120, None, &[]).unwrap();
+        assert_eq!(db.clear_unsaved_transcripts().unwrap(), 1);
+        assert_eq!(db.get_message(old).unwrap().unwrap().body, "old");
     }
 
     #[test]
@@ -745,6 +918,9 @@ mod tests {
         restored.add_contact(&[3;32],&[8;32],"third","third",None).unwrap();
         assert_ne!(new_peer,old_peer);
         restored.set_setting(Db::DM_BACKUP_KEY,&sidecar).unwrap();
+        let prefs = serde_json::json!({"clearOnLock":true, "saveHistory":{"contact:1":false, "contact:2":true,
+            "contact:99":true, "group:ac":true}, "chatTtlSecs":{"contact:2":300}});
+        restored.set_setting("ui_chat_prefs", prefs.to_string().as_bytes()).unwrap();
         let map=restored.dm_backup_contact_map().unwrap().unwrap();
         let mut messages=source.list_all_messages().unwrap();
         for message in &mut messages {message.contact_id=message.contact_id.map(|old|map[&old]);}
@@ -755,6 +931,12 @@ mod tests {
         restored.bulk_insert_attachments(&[Attachment {id:900,message_id:removed,name:"private filename".into(),size:10,
             key:vec![9;32],path:path.to_string_lossy().into(),chunk_size:None}]).unwrap();
         restored.restore_dm_state().unwrap();
+        let prefs: serde_json::Value = serde_json::from_slice(&restored.get_setting("ui_chat_prefs").unwrap().unwrap()).unwrap();
+        assert_eq!(prefs["saveHistory"][format!("contact:{new_peer}")], true);
+        assert_eq!(prefs["saveHistory"][format!("contact:{old_peer}")], false);
+        assert_eq!(prefs["saveHistory"]["group:ac"], true);
+        assert!(prefs["saveHistory"].get("contact:99").is_none());
+        assert_eq!(prefs["chatTtlSecs"][format!("contact:{new_peer}")], 300);
         restored.cleanup_deleted_files(directory.path()).unwrap();
         assert!(!path.exists());
         assert!(restored.list_attachments(removed).unwrap().is_empty());

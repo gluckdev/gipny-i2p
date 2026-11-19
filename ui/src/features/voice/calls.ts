@@ -240,7 +240,14 @@ export class Calls {
   private send(call: Session, kind: Kind, seq: number, data?: string, lane = 0): void {
     if (call.sends >= 8) return;
     call.sends++;
-    void this.transmit(call, kind, seq, data, lane).catch(error => this.fail(call, error)).finally(() => call.sends--);
+    // Probes and media can lose one route while another lane is answering.
+    // Their receive timers and bounded windows already handle a missing reply.
+    void this.transmit(call, kind, seq, data, lane).catch(() => {
+      if (kind === 'audio' && this.current === call) {
+        call.pending.delete(seq);
+        call.window = 1;
+      }
+    }).finally(() => call.sends--);
   }
 
   private fail(call: Session, error: unknown): void {

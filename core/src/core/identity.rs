@@ -38,11 +38,11 @@ impl Core {
     }
 
     pub fn my_i2p_address(&self) -> &str {
-        self.node.i2p_address()
+        &self.personal_address
     }
 
     pub fn my_b32(&self) -> String {
-        self.node.b32_address().unwrap_or_default()
+        gipny_libcore::card::compact_address(&self.relay_address()).unwrap_or_default()
     }
 
     pub fn display_name(&self) -> Result<String> {

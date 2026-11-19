@@ -17,24 +17,23 @@ export class AddContactModal {
     }) as HTMLTextAreaElement;
     const err = h('div', { class: 'err', style: { minHeight: '14px', marginTop: '8px' } });
     const i2pAddressI = h('input', { class: 'input', placeholder: tr('contact.destination_base64_or_abc_xyz_b32_i2p') });
-    const relayI = h('input', {
-      class: 'input',
-      placeholder: tr('contact.leave_empty_to_use_yours'),
-      'aria-label': tr('contact.contact_relay_destination'),
-    }) as HTMLInputElement;
     const signI = h('input', { class: 'input', placeholder: 'sign_pk (64 hex)' });
     const dhI = h('input', { class: 'input', placeholder: 'dh_pk (64 hex)' });
-    let cardName = '';
+    let parsedCard: DecodedCard | null = null;
     let closed = false;
     const addBtn = h('button', { class: 'btn', onClick: () => void submit(fields()) }, tr('contact.add'));
     const importer = new ContactImport(store, (busy) => {
       addBtn.disabled = scanBtn.disabled = fileBtn.disabled = busy;
       pasteI.readOnly = busy;
-      for (const input of [i2pAddressI, relayI, signI, dhI]) input.readOnly = busy;
+      for (const input of [i2pAddressI, signI, dhI]) input.readOnly = busy;
       this.el?.setAttribute('aria-busy', String(busy));
     });
-    const fields = (): DecodedCard => ({ i2p_address: i2pAddressI.value.trim(), signPk: signI.value.trim().toLowerCase(),
-      dhPk: dhI.value.trim().toLowerCase(), name: cardName, relay: relayI.value.trim() || undefined });
+    const fields = (): DecodedCard => {
+      const i2p_address = i2pAddressI.value.trim();
+      const signPk = signI.value.trim().toLowerCase(), dhPk = dhI.value.trim().toLowerCase();
+      if (parsedCard && parsedCard.i2p_address === i2p_address && parsedCard.signPk === signPk && parsedCard.dhPk === dhPk) return parsedCard;
+      return { i2p_address, signPk, dhPk };
+    };
     const submit = async (card: DecodedCard): Promise<void> => {
       if (closed) return;
       const invalid = validateContact(card);
@@ -52,12 +51,11 @@ export class AddContactModal {
 
     const applyCard = (text: string, autoAdd: boolean): boolean => {
       const parsed = parseContactImport(text);
+      parsedCard = parsed;
       if (!parsed) return false;
       i2pAddressI.value = parsed.i2p_address;
       signI.value = parsed.signPk;
       dhI.value = parsed.dhPk;
-      relayI.value = parsed.relay ?? '';
-      cardName = parsed.name?.trim() ?? '';
       err.textContent = '';
       if (autoAdd) void submit(parsed);
       return true;
@@ -138,10 +136,7 @@ export class AddContactModal {
         h('div', { class: 'hint', style: { marginBottom: '8px' } },
           tr('contact.a_contact_s_name_comes_from_their_card')),
         h('div', { class: 'divider-text' }, tr('contact.enter_manually')),
-        h('div', { class: 'field' }, h('label', null, tr('contact.i2p_address')), i2pAddressI),
-        h('div', { class: 'field' }, h('label', null, tr('contact.contact_s_relay')), relayI),
-        h('div', { class: 'hint', style: { marginBottom: '8px' } },
-          tr('contact.the_relay_is_where_this_contact_collects_mail')),
+        h('div', { class: 'field' }, h('label', null, tr('about.personal_terminal')), i2pAddressI),
         h('div', { class: 'field' }, h('label', null, 'sign_pk'), signI),
         h('div', { class: 'field' }, h('label', null, 'dh_pk'), dhI),
         err,

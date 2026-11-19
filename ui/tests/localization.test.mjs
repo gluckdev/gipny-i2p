@@ -800,6 +800,54 @@ function chatStore() {
   return store;
 }
 
+test('a custom lifetime belongs to its chat and supports whole minutes up to ninety days', async () => {
+  const before = { get: Api.getChatPrefs, update: Api.updateChatPrefs };
+  const saved = {};
+  Api.getChatPrefs = async () => ({ ttlSecs: null, ttlChosen: false, clearOnLock: true, chatTtlSecs: {...saved} });
+  Api.updateChatPrefs = async patch => { Object.assign(saved, patch.chatTtlSecs); };
+  const store = chatStore(), app = new App(store);
+  document.body.append(app.el);
+  try {
+    await tick();
+    const input = () => app.el.querySelector('.ttl-duration');
+    const units = () => app.el.querySelector('.ttl-units');
+    assert.equal(input().value, '30');
+    assert.equal(units().value, '86400');
+    units().value = '60'; units().dispatchEvent(new win.Event('change'));
+    input().value = '37'; input().dispatchEvent(new win.Event('change'));
+    assert.equal(saved['contact:1'], 37 * 60);
+    input().value = '129601'; input().dispatchEvent(new win.Event('change'));
+    assert.equal(saved['contact:1'], 37 * 60);
+    store.selectedChat.set({kind: 'group', id: 'team'}); await tick();
+    assert.equal(input().value, '30');
+    input().value = '90'; input().dispatchEvent(new win.Event('change'));
+    assert.equal(saved['group:team'], 90 * 86400);
+    input().value = '0'; input().dispatchEvent(new win.Event('change'));
+    assert.equal(saved['group:team'], 0);
+    store.selectedChat.set({kind: 'contact', id: 1}); await tick();
+    assert.equal(input().value, '37');
+  } finally { app.destroy(); Api.getChatPrefs = before.get; Api.updateChatPrefs = before.update; }
+});
+
+test('closing the one-time reader discards a late result and never puts it in the chat', async () => {
+  const before = { list: Api.listViewOnce, open: Api.openViewOnce };
+  const notice = {id: 'ab'.repeat(16), contact_id: 1, sent_at: Date.now(), expires_at: Date.now() + 60000};
+  let resolve, opened = 0;
+  Api.listViewOnce = async () => opened ? [] : [notice];
+  Api.openViewOnce = () => { opened++; return new Promise(done => { resolve = done; }); };
+  const store = chatStore(), app = new App(store); document.body.append(app.el);
+  try {
+    await tick(); assert.equal(opened, 0);
+    app.el.querySelector('.view-once-inbox button').click();
+    assert.equal(opened, 1);
+    app.closeModals();
+    resolve('only-in-the-reader'); await tick();
+    assert.equal(document.body.textContent.includes('only-in-the-reader'), false);
+    assert.equal(JSON.stringify([...store.messages.get()]).includes('only-in-the-reader'), false);
+    assert.equal(app.el.querySelector('.view-once-inbox button'), null);
+  } finally { app.destroy(); Api.listViewOnce = before.list; Api.openViewOnce = before.open; }
+});
+
 test('history prompts persist explicit choices per direct chat and group in every language', async () => {
   const original = { get: Api.getChatPrefs, update: Api.updateChatPrefs };
   try {
@@ -1235,7 +1283,7 @@ test('settings omit relay diagnostics, APK catalog and log controls in either bu
       const modal = new ui.SettingsModal(store, app, () => {});
       document.body.append(modal.el); await tick();
       assert.equal(modal.el.querySelector('.application-log'), null);
-      for (const key of ['settings.application_log', 'settings.android_app', 'settings.relay', 'about.relay_network']) {
+      for (const key of ['settings.application_log', 'settings.android_app', 'settings.relay', 'about.contact_discovery']) {
         assert.ok(![...modal.el.querySelectorAll('.divider-text')].some(node => node.textContent === t(key)));
       }
       assert.ok(!calls.slice(before).some(cmd => /log_settings|read_.*log|set_log_enabled|clear_debug_log|list_apk_artifacts/.test(cmd)));

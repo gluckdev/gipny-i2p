@@ -16,7 +16,6 @@ import time
 
 
 POINT_TIMEOUT = 20 * 60
-STARTUP_TIMEOUT = 10 * 60
 FORBIDDEN_ENV = ("GIPNY_FAST", "GIPNY_FAST_HOPS", "GIPNY_SERVER_HOPS")
 
 
@@ -50,14 +49,12 @@ def verified_build(directory):
             raise ValueError(f"invalid {key}")
     if build.get("native_router") is not True:
         raise ValueError("measurement requires a native router build")
-    for name in ("e2e-harness", "gipny-relay"):
-        binary = directory / name
-        if binary.is_symlink() or not binary.is_file():
-            raise ValueError(f"missing regular binary: {name}")
-        actual = hashlib.sha256(binary.read_bytes()).hexdigest()
-        if actual != build["sha256"][name]:
-            raise ValueError(f"artifact hash mismatch: {name}")
-        binary.chmod(0o755)
+    binary = directory / "e2e-harness"
+    if binary.is_symlink() or not binary.is_file():
+        raise ValueError("missing regular binary: e2e-harness")
+    if hashlib.sha256(binary.read_bytes()).hexdigest() != build["sha256"]["e2e-harness"]:
+        raise ValueError("artifact hash mismatch: e2e-harness")
+    binary.chmod(0o755)
     return build
 
 
@@ -81,7 +78,8 @@ def report_outcome(result, returncode, lanes, size):
             or result.get("status") not in ("passed", "failed")):
         raise ValueError("harness did not produce a matching measurement report")
     measured = result.get("measurement_started") is True
-    if measured and (result.get("participant_hops") != [3, 3, 3, 3]
+    if measured and (result.get("topology") != "shared_router_personal_terminals"
+                     or result.get("participant_hops") != [3, 3, 3, 3]
                      or result.get("padded") is not True):
         raise ValueError("measurement lacks the protected three-hop padded policy")
     if result["status"] == "passed":
@@ -108,7 +106,8 @@ def interrupted_phase(result, lanes, size, application_sha):
         raise ValueError("interrupted harness has no matching checkpoint")
     if result.get("measurement_started") is not True:
         return "setup"
-    if (result.get("participant_hops") != [3, 3, 3, 3]
+    if (result.get("topology") != "shared_router_personal_terminals"
+            or result.get("participant_hops") != [3, 3, 3, 3]
             or result.get("padded") is not True
             or result.get("phase") not in ("measurement", "complete")
             or not isinstance(result.get("setup_elapsed_ms"), int)
@@ -130,21 +129,6 @@ def stop(process):
         process.wait(timeout=15)
 
 
-def relay_policy(directory):
-    path = directory / "destination-policy.json"
-    if not path.exists():
-        return None
-    policy = json.loads(path.read_text())
-    destination = (directory / "dest.pub").read_text().strip()
-    if (policy.get("schema_version") != 1 or not destination
-            or policy.get("destination") != destination
-            or policy.get("inbound_hops") != 3 or policy.get("outbound_hops") != 3
-            or policy.get("bandwidth") != "L" or policy.get("share_percent") != 0
-            or policy.get("transit_tunnels") != 0):
-        raise ValueError("relay readiness policy does not match the protected baseline")
-    return policy
-
-
 def run_point(index, lanes, size, binaries, reports, state_root, build):
     report_dir = reports / f"{index:02d}-lanes-{lanes}"
     report_dir.mkdir()
@@ -157,63 +141,28 @@ def run_point(index, lanes, size, binaries, reports, state_root, build):
         "report_state": "missing",
         "application_sha": build["application_sha"], "router_sha": build["router_sha"],
         "point_timeout_seconds": POINT_TIMEOUT,
-        "topology": "two client Destinations on one router; two external relay processes",
+        "topology": "two clients with personal terminals on one embedded router",
         "client_router_policy": {"transit_profile": "balanced", "bandwidth": "O",
                                  "share_percent": 50, "transit_tunnels": 256},
         "bandwidth_note": "Router bandwidth classification is not a local streaming hard cap.",
     }
-    processes, handles = [], []
+    log = None
     harness_process = None
     state = Path(tempfile.mkdtemp(prefix=f"{index:02d}-lanes-{lanes}-", dir=state_root))
     try:
         environment = runtime_environment()
-        relay_dirs = [state / "relay-a", state / "relay-b"]
-        relays = []
-        for name, directory in zip(("relay-a", "relay-b"), relay_dirs):
-            directory.mkdir()
-            log = (report_dir / f"{name}.log").open("wb")
-            handles.append(log)
-            relay_env = dict(environment, GIPNY_RELAY_DATA=str(directory))
-            process = subprocess.Popen([str(binaries / "gipny-relay")], env=relay_env,
-                                       stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-            processes.append(process)
-            relays.append(process)
-        startup_deadline = min(deadline, started + STARTUP_TIMEOUT)
-        while True:
-            if any(process.poll() is not None for process in relays):
-                raise RuntimeError("a relay exited before readiness")
-            policies = [relay_policy(directory) for directory in relay_dirs]
-            if all(policies):
-                break
-            if time.monotonic() >= startup_deadline:
-                raise TimeoutError("relay readiness exceeded the bounded startup budget")
-            time.sleep(1)
-        point["relay_startup_elapsed_ms"] = round((time.monotonic() - started) * 1000)
-        point["relay_policies"] = policies
-        for name, directory in zip(("relay-a", "relay-b"), relay_dirs):
-            shutil.copyfile(directory / "destination-policy.json", report_dir / f"{name}-policy.json")
         harness_env = dict(environment, E2E_PERFORMANCE="1", E2E_BIG_FILE=str(size),
                            GIPNY_FILE_LANES=str(lanes), E2E_WORK_DIR=str(state / "clients"),
                            E2E_TIMEOUT_SECS=str(max(1, int(deadline - time.monotonic()) - 5)),
-                           E2E_RELAY_DEST=policies[0]["destination"],
-                           E2E_RELAY_DEST_A=policies[0]["destination"],
-                           E2E_RELAY_DEST_B=policies[1]["destination"],
-                           E2E_PERF_RELAY_A_MANIFEST=str(relay_dirs[0] / "destination-policy.json"),
-                           E2E_PERF_RELAY_B_MANIFEST=str(relay_dirs[1] / "destination-policy.json"),
                            E2E_PERF_REPORT=str(report_dir / "performance.json"),
                            E2E_PERF_PROBE_INTERVAL_MS="2000", E2E_PERF_PROBE_TIMEOUT_SECS="60",
                            E2E_PERF_MAX_IN_FLIGHT="4")
         log = (report_dir / "harness.log").open("wb")
-        handles.append(log)
         process = subprocess.Popen(["/usr/bin/time", "-v", "-o", str(report_dir / "resources.txt"),
                                     str(binaries / "e2e-harness")], env=harness_env,
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        processes.append(process)
         harness_process = process
         while process.poll() is None:
-            if any(relay.poll() is not None for relay in relays):
-                point["report_state"] = "incomplete"
-                raise RuntimeError("a relay exited during measurement")
             if time.monotonic() >= deadline:
                 raise TimeoutError("measurement exceeded its 20-minute total budget")
             time.sleep(1)
@@ -234,15 +183,15 @@ def run_point(index, lanes, size, binaries, reports, state_root, build):
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         point["errors"].append(str(error))
     finally:
-        for process in reversed(processes):
+        if harness_process is not None:
             try:
-                stop(process)
+                stop(harness_process)
             except (OSError, subprocess.SubprocessError) as error:
                 point["status"] = "failed"
                 point["failure_kind"] = "cleanup"
                 point["errors"].append(f"process cleanup: {error}")
-        for handle in handles:
-            handle.close()
+        if log is not None:
+            log.close()
         # Read only after the writer was stopped. A valid checkpoint can prove
         # that protected measurement began, but its initial counters are not a
         # final result. Keep the point red and never present them as zero rates.
@@ -295,7 +244,7 @@ def summary(reports, points):
                   file.get("verified_unique_bytes"), file.get("goodput_bytes_per_sec"), probes.get("p95")]
         lines.append("| " + " | ".join("—" if value is None else str(value) for value in values) + " |")
     lines.extend(["", "Peak send available counts open lanes at a successful enqueue; it does not prove all were busy.",
-                  "resources.txt records GNU time CPU/RSS for the harness process, excluding the two external relays."])
+                  "resources.txt records GNU time CPU/RSS for the harness process, including both personal terminals."])
     text = "\n".join(lines) + "\n"
     (reports / "summary.md").write_text(text)
     if path := os.environ.get("GITHUB_STEP_SUMMARY"):

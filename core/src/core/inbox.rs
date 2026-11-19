@@ -24,6 +24,9 @@ impl Core {
                 let (state, plaintext, opk_id) = self.accept_x3dh(&init, &ad).await?;
                 let plaintext = zeroize::Zeroizing::new(plaintext);
                 let payload: WirePayload = decode_with_padding_fallback(&plaintext)?;
+                if payload.content_expired(now_ms()) && known.as_ref().is_none_or(|c| c.request_state==RequestState::Incoming) {
+                    return Ok(());
+                }
                 let contact = match known {
                     Some(c) => c,
                     None => {
@@ -72,7 +75,7 @@ impl Core {
                     // disk together, under the lock, as the ratchet path does;
                     // the prekey is spent and the letter kept in that commit.
                     let mut sessions = self.sessions.lock().await;
-                    let letter = self.db.commit_received(contact.id, Some(&state_bytes), opk_id, &plaintext)?;
+                    let letter = self.db.commit_incoming_initial(contact.id, &state_bytes, opk_id, &plaintext)?;
                     sessions.insert(contact.id, state);
                     letter
                 };
@@ -389,6 +392,7 @@ impl Core {
     }
 
     async fn persist_incoming(self: &Arc<Self>, contact_id: i64, payload: WirePayload) -> Result<()> {
+        if self.handle_view_once_control(contact_id,&payload).await? {return Ok(());}
         if payload.wipe == Some(true) {
             let name = self.db.get_contact(contact_id)?.map(|c| c.display_name).unwrap_or_default();
             gipny_libcore::debug_trace!("[wipe] contact {contact_id} deleted us and asked for the chat to go; deleting it");

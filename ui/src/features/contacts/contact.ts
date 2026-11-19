@@ -1,3 +1,4 @@
+import { chatPreferences } from '../messaging/chat-preferences';
 import { errorText } from '../../app/error-text';
 import { t as tr } from '../localization/i18n';
 import { Api } from '../../app/api';
@@ -30,6 +31,7 @@ export class ContactModal {
         h('button', { class: 'icon-btn', title: tr('common.close'), onClick: close }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
+        chatPreferences(targetKey({ kind: 'contact', id: contactId }), () => store.showToast(tr('chat.ttl_save_failed'), true)),
         avatarPicker(c.sign_pk, tr('contact.only_you_see_this_avatar'), (e) => store.showToast(errorText(e), true)),
         h('div', { class: 'field' }, h('label', null, tr('contact.name')), nameI),
         h('div', { class: 'field' }, h('label', null, tr('contact.trust')), trustSel),

@@ -237,6 +237,11 @@ fn passkey_enrollment_descriptor_and_open() {
     let slot_a = engine.seal(r#"{"passkey":"enrolled"}"#).unwrap();
     engine.commit().unwrap();
 
+    assert!(engine.verify_passkey(&credential_id, &prf).is_ok());
+    assert!(engine.verify_passkey(&credential_id, &[0x22; 32]).is_err());
+    assert!(engine.verify_passkey(&[0x11, 0x22], &prf).is_err());
+    assert!(engine.verify_password("this is not the password").is_err());
+
     // Inspect passkey descriptor public entries before credential use
     let entries_raw = BrowserEngine::passkey_entries(&slot_a, &[]).expect("passkey entries");
     let entries: Value = serde_json::from_str(&entries_raw).expect("parse passkey entries");

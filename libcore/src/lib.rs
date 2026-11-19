@@ -1,6 +1,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod agent;
 pub mod card;
+pub mod view_once;
 pub mod crypto;
 pub mod profile_transfer;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,6 +36,8 @@ pub mod relay;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_server;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod relay_deposit;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod router;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod security;
@@ -56,11 +59,11 @@ pub use db::{Db, DbError, Contact, Message, NewAttachment, Direction, TrustLevel
 pub use net::{I2pNode, NetError};
 #[cfg(not(target_arch = "wasm32"))]
 pub use embedded::fast_on;
-pub use relay::{ClientToRelay, RelayToClient, EnvelopeBlob, DEFAULT_RELAY};
+pub use relay::{ClientToRelay, RelayToClient, EnvelopeBlob};
 #[cfg(not(target_arch = "wasm32"))]
 pub use relay::{RelayClient, RelayError};
 #[cfg(not(target_arch = "wasm32"))]
-pub use relay_server::{DhtHandler, EphemeralRelay, MemStoreLimits};
+pub use relay_server::{DhtHandler, EphemeralRelay};
 #[cfg(not(target_arch = "wasm32"))]
 pub use security::{MasterKey, Vault, DuressMode, UnlockOutcome};
 pub use session::{WirePayload, WireAttachment, WireButton, WireGroupRef, WireMember, WirePin, WireConsole};

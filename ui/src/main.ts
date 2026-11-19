@@ -36,6 +36,10 @@ void start().catch(error => {
 
 window.addEventListener('keydown', (e) => {
   if (!store || !app) return;
+  if (e.isTrusted && !e.repeat && (e.key === 'Power' || e.key === 'PowerOff') && store.view.get() === 'main') {
+    void store.lockAndClose().catch(error => store.showToast(errorText(error), true));
+    return;
+  }
   if (e.key === 'F5' || (e.ctrlKey && (e.key === 'r' || e.key === 'R'))) {
     e.preventDefault();
     e.stopPropagation();
@@ -44,7 +48,7 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
-  if (store.view.get() !== 'main') return;
+  if (store.view.get() !== 'main' || store.screenLocked.get()) return;
   if (app.isModalActive()) return;
   if (e.key === 'Escape') {
     if (store.selectedChat.get() != null) {

@@ -4,6 +4,8 @@ use super::*;
 
 #[derive(Debug, Clone, Serialize)]
 pub enum CoreEvent {
+    ViewOnceAvailable(super::ViewOnceNotice),
+    ViewOnceDeliveryChanged(gipny_libcore::db::ViewOnceDelivery),
     IncomingMessage {
         contact_id: Option<i64>,
         group_id: Option<String>,
@@ -48,6 +50,7 @@ pub enum CoreEvent {
     MessageSent {
         message_id: i64,
     },
+    MessageDeliveryExpired(gipny_libcore::db::DeliveryExpiryNotice),
     MessageDelivered {
         message_id: i64,
     },

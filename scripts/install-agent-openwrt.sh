@@ -160,7 +160,7 @@ status=0
 "$binary" --help > "$stage/help.txt" 2>&1 || status=$?
 { [ "$status" = 0 ] || [ "$status" = 1 ]; } && grep -qF 'Usage: gipny-agent' "$stage/help.txt" || fail 'бинарник не запускается на этом CPU/ядре'
 case "$master" in
-  gipny:v3:*) "$binary" --check-master-card "$master" >/dev/null 2>&1 || fail 'карточка повреждена или версия агента не поддерживает v3; нужны 0.4.19 или новее' ;;
+  gipny:v3:*) "$binary" --check-master-card "$master" >/dev/null 2>&1 || fail 'карточка повреждена или выбранный агент не поддерживает этот формат карточки мастера' ;;
 esac
 [ ! -d "$prefix/gipny-agent" ] && [ ! -d "$data/master.card" ] || fail 'путь бинарника или master.card занят каталогом'
 

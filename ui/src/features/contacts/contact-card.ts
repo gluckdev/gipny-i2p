@@ -11,6 +11,7 @@ export interface DecodedCard {
   signPk: string;
   dhPk: string;
   name?: string;
+  /** Additional address from older cards. Sending requires a live proof of ownership. */
   relay?: string;
 }
 
@@ -69,14 +70,14 @@ function addressHash(input: string): Uint8Array {
 
 /** Export canonical v3. Invalid input fails; a long name is never truncated. */
 export function encodeCard(i2p_address: string, signPk: string, dhPk: string, name?: string, relay?: string): string {
-  const outbound = addressHash(i2p_address);
+  const primary = addressHash(i2p_address);
   const relayHash = relay === undefined ? undefined : addressHash(relay);
   if (name && name.length > MAX_NAME_BYTES) return invalid();
   const label = name ? new TextEncoder().encode(name) : undefined;
   if (label && (label.length > MAX_NAME_BYTES || new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(label) !== name)) return invalid();
   const body = new Uint8Array(97 + (relayHash ? 32 : 0) + (label ? 1 + label.length : 0));
   body[0] = (relayHash ? 1 : 0) | (label ? 2 : 0);
-  body.set(key(signPk), 1); body.set(key(dhPk), 33); body.set(outbound, 65);
+  body.set(key(signPk), 1); body.set(key(dhPk), 33); body.set(primary, 65);
   let offset = 97;
   if (relayHash) { body.set(relayHash, offset); offset += 32; }
   if (label) { body[offset++] = label.length; body.set(label, offset); }
@@ -122,6 +123,5 @@ export function decodeCard(input: string): DecodedCard | null {
 }
 
 export function isValidI2pAddress(address: string): boolean {
-  const a = address.trim();
-  return /^[a-z2-7]{52}\.b32\.i2p$/i.test(a) || /^[A-Za-z0-9~-]{516,}={0,2}$/.test(a);
+  try { addressHash(address); return true; } catch { return false; }
 }

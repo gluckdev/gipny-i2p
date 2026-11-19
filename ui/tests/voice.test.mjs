@@ -56,7 +56,7 @@ try {
         firstEcho();
         return;
       }
-      if (side === 0 && kind === 'probe' && seq === 3) return;
+      if (side === 0 && kind === 'probe' && seq === 3) throw new Error('temporary probe lane failure');
       return pages[0].evaluate(data => window.workerCall(data), { side, command: 'send', frame, lane });
     });
   }

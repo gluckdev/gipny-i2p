@@ -1,16 +1,13 @@
 name: e2e-i2pd
 
-# End-to-end messaging test: relays + two headless bot clients, latency report.
+# End-to-end messaging between headless clients with personal terminals.
 #
 # These jobs answer the question the product turns on: do messages arrive
 # over live i2p. They prove the full
 # "boot → link → deliver → measure" path end to end.
 #
-# Every binary here compiles the i2p router in (i2p-embed): the relays, the
-# harness (both bots on one router, a destination each) and the agent each run
-# their own, in their own process. There is no i2pd beside them, no SAM and no
-# local port — the way the app ships.
-#
+# Each client hosts its own terminal on its embedded I2P router.
+
 # PR and ordinary manual checks compile the immutable router pin from the
 # checked-out application commit. Nightly runs and explicit test_upstream=true
 # manual probes resolve upstream once. Only an upstream probe with all four
@@ -48,6 +45,14 @@ on:
   pull_request:
     paths:
       - 'third_party/**'
+      - 'tests/e2e-harness/**'
+      - 'libcore/src/session*'
+      - 'libcore/src/session/**'
+      - 'libcore/src/relay*.rs'
+      - 'libcore/src/db/outbox*.rs'
+      - 'libcore/src/db/outbox/**'
+      - 'agent/src/**'
+      - 'i2p-embed/**'
       - '.github/workflows/e2e-i2pd.yml'
       - '.github/scripts/i2pd-under-test.sh'
       - '.github/scripts/with-test-secret-service.sh'
@@ -120,7 +125,7 @@ jobs:
           echo "revision=$REV" >> "$GITHUB_OUTPUT"
 
   e2e:
-    name: e2e (relay + two bots)
+    name: e2e (two personal terminals and a file)
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
     needs: head
     runs-on: ubuntu-latest
@@ -134,68 +139,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
-          # Cache the relay sub-workspace and the harness separately from the
-          # main workspace so the large Tauri/gstreamer deps don't bloat this job.
-          workspaces: |
-            core/relay
-            . -> target
-          # only main writes it — see .github/workflows/README.md
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: build relay and e2e harness
-        run: |
-          cargo build --release --manifest-path core/relay/Cargo.toml
-          cargo build --release -p e2e-harness
-
-      - name: start two relays, capture destinations
-        run: |
-          # Two relays, one per bot, each a process with its own router. This
-          # is what makes the run prove something: each bot collects from its
-          # own, so a message only arrives if the sender deposited on the
-          # *recipient's* relay.
-          start_relay() {
-            name="$1"
-            mkdir -p "e2e-state/$name"
-            GIPNY_RELAY_DATA="e2e-state/$name" \
-            nohup ./core/relay/target/release/gipny-relay \
-              > "e2e-logs/$name.log" 2>&1 &
-            echo $! > "$name.pid"
-            echo "[e2e-setup] $name pid=$(cat "$name.pid")"
-            # dest.pub is written before the destination is up.
-            for i in $(seq 1 120); do
-              [ -s "e2e-state/$name/dest.pub" ] && break
-              if ! kill -0 "$(cat "$name.pid")" 2>/dev/null; then
-                echo "$name died during startup"; tail -50 "e2e-logs/$name.log"; exit 1
-              fi
-              sleep 2
-            done
-            if [ ! -s "e2e-state/$name/dest.pub" ]; then
-              echo "$name: dest.pub never appeared"; tail -50 "e2e-logs/$name.log"; exit 1
-            fi
-          }
-          export GIPNY_I2P_LOGLEVEL=info
-          start_relay relay-a
-          start_relay relay-b
-          # Alive a few seconds on: dest.pub alone proves only that keys exist.
-          sleep 5
-          for r in relay-a relay-b; do
-            kill -0 "$(cat "$r.pid")" 2>/dev/null || { echo "$r died after dest.pub"; tail -50 "e2e-logs/$r.log"; exit 1; }
-          done
-          {
-            echo "RELAY_DEST_A=$(cat e2e-state/relay-a/dest.pub)"
-            echo "RELAY_DEST_B=$(cat e2e-state/relay-b/dest.pub)"
-          } >> "$GITHUB_ENV"
+      - name: build e2e harness
+        run: cargo build --locked --release -p e2e-harness
 
       - name: run e2e harness
         id: harness
         env:
-          E2E_RELAY_DEST: ${{ env.RELAY_DEST_A }}
-          E2E_RELAY_DEST_A: ${{ env.RELAY_DEST_A }}
-          E2E_RELAY_DEST_B: ${{ env.RELAY_DEST_B }}
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
-          # A file in parts through server relays: bot-b collects them over
-          # several connections to its relay at once.
+          # Verify all file parts received through the personal terminal.
           E2E_BIG_FILE: '10485760'
           # The routers' own logs, uploaded below, for where a letter waits.
           GIPNY_I2P_LOGLEVEL: info
@@ -241,16 +195,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: stop relays
-        if: always()
-        run: |
-          kill "$(cat relay-a.pid)" 2>/dev/null || true
-          kill "$(cat relay-b.pid)" 2>/dev/null || true
-          for r in relay-a relay-b; do
-            echo "--- $r log (last 30 lines) ---"
-            tail -30 "e2e-logs/$r.log" || true
-          done
-
       # Always: a green run can still be slow, and the router's log is where
       # the time went.
       - name: upload logs
@@ -264,15 +208,11 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
-  # The same delivery test with no standalone relay: each bot's relay is an
-  # EphemeralRelay running inside the harness process. Proves libcore's relay
-  # server works over live i2p, not just over the in-memory pipe its unit
-  # tests use. This is one of the four delivery gates required by an upstream
-  # probe before its router revision can be recorded.
+  # Both clients send before receiving the other's first message.
   # ------------------------------------------------------------------
-  e2e-in-process:
+  e2e-both-first:
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
-    name: e2e (relays inside the bots)
+    name: e2e (simultaneous first messages)
     needs: head
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -290,7 +230,7 @@ jobs:
         run: cargo build --release -p e2e-harness
       - name: run e2e harness
         env:
-          E2E_IN_PROCESS_RELAYS: '1'
+          E2E_BOTH_FIRST: '1'
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
@@ -303,23 +243,19 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-in-process-logs
+          name: e2e-both-first-logs
           path: |
             e2e-logs/
             e2e-state/**/i2pd.log
           retention-days: 7
 
   # ------------------------------------------------------------------
-  # Delivery through the relay network while each side is away in turn: B
-  # leaves, A writes; A leaves, B comes back on a new address, reads and
-  # answers; B leaves, A comes back elsewhere and reads the answers. The seed
-  # is a `gipny-relay --dht` started here, so the run needs neither the
-  # long-running relay-testnet seed nor its age key. This must also pass before
-  # an upstream probe may record a new router pin.
+  # Run the clients at disjoint times, then overlap them. A letter must
+  # survive at the sender and arrive once when both terminals are available.
   # ------------------------------------------------------------------
-  e2e-dht:
+  e2e-offline:
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) }}
-    name: e2e (relay network, each side away in turn)
+    name: e2e (offline outbox and peer return)
     needs: head
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -330,53 +266,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.1
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            core/relay
-            . -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: build seed and e2e harness
-        run: |
-          cargo build --release --manifest-path core/relay/Cargo.toml
-          cargo build --release -p e2e-harness
-      - name: start the seed, capture its destination
-        run: |
-          mkdir -p e2e-state/seed
-          GIPNY_RELAY_DATA=e2e-state/seed nohup \
-            ./core/relay/target/release/gipny-relay --dht > e2e-logs/seed.log 2>&1 &
-          echo $! > seed.pid
-          for i in $(seq 1 120); do
-            [ -s e2e-state/seed/dest.pub ] && break
-            if ! kill -0 "$(cat seed.pid)" 2>/dev/null; then
-              echo "seed died during startup"; tail -50 e2e-logs/seed.log; exit 1
-            fi
-            sleep 2
-          done
-          [ -s e2e-state/seed/dest.pub ] || { echo "seed: dest.pub never appeared"; tail -50 e2e-logs/seed.log; exit 1; }
-          sleep 5
-          kill -0 "$(cat seed.pid)" 2>/dev/null || { echo "seed died after dest.pub"; tail -50 e2e-logs/seed.log; exit 1; }
-          echo "E2E_DHT_SEED_DEST=$(cat e2e-state/seed/dest.pub)" >> "$GITHUB_ENV"
+      - name: build e2e harness
+        run: cargo build --locked --release -p e2e-harness
       - name: run e2e harness
         env:
-          E2E_DHT_OFFLINE: '1'
+          E2E_OFFLINE_RETURN: '1'
           E2E_N_MESSAGES: '3'
           E2E_TIMEOUT_SECS: '2400'
           E2E_WORK_DIR: e2e-state
         run: |
           set -o pipefail
           ./target/release/e2e-harness 2>&1 | tee e2e-logs/harness.log
-      - name: seed log
-        if: always()
-        run: tail -100 e2e-logs/seed.log || true
-      - name: stop seed
-        if: always()
-        run: kill "$(cat seed.pid)" 2>/dev/null || true
       # Always: a green run can still be slow, and the router's log is where
       # the time went.
       - name: upload logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: e2e-dht-logs
+          name: e2e-offline-logs
           path: |
             e2e-logs/
             e2e-state/**/i2pd.log
@@ -420,7 +328,6 @@ jobs:
       - name: run e2e harness against the agent binary
         env:
           E2E_AGENT_BIN: ./target/release/gipny-agent
-          E2E_IN_PROCESS_RELAYS: '1'
           E2E_N_MESSAGES: '5'
           E2E_TIMEOUT_SECS: '900'
           E2E_WORK_DIR: e2e-state
@@ -447,7 +354,7 @@ jobs:
   # ------------------------------------------------------------------
   bump:
     name: record the proven revision
-    needs: [head, e2e, e2e-in-process, e2e-dht, e2e-agent]
+    needs: [head, e2e, e2e-both-first, e2e-offline, e2e-agent]
     if: >-
       !(github.event_name == 'workflow_dispatch' && inputs.throughput == true) &&
       github.repository == 'gluckdev/gipny-i2p' &&
@@ -456,8 +363,8 @@ jobs:
       (github.event_name == 'schedule' ||
        (github.event_name == 'workflow_dispatch' && inputs.test_upstream == true)) &&
       needs.e2e.result == 'success' &&
-      needs['e2e-in-process'].result == 'success' &&
-      needs['e2e-dht'].result == 'success' &&
+      needs['e2e-both-first'].result == 'success' &&
+      needs['e2e-offline'].result == 'success' &&
       needs['e2e-agent'].result == 'success' &&
       needs.e2e.outputs.delivered == 'true'
     runs-on: ubuntu-latest

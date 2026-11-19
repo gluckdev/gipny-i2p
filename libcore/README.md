@@ -17,16 +17,15 @@
 | `db/dm.rs`, `db/deletion_notice.rs` | Tombstones, удаление и отдельное подтверждение пользователя «ОК» |
 | `files.rs`, `files/received.rs`, `db/file_transfer.rs` | Подготовка зашифрованных файлов, части, окно отправки и устойчивые ACK |
 | `session.rs`, `session/` | Доставка для агента и ботов, повторы, группы, контакты и файлы |
-| `relay.rs`, `relay_server.rs`, `dht_client.rs` | Клиент релея, встроенный релей и участие в сети доставки |
+| `relay.rs`, `relay_server.rs`, `dht_client.rs` | Личный терминал, клиент протокола и поиск контактов |
 | `embedded.rs`, `net.rs`, `router.rs` | i2pd внутри процесса, I2P destinations, транспорт и настройки роутера |
 | `i2p_http.rs`, `update.rs` | HTTPS через I2P outproxy и проверяемая подготовка обновлений |
 
 ### Границы компонентов
 
 `Core` в `core/src/core.rs` и `SessionManager` — две реализации доставки.
-Изменение одной требует проверки второй и browser backend. Форматы релея
-также представлены в отдельном workspace `core/relay`; кодировка карточек
-имеет TypeScript-реализацию. Старые данные не требуют миграций по решению
+Изменение одной требует проверки второй и browser backend. Клиенты используют
+общий протокол личного терминала. Кодировка карточек имеет TypeScript-реализацию. Старые данные не требуют миграций по решению
 владельца, но все текущие клиенты должны понимать один протокол.
 
 Нативная БД — SQLCipher. GUI получает ключ из vault; production agent/bot paths
@@ -93,13 +92,13 @@ storage and asynchronous delivery have separate implementations.
 | `db/dm.rs`, `db/deletion_notice.rs` | Tombstones, deletion and explicit human OK receipts |
 | `files.rs`, `files/received.rs`, `db/file_transfer.rs` | Encrypted file staging, parts, sending windows and durable ACKs |
 | `session.rs`, `session/` | Agent/bot delivery, retry, groups, contacts and files |
-| `relay.rs`, `relay_server.rs`, `dht_client.rs` | Relay client, built-in relay and delivery network |
+| `relay.rs`, `relay_server.rs`, `dht_client.rs` | Personal terminal, protocol client and contact discovery |
 | `embedded.rs`, `net.rs`, `router.rs` | In-process i2pd, I2P destinations and router configuration |
 | `i2p_http.rs`, `update.rs` | HTTPS over an I2P outproxy and verified update preparation |
 
 `Core` and `SessionManager` contain separate delivery implementations. Check
-both and the browser when changing behavior. Relay formats also appear in the
-separate `core/relay` workspace; contact cards have a TypeScript implementation.
+both and the browser when changing behavior. The clients share the personal
+terminal protocol. Contact cards also have a TypeScript implementation.
 Old-data migrations are not required, but current clients must interoperate.
 
 Native GUI storage uses a vault SQLCipher key; production agent/bot paths use

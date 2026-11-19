@@ -18,14 +18,16 @@ pub enum RelayError {
     #[error("auth failed")] AuthFailed,
     #[error("protocol: {0}")] Proto(String),
     #[error("closed")] Closed,
-    /// The relay hung up on `AuthV2` — what a relay from before it does.
-    #[error("relay predates AuthV2")] AuthV2Unsupported,
 }
 
 impl From<bincode::Error> for RelayError { fn from(_: bincode::Error) -> Self { Self::Codec } }
 
+#[path = "relay_sender.rs"]
+pub(crate) mod sender;
+pub use sender::RelaySender;
+
 pub struct RelayClient {
-    pub out_tx: mpsc::Sender<ClientToRelay>,
+    pub out_tx: RelaySender,
     pub in_rx: Arc<Mutex<mpsc::Receiver<RelayToClient>>>,
 }
 
@@ -35,57 +37,81 @@ pub async fn connect(
     i2p_address: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
-    let Some(hash) = destination_hash(i2p_address) else {
-        let stream = node.connect_relay(i2p_address, RELAY_PORT).await?;
-        return handshake(stream.into_inner(), identity, None).await;
-    };
     let stream = node.connect_relay(i2p_address, RELAY_PORT).await?;
-    match handshake(stream.into_inner(), identity, Some(&hash)).await {
-        Err(e) if predates_auth_v2(&e) => {
-            let stream = node.connect_relay(i2p_address, RELAY_PORT).await?;
-            handshake(stream.into_inner(), identity, None).await
-        }
-        r => r,
-    }
+    start_terminal(
+        stream.into_inner(),
+        i2p_address,
+        identity,
+        &identity.card().sign_pk,
+    )
+    .await
 }
 
-/// Connect to our own relay running in this process, over the pipe
-/// [`crate::EphemeralRelay::connect_local`] hands out, instead of out through
-/// i2p and back. `address` is that relay's, for the `AuthV2` signature.
 pub async fn connect_local(
     stream: std::pin::Pin<Box<dyn crate::net::DuplexStream>>,
     address: &str,
     identity: &Arc<Identity>,
 ) -> Result<RelayClient> {
-    let hash = destination_hash(address)
-        .ok_or_else(|| RelayError::Proto("own relay's address does not decode".into()))?;
-    handshake(stream, identity, Some(&hash)).await
+    start_terminal(stream, address, identity, &identity.card().sign_pk).await
 }
 
-/// Connect to a contact's relay, to deposit a message where they collect.
-///
-/// Unlike [`connect`], a failure here says nothing about our own session: a
-/// contact's relay may be offline, retired, or an ephemeral one that died with
-/// its app. Counting those toward session health let five unreachable contact
-/// relays tear down a session that was carrying our own traffic fine, and do it
-/// again every cooldown.
 pub async fn connect_peer(
     node: &Arc<I2pNode>,
-    i2p_address: &str,
+    address: &str,
     identity: &Arc<Identity>,
+    owner: &[u8; 32],
 ) -> Result<RelayClient> {
-    let Some(hash) = destination_hash(i2p_address) else {
-        let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
-        return handshake(stream.into_inner(), identity, None).await;
+    let stream = node.connect_service(address, RELAY_PORT).await?;
+    start_terminal(stream.into_inner(), address, identity, owner).await
+}
+
+async fn start_terminal(
+    mut stream: std::pin::Pin<Box<dyn crate::net::DuplexStream>>,
+    address: &str,
+    identity: &Identity,
+    owner: &[u8; 32],
+) -> Result<RelayClient> {
+    authenticate_terminal(&mut stream, address, identity, owner).await?;
+    Ok(sender::start(stream, *owner, address))
+}
+
+pub async fn authenticate_terminal<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    address: &str,
+    identity: &Identity,
+    owner: &[u8; 32],
+) -> Result<()> {
+    let hash = crate::card::address_hash(address).map_err(|_| RelayError::AuthFailed)?;
+    let RelayToClient::Challenge(challenge) = recv(stream).await? else {
+        return Err(RelayError::AuthFailed);
     };
-    let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
-    match handshake(stream.into_inner(), identity, Some(&hash)).await {
-        Err(e) if predates_auth_v2(&e) => {
-            let stream = node.connect_service(i2p_address, RELAY_PORT).await?;
-            handshake(stream.into_inner(), identity, None).await
-        }
-        r => r,
+    let mut nonce = [0; 32];
+    crate::crypto::fill_random(&mut nonce);
+    let requester = identity.card().sign_pk;
+    let signature = identity.sign(&framed_auth_message(&hash, &challenge, &nonce));
+    send(
+        stream,
+        &ClientToRelay::AuthFramedV1 {
+            sign_pk: requester,
+            nonce,
+            signature,
+        },
+    )
+    .await?;
+    let RelayToClient::AuthFramedOkV1 { proof } = recv(stream).await? else {
+        return Err(RelayError::AuthFailed);
+    };
+    let card = crate::crypto::IdentityCard {
+        sign_pk: *owner,
+        dh_pk: [0; 32],
+    };
+    if !card.verify(
+        &terminal_proof_message(&hash, &requester, &challenge, &nonce),
+        &proof,
+    ) {
+        return Err(RelayError::AuthFailed);
     }
+    Ok(())
 }
 
 /// Reach a relay the way a contact would — over i2p, through our tunnels and
@@ -101,81 +127,17 @@ pub async fn probe(node: &Arc<I2pNode>, i2p_address: &str) -> Result<()> {
     }
 }
 
-/// Retrying with plain `Auth` is safe to allow: a current relay grants that
-/// nothing but depositing, so a relay that fakes being old gains nothing.
-fn predates_auth_v2(e: &RelayError) -> bool {
-    matches!(e, RelayError::AuthV2Unsupported)
-}
-
-async fn handshake(
-    mut stream: std::pin::Pin<Box<dyn crate::net::DuplexStream>>,
-    identity: &Arc<Identity>,
-    destination_hash: Option<&[u8; 32]>,
-) -> Result<RelayClient> {
-    let challenge = match recv::<_, RelayToClient>(&mut stream).await? {
-        RelayToClient::Challenge(c) => c,
-        _ => return Err(RelayError::Proto("expected Challenge".into())),
-    };
-    let sign_pk = identity.card().sign_pk;
-    let auth = match destination_hash {
-        Some(hash) => ClientToRelay::AuthV2 { sign_pk, signature: identity.sign(&auth_v2_message(hash, &challenge)) },
-        None => ClientToRelay::Auth { sign_pk, signature: identity.sign(&challenge) },
-    };
-    send(&mut stream, &auth).await?;
-
-    let answer = match recv::<_, RelayToClient>(&mut stream).await {
-        Err(RelayError::Io(_) | RelayError::Codec) if destination_hash.is_some() => {
-            return Err(RelayError::AuthV2Unsupported);
-        }
-        r => r?,
-    };
-    match answer {
-        RelayToClient::AuthOk => {}
-        RelayToClient::AuthFail => return Err(RelayError::AuthFailed),
-        _ => return Err(RelayError::Proto("expected AuthOk".into())),
-    }
-
-    let (in_tx, in_rx) = mpsc::channel::<RelayToClient>(256);
-    let (out_tx, mut out_rx) = mpsc::channel::<ClientToRelay>(256);
-
-    let (mut read_half, mut write_half) = tokio::io::split(stream);
-
-    tokio::spawn(async move {
-        loop {
-            match recv::<_, RelayToClient>(&mut read_half).await {
-                Ok(f) => {
-                    crate::debug_trace!("[relay-wire] recv {}", frame_kind(&f));
-                    if in_tx.send(f).await.is_err() { crate::debug_trace!("[relay-wire] in_tx closed, recv-task exit"); break; }
-                }
-                Err(e) => { crate::debug_trace!("[relay-wire] recv err: {:?}, recv-task exit", e); break; }
-            }
-        }
-    });
-
-    tokio::spawn(async move {
-        while let Some(f) = out_rx.recv().await {
-            crate::debug_trace!("[relay-wire] send {}", out_kind(&f));
-            if let Err(e) = send(&mut write_half, &f).await {
-                crate::debug_trace!("[relay-wire] send err: {:?}, send-task exit", e);
-                break;
-            }
-        }
-        // Every sender gone: the connection was let go. Close it now, not at
-        // the relay's next push, so what it held unacked is dealt elsewhere.
-        let _ = write_half.shutdown().await;
-    });
-
-    Ok(RelayClient { out_tx, in_rx: Arc::new(Mutex::new(in_rx)) })
-}
-
 fn out_kind(f: &ClientToRelay) -> String {
     match f {
+        ClientToRelay::SendPartV1 { .. } => "part".into(),
+        ClientToRelay::Reserved11 | ClientToRelay::Reserved12 | ClientToRelay::Reserved13 | ClientToRelay::Reserved14 | ClientToRelay::ViewOnceOfferV1(_) | ClientToRelay::ViewOncePartV1 { .. } => "live".into(),
         ClientToRelay::Auth { .. } => "Auth".into(),
         ClientToRelay::Publish { bundle } => format!("Publish({}B)", bundle.len()),
         ClientToRelay::GetBundle { pk } => format!("GetBundle({})", hex_short(pk)),
         ClientToRelay::Send { to, blob } => format!("Send(to={}, {}B)", hex_short(to), blob.len()),
         ClientToRelay::Ack { id } => format!("Ack({})", id),
         ClientToRelay::Ping => "Ping".into(),
+        ClientToRelay::AuthFramedV1 { .. } => "AuthFramedV1".into(),
         ClientToRelay::AuthV2 { .. } => "AuthV2".into(),
         ClientToRelay::Dht(b) => format!("Dht({}B)", b.len()),
     }
@@ -183,8 +145,12 @@ fn out_kind(f: &ClientToRelay) -> String {
 
 fn frame_kind(f: &RelayToClient) -> String {
     match f {
+        RelayToClient::SendPartAckV1 { .. } => "part-ack".into(),
+        RelayToClient::Reserved13 | RelayToClient::Reserved14 | RelayToClient::Reserved15 | RelayToClient::Reserved16 | RelayToClient::ViewOnceReadyV1 { .. } | RelayToClient::ViewOnceStoredV1 { .. } | RelayToClient::ViewOncePartAckV1 { .. } => "live".into(),
         RelayToClient::Challenge(_) => "Challenge".into(),
         RelayToClient::AuthOk => "AuthOk".into(),
+        RelayToClient::AuthFramedOkV1 { .. } => "AuthFramedOkV1".into(),
+        RelayToClient::IncomingPartV1 { index, .. } => format!("IncomingPart({index})"),
         RelayToClient::AuthFail => "AuthFail".into(),
         RelayToClient::Bundle { pk, bundle } => format!("Bundle(pk={}, present={})", hex_short(pk), bundle.is_some()),
         RelayToClient::Incoming { id, from, blob } => format!("Incoming(id={}, from={}, {}B)", id, hex_short(from), blob.len()),
@@ -223,23 +189,13 @@ where R: AsyncRead + Unpin, T: serde::de::DeserializeOwned
     r.read_exact(&mut buf).await?;
     Ok(bincode::deserialize(&buf)?)
 }
-/// Wire-format pins, shared with core/relay.
-///
-/// core/relay encodes with bincode 2 in `legacy()` mode; this crate uses
-/// bincode 1. They must agree to the byte, and both the standalone relay and
-/// [`crate::relay_server`] must agree with the clients. These are the same
-/// golden bytes as core/relay/src/proto.rs, checked against bincode 1 here, so
-/// the enums in the two crates cannot drift apart without one side failing:
-///   - enum variant: u32 little-endian
-///   - integer fields: little-endian fixed-width
-///   - Vec<u8>: u64 LE length prefix + raw bytes
-///   - [u8; N]: raw N bytes (no length prefix)
-///   - Option<T>: u8 (0=None / 1=Some) then T if present
-///
-/// New variants go at the end of an enum, in both crates, with a test here.
+/// Golden frames for the shared native and WASM binary protocol. Preserve
+/// earlier discriminants when appending message types.
 #[cfg(test)]
 mod wire_compat {
     use super::*;
+
+    include!("view_once_wire_golden.rs");
 
     fn enc<T: Serialize>(v: &T) -> Vec<u8> {
         bincode::serialize(v).expect("encode")
@@ -397,4 +353,61 @@ mod destination {
         assert_ne!(a, b);
         assert!(a.starts_with(b"gipny-relay-auth-v2"));
     }
+}
+
+/// Send to the live, authenticated personal terminal.
+/// The sender seals only after validating the pinned recipient's signed prekey.
+pub async fn send_view_once(
+    node: &I2pNode,
+    address: &str,
+    identity: &Identity,
+    peer: &crate::IdentityCard,
+    request: crate::view_once::Request,
+    body: impl FnOnce() -> Option<zeroize::Zeroizing<Vec<u8>>>,
+) -> Result<()> {
+    let stream=node.connect_service(address,RELAY_PORT).await?.into_inner();
+    send_view_once_on(stream,address,identity,peer,request,body).await
+}
+pub(crate) async fn send_view_once_on<S:AsyncRead+AsyncWrite+Unpin>(
+    mut stream:S, address:&str, identity:&Identity,peer:&crate::IdentityCard,request:crate::view_once::Request,
+    body:impl FnOnce()->Option<zeroize::Zeroizing<Vec<u8>>>,
+)->Result<()>{
+    let unavailable=||RelayError::Proto("one-time message unavailable".into());
+    authenticate_terminal(&mut stream,address,identity,&peer.sign_pk).await?;
+    send(&mut stream, &ClientToRelay::ViewOnceOfferV1(request)).await?;
+    let offer=match recv(&mut stream).await? {
+        RelayToClient::ViewOnceStoredV1 { id } if id==request.id => return Ok(()),
+        RelayToClient::ViewOnceReadyV1 { offer } => offer,
+        _=>return Err(unavailable()),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let envelope = crate::view_once::seal_with(identity, peer, &request, &offer, body, now)
+        .map_err(|_| unavailable())?;
+    let parts = crate::view_once::parts(&envelope);
+    let total = parts.len() as u16;
+    for (i, part) in parts.enumerate() {
+        let index = i as u16;
+        send(
+            &mut stream,
+            &ClientToRelay::ViewOncePartV1 {
+                index,
+                total,
+                bytes: part.to_vec(),
+            },
+        )
+        .await?;
+        let answer = recv(&mut stream).await?;
+        if index + 1 == total {
+            if !matches!(answer, RelayToClient::ViewOnceStoredV1 { id } if id == request.id) {
+                return Err(unavailable());
+            }
+        } else if !matches!(answer, RelayToClient::ViewOncePartAckV1 { index: ack } if ack == index)
+        {
+            return Err(unavailable());
+        }
+    }
+    Ok(())
 }

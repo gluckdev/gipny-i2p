@@ -1,50 +1,6 @@
-//! Relay mode, built-in relay lifecycle, and reachability.
+//! Personal terminal lifecycle and reachability.
 
 use super::*;
-
-/// Where this client collects its mail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RelayMode {
-    /// A relay inside this process, on a destination made at launch and never
-    /// written down. The default: a fresh install works with no setup.
-    Builtin,
-    /// A relay somebody operates, named in Settings. A mailbox that is there
-    /// while this app is not.
-    External,
-}
-
-impl RelayMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Builtin => "builtin",
-            Self::External => "external",
-        }
-    }
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "builtin" => Some(Self::Builtin),
-            "external" => Some(Self::External),
-            _ => None,
-        }
-    }
-}
-
-/// The saved choice if there is one. Without one, a profile that already names
-/// a relay keeps using it, and a profile that names none gets the built-in one.
-fn resolve_relay_mode(saved: Option<&[u8]>, external: &str) -> RelayMode {
-    match saved
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .and_then(RelayMode::parse)
-    {
-        // External with no address can never connect, and Settings no longer
-        // offers a way out of it: fall back to the built-in relay.
-        Some(RelayMode::External) if external.trim().is_empty() => RelayMode::Builtin,
-        Some(mode) => mode,
-        None if external.trim().is_empty() => RelayMode::Builtin,
-        None => RelayMode::External,
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -62,9 +18,6 @@ pub enum HostedRelayState {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RelayInfo {
-    pub mode: RelayMode,
-    /// The address saved for external mode, whether or not it is in use.
-    pub external: String,
     pub hosted: HostedRelayState,
     pub dial: DialState,
 }
@@ -91,47 +44,12 @@ pub struct DialState {
 }
 
 impl Core {
-    /// The relay named in Settings, used in external mode.
-    pub(super) fn external_relay(&self) -> String {
-        self.db
-            .get_setting(SETTING_RELAY_ADDRESS)
-            .ok()
-            .flatten()
-            .and_then(|v| String::from_utf8(v).ok())
-            .unwrap_or_else(|| DEFAULT_RELAY.to_string())
-    }
-
-    pub fn relay_mode(&self) -> RelayMode {
-        resolve_relay_mode(
-            self.db
-                .get_setting(SETTING_RELAY_MODE)
-                .ok()
-                .flatten()
-                .as_deref(),
-            &self.external_relay(),
-        )
-    }
-
-    /// Where we collect right now; empty while there is nowhere yet. In
-    /// built-in mode this is the address of this launch and lives in memory
-    /// only — it is never written into the settings, which is how 0.4.0 left
-    /// clients listening on a relay that no longer existed.
     pub(super) fn relay_address(&self) -> String {
-        match self.relay_mode() {
-            RelayMode::External => self.external_relay(),
-            RelayMode::Builtin => {
-                match &*self.hosted_state.read().unwrap_or_else(|p| p.into_inner()) {
-                    HostedRelayState::Ready { address } => address.clone(),
-                    _ => String::new(),
-                }
-            }
-        }
+        self.personal_address.clone()
     }
 
     pub fn relay_info(&self) -> RelayInfo {
         RelayInfo {
-            mode: self.relay_mode(),
-            external: self.external_relay(),
             hosted: self
                 .hosted_state
                 .read()
@@ -228,30 +146,6 @@ impl Core {
         });
     }
 
-    pub async fn set_relay_mode(self: &Arc<Self>, mode: RelayMode) -> Result<()> {
-        self.db
-            .set_setting(SETTING_RELAY_MODE, mode.as_str().as_bytes())?;
-        match mode {
-            RelayMode::Builtin => self.start_hosted_relay(),
-            RelayMode::External => {
-                if let Some(task) = self
-                    .hosted_task
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take()
-                {
-                    task.abort();
-                }
-                *self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                self.announce_pending.lock().await.clear();
-                self.set_hosted_state(HostedRelayState::Off);
-            }
-        }
-        // The open connection to the old relay notices at its next ping that
-        // it is no longer the one to collect from, and the loop redials.
-        Ok(())
-    }
-
     /// Starts the relay this client hosts for itself, unless it is already
     /// starting or up.
     pub(super) fn start_hosted_relay(self: &Arc<Self>) {
@@ -268,69 +162,37 @@ impl Core {
         *slot = Some(tokio::spawn(async move { this.run_hosted_relay().await }));
     }
 
-    /// The relay built while the password was typed, if there is one and it
-    /// came up, claimed for us; otherwise a new one, built now.
-    pub(super) async fn bring_up_hosted_relay(
+    async fn bring_up_hosted_relay(
         self: &Arc<Self>,
     ) -> std::result::Result<gipny_libcore::EphemeralRelay, gipny_libcore::NetError> {
-        let owner = self.identity.card().sign_pk;
-        let prebuilt = self
-            .prebuilt_relay
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        if let Some(task) = prebuilt {
-            match task.await {
-                Ok(Ok(relay)) => {
-                    gipny_libcore::debug_trace!(
-                        "[relay-hosted] using the relay built before unlock"
-                    );
-                    relay.claim(owner, Some(dht_client::handler(&self.dht)));
-                    return Ok(relay);
-                }
-                Ok(Err(e)) => gipny_libcore::debug_error!(
-                    "[relay-hosted] the relay built before unlock failed: {e:?}; building one now"
-                ),
-                Err(_) => {}
-            }
-        }
-        gipny_libcore::EphemeralRelay::start(
-            // This relay is our inbox and nobody else's.
-            gipny_libcore::MemStoreLimits::personal(owner),
+        gipny_libcore::EphemeralRelay::start_personal(
+            &self.db,
+            self.identity.clone(),
             Some(dht_client::handler(&self.dht)),
         )
         .await
     }
 
     /// Brings the built-in relay up and hands it over. Off the path anything
-    /// user-facing waits on: `EphemeralRelay::start` returns once the
+    /// user-facing waits on: `EphemeralRelay::start_personal` returns once the
     /// destination's tunnels exist, commonly a minute or two.
     pub(super) async fn run_hosted_relay(self: Arc<Self>) {
         let mut wait = Duration::from_secs(15);
         loop {
-            if self.relay_mode() != RelayMode::Builtin {
-                self.set_hosted_state(HostedRelayState::Off);
-                return;
-            }
             self.set_hosted_state(HostedRelayState::Starting);
             gipny_libcore::debug_trace!(
                 "[relay-hosted] starting the built-in relay (in-process router)..."
             );
             match self.bring_up_hosted_relay().await {
                 Ok(relay) => {
-                    // The mode may have changed while the tunnels were building.
-                    if self.relay_mode() != RelayMode::Builtin {
-                        drop(relay);
-                        self.set_hosted_state(HostedRelayState::Off);
-                        return;
-                    }
+                    relay.set_view_once_handler(self.view_once_handler());
                     let address = relay.address().to_string();
                     gipny_libcore::debug_trace!(
                         "[relay-hosted] built-in relay ready at {}",
                         &address[..address.len().min(16)]
                     );
                     *self.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()) = Some(relay);
-                    // Every contact still holds the previous launch's address.
+                    // Announce the personal address to trusted contacts.
                     // They are told as soon as their relay can be reached; the
                     // send loop keeps trying until each has been.
                     if let Ok(contacts) = self.db.list_contacts() {
@@ -357,8 +219,6 @@ impl Core {
                             reached: joined.reached,
                         });
                         this.publish_bundle_to_dht().await;
-                        // Anything left for us while we were away.
-                        this.collect_from_dht(DHT_COLLECT_DAYS_FIRST).await;
                     });
                     self.tasks.lock().unwrap().push(join);
                     return;
@@ -383,7 +243,7 @@ impl Core {
     /// A contact is never dropped from this list for being away (2026-09-17,
     /// owner's requirement): an address that changed must not cost people the
     /// contact. So an announcement goes out again and again — over their relay,
-    /// or through the network when that relay is silent, opening a session if
+    /// opening a session if
     /// there is none — until something arrives *from* them, which is the only
     /// proof they have our address. `announce_sent_at` keeps that from
     /// repeating on every tick of the send loop.
@@ -438,47 +298,5 @@ impl Core {
 
     pub fn get_relay_address(&self) -> String {
         self.relay_address()
-    }
-
-    pub fn set_relay_address(&self, addr: &str) -> Result<()> {
-        self.db
-            .set_setting(SETTING_RELAY_ADDRESS, addr.trim().as_bytes())?;
-        Ok(())
-    }
-}
-#[cfg(test)]
-mod relay_mode_tests {
-    use super::{resolve_relay_mode, RelayMode};
-
-    #[test]
-    fn a_fresh_profile_gets_the_built_in_relay() {
-        assert_eq!(resolve_relay_mode(None, ""), RelayMode::Builtin);
-        assert_eq!(resolve_relay_mode(None, "  "), RelayMode::Builtin);
-    }
-
-    #[test]
-    fn a_profile_that_already_names_a_relay_keeps_it() {
-        // Upgrading must not move anyone off the relay their contacts know.
-        assert_eq!(resolve_relay_mode(None, "abc.b32.i2p"), RelayMode::External);
-    }
-
-    #[test]
-    fn an_explicit_choice_wins_either_way() {
-        assert_eq!(
-            resolve_relay_mode(Some(b"builtin"), "abc.b32.i2p"),
-            RelayMode::Builtin
-        );
-        assert_eq!(
-            resolve_relay_mode(Some(b"external"), "abc.b32.i2p"),
-            RelayMode::External
-        );
-        // …except external with no address, which could never connect and
-        // which Settings no longer offers a way out of.
-        assert_eq!(
-            resolve_relay_mode(Some(b"external"), " "),
-            RelayMode::Builtin
-        );
-        // Garbage in the setting is no choice at all.
-        assert_eq!(resolve_relay_mode(Some(b"???"), ""), RelayMode::Builtin);
     }
 }

@@ -3,10 +3,7 @@ name = "gipny-dht"
 version = "0.1.0"
 edition = "2021"
 
-# Versions are spelled out rather than inherited from the workspace: the
-# standalone relay (core/relay, its own workspace) depends on this crate by
-# path. No rusqlite here, for the same reason — its `links = "sqlite3"` would
-# clash with the relay's; storage is a trait.
+# Consumers supply their own persistence through the storage trait.
 [dependencies]
 tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 serde = { version = "1", features = ["derive"] }

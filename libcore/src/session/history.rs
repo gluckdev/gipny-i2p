@@ -183,7 +183,7 @@ impl SessionManager {
             if payload.dm.is_some() {
                 return Err(SessionError::State);
             }
-            return Ok(false);
+            return Ok(payload.content_expired(now_ms()));
         }
         let contact = self
             .db
@@ -228,11 +228,7 @@ impl SessionManager {
             let _ = self.send_ack(&contact, payload).await;
             return Ok(true);
         }
-        if ordinary
-            && payload
-                .ttl_ms
-                .is_some_and(|ttl| ttl > 0 && payload.sent_at.saturating_add(ttl) <= now_ms())
-        {
+        if payload.content_expired(now_ms()) {
             let deletion = self.db.expire_incoming_dm(contact_id, &reference)?;
             self.db
                 .reject_deleted_dm_files(contact_id, &reference, &files)?;

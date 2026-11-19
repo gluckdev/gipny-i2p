@@ -55,7 +55,7 @@ impl Core {
     ///
     /// Our side goes at once: the messages now, the contact hidden. The
     /// contact row and its session stay only until the request is handed over
-    /// — to their relay, or to the relay network while they are away — and
+    /// to their personal terminal and
     /// then go too; after `WIPE_TTL_MS` they go regardless. Their client
     /// deletes the chat and the contact when the request arrives. That is a
     /// request, not a guarantee: a modified client can ignore it, and nothing
@@ -183,8 +183,7 @@ impl Core {
             .db
             .get_contact(contact_id)?
             .ok_or(CoreError::NotFound)?;
-        // An ack that finds no relay yet is not lost: the sender retries, and
-        // the duplicate is acknowledged on arrival.
+        // A newly accepted contact may now receive receipts for their messages.
         for origin in self.db.incoming_origins(contact_id)? {
             if let Some(mid) = self.db.find_message_by_origin(contact_id, origin)? {
                 self.activate_message_files(contact_id, mid).await?;
@@ -212,11 +211,8 @@ impl Core {
         self.delete_contact(contact_id).await
     }
 
-    /// Add a contact, recording the relay their card named.
-    ///
-    /// `relay` is where *they* receive: messages to this contact are deposited
-    /// there, not on whatever relay this client happens to use. `None` keeps the
-    /// old behaviour of falling back to this client's configured relay.
+    /// Both address fields from an imported card are routing hints. The
+    /// terminal must prove ownership using the contact's pinned signing key.
     pub async fn add_contact_via(
         self: &Arc<Self>,
         card: &gipny_libcore::crypto::IdentityCard,

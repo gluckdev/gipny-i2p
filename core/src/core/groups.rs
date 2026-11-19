@@ -3,6 +3,17 @@
 use super::*;
 
 impl Core {
+    fn wire_member(&self,member:&gipny_libcore::db::GroupMember)->WireMember {
+        // Older groups may still hold an outgoing I2P destination for our
+        // identity. Every freshly composed card advertises the personal terminal.
+        WireMember {
+            sign_pk:member.sign_pk.clone(),
+            dh_pk:member.dh_pk.clone(),
+            i2p_address:if member.is_self {self.my_i2p_address().to_owned()} else {member.i2p_address.clone()},
+            name:member.display_name.clone(),
+        }
+    }
+
     pub async fn press_group_button(
         self: &Arc<Self>,
         group_id: &[u8],
@@ -26,12 +37,7 @@ impl Core {
         let members = self.db.list_group_members(group_id)?;
         let gref_members: Vec<WireMember> = members
             .iter()
-            .map(|m| WireMember {
-                sign_pk: m.sign_pk.clone(),
-                dh_pk: m.dh_pk.clone(),
-                i2p_address: m.i2p_address.clone(),
-                name: m.display_name.clone(),
-            })
+            .map(|m| self.wire_member(m))
             .collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef {
@@ -100,12 +106,7 @@ impl Core {
         let members = self.db.list_group_members(group_id)?;
         let gref_members: Vec<WireMember> = members
             .iter()
-            .map(|m| WireMember {
-                sign_pk: m.sign_pk.clone(),
-                dh_pk: m.dh_pk.clone(),
-                i2p_address: m.i2p_address.clone(),
-                name: m.display_name.clone(),
-            })
+            .map(|m| self.wire_member(m))
             .collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef {
@@ -203,12 +204,7 @@ impl Core {
         let members = self.db.list_group_members(group_id)?;
         let gref_members: Vec<WireMember> = members
             .iter()
-            .map(|m| WireMember {
-                sign_pk: m.sign_pk.clone(),
-                dh_pk: m.dh_pk.clone(),
-                i2p_address: m.i2p_address.clone(),
-                name: m.display_name.clone(),
-            })
+            .map(|m| self.wire_member(m))
             .collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef {
@@ -274,7 +270,7 @@ impl Core {
             &gid,
             &self.identity.card().sign_pk,
             &self.identity.card().dh_pk,
-            self.node.i2p_address(),
+            self.my_i2p_address(),
             &self.display_name().unwrap_or_default(),
             true,
         )?;
@@ -282,7 +278,7 @@ impl Core {
         members_wire.push(WireMember {
             sign_pk: self.identity.card().sign_pk.to_vec(),
             dh_pk: self.identity.card().dh_pk.to_vec(),
-            i2p_address: self.node.i2p_address().to_string(),
+            i2p_address: self.my_i2p_address().to_string(),
             name: self.display_name().unwrap_or_default(),
         });
         for cid in member_contact_ids {
@@ -346,12 +342,7 @@ impl Core {
         let members = self.db.list_group_members(group_id)?;
         let gref_members: Vec<WireMember> = members
             .iter()
-            .map(|m| WireMember {
-                sign_pk: m.sign_pk.clone(),
-                dh_pk: m.dh_pk.clone(),
-                i2p_address: m.i2p_address.clone(),
-                name: m.display_name.clone(),
-            })
+            .map(|m| self.wire_member(m))
             .collect();
         let gref = WireGroupRef {
             id: group_id.to_vec(),
@@ -384,12 +375,11 @@ impl Core {
         group_id: &[u8],
         body: String,
         attachments: Vec<PendingAttachment>,
-        _ttl: Option<Duration>,
+        ttl: impl Into<gipny_libcore::db::MessageLifetime>,
         reply_to: Option<i64>,
     ) -> Result<i64> {
         let sent_at = now_ms();
-        let expires_at: Option<i64> = None;
-        let ttl: Option<Duration> = None;
+        let expires_at = ttl.into().expiry(sent_at)?;
         let members = self.db.list_group_members(group_id)?;
         let mut recipients = Vec::new();
         for member in members.iter().filter(|member| !member.is_self) {
@@ -427,12 +417,7 @@ impl Core {
         let offers = staged.offers();
         let gref_members: Vec<WireMember> = members
             .iter()
-            .map(|m| WireMember {
-                sign_pk: m.sign_pk.clone(),
-                dh_pk: m.dh_pk.clone(),
-                i2p_address: m.i2p_address.clone(),
-                name: m.display_name.clone(),
-            })
+            .map(|m| self.wire_member(m))
             .collect();
         let gname = self.db.get_group_name(group_id)?.unwrap_or_default();
         let gref = WireGroupRef {
@@ -471,7 +456,7 @@ impl Core {
                 body.clone(),
                 wire_atts.clone(),
                 sent_at,
-                ttl.map(|d| d.as_millis() as i64),
+                expires_at.map(|end| end - sent_at),
             );
             payload.group = Some(gref.clone());
             payload.reply_to = wire_reply.clone();
@@ -497,12 +482,7 @@ impl Core {
             name: self.db.get_group_name(group_id)?.unwrap_or_default(),
             members: members
                 .iter()
-                .map(|m| WireMember {
-                    sign_pk: m.sign_pk.clone(),
-                    dh_pk: m.dh_pk.clone(),
-                    i2p_address: m.i2p_address.clone(),
-                    name: m.display_name.clone(),
-                })
+                .map(|m| self.wire_member(m))
                 .collect(),
         };
         let self_sign = self.identity.card().sign_pk;

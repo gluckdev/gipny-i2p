@@ -42,6 +42,8 @@ class MainActivity : TauriActivity() {
       WebView.setWebContentsDebuggingEnabled(true)
     }
     super.onCreate(savedInstanceState)
+    ContextCompat.registerReceiver(this, screenReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF),
+      ContextCompat.RECEIVER_NOT_EXPORTED)
     val svc = Intent(this, GipnyService::class.java)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       ContextCompat.startForegroundService(this, svc)
@@ -51,6 +53,58 @@ class MainActivity : TauriActivity() {
     // A share that cold-started the process arrives here; a share to an
     // already-running instance comes through onNewIntent (singleTask).
     if (savedInstanceState == null) stageShareIntent(intent)
+  }
+
+  private val screenReceiver = object : android.content.BroadcastReceiver() {
+    override fun onReceive(context: android.content.Context, intent: Intent) {
+      if (intent.action == Intent.ACTION_SCREEN_OFF) screenHidden()
+    }
+  }
+  @androidx.annotation.Keep
+  private external fun screenHidden()
+
+  private var credentialRequest = 0L
+  private val deviceCredentialCode = 4931
+
+  @androidx.annotation.Keep
+  fun deviceAuthAvailable(): Boolean =
+    (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isDeviceSecure
+
+  @androidx.annotation.Keep
+  @Suppress("DEPRECATION")
+  fun verifyDeviceAuth(id: Long, reason: String): Boolean {
+    if (credentialRequest != 0L || !deviceAuthAvailable()) return false
+    val manager = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
+    val intent = manager.createConfirmDeviceCredentialIntent("Gipny", reason) ?: return false
+    credentialRequest = id
+    try { startActivityForResult(intent, deviceCredentialCode) }
+    catch (_: android.content.ActivityNotFoundException) { credentialRequest = 0; return false }
+    return true
+  }
+
+  @androidx.annotation.Keep
+  private external fun deviceAuthFinished(id: Long, success: Boolean)
+
+  @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode == deviceCredentialCode && credentialRequest != 0L) {
+      val id = credentialRequest
+      credentialRequest = 0
+      deviceAuthFinished(id, resultCode == RESULT_OK)
+    }
+  }
+
+  override fun onDestroy() {
+    unregisterReceiver(screenReceiver)
+    if (credentialRequest != 0L) { deviceAuthFinished(credentialRequest, false); credentialRequest = 0 }
+    super.onDestroy()
+  }
+
+  @androidx.annotation.Keep
+  fun closeLockedApp() {
+    stopService(Intent(this, GipnyService::class.java))
+    finishAndRemoveTask()
   }
 
   /** launchMode=singleTask: a second "share into Gipny" reuses this instance. */

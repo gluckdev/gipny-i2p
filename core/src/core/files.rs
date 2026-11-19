@@ -91,12 +91,6 @@ impl Core {
         sent_at: i64,
         reference: Option<&gipny_libcore::db::DmReference>,
     ) -> Result<()> {
-        let before = self
-            .part_seen
-            .swap(now_ms(), std::sync::atomic::Ordering::Relaxed);
-        if !collect_lane_holds(before, now_ms()) {
-            self.collect_kick.notify_one();
-        }
         let Some(update) = self.db.apply_file_chunk(
             contact_id,
             chunk,
@@ -252,23 +246,17 @@ impl Core {
     pub(super) async fn relay_lanes(
         self: &Arc<Self>,
         contact: &gipny_libcore::db::Contact,
-        main: &mpsc::Sender<ClientToRelay>,
+        main: &relay::RelaySender,
         want: usize,
-    ) -> Vec<mpsc::Sender<ClientToRelay>> {
+    ) -> Result<Vec<relay::RelaySender>> {
         let mut out = vec![main.clone()];
-        let Some(relay) = contact
-            .relay_address
-            .as_deref()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-        else {
-            return out;
-        };
-        let relay = relay.to_string();
+        let owner=to_arr32(contact.identity_sign.clone())?;
+        if !main.belongs_to(&owner) {return Err(CoreError::State);}
+        let key=(main.terminal_address().to_string(), owner);
         let (live, dial) = {
             let mut lanes = self.file_lanes.lock().await;
-            let v = lanes.entry(relay.clone()).or_default();
-            v.retain(|tx| !tx.is_closed());
+            let v = lanes.entry(key.clone()).or_default();
+            v.retain(|tx| !tx.is_closed() && tx.belongs_to(&owner));
             // Count and reserve together: a completed dial cannot make this
             // snapshot stale before we claim the next one.
             let dial = v.len() + 1 < want.min(gipny_libcore::files::lanes::limit())
@@ -276,7 +264,7 @@ impl Core {
                     .file_lanes_dialling
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .insert(relay.clone());
+                    .insert(key.clone());
             (v.clone(), dial)
         };
         out.extend(live.into_iter().take(want.saturating_sub(1)));
@@ -285,36 +273,36 @@ impl Core {
             let handle = tokio::spawn(async move {
                 let dial = tokio::time::timeout(
                     PEER_RELAY_CONNECT_TIMEOUT,
-                    relay::connect_peer(&this.node, &relay, &this.identity),
+                    relay::connect_peer(&this.node,&key.0,&this.identity,&owner),
                 )
                 .await;
                 if let Ok(Ok(client)) = dial {
                     gipny_libcore::debug_trace!(
                         "[files] another lane to relay {}",
-                        &relay[..16.min(relay.len())]
+                        &key.0[..16.min(key.0.len())]
                     );
                     this.file_lanes
                         .lock()
                         .await
-                        .entry(relay.clone())
+                        .entry(key.clone())
                         .or_default()
                         .push(client.out_tx.clone());
                     this.file_lanes_dialling
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .remove(&relay);
+                        .remove(&key);
                     this.send_kick.notify_one();
-                    this.clone().run_recv_loop(client, None, None).await;
+                    this.clone().run_recv_loop(client, None).await;
                 } else {
                     this.file_lanes_dialling
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .remove(&relay);
+                        .remove(&key);
                 }
             });
             self.tasks.lock().unwrap().push(handle);
         }
-        out
+        Ok(out)
     }
 
     pub(super) async fn send_file_parts(
@@ -324,9 +312,7 @@ impl Core {
     ) -> Result<()> {
         use gipny_libcore::files;
         let now = now_ms();
-        let Route::Relay(main) = route else {
-            return Ok(());
-        };
+        let main=route;
         let wanted = self
             .flows
             .lock()
@@ -334,7 +320,7 @@ impl Core {
             .entry(contact.id)
             .or_default()
             .desired_lanes();
-        let lanes = self.relay_lanes(contact, main, wanted).await;
+        let lanes = self.relay_lanes(contact, main, wanted).await?;
         let heard = self
             .heard
             .lock()
@@ -405,7 +391,7 @@ impl Core {
                     .entry(contact.id)
                     .or_default()
                     .next_lane(lanes.len());
-                let via = Route::Relay(lanes[lane].clone());
+                let via = lanes[lane].clone();
                 if let Err(e) = self
                     .send_payload_via_relay(contact, &mut payload, &via)
                     .await

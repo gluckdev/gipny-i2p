@@ -25,6 +25,7 @@ def report(status="passed", measured=True):
     return {"schema_version": 1, "status": status,
             "configured_file_lanes": 4, "measurement_started": measured,
             "participant_hops": [3, 3, 3, 3] if measured else None,
+            "topology": "shared_router_personal_terminals",
             "padded": True, "file": {"verified_unique_bytes": MIB}}
 
 
@@ -55,7 +56,7 @@ class InputTests(unittest.TestCase):
     def test_runtime_removes_build_and_scenario_switches(self):
         environment = {"PATH": "/usr/bin", "I2P_EMBED_STUB": "0",
                        "I2P_EMBED_SKIP_NATIVE": "0", "GIPNY_FILE_LANES": "8",
-                       "E2E_DHT_OFFLINE": "1", "E2E_PERFORMANCE": "0"}
+                       "E2E_OFFLINE_RETURN": "1", "E2E_PERFORMANCE": "0"}
         with patch.dict(os.environ, environment, clear=True):
             actual = runner.runtime_environment()
         self.assertEqual(actual, {"PATH": "/usr/bin", "GIPNY_I2P_LOGLEVEL": "warn"})
@@ -72,11 +73,9 @@ class ArtifactTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
-        hashes = {}
-        for name in ("e2e-harness", "gipny-relay"):
-            data = f"test fixture {name}".encode()
-            (self.directory / name).write_bytes(data)
-            hashes[name] = hashlib.sha256(data).hexdigest()
+        data = b"test harness fixture"
+        (self.directory / "e2e-harness").write_bytes(data)
+        hashes = {"e2e-harness": hashlib.sha256(data).hexdigest()}
         self.build = {"schema_version": 1, "application_sha": APP_SHA,
                       "router_sha": "b" * 40, "native_router": True, "sha256": hashes}
         self.write_manifest()
@@ -87,7 +86,7 @@ class ArtifactTests(unittest.TestCase):
     def test_verified_artifact_and_executable_permissions(self):
         with patch.dict(os.environ, {"GITHUB_SHA": APP_SHA}, clear=True):
             self.assertEqual(runner.verified_build(self.directory), self.build)
-        self.assertTrue((self.directory / "gipny-relay").stat().st_mode & 0o111)
+        self.assertTrue((self.directory / "e2e-harness").stat().st_mode & 0o111)
 
     def test_tampered_binary_is_rejected(self):
         (self.directory / "e2e-harness").write_bytes(b"different executable")
@@ -139,24 +138,6 @@ class PolicyAndResultTests(unittest.TestCase):
                     self.assertIn("| 1 | 4 | — / — | failed | — | — | — |",
                                   (directory / "summary.md").read_text())
 
-    def test_relay_manifest_binds_destination_and_all_baseline_settings(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            self.assertIsNone(runner.relay_policy(directory))
-            (directory / "dest.pub").write_text("test-destination\n")
-            policy = {"schema_version": 1, "destination": "test-destination",
-                      "inbound_hops": 3, "outbound_hops": 3, "bandwidth": "L",
-                      "share_percent": 0, "transit_tunnels": 0}
-            runner.save(directory / "destination-policy.json", policy)
-            self.assertEqual(runner.relay_policy(directory), policy)
-            for key, wrong in (("destination", "other"), ("inbound_hops", 2),
-                               ("outbound_hops", 0), ("bandwidth", "O"),
-                               ("share_percent", 50), ("transit_tunnels", 256)):
-                with self.subTest(key=key):
-                    runner.save(directory / "destination-policy.json", dict(policy, **{key: wrong}))
-                    with self.assertRaisesRegex(ValueError, "protected baseline"):
-                        runner.relay_policy(directory)
-
     def test_measured_failure_is_distinct_from_setup_failure(self):
         self.assertIsNone(runner.report_outcome(report(), 0, 4, MIB))
         self.assertEqual(runner.report_outcome(report("failed"), 1, 4, MIB), "measurement")
@@ -168,7 +149,8 @@ class PolicyAndResultTests(unittest.TestCase):
                  (dict(report(), configured_file_lanes=8), 0),
                  (dict(report(), measurement_started=False), 0),
                  (dict(report("failed"), participant_hops=[3, 3, 2, 3]), 1),
-                 (dict(report("failed"), padded=False), 1)]
+                 (dict(report("failed"), padded=False), 1),
+                 (dict(report(), topology="different-fixture"), 0)]
         for value, code in cases:
             with self.subTest(value=value, code=code), self.assertRaises(ValueError):
                 runner.report_outcome(value, code, 4, MIB)
@@ -233,7 +215,7 @@ class OuterTimeoutTests(unittest.TestCase):
             def spawn(*args, **kwargs):
                 process = Process()
                 processes.append(process)
-                if len(processes) == 3 and value is not None:
+                if value is not None:
                     runner.save(reports / "01-lanes-4" / "performance.json", value)
                 return process
 
@@ -249,9 +231,8 @@ class OuterTimeoutTests(unittest.TestCase):
             with patch.object(runner.subprocess, "Popen", side_effect=spawn), \
                     patch.object(runner, "stop", side_effect=stop), \
                     patch.object(runner, "interrupted_phase", side_effect=classify), \
-                    patch.object(runner, "relay_policy", return_value={"destination": "fixture"}), \
                     patch.object(runner.shutil, "copyfile"), \
-                    patch.object(runner.time, "monotonic", side_effect=[0, 0, 0, 1201, 1202]):
+                    patch.object(runner.time, "monotonic", side_effect=[0, 0, 1201, 1202]):
                 point = runner.run_point(1, 4, MIB, directory / "bin", reports, state,
                                          {"application_sha": APP_SHA, "router_sha": "b" * 40})
             self.assertEqual(point["status"], "failed")

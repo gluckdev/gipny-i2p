@@ -1,3 +1,4 @@
+import { DEFAULT_TTL_SECS, MAX_TTL_SECS } from './message-lifetime';
 import { selectedBrowserFiles, forgetBrowserFiles } from '../features/files/browser-files';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -49,18 +50,12 @@ export interface ContactFolder {
   contacts: number[];
 }
 
-/** What the chat screen remembers between launches.
- *
- * `ttlSecs` null means the person turned the disappearing timer off, which is
- * not the same as never having an opinion: `ttlChosen` separates "I picked
- * this" from "nobody has picked yet", and only the second is worth a reminder
- * about the default. */
+/** Per-chat choices override the timer saved by older versions of the app. */
 export interface ChatPrefs {
   ttlSecs: number | null;
   ttlChosen: boolean;
-  /** Empty the transcript the moment the vault is locked. Off unless asked
-   * for: a person who wants the app empty on every close says so, and nobody
-   * else should lose a conversation to a default they never saw. */
+  chatTtlSecs?: Record<string, number>;
+  /** Clear completed local transcripts on logout, except chats opted into retention. */
   clearOnLock: boolean;
   /** Explicit choices by targetKey. A missing key still needs a decision. */
   saveHistory?: Record<string, boolean>;
@@ -112,7 +107,7 @@ export interface ConsoleFrame {
   truncated: boolean;
 }
 
-export type RelayMode = 'builtin' | 'external';
+
 
 /** The relay this process hosts for itself in built-in mode. */
 export type HostedRelayState =
@@ -126,9 +121,6 @@ export type HostedRelayState =
   | { state: 'unconfigured'; reason: string };
 
 export interface RelayInfo {
-  mode: RelayMode;
-  /** The address saved for external mode, whether or not it is in use. */
-  external: string;
   hosted: HostedRelayState;
   /** How the attempt to reach our own relay is going. */
   dial: { attempts: number; last_error: string | null; unreachable_checks: number; unreachable_error: string | null };
@@ -172,6 +164,16 @@ export interface DeletionNotice {
   can_ack: boolean;
 }
 
+export interface ViewOnceDelivery { id: string; contact_id: number; deadline: number; status: 'pending' | 'relayed' | 'received' | 'unconfirmed' }
+export interface ViewOnceNotice { id: string; contact_id: number; sent_at: number; expires_at: number }
+
+export interface DeliveryExpiryNotice {
+  message_id: number;
+  contact_id: number | null;
+  group_id: string | null;
+  expired_at: number;
+}
+
 export interface Message {
   id: number;
   contact_id: number | null;
@@ -182,6 +184,7 @@ export interface Message {
   sent_at: number;
   sent: boolean;
   delivered: boolean;
+  delivery_expired_at?: number | null;
   read: boolean;
   expires_at: number | null;
   /** Immutable local arrival number in this direct conversation. */
@@ -287,6 +290,9 @@ export type CoreEvent =
   | { PeerEvent: { contact_id: number; message_id: number; events: PeerEvent[] } }
   | { MessagePinned: { contact_id: number | null; group_id: string | null; message_id: number } }
   | { MessageUnpinned: { contact_id: number | null; group_id: string | null; message_id: number } }
+  | { ViewOnceDeliveryChanged: ViewOnceDelivery }
+  | { ViewOnceAvailable: ViewOnceNotice }
+  | { MessageDeliveryExpired: DeliveryExpiryNotice }
   | { MessageSent: { message_id: number } }
   | { MessageDelivered: { message_id: number } }
   | { MessageFailed: { message_id: number; reason: string } }
@@ -354,6 +360,23 @@ export class Api {
   }
   static vaultUnlockBiometric(profile: string, totpCode?: string): Promise<string | null> {
     return invoke('vault_unlock_biometric', { profile, ...(totpCode ? { totpCode } : {}) });
+  }
+  static deviceScreenAuthAvailable(): Promise<boolean> {
+    return invoke('device_screen_auth_available');
+  }
+  static verifyDeviceScreenAuth(profile: string, reason: string): Promise<void> {
+    return invoke('verify_device_screen_auth', { profile, reason });
+  }
+  static async hasScreenPasskey(profile: string): Promise<boolean> {
+    return (await invoke<unknown[]>('passkey_entries', { profile })).length > 0;
+  }
+  static verifyScreenPasskey(profile: string): Promise<void> {
+    return new Promise((resolve, reject) => window.dispatchEvent(new CustomEvent('gipny-unlock-passkey', {
+      detail: { profile, screenOnly: true, done: (error?: unknown) => error ? reject(error) : resolve() },
+    })));
+  }
+  static verifyScreenPassword(profile: string, pass: string): Promise<void> {
+    return invoke('verify_screen_password', { profile, pass });
   }
   static vaultLock(): Promise<void> {
     return invoke('vault_lock');
@@ -489,10 +512,23 @@ export class Api {
   static clearDmChat(contactId: number): Promise<number> {
     return invoke('clear_dm_chat', { contactId });
   }
-  static sendMessage(contactId: number, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+  static sendViewOnce(contactId: number, body: string, ttlSecs: number): Promise<string> {
+    return invoke('send_view_once', { contactId, body, ttlSecs });
+  }
+  static listViewOnceDeliveries(): Promise<ViewOnceDelivery[]> { return invoke('list_view_once_deliveries'); }
+  static acknowledgeViewOnceDeliveries(ids: string[]): Promise<void> { return invoke('acknowledge_view_once_deliveries', { ids }); }
+  static listViewOnce(contactId: number): Promise<ViewOnceNotice[]> { return invoke('list_view_once', { contactId }); }
+  static openViewOnce(id: string): Promise<string> { return invoke('open_view_once', { id }); }
+  static listDeliveryExpiryNotices(profile: string): Promise<DeliveryExpiryNotice[]> {
+    return invoke('list_delivery_expiry_notices', { profile });
+  }
+  static acknowledgeDeliveryExpiryNotices(profile: string, messageIds: number[]): Promise<void> {
+    return invoke('acknowledge_delivery_expiry_notices', { profile, messageIds });
+  }
+  static sendMessage(contactId: number, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = DEFAULT_TTL_SECS, replyTo: number | null = null): Promise<number> {
     return invoke('send_message', { contactId, body, attachments, ttlSecs, replyTo });
   }
-  static sendMessagePaths(contactId: number, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+  static sendMessagePaths(contactId: number, body: string, paths: string[] = [], ttlSecs: number | null = DEFAULT_TTL_SECS, replyTo: number | null = null): Promise<number> {
     if (!isTauri) return invoke<number>('send_message', { contactId, body, browserFiles: selectedBrowserFiles(paths), ttlSecs, replyTo }).then(id => { forgetBrowserFiles(paths); return id; });
     return invoke('send_message_paths', { contactId, body, paths, ttlSecs, replyTo });
   }
@@ -652,10 +688,10 @@ export class Api {
   static listGroupMessages(groupId: string, limit = 100, beforeId: number | null = null): Promise<Message[]> {
     return invoke('list_group_messages', { groupId, limit, beforeId });
   }
-  static sendGroupMessage(groupId: string, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+  static sendGroupMessage(groupId: string, body: string, attachments: PendingAttachment[] = [], ttlSecs: number | null = DEFAULT_TTL_SECS, replyTo: number | null = null): Promise<number> {
     return invoke('send_group_message', { groupId, body, attachments, ttlSecs, replyTo });
   }
-  static sendGroupMessagePaths(groupId: string, body: string, paths: string[] = [], ttlSecs: number | null = null, replyTo: number | null = null): Promise<number> {
+  static sendGroupMessagePaths(groupId: string, body: string, paths: string[] = [], ttlSecs: number | null = DEFAULT_TTL_SECS, replyTo: number | null = null): Promise<number> {
     if (!isTauri) return invoke<number>('send_group_message', { groupId, body, browserFiles: selectedBrowserFiles(paths), ttlSecs, replyTo }).then(id => { forgetBrowserFiles(paths); return id; });
     return invoke('send_group_message_paths', { groupId, body, paths, ttlSecs, replyTo });
   }
@@ -747,8 +783,10 @@ export class Api {
       const o = parsed as Record<string, unknown>;
       const ttl = o['ttlSecs'];
       return {
-        ttlSecs: typeof ttl === 'number' && Number.isFinite(ttl) ? ttl : null,
+        ttlSecs: typeof ttl === 'number' && Number.isSafeInteger(ttl) && ttl >= 0 && ttl <= MAX_TTL_SECS ? ttl : null,
         ttlChosen: o['ttlChosen'] === true,
+        chatTtlSecs: Object.fromEntries(Object.entries(o.chatTtlSecs && typeof o.chatTtlSecs === 'object' && !Array.isArray(o.chatTtlSecs) ? o.chatTtlSecs : {})
+          .filter(([key, value]) => /^(contact|group):.+$/.test(key) && typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= MAX_TTL_SECS)),
         saveHistory: Object.fromEntries(Object.entries(
           o['saveHistory'] && typeof o['saveHistory'] === 'object' && !Array.isArray(o['saveHistory'])
             ? o['saveHistory'] as Record<string, unknown> : {},
@@ -775,6 +813,7 @@ export class Api {
     const write = Api.chatPrefsWrite.then(async () => {
       const current = await Api.getChatPrefs();
       await Api.setChatPrefs({ ...current, ...patch,
+        ...(patch.chatTtlSecs ? { chatTtlSecs: { ...current.chatTtlSecs, ...patch.chatTtlSecs } } : {}),
         ...(patch.saveHistory ? { saveHistory: { ...current.saveHistory, ...patch.saveHistory } } : {}),
       });
     });

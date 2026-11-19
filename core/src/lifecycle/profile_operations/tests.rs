@@ -36,21 +36,17 @@ async fn install_build(ctx: &AppCtx, profile: &str) -> (Arc<AtomicUsize>, Arc<At
         dir: profile_dir(ctx, profile).unwrap(),
     };
     let (started, running) = tokio::sync::oneshot::channel();
-    let builders = super::super::prewarm::builders::spawn(
-        || Ok::<_, String>(()),
-        |_| async move {
-            let _resource = resource;
-            started.send(()).unwrap();
-            std::future::pending().await
-        },
-        |_| std::future::pending(),
-    );
+    let builder = super::super::prewarm::Preparation(tokio::spawn(async move {
+        let _resource=resource;
+        started.send(()).unwrap();
+        std::future::pending().await
+    }));
     running.await.unwrap();
     *ctx.prewarm.lock().await = Some(Prewarm::Building {
         profile: profile.to_owned(),
         settings: Default::default(),
         generation: ctx.invalidate_prewarm(),
-        builders,
+        builder,
     });
     (dropped, existed)
 }

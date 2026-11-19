@@ -4,8 +4,8 @@
 v2 с релеем также принимается. Флаг `--check-master-card` проверяет карточку
 без запуска роутера, credential provider, базы и создания каталога данных;
 при успехе ничего не печатает. Установщики проверяют v3 через скачанный и
-проверенный бинарь до изменения установки; для этого нужен агент 0.4.19 или
-новее. [Формат, совместимость и ограничения](../docs/contact-cards.md).
+проверенный бинарь до изменения установки. Карточку с одним адресом личного
+терминала принимает агент с поддержкой личных терминалов. [Формат, совместимость и ограничения](../docs/contact-cards.md).
 
 Один бинарь, `src/main.rs`, поверх `SessionManager` из `libcore`. Запускает
 роутер I2P внутри своего процесса через Rust `i2p-embed` → C++ shim →
@@ -19,7 +19,7 @@ IP-транспорты роутера остаются. Отдельный daem
 
 | Файл | За что отвечает |
 |---|---|
-| `src/main.rs` | `parse_args`/`usage` (флаги `--data`, `--master`, `--name`, `--relay`, `--cwd`, `--timeout`); `data_dir` (`--data` или `GIPNY_AGENT_DATA`); `load_master`/`load_relay`, которые запоминают карточку мастера и `--relay` в `master.card` и `relay.txt`; `main` (роутер → `SessionManager::start` → встроенный `EphemeralRelay` или внешний релей → GRANT мастеру → цикл событий: команды, OFF); `load_attachments`; `run_update_loop` (автообновление); `begin_stop` (REVOKE и выход) |
+| `src/main.rs` | `parse_args`/`usage` (флаги `--data`, `--master`, `--name`, `--cwd`, `--timeout`); `data_dir` (`--data` или `GIPNY_AGENT_DATA`); `load_master` сохраняет карточку мастера в `master.card`; `main` (роутер → `SessionManager::start` с личным терминалом → GRANT мастеру → цикл событий: команды, OFF); `load_attachments`; `run_update_loop` (автообновление); `begin_stop` (REVOKE и выход) |
 | `gipny-agent.service` | systemd-юнит: `/var/lib/gipny-agent`, аргументы из `/etc/gipny-agent.env` (`GIPNY_AGENT_ARGS`), `Restart=on-failure` |
 | `Cargo.toml` | Версия агента, должна совпадать с версией приложения |
 
@@ -30,7 +30,7 @@ IP-транспорты роутера остаются. Отдельный daem
 | Новый флаг командной строки | `src/main.rs`: `Args`, `parse_args`, `usage` + раздел Options в `README.txt` внутри `release.yml` |
 | Что делает команда консоли, справка, таймауты, лимиты вывода | `libcore/src/agent.rs` (`handle_console_request`, `run_command`, `HELP_TEXT`) |
 | Разбор GRANT, REVOKE, OFF | `libcore/src/agent.rs` (`parse_control`) и цикл событий в `main` |
-| Встроенный и внешний релей агента | `main` в `src/main.rs` (`EphemeralRelay::start`, `set_local_relay` — свой релей читается по трубе, `set_relay_onion`, `join_dht` — вход в сеть релеев через узел самого `SessionManager`) |
+| Личный терминал агента | `SessionManager::start` поднимает терминал, `terminal_address` возвращает адрес для карточки. |
 | Автообновление агента | `run_update_loop` + `libcore/src/update.rs` (`Component::Agent`, `install_agent_binary_now`) |
 | Приём и отправка сообщений агентом | `libcore/src/session.rs` |
 | Юнит systemd | `gipny-agent.service` |
@@ -40,7 +40,7 @@ IP-транспорты роутера остаются. Отдельный daem
 
 - **Агент работает на `SessionManager`,** а не на `Core`: любые правки доставки в `libcore/src/session.rs` касаются его напрямую.
 - **База агента шифруется SQLCipher** через `security::open_device_bound_database` и ключ OS credential provider. Каталог данных остаётся приватным. Отсутствующий/заблокированный provider означает явный отказ, без fallback на raw key file или plaintext DB; копирование каталога не переносит device binding; новый [I2P-only перенос](../docs/profile-transfer.md) ещё проектируется. Прежний unbound профиль автоматически не переписывается.
-- **Адрес личного релея новый при каждом запуске.** Мастер узнаёт его из GRANT, который агент шлёт при каждом старте.
+- Адрес личного терминала сохраняется в профиле. При запуске агент отправляет мастеру GRANT.
 - **Путь к бинарю для самообновления берётся один раз** до цикла: после первой подмены `current_exe()` указывал бы на удалённый файл.
 - **Самообновление требует SHA256 из manifest релиза** (следующая версия). При отсутствии суммы или ошибке проверки `download` возвращает ошибку, и `run_update_loop` не вызывает установку. [Контракт и ограничения](../docs/update-verification.md).
 - **Способ установки зависит от платформы.** Linux GNU и macOS атомарно заменяют бинарь для следующего запуска; Windows передаёт проверенный файл bootstrap `start-agent.ps1` через `pending_agent/ready.json`. Старой Windows-задаче нужен повторный запуск установщика; без bootstrap операция возвращает ошибку и сохраняет архив. Для musl выбирается только точный поддерживаемый target без GNU fallback. [Матрица и пределы](../docs/platform-updates.md).
@@ -64,7 +64,7 @@ env -u CC -u CXX cargo check --locked -p gipny-agent
 ## Установка одной командой
 
 В GIPNY откройте **Настройки → Режим агента → Подключить удалённый сервер / агента**.
-Окно подставляет текущую карточку мастера вместе с ключами и адресом его релея.
+Окно подставляет текущую карточку мастера вместе с ключами и адресом его личного терминала.
 Выберите Linux/macOS с root, Linux без root или Windows и скопируйте команду.
 На Windows откройте PowerShell от имени администратора.
 
