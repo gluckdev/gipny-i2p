@@ -4,7 +4,7 @@ import { hex, unhex, type StoredBlob } from '../profiles/model';
 export const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 export const STORED_CHUNK = 192 * 1024;
 export const FILE_PREVIEW_LIMIT = 32 * 1024 * 1024;
-const OVERHEAD = 40;
+export const FILE_PART_OVERHEAD = 40; // XChaCha20 nonce and authentication tag
 const RESERVE = 64 * 1024 * 1024;
 type Directory = FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> };
 export interface FileCrypto {
@@ -12,7 +12,7 @@ export interface FileCrypto {
   seal_attachment_part(id: string, key: Uint8Array, index: number, data: Uint8Array): Uint8Array;
   open_attachment_part(id: string, key: Uint8Array, index: number, data: Uint8Array): Uint8Array;
 }
-export function storedSize(size: number, chunk = STORED_CHUNK): number { return size + Math.max(1, Math.ceil(size / chunk)) * OVERHEAD; }
+export function storedSize(size: number, chunk = STORED_CHUNK): number { return size + Math.max(1, Math.ceil(size / chunk)) * FILE_PART_OVERHEAD; }
 
 /** Opening an OPFS access handle did not finish in time (live runs showed it
  * hanging): the operation fails as retryable instead of blocking every later
@@ -116,7 +116,7 @@ export class FileStorage {
     await this.using(file.id, true, handle => {
       let offset = 0;
       while (offset < sealed.length) {
-        const n = handle.write(sealed.subarray(offset), { at: index * (file.chunk_size + OVERHEAD) + offset });
+        const n = handle.write(sealed.subarray(offset), { at: index * (file.chunk_size + FILE_PART_OVERHEAD) + offset });
         if (!Number.isSafeInteger(n) || n <= 0 || n > sealed.length - offset) throw new Error('Incomplete attachment write');
         offset += n;
       }
@@ -135,11 +135,11 @@ export class FileStorage {
   }
   private async readPart(file: StoredBlob, index: number): Promise<Uint8Array> {
     this.check();
-    const bytes = new Uint8Array(this.length(file, index) + OVERHEAD);
+    const bytes = new Uint8Array(this.length(file, index) + FILE_PART_OVERHEAD);
     await this.using(file.id, false, handle => {
       let offset = 0;
       while (offset < bytes.length) {
-        const n = handle.read(bytes.subarray(offset), { at: index * (file.chunk_size + OVERHEAD) + offset });
+        const n = handle.read(bytes.subarray(offset), { at: index * (file.chunk_size + FILE_PART_OVERHEAD) + offset });
         if (!Number.isSafeInteger(n) || n <= 0 || n > bytes.length - offset) throw new Error('Incomplete attachment read');
         offset += n;
       }
@@ -160,10 +160,10 @@ export class FileStorage {
       if (entry.kind === 'file' && /^[0-9a-f]{64}$/.test(name) && !keep.has(name)) await this.remove(name);
     }
   }
-  close(): void {
+  async close(): Promise<void> {
     this.closed = true;
     for (const timer of this.idle.values()) clearTimeout(timer);
     this.idle.clear();
-    for (const id of [...this.handles.keys()]) void this.release(id);
+    await Promise.all([...this.handles.keys()].map(id => this.release(id)));
   }
 }

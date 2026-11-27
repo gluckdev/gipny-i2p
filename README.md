@@ -16,11 +16,11 @@
 
 На 18 ноября 2026 года последний опубликованный предварительный выпуск — [v0.5.0-alpha.1](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.5.0-alpha.1). Pages публикует веб-клиент из `main`. Порядок публикации и проверки офлайн-запуска описан в [руководстве по деплою](scripts/deploy/README.md).
 
-Готовится **beta** в `release/0.5.0-beta.1`; alpha2 не публикуется. Метаданные
-пакетов пока имеют версию `0.5.0-beta.1`. Версия в файле, успешная сборка,
+Готовится **rc.7** в `release/0.5.0-beta.1`; alpha2 не публикуется. Метаданные
+пакетов имеют версию `0.5.0-rc.7`. Версия в файле, успешная сборка,
 опубликованный пакет и работающий публичный сервис — разные состояния.
 Состав реализации и ограничения перечислены в [текущем состоянии](docs/current-state.md).
-Native и browser WSS/WebRTC CI прошли на baseline `2139725`; новые beta-изменения
+Native и browser WSS/WebRTC CI прошли на baseline `2139725`; новые rc-изменения
 требуют своих проверок. [Условия выпуска](docs/plans/2026-11-16-beta.md) включают
 полный перенос профиля через I2P, адаптацию сети и платформенную совместимость.
 Поддержка старых данных и миграции не предусмотрены.
@@ -104,7 +104,7 @@ Upstream обновляется с проверкой патчей и реаль
 |---|---|
 | Нативный клиент, Tauri и Android | [core](core/README.md), [Android](core/gen/android/README.md) |
 | Криптография, доставка и хранение | [libcore](libcore/README.md) |
-| Интерфейс и локализация | [ui](ui/README.md), [RU/EN](docs/localization.md) |
+| Интерфейс и локализация | [ui](ui/README.md), [Восемь языков интерфейса](docs/localization.md) |
 | WASM и транспортный мост | [browser-router](browser-router/README.md), [forwarder](browser-router/forwarder/README.md) |
 | Обнаружение и личные I2P-терминалы | [DHT](dht/README.md), [терминал](libcore/src/relay_server.rs) |
 | Удалённые команды и боты | [agent](agent/README.md), [bot-sdk](bot-sdk/README.md) |

@@ -90,7 +90,7 @@ application identity: native Destination сейчас ephemeral, browser identit
 4. Выбранная проверенная PAKE библиотека, mutual confirmation с bound transcript,
    AEAD records с уникальными nonces и durable verified bitmap. Local password
    check отдельно от remote attempts/duress. Никакого самодельного PAKE.
-5. Persistent transfer-only I2P endpoints и decision recovery/polling, 3/3 hops и
+5. Persistent transfer-only I2P endpoints и decision recovery/polling, 2/2 hops и
    padding. Native/WASM adapters и backend APIs; source final OK/Cancel только
    после полного durable Prepared. У Prepared receiver нет local timeout/cancel.
 6. Сквозные четыре направления native/browser, restart/drop/replay/quota/disk

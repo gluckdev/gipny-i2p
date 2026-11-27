@@ -56,8 +56,8 @@ Unknown flags, неполные/лишние байты, некорректны�
 
 ## Реализация и проверки
 
-Rust-кодек находится в `libcore/src/card.rs`; UI — в `ui/src/contact-card.ts`,
-публичные импорты из `ui/src/api.ts` сохранены. UI использует pinned
+Rust-кодек находится в `libcore/src/card.rs`. Интерфейс использует кодек из
+`ui/src/features/contacts/contact-card.ts` через реэкспорт в `ui/src/app/api.ts`. UI использует pinned
 `@noble/hashes` 2.4.0 и синхронный `sha256` из `sha2.js`, Rust — существующий
 `sha2`; собственного криптографического хеша здесь нет.
 [API и исходники noble-hashes](https://github.com/paulmillr/noble-hashes),
@@ -75,7 +75,6 @@ python3 scripts/check-contact-card-fixtures.py
 
 Эта data-only проверка выполнена: 8 положительных и 13 отрицательных
 примеров, размеры 187/144/316 подтверждены. Она не выполняет Rust/TS-код.
-Компиляция и исполнение тестов Rust/UI разрешены только в GitHub CI.
 На 2026-10-28 для SHA `38892f6` подтверждены frontend build и 17/17 UI-тестов,
 включая общие vectors, legacy import и запрет копирования ошибки экспорта:
 [GitHub job](https://github.com/gluckdev/gipny-i2p/actions/runs/40759359493/job/123066773196).

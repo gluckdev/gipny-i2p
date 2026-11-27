@@ -64,6 +64,8 @@ export type Outbox = {
   /** New encryptions of a deposited letter still waiting for its answer. */
   resends?: number;
   file?: { id: string; index: number; message_id: number };
+  /** Only a queued contact wipe keeps a route after local contact removal. */
+  wipeRoute?: Pick<Contact, 'id' | 'sign_pk' | 'dh_pk' | 'relay' | 'i2p_address'>;
 };
 export type SeenEnvelope = { hash: string; peer: string; ack: WirePayload | null; group?: string; file?: { id: string; index: number; sent_at: number } };
 export type BrowserState = {
@@ -223,7 +225,7 @@ export const retained = (item: Outbox): boolean => item.payload !== null && (ite
 function supersedes(letter: WirePayload): string | null {
   if (letter.file_ack) return `ack:${hex(letter.file_ack.file_id)}`;
   if (letter.file_cancel) return `cancel:${hex(letter.file_cancel)}`;
-  if (letter.typing !== null) return 'typing';
+  if (letter.typing !== null) return letter.group ? `typing:${hex(letter.group.id)}` : 'typing';
   return null;
 }
 
@@ -375,7 +377,7 @@ export function expireResends(state: BrowserState, now: number, forgetPeer: (pee
   state.outbox = state.outbox.filter(item => {
     if ((item.row === null || !ids.has(item.row)) && now < letterDeadline(item) &&
         (!item.file || !stopped.has(item.peer + ':' + item.file.id))) return true;
-    if (item.initial && item.blob && !item.deposited) reset.add(item.peer);
+    if (item.wipeRoute || (item.initial && item.blob && !item.deposited)) reset.add(item.peer);
     return false;
   });
   for (const peer of reset) { resetPeerOutbox(state, peer); forgetPeer(peer); }

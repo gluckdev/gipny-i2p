@@ -1,5 +1,12 @@
 /** Russian UI messages. Keep keys and placeholders aligned with en.ts. */
 export const ru = {
+  "native.open": "Открыть в приложении",
+  "native.prompt": "Установите тестовую версию Gipny на своё устройство.",
+  "native.no_build": "На этом устройстве можно пользоваться Gipny в браузере.",
+  "native.download": "Скачать для {os} ({format})",
+  "native.never": "Не показывать больше",
+  "native.all_builds": "Все сборки",
+
   "setup.title": "Язык и клавиатура",
   "setup.detected": "Мы выбрали для вас язык: {language}. Его можно изменить ниже.",
   "setup.layouts": "Раскладки клавиатуры",
@@ -177,6 +184,7 @@ export const ru = {
   "chat.unpin": "Открепить",
   "chat.forward": "Переслать",
   "chat.delete_msg": "Удалить сообщение",
+  "chat.no_messages": "Пока нет сообщений",
   "chat.empty_state": "Выберите контакт или группу слева",
   "chat.ttl_label": "Срок жизни",
   "chat.ttl_units": "Единица времени",
@@ -510,6 +518,7 @@ export const ru = {
   "settings.duress_passphrase": "Пароль под принуждением",
   "settings.attempt_limit": "Лимит попыток",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "полный экспорт профиля: identity, контакты, группы, ВСЯ переписка с вложениями, прекеи, pinned, settings — всё в один зашифрованный файл. ",
+  "settings.restore_browser_backup": "Чтобы восстановить данные из этого файла, откройте приложение в браузере и выберите «{select}» → «{restore}». ",
   "settings.on_another_device_profile_selection_import_backup": "импорт на другом устройстве: profile-select → [ IMPORT BACKUP ]. ",
   "settings.one_identity_means_one_active_device_after_importing": "ВАЖНО: одна identity = одно активное устройство. После импорта закрой gipny на старом — иначе session ratchet поплывёт и сообщения начнут падать в resync.",
   "settings.backup_passphrase_at_least_8_characters": "пароль копии (от 8 символов)",
@@ -553,6 +562,7 @@ export const ru = {
   "sidebar.accept": "Принять",
   "sidebar.request_declined": "Запрос отклонён",
   "sidebar.decline": "Отклонить",
+  "sidebar.block_contact": "Заблокировать контакт",
   "sidebar.blocked": "{p0} заблокирован",
   "sidebar.pin_to_top": "Закрепить наверху",
   "sidebar.move_to": "В папку «{p0}»",

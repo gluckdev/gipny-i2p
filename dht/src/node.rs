@@ -9,11 +9,13 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use futures::future::{join_all, BoxFuture};
+use futures::stream::{self, StreamExt};
+use tokio::time::{timeout_at, Instant};
 
 use crate::crypto::{sha256, DhtKey};
 use crate::proto::{
     self, node_id, pow_ok, solve_pow, DhtEnvelope, DhtRequest, DhtResponse, NodeInfo, StoredItem,
-    MAX_NODE_DESTINATION_BYTES, PROTOCOL_VERSION,
+    MAX_NODE_DESTINATION_BYTES, MAX_VALUE_BYTES, PROTOCOL_VERSION,
 };
 use crate::store::{Storage, StoreStats};
 
@@ -60,6 +62,12 @@ pub struct NodeConfig {
     pub max_failures: u32,
     /// Most bytes of items in one `Get` answer.
     pub max_get_bytes: usize,
+    /// Pages requested across all holders during one Get.
+    pub max_collect_pages: usize,
+    /// Bytes of item values and metadata examined across local and remote copies.
+    pub max_collect_bytes: usize,
+    /// Wall-clock budget for discovery, dials and all pages of one Get.
+    pub get_timeout: Duration,
 }
 
 impl Default for NodeConfig {
@@ -73,7 +81,73 @@ impl Default for NodeConfig {
             call_timeout: Duration::from_secs(120),
             max_failures: 3,
             max_get_bytes: 8 * 1024 * 1024,
+            max_collect_pages: 128,
+            max_collect_bytes: 64 * 1024 * 1024,
+            get_timeout: Duration::from_secs(5 * 60),
         }
+    }
+}
+
+// Leave room for other holders even when one has many pages. A normal store
+// holds up to 16 MiB of values per key.
+const MAX_GET_PAGES_PER_PEER: usize = 16;
+const MAX_GET_BYTES_PER_PEER: usize = 32 * 1024 * 1024;
+
+/// A best-effort read. A local resource limit can leave more items at a holder.
+#[derive(Debug, Default)]
+pub struct GetResult {
+    pub items: Vec<StoredItem>,
+    pub truncated: bool,
+}
+
+struct GetCollection {
+    deadline: Instant,
+    pages_left: usize,
+    bytes_left: usize,
+    seen: HashSet<[u8; 32]>,
+    result: GetResult,
+}
+
+impl GetCollection {
+    fn new(cfg: &NodeConfig) -> Self {
+        Self {
+            deadline: Instant::now() + cfg.get_timeout,
+            pages_left: cfg.max_collect_pages,
+            bytes_left: cfg.max_collect_bytes,
+            seen: HashSet::new(),
+            result: GetResult::default(),
+        }
+    }
+
+    fn can_fetch(&mut self) -> bool {
+        let available = self.pages_left > 0 && self.bytes_left > 0 && Instant::now() < self.deadline;
+        self.result.truncated |= !available;
+        available
+    }
+
+    /// Charge every examined item, including duplicates, empty and invalid
+    /// values. The fixed charge bounds metadata and deduplication entries.
+    fn take(&mut self, key: &DhtKey, now: u64, items: Vec<StoredItem>, peer_bytes: &mut usize) -> bool {
+        for item in items {
+            let cost = item.value.len().saturating_add(std::mem::size_of::<StoredItem>() + 32);
+            if cost > self.bytes_left {
+                self.bytes_left = 0;
+                self.result.truncated = true;
+                return false;
+            }
+            if cost > *peer_bytes || Instant::now() >= self.deadline {
+                self.result.truncated = true;
+                return false;
+            }
+            self.bytes_left -= cost;
+            *peer_bytes -= cost;
+            if item.key == *key && item.expires_at_ms > now && item.value.len() <= MAX_VALUE_BYTES
+                && self.seen.insert(sha256(&[&item.value]))
+            {
+                self.result.items.push(item);
+            }
+        }
+        true
     }
 }
 
@@ -470,6 +544,9 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                     }
                 }
             }
+            // Even immediately ready transports must let an enclosing Get's
+            // deadline interrupt discovery between rounds.
+            tokio::task::yield_now().await;
         }
         let mut out: Vec<NodeInfo> = answered.into_values().collect();
         out.sort_by_key(|i| distance(&i.id(), target));
@@ -532,41 +609,42 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
         results.into_iter().filter(|ok| *ok).count()
     }
 
-    async fn items_at(&self, node: &NodeInfo, key: &DhtKey) -> Option<Vec<StoredItem>> {
-        let mut conn = self.open(&node.destination).await?;
-        let mut out = Vec::new();
-        loop {
-            match self.exchange(&node.destination, &mut conn, DhtRequest::Get { key: *key, skip: out.len() as u32 }).await? {
-                DhtResponse::Items { items, more, closer } => {
-                    for c in &closer {
-                        self.learn(c, false);
-                    }
-                    let got = items.len();
-                    out.extend(items);
-                    if !more || got == 0 {
-                        return Some(out);
-                    }
-                }
-                _ => return None,
-            }
+    async fn items_at(&self, node: &NodeInfo, key: &DhtKey, collection: &Mutex<GetCollection>) {
+        if !collection.lock().unwrap().can_fetch() {
+            return;
         }
+        let Some(mut conn) = self.open(&node.destination).await else { return };
+        let mut skip = 0u32;
+        let mut peer_bytes = MAX_GET_BYTES_PER_PEER;
+        for _ in 0..MAX_GET_PAGES_PER_PEER {
+            {
+                let mut state = collection.lock().unwrap();
+                if !state.can_fetch() { return; }
+                state.pages_left -= 1;
+            }
+            let req = DhtRequest::Get { key: *key, skip };
+            let Some(DhtResponse::Items { items, more, closer }) =
+                self.exchange(&node.destination, &mut conn, req).await else {
+                    collection.lock().unwrap().result.truncated |= skip > 0;
+                    return;
+                };
+            for peer in closer.iter().take(self.cfg.k) {
+                self.learn(peer, false);
+            }
+            // The wire cursor counts raw items, including duplicates or items
+            // discarded locally. Never request a wrapped or stationary cursor.
+            let next = u32::try_from(items.len()).ok().and_then(|n| skip.checked_add(n));
+            if !collection.lock().unwrap().take(key, self.now_ms(), items, &mut peer_bytes) || !more {
+                return;
+            }
+            let Some(next) = next.filter(|&n| n > skip && peer_bytes > 0) else { break };
+            skip = next;
+            tokio::task::yield_now().await;
+        }
+        collection.lock().unwrap().result.truncated = true;
     }
 
-    /// Every distinct item under `key` the closest storing nodes (and seeds) hold.
-    pub async fn get(&self, key: &DhtKey) -> Vec<StoredItem> {
-        let now = self.now_ms();
-        let mut seen: HashSet<[u8; 32]> = HashSet::new();
-        let mut out = Vec::new();
-        let mut take = |items: Vec<StoredItem>, out: &mut Vec<StoredItem>| {
-            for it in items {
-                if it.key == *key && it.expires_at_ms > now && seen.insert(sha256(&[&it.value])) {
-                    out.push(it);
-                }
-            }
-        };
-        if self.stores() {
-            take(self.storage.get(key, now), &mut out);
-        }
+    async fn collect_remote(&self, key: &DhtKey, collection: &Mutex<GetCollection>) {
         let mut targets: Vec<NodeInfo> = self.lookup(key).await.into_iter().filter(|n| n.stores).collect();
         for seed in self.seed_storing_nodes() {
             if !targets.iter().any(|t| t.destination == seed.destination) {
@@ -587,12 +665,37 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                 .take(remaining).collect();
             if batch.is_empty() { break; }
             for node in &batch { queried.insert(node.destination.clone()); }
-            for items in join_all(batch.iter().map(|node| self.items_at(node, key))).await.into_iter().flatten() {
-                take(items, &mut out);
-            }
+            stream::iter(batch)
+                .for_each_concurrent(self.cfg.alpha.max(1), |node| async move {
+                    self.items_at(&node, key, collection).await;
+                }).await;
             targets = self.closest(key, self.cfg.k, true);
         }
-        out
+    }
+
+    /// Distinct live items collected before the page, byte or time limit.
+    pub async fn get(&self, key: &DhtKey) -> Vec<StoredItem> {
+        self.get_with_status(key).await.items
+    }
+
+    /// Also reports truncation when a limit or failed continuation interrupts
+    /// a read. Holders unreachable on the first request are skipped.
+    pub async fn get_with_status(&self, key: &DhtKey) -> GetResult {
+        let mut state = GetCollection::new(&self.cfg);
+        let deadline = state.deadline;
+        if self.stores() {
+            let now = self.now_ms();
+            let mut local_bytes = state.bytes_left;
+            state.take(key, now, self.storage.get(key, now), &mut local_bytes);
+        }
+        if self.table_len() == 0 || !state.can_fetch() {
+            return state.result;
+        }
+        let collection = Mutex::new(state);
+        let timed_out = timeout_at(deadline, self.collect_remote(key, &collection)).await.is_err();
+        let mut result = collection.into_inner().unwrap().result;
+        result.truncated |= timed_out;
+        result
     }
 
     /// Delete mail we opened, wherever the closest nodes (and seeds) hold it.
@@ -629,8 +732,13 @@ impl<T: Transport, S: Storage> DhtNode<T, S> {
                 }
             }
             for node in targets {
-                let has = self.items_at(&node, &item.key).await
-                    .is_some_and(|items| items.iter().any(|i| sha256(&[&i.value]) == hash));
+                let state = GetCollection::new(&self.cfg);
+                let deadline = state.deadline;
+                let collection = Mutex::new(state);
+                let _ = timeout_at(deadline, self.items_at(&node, &item.key, &collection)).await;
+                // On a partial read, a matching item already proves possession.
+                // Otherwise Store remains safe to retry on this holder.
+                let has = collection.into_inner().unwrap().seen.contains(&hash);
                 if !has && self.store_at(&node, &item).await {
                     handed += 1;
                 }

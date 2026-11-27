@@ -16,11 +16,11 @@ of gipny; the [migration history](MIGRATION-i2p.md) is retained separately.
 
 As of 18 November 2026, the newest published prerelease is [v0.5.0-alpha.1](https://github.com/gluckdev/gipny-i2p/releases/tag/v0.5.0-alpha.1). Pages publishes the web client from `main`. See the [deployment guide](scripts/deploy/README.md) for publication and offline startup checks.
 
-Development targets **beta** on `release/0.5.0-beta.1`; alpha2 will not be
-published. Package metadata still says `0.5.0-beta.1`. A source version, a passing build,
+Development targets **rc.7** on `release/0.5.0-beta.1`; alpha2 will not be
+published. Package metadata says `0.5.0-rc.7`. A source version, a passing build,
 a published package and a deployed service are different things.
 See [current capabilities](docs/current-state.md). Native and browser WSS/WebRTC
-CI passed at baseline `2139725`; new beta changes need their own evidence.
+CI passed at baseline `2139725`; new rc changes need their own evidence.
 [Release gates](docs/plans/2026-11-16-beta.md) include profile transfer over I2P,
 network adaptation and platform coverage. Old-data compatibility and migrations
 are not planned.
@@ -101,7 +101,7 @@ Hop counts, transit settings and timeouts need comparable measurements.
 |---|---|
 | Tauri native client and Android | [core](core/README.md), [Android](core/gen/android/README.md) |
 | Crypto, delivery and storage | [libcore](libcore/README.md) |
-| UI and localization | [ui](ui/README.md), [RU/EN](docs/localization.md) |
+| UI and localization | [ui](ui/README.md), [Eight UI languages](docs/localization.md) |
 | WASM and transport bridge | [browser-router](browser-router/README.md), [forwarder](browser-router/forwarder/README.md) |
 | Peer discovery and personal I2P terminals | [DHT](dht/README.md), [terminal](libcore/src/relay_server.rs) |
 | Remote command agent and bot API | [agent](agent/README.md), [bot-sdk](bot-sdk/README.md) |

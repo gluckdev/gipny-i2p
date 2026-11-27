@@ -1,7 +1,8 @@
 /* Interaction effects share the existing palette and do not animate geometry. */
 :root { --interaction-time: 160ms; --modal-blur: 2px; }
 .btn, .icon-btn, .sidebar-me, .sidebar-link, .salon-profile, .contact,
-.ctx-menu-item, .input, .textarea, .sidebar-search, .chat-input textarea, .chat-send {
+.ctx-menu-item, .input, .textarea, .sidebar-search, .chat-input textarea, .chat-send,
+.section-toggle, .bugtracker-contact, .opt, .opt input {
   transition: background-color var(--interaction-time) ease, color var(--interaction-time) ease,
     border-color var(--interaction-time) ease, box-shadow var(--interaction-time) ease;
 }
@@ -16,6 +17,21 @@
 .sidebar-me-qr { flex: 0 0 auto; display: inline-flex; color: var(--fg-dim); }
 .sidebar-me:hover .sidebar-me-qr, .sidebar-me:focus-visible .sidebar-me-qr { color: var(--accent); }
 .sidebar-me-qr { transition: color var(--interaction-time) ease; }
+.section-chevron { transition: transform var(--interaction-time) ease; }
+.section-toggle:focus-visible, .bugtracker-contact:focus-visible { background: var(--bg-hover); }
+.bugtracker-contact:focus-visible { outline-offset: -3px; }
+.ctx-menu-item:focus-visible { outline-offset: -2px; }
+.btn:enabled:active, .icon-btn:enabled:active, .contact:enabled:active,
+.section-toggle:enabled:active, .ctx-menu-item:active, .bugtracker-contact:active {
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+.btn:disabled, .btn:disabled:hover, .btn:not(.btn-ghost):not(.btn-danger):disabled {
+  color: var(--fg-dim); background: var(--bg-panel); border-color: var(--border);
+  opacity: 1; box-shadow: none; cursor: not-allowed;
+}
+.btn[aria-busy="true"]:disabled { cursor: progress; }
+.opt:has(input:disabled), .opt input:disabled { cursor: not-allowed; }
+.opt:has(input:disabled) .opt-title { color: var(--fg-muted); }
 
 /* Unsupported filters retain the existing opaque-enough backdrop. No costly
    filter animation; the modal and its controls remain sharp. */
@@ -29,3 +45,57 @@
   :root { --interaction-time: 0s; --modal-blur: 0px; }
   .modal-backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .msg-flash { animation: none; outline: 2px solid var(--accent); outline-offset: -2px; }
+}
+
+/* The browser header stays above the current view, including sign-in. Reserve
+   its row inside the viewport height already calculated for the keyboard. */
+:root { --native-bar-height: calc(44px + env(safe-area-inset-top, 0px)); }
+.native-handoff-bar {
+  position: fixed;
+  inset: var(--viewport-top, 0px) 0 auto;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: var(--native-bar-height);
+  padding: var(--safe-top) calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+.native-handoff-bar + #app { padding-top: var(--native-bar-height); --safe-top: 0px; }
+.native-handoff-launch { min-height: 36px; padding: 4px 14px; }
+#native-prompt {
+  position: fixed;
+  inset: calc(var(--viewport-top, 0px) + var(--native-bar-height) + 5px) calc(8px + var(--safe-right)) auto auto;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(360px, 90vw);
+  max-height: 25vh;
+  max-height: min(25vh, 25dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--fg);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+#native-prompt[hidden], .native-download[hidden] { display: none; }
+.native-prompt-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-right: -8px; }
+.native-handoff-close {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  font-size: 24px;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+.native-handoff-close:hover, .native-handoff-close:focus-visible { background: var(--bg-hover); }
+.native-prompt-actions a, .native-all-builds { font-size: 12px; color: var(--accent); text-decoration: underline; }
+.native-download { margin-block: 6px; padding: 5px 12px; }
+.native-all-builds { display: block; width: fit-content; }

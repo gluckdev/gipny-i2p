@@ -67,9 +67,10 @@ Rust закреплён на `1.93.1`, Android NDK — `27.3.13750724`. `tauri-c
 это не проверка установки NSIS на компьютере пользователя.
 
 Windows memory-security CI также выявил upstream SQLCipher logger recursion
-при `VirtualLock` quota failure. Workspace использует rusqlite 0.41.1 / libsqlite3-sys 0.39.1; SQLCipher 4.19.0 приходит
-из публичного source crate `sqlcipher-src` по корневому lockfile. Отдельный Windows child-process regression
-форсирует lock failure при включённом `cipher_memory_security`.
+при `VirtualLock` quota failure. Workspace использует `rusqlite 0.43.0`, `libsqlite3-sys 0.40.0`
+и SQLCipher 4.20.0 из `sqlcipher-src 420.0.0`. Отказ блокировки при включённом
+`cipher_memory_security` проверяет отдельный дочерний процесс.
+[Версии зависимостей](../Cargo.lock) · [Тест Windows](../libcore/tests/sqlcipher_windows.rs).
 
 После Tauri build `verify-macos-bundle.sh` проверяет Info.plist, единственный
 executable, точную архитектуру и `codesign --verify --deep --strict` для обеих
@@ -110,11 +111,11 @@ workflow SHA. Файл перед сборкой APK и после неё пов
 cache в релизе не используется. Зависимости могут кэшироваться по source pins.
 Android выравнивает nested i2pd на desktop pin и применяет
 `scripts/apply-i2pd-memory-patches.sh`; actual commits отражаются в build manifest.
-На 2026-10-31 подготовлен переход на layout i2pd-android 3.0.0; его сборку ещё
-должен подтвердить CI. `binary/jni/fetch_deps.sh` закрепляет версии и SHA256
-архивов Boost/OpenSSL/miniupnpc, `build_openssl.sh arm64|arm` собирает OpenSSL
-для API 23. Boost program_options компилирует наш `Android.mk`; miniupnpc
-не линкуется. Source archive хранит исходные gitlinks; версии зависимостей
+В подмодуле `third_party/i2pd-android` скрипт `binary/jni/fetch_deps.sh`
+закрепляет версии и SHA256 архивов Boost, OpenSSL и miniupnpc,
+а `binary/jni/build_openssl.sh` собирает OpenSSL для API 23. Наш `android-router/jni/Android.mk` компилирует Boost program_options и
+статически линкует miniupnpc из `i2p-embed/vendor/miniupnpc` для Rust-менеджера UPnP.
+Source archive хранит исходные gitlinks; версии зависимостей
 закреплены скриптами этого пина i2pd-android. Оба workflow используют NDK
 `27.3.13750724` и общий ключ кэша по NDK, ABI, commit i2pd-android и хэшу обоих
 скриптов; сохраняют `deps/boost`, `deps/openssl/out/<abi>` и `deps/*.tar.gz`.

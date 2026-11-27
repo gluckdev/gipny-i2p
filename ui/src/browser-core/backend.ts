@@ -4,13 +4,14 @@ import type { BootStatus, CoreEvent, DeliveryExpiryNotice, GroupMember, PendingA
 import { isValidI2pAddress } from '../features/contacts/contact-card';
 import { ProfileStorage, listProfiles, removeProfile, profileName } from './profiles/storage';
 import { publicIdentity } from './profiles/public-identity';
+import { exportBackup, importBackup } from './profiles/backup';
 import { BrowserRelay } from './networking/relay';
 import { PublicPrewarm, StartupTimings } from './networking/startup';
 import { acknowledgeBrowserDeletion, deletionEvent, forgetRequestObligations, queuePeerReport, queueDeletionControls, receiveDeletionControl } from './messaging/deletion';
 import { addContact, getContact, removeContact } from './messaging/contacts';
 import { groupWire, ingestGroup } from './messaging/groups';
 import { validatePayload } from './messaging/validation';
-import { oweReceipt, receiveViewOnceControl, sweepViewOnce, trackViewOnce, viewOnceDue } from './messaging/view-once-delivery';
+import { isViewOnceControl, oweReceipt, receiveViewOnceControl, sweepViewOnce, trackViewOnce, viewOnceDue } from './messaging/view-once-delivery';
 import type { ViewOnceDelivery } from '../app/api';
 import { markerEnd, pruneViewOnceMarkers, VIEW_ONCE_BODY_LIMIT, ViewOnceInbox, type ViewOnceOfferReply, type ViewOnceRequest } from './messaging/view-once';
 import { ViewOnceOutbox, type WaitingLetter } from './messaging/view-once-outbox';
@@ -62,6 +63,9 @@ export class BrowserBackend {
   private network: BrowserNetwork | null = null;
   private generation = 0;
   private closing = false;
+  private profileOperation = false;
+  private unreachable = new Set<number>();
+  private roundTrips = new Map<number, number[]>();
   private pumping = false;
   /** Outbox keys being sent (at most SEND_STREAMS) and the step each is in. */
   private sending = new Map<string, { stage: string; at: number }>();
@@ -302,6 +306,8 @@ export class BrowserBackend {
    * this worker; no long network operation is held inside the state queue. */
   closeNow(): void {
     this.closing = true;
+    this.unreachable.clear();
+    this.roundTrips.clear();
     this.viewOnce.clear();
     this.viewOnceOutbox.clear();
     this.prewarm.cancel();
@@ -415,10 +421,7 @@ export class BrowserBackend {
       this.network = network;
       this.startup.mark('application_destination_ready');
       this.relay = new BrowserRelay(engine, network, this.identity!, (peer, blob) => this.receive(peer, blob), error => this.networkFailed(error),
-        peer => this.resumePeerRetries(peer, attempt), (peer, request) => this.receiveViewOnceOffer(peer, request), peer => {
-          const contact = this.state?.contacts.find(c => c.sign_pk === peer && c.trust !== 2);
-          return contact ? [contact.i2p_address, contact.relay].filter((address): address is string => !!address && isValidI2pAddress(address)) : [];
-        });
+        peer => this.resumePeerRetries(peer, attempt), (peer, request) => this.receiveViewOnceOffer(peer, request), peer => this.terminalCandidates(peer));
       this.relay.start();
       this.hosted = { state: 'ready', address: this.identity!.i2p_address };
       this.boot('core', 'done', 'In-process client destination is ready');
@@ -435,8 +438,16 @@ export class BrowserBackend {
     } catch (error) { if (attempt === this.generation && !this.closing) this.networkFailed(reason(error)); }
   }
 
+  private terminalCandidates(peer: string): string[] {
+    const contact = this.state?.contacts.find(contact => contact.sign_pk === peer && contact.trust !== 2)
+      ?? this.state?.outbox.find(item => item.peer === peer && item.wipeRoute && Date.now() < letterDeadline(item))?.wipeRoute;
+    return contact ? [contact.i2p_address, contact.relay].filter((address): address is string => !!address && isValidI2pAddress(address)) : [];
+  }
+
   private resumePeerRetries(peer: string, generation: number): void {
     if (generation !== this.generation || this.closing || !this.state) return;
+    const contact = this.state.contacts.find(contact => contact.sign_pk === peer);
+    if (contact && this.unreachable.delete(contact.id)) this.event({ ContactReachability: { contact_id: contact.id, unreachable: false } });
     const waiting = this.viewOnceOutbox.wake(peer);
     if (wakePeerRetries(this.state, peer, this.sending, this.retryOnReturn) || waiting) {
       this.log.debug('outbox_peer_returned', this.who(peer));
@@ -564,8 +575,11 @@ export class BrowserBackend {
    * then record the deposit before anything could send it again. */
   private async sendItem(item: Outbox, attempt: number): Promise<void> {
     if (attempt !== this.generation || !this.relay || !this.state) return;
-    const contact = this.state.contacts.find(value => value.sign_pk === item.peer);
-    if (!contact || !canSendControls(this.state, item.peer)) return;
+    const contact = item.wipeRoute ?? this.state.contacts.find(value => value.sign_pk === item.peer);
+    const allowed = (state: BrowserState): boolean => item.wipeRoute
+      ? item.payload?.wipe === true && !state.contacts.some(value => value.sign_pk === item.peer)
+      : canSendControls(state, item.peer);
+    if (!contact || !allowed(this.state)) return;
     const address = contact.relay || contact.i2p_address;
     const step = (stage: string): void => { if (this.sending.has(item.key)) this.sending.set(item.key, { stage, at: Date.now() }); };
     let part: Uint8Array | null = null;
@@ -597,7 +611,7 @@ export class BrowserBackend {
       await this.transact((state, engine) => {
         if (attempt !== this.generation) return;
         const current = state.outbox.find(value => value.key === item.key);
-        if (!current || Date.now() >= letterDeadline(current) || !canSendControls(state, item.peer) || !reopenForResend(current)) return;
+        if (!current || Date.now() >= letterDeadline(current) || !allowed(state) || !reopenForResend(current)) return;
         if (current.blob === null) {
           const letter = current.file ? buildChunkLetter(state, this.identity!, current, part) : current.payload;
           if (!letter) { state.outbox = state.outbox.filter(value => value !== current); return; }
@@ -610,7 +624,7 @@ export class BrowserBackend {
       });
       part?.fill(0); part = null;
       const current = this.state?.outbox.find(value => value.key === item.key);
-      if (!current?.blob || !this.relay || attempt !== this.generation || !this.state || !canSendControls(this.state, item.peer)) return;
+      if (!current?.blob || !this.relay || attempt !== this.generation || !this.state || !allowed(this.state)) return;
       step('deposit');
       await this.relay.deposit(address, current.peer, fromBase64(current.blob), () =>
         attempt === this.generation && Date.now() < letterDeadline(current) && !!this.state?.outbox.some(value => value.key === current.key));
@@ -618,13 +632,17 @@ export class BrowserBackend {
       this.lastDeposit = Date.now(); this.stallReports = 0;
       this.relayAnswered = true;
       this.startup.mark('first_authenticated_peer');
+      this.unreachable.delete(contact.id);
       this.event({ ContactReachability: { contact_id: contact.id, unreachable: false } });
       this.boot('dht', 'skipped', 'Authenticated peer relay answered');
       this.log.debug('outbox_deposited', `to ${this.who(current.peer)} · attempts ${current.attempts}${current.resends ? ` · resend ${current.resends}` : ''}`);
       let sent: number | null = null;
       step('settle');
       // The relay stored this ciphertext: from now on it is never sent again.
-      await this.transact(state => { sent = settleDeposit(state, item.key, Date.now()); });
+      await this.transact((state, engine) => {
+        if (state.outbox.some(row => row.key === item.key && row.wipeRoute)) engine.forget_peer(item.peer);
+        sent = settleDeposit(state, item.key, Date.now());
+      }, !!item.wipeRoute);
       if (sent !== null) this.event({ MessageSent: { message_id: sent } });
     } catch (error) {
       if (attempt !== this.generation || !this.state) return;
@@ -639,6 +657,7 @@ export class BrowserBackend {
         });
       } catch { /* Locked or storage fault: nothing more to record. */ }
       if (!this.state?.outbox.some(value => value.key === item.key)) return;
+      this.unreachable.add(contact.id);
       this.event({ ContactReachability: { contact_id: contact.id, unreachable: true } });
       this.log.debug('outbox_retry', `to ${this.who(item.peer)} · attempts ${(this.state?.outbox.find(value => value.key === item.key))?.attempts ?? item.attempts} · ${reason(error)}`);
       // Keep the exact ciphertext for a later retry (until the relay confirms it), including restart.
@@ -665,10 +684,12 @@ export class BrowserBackend {
     const hash = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', digestInput)));
     if (this.engine !== receivingEngine || this.closing) throw new Error('Profile is locked');
     const events: CoreEvent[] = [];
+    let sample: { id: number; ms: number } | undefined;
     let erasure = false;
     await this.transact(async (state, engine) => {
       if (engine !== receivingEngine) throw new Error('Profile is locked');
       if (state.contacts.some(contact => contact.sign_pk === peer && contact.trust === 2)) return;
+      if (state.outbox.some(item => item.peer === peer && item.wipeRoute)) return;
       const duplicate = recentEnvelope(state, peer, hash);
       if (duplicate) {
         // The same ciphertext again (a lost `Deposited` frame): repeat the
@@ -729,8 +750,11 @@ export class BrowserBackend {
         ack = receiveDeletionControl(state, own, contact.id, peer, incoming, events);
       } else if (incoming.ack_for !== null) {
         const row = state.messages.find(value => value.outgoing && value.origin === incoming.ack_for && sameScope(value, contactId, groupId));
-        if (row && acknowledgeDelivery(state, row, peer, Date.now())) {
+        const at = row && state.outbox.find(item => item.peer === peer && item.row === row.id)?.at;
+        const now = Date.now();
+        if (row && acknowledgeDelivery(state, row, peer, now)) {
           events.push({ MessageDelivered: { message_id: row.id } });
+          if (at && now > at && now - at <= 600_000) sample = { id: contact.id, ms: now - at };
           this.log.info('message_ack', `message ${row.id} delivered to ${this.who(peer)}`);
         }
       } else if (incoming.typing !== null) {
@@ -777,9 +801,20 @@ export class BrowserBackend {
       events.push({ PeerSeen: { contact_id: contact.id, at_ms: incoming.sent_at } });
     }, () => erasure);
     if (this.engine !== receivingEngine) return;
+    if (sample) {
+      const { id, ms } = sample;
+      const times = [...(this.roundTrips.get(id) ?? []), ms].slice(-7);
+      this.roundTrips.set(id, times);
+      events.push({ LinkRtt: { contact_id: id, ms: this.medianRoundTrip(id)! } });
+    }
     events.forEach(event => this.event(event));
     this.verifyReadyFiles();
     this.schedule(0);
+  }
+
+  private medianRoundTrip(id: number): number | null {
+    const times = this.roundTrips.get(id);
+    return times ? [...times].sort((a, b) => a - b)[Math.floor(times.length / 2)]! : null;
   }
 
   private send(state: BrowserState, args: Args, group: boolean, attachments: PreparedFile[], sourceExpiresAt?: number | null): number {
@@ -812,7 +847,8 @@ export class BrowserBackend {
       const offer = { file_id: [...crypto.getRandomValues(new Uint8Array(16))], name: attachment.name, size: attachment.size, sha256: attachment.sha256, chunk_size: attachment.storage.chunk_size };
       letter.files.push(offer); chunked.push({ offer, attachment: id });
     }
-    const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(member => !member.is_self).map(member => {
+    const peers = groupId ? state.groups.find(value => value.id === groupId)!.members.filter(member =>
+      !member.is_self && !state.outbox.some(item => item.peer === member.sign_pk && item.wipeRoute)).map(member => {
       let recipient = state.contacts.find(value => value.sign_pk === member.sign_pk);
       if (!recipient) recipient = addContact(state, this.identity!, this.log, { signPk: member.sign_pk, dhPk: member.dh_pk, i2pAddress: member.i2p_address, name: member.name }, 'none');
       return recipient;
@@ -924,9 +960,21 @@ export class BrowserBackend {
       return null;
     }
     if (command === 'vault_status') return { exists: this.storage?.name === args.profile || (await listProfiles()).includes(text(args, 'profile')), unlocked: this.storage?.name === args.profile && this.engine !== null };
-    if (command === 'vault_create') return this.open(args, true);
-    if (command === 'vault_unlock') return this.open(args, false);
-    if (command === 'vault_unlock_passkey') return this.open(args, false, true);
+    if (['vault_create', 'vault_unlock', 'vault_unlock_passkey', 'import_identity_to_profile'].includes(command)) {
+      if (this.profileOperation) throw new Error('Another profile operation is in progress');
+      this.profileOperation = true;
+      try {
+        if (command !== 'import_identity_to_profile') return await this.open(args, command === 'vault_create', command === 'vault_unlock_passkey');
+        if (this.engine || this.storage) throw new Error('Lock the current profile first');
+        const file = args.backupFile ?? args.backupPath;
+        if (!(file instanceof Blob)) throw new Error('Select a browser backup file');
+        const generation = this.generation;
+        await importBackup(file, text(args, 'backupPass'), text(args, 'profile'), text(args, 'vaultPass'), () => {
+          if (generation !== this.generation) throw new Error('Profile restore cancelled');
+        });
+        return null;
+      } finally { this.profileOperation = false; }
+    }
     if (command === 'vault_lock') { this.closeNow(); return null; }
     if (command === 'passkey_entries') {
       if (this.storage && this.storage.name === args.profile) {
@@ -952,13 +1000,26 @@ export class BrowserBackend {
     if (command === 'get_relay_address') return this.identity?.i2p_address || '';
     if (command === 'get_router_settings') return { transit: 'frugal', upnp: 'off' };
     if (command === 'get_dht_status') return { peers: 0, items: 0, bytes: 0, joined: false, stores: false, seeds: 0 };
-    if (command === 'list_unreachable_contacts') return [];
+    if (command === 'list_unreachable_contacts') return this.require().state.contacts.filter(contact => this.unreachable.has(contact.id)).map(contact => contact.id);
+    if (command === 'device_screen_auth_available') return false;
     // The application log viewer works without an unlocked profile.
     if (command === 'log_settings') return { available: this.log.isEnabled, enabled: this.log.isEnabled, path: LOG_LOCATION };
     if (command === 'read_debug_log') return this.log.text();
     if (command === 'read_previous_log') return this.log.previous();
     if (command === 'clear_debug_log') { await this.log.clear(); this.log.info('log_cleared', 'action log and its stored copy erased'); return null; }
     const { state, engine, identity } = this.require();
+    if (command === 'export_identity') {
+      const password = text(args, 'passphrase');
+      const active = (): void => { if (this.closing || this.engine !== engine) throw new Error('Profile is locked'); };
+      // Hold the mutation queue across the snapshot, including all OPFS reads.
+      // A deletion or incoming part must not race its corresponding metadata.
+      const pending = this.queue.then(() => {
+        active();
+        return exportBackup(engine, this.require().state, this.files!, password, active);
+      });
+      this.queue = pending.then(() => {}, () => {});
+      return pending;
+    }
     if (command === 'list_view_once_deliveries') return state.view_once_tracking?.deliveries ?? [];
     if (command === 'acknowledge_view_once_deliveries') {
       if (!Array.isArray(args.ids) || !args.ids.every(id => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id))) throw new Error('Invalid view-once IDs');
@@ -1024,7 +1085,9 @@ export class BrowserBackend {
     if (command === 'get_display_name') return state.displayName;
     if (command === 'link_stats') {
       const hops = application_tunnel_hops();
-      return { our_hops: hops[1], their_hops: hops[0], padded: true, route: this.relay ? 'relay' : 'none', rtt_ms: null };
+      const id = args.contactId === undefined ? null : number(args, 'contactId');
+      const reachable = this.relay && (id === null || (!this.unreachable.has(id) && state.contacts.some(contact => contact.id === id)));
+      return { our_hops: hops[1], their_hops: hops[0], padded: true, route: reachable ? 'relay' : 'none', rtt_ms: id === null ? null : this.medianRoundTrip(id) };
     }
     if (command === 'list_contacts') return state.contacts;
     if (command === 'get_contact') return getContact(state, number(args, 'id'));
@@ -1054,8 +1117,12 @@ export class BrowserBackend {
       return state.messages.filter(value => visible(value) && value.body.toLocaleLowerCase().includes(query) && (args.contactId == null || value.contact_id === args.contactId) && (args.groupId == null || value.group_id === args.groupId)).slice(-Math.min(500, typeof args.limit === 'number' ? args.limit : 100)).reverse().map(message => ({ message, contact_id: message.contact_id, group_id: message.group_id, contact_name: state.contacts.find(value => value.id === message.contact_id)?.name || null, group_name: state.groups.find(value => value.id === message.group_id)?.name || null }));
     }
     if (command === 'list_media_contact' || command === 'list_media_group') {
-      const messages = state.messages.filter(value => visible(value) && sameScope(value, command === 'list_media_contact' ? number(args, 'contactId') : null, command === 'list_media_group' ? text(args, 'groupId') : null));
-      return state.attachments.filter(value => messages.some(message => message.id === value.message_id)).slice(-100).map(file => ({ id: file.id, message_id: file.message_id, name: file.name, size: file.size, sent_at: messages.find(message => message.id === file.message_id)!.sent_at }));
+      const contact = command === 'list_media_contact' ? number(args, 'contactId') : null;
+      const group = command === 'list_media_group' ? text(args, 'groupId') : null;
+      const times = new Map(state.messages.filter(row => visible(row) && sameScope(row, contact, group)).map(row => [row.id, row.sent_at]));
+      return state.attachments.filter(file => times.has(file.message_id)).sort((a, b) => b.message_id - a.message_id)
+        .slice(0, args.limit === undefined ? 200 : number(args, 'limit'))
+        .map(file => ({ id: file.id, message_id: file.message_id, name: file.name, size: file.size, sent_at: times.get(file.message_id)! }));
     }
     if (command === 'message_position') { const index = state.messages.filter(value => visible(value) && sameScope(value, typeof args.contactId === 'number' ? args.contactId : null, typeof args.groupId === 'string' ? args.groupId : null)).reverse().findIndex(value => value.id === args.messageId); return index < 0 ? null : index; }
     if (command === 'send_message' || command === 'send_group_message' || command === 'forward_message') {
@@ -1121,8 +1188,20 @@ export class BrowserBackend {
     if (command === 'set_contact_bot') { getContact(state, number(args, 'id')).is_bot = args.isBot === true; return null; }
     if (command === 'accept_contact_request') { getContact(state, number(args, 'id')).request = 'none'; return null; }
     if (command === 'decline_contact_request' || command === 'delete_contact') {
-      if (args.forBoth) throw new Error('Browser contact removal is local; delete messages individually to notify the peer');
-      engine.forget_peer(getContact(state, number(args, 'id')).sign_pk); removeContact(state, this.log, number(args, 'id')); return null;
+      const contact = getContact(state, number(args, 'id'));
+      const notify = command === 'delete_contact' && args.forBoth === true && contact.request !== 'incoming';
+      // An unconfirmed initial may have been abandoned with the old outbox.
+      if (!notify || state.outbox.some(item => item.peer === contact.sign_pk && item.initial && !item.deposited)) engine.forget_peer(contact.sign_pk);
+      removeContact(state, this.log, contact.id);
+      if (notify) {
+        const letter = payload(this.identity!, state.displayName);
+        letter.wipe = true;
+        const item = queueLetter(state, contact.sign_pk, letter, null);
+        const { id, sign_pk, dh_pk, i2p_address, relay } = contact;
+        item.wipeRoute = { id, sign_pk, dh_pk, i2p_address, relay };
+        item.send_until = letter.sent_at + RESEND_TTL_MS;
+      }
+      return null;
     }
     if (command === 'reset_contact_session') {
       const contact = getContact(state, number(args, 'id'));
@@ -1209,12 +1288,34 @@ export class BrowserBackend {
     if (command === 'pin_chat' || command === 'unpin_chat') { const target = args.contactId != null ? getContact(state, number(args, 'contactId')) : state.groups.find(value => value.id === args.groupId); if (!target) throw new Error('Conversation not found'); target.pinned_at = command === 'pin_chat' ? Date.now() : null; return null; }
     if (command === 'set_attachment_privacy') { state.ui.attachment_privacy = args.enabled === false ? 'false' : 'true'; this.log.debug('settings_update', 'attachment_privacy'); return null; }
     if (command === 'set_auto_update' && args.enabled === false) return null;
+    if (command === 'press_button' || command === 'press_group_button') {
+      const contactId = command === 'press_button' ? number(args, 'contactId') : null;
+      const groupId = command === 'press_group_button' ? text(args, 'groupId') : null;
+      const data = text(args, 'callbackData');
+      const row = state.messages.find(row => row.id === args.messageId && !row.outgoing && visible(row) && sameScope(row, contactId, groupId));
+      if (!row || !row.buttons?.some(buttons => buttons.some(button => button.callback_data === data)) || isViewOnceControl(data)) throw new Error('Button is unavailable');
+      const sender = state.contacts.find(contact => contact.sign_pk === row.author);
+      if (!sender || sender.request !== 'none' || sender.trust === 2) throw new Error('Button sender is unavailable');
+      const letter = payload(this.identity!, state.displayName);
+      letter.origin_msg_id = row.origin;
+      letter.callback_data = data;
+      if (groupId) letter.group = groupWire(state, groupId);
+      queueLetter(state, sender.sign_pk, letter, null).send_until = Math.min(row.expires_at ?? Infinity, Date.now() + RESEND_TTL_MS);
+      return null;
+    }
     if (command === 'send_typing') {
-      if (typeof args.contactId !== 'number') return null;
-      const contact = getContact(state, args.contactId);
-      if (contact.request !== 'none' || contact.trust === 2) return null;
       const letter = payload(this.identity!, state.displayName); letter.typing = args.typing === true;
-      queueReceipt(state, contact.sign_pk, letter); return null;
+      if (typeof args.groupId === 'string') {
+        letter.group = groupWire(state, args.groupId);
+        for (const member of letter.group.members) {
+          const peer = hex(member.sign_pk);
+          if (state.contacts.some(contact => contact.sign_pk === peer && contact.request === 'none')) queueReceipt(state, peer, letter);
+        }
+      } else if (typeof args.contactId === 'number') {
+        const contact = getContact(state, args.contactId);
+        if (contact.request === 'none') queueReceipt(state, contact.sign_pk, letter);
+      }
+      return null;
     }
     throw new Error(`The browser core does not support ${command}`);
   }

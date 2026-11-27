@@ -73,10 +73,10 @@ export class Sidebar extends View {
       ]);
     });
 
-    const search = h('input', { class: 'sidebar-search', type: 'search', placeholder: tr('sidebar.search_placeholder') });
+    const search = h('input', { class: 'sidebar-search', type: 'search', placeholder: tr('sidebar.search_placeholder'), 'aria-label': tr('sidebar.search_placeholder') });
     search.addEventListener('input', () => { this.filter = search.value.trim().toLowerCase(); this.renderList(); });
 
-    this.el = h('div', { class: 'sidebar' },
+    this.el = h('nav', { class: 'sidebar', 'aria-label': tr('forward.contacts') },
       h('div', { class: 'sidebar-header' },
         me,
         h('div', { class: 'row sidebar-actions' },
@@ -87,11 +87,11 @@ export class Sidebar extends View {
       ),
       h('div', { class: 'sidebar-search-wrap' }, search),
       this.listEl,
-      h('div', { class: 'bugtracker-contact', onClick: () => this.openBugtracker() },
-        h('div', { class: 'bugtracker-icon' }, '🐛'),
-        h('div', { class: 'bugtracker-info' },
-          h('div', { class: 'bugtracker-title' }, tr('sidebar.bugtracker')),
-          h('div', { class: 'bugtracker-sub' }, tr('sidebar.report_bug')),
+      h('button', { type: 'button', class: 'bugtracker-contact', onClick: () => this.openBugtracker() },
+        h('span', { class: 'bugtracker-icon', 'aria-hidden': 'true' }, '🐛'),
+        h('span', { class: 'bugtracker-info' },
+          h('span', { class: 'bugtracker-title' }, tr('sidebar.bugtracker')),
+          h('span', { class: 'bugtracker-sub' }, tr('sidebar.report_bug')),
         ),
       ),
       h('div', { class: 'sidebar-footer' },
@@ -115,7 +115,14 @@ export class Sidebar extends View {
     return !this.filter || name.toLowerCase().includes(this.filter);
   }
 
+  focusItem(key: string): void {
+    const item = Array.from(this.listEl.querySelectorAll<HTMLElement>('[data-list-key]')).find(el => el.dataset.listKey === key);
+    (item ?? this.el.querySelector<HTMLElement>('.sidebar-me'))?.focus({ preventScroll: true });
+  }
+
   private renderList(): void {
+    const previous = document.activeElement;
+    const focusKey = previous instanceof HTMLElement && this.listEl.contains(previous) ? previous.dataset.listKey : undefined;
     this.listEl.replaceChildren();
     const contacts = this.store.contacts.get();
     const groups = this.store.groups.get().filter((g) => this.matches(g.name));
@@ -141,29 +148,32 @@ export class Sidebar extends View {
     }
 
     const rest = known.filter((c) => !inFolder.has(c.id) && this.matches(c.name));
-    if (known.length === 0) {
+    if (known.length === 0 && !this.filter) {
       this.listEl.appendChild(h('div', { class: 'list-empty' },
         h('div', { class: 'list-empty-title' }, tr('sidebar.no_contacts_yet')),
         h('div', { class: 'list-empty-sub' }, tr('sidebar.ask_for_someone_s_contact_card_and_add')),
-        h('button', { class: 'btn btn-sm', onClick: () => this.addContact() }, tr('contact.add_contact')),
+        h('button', { class: 'btn btn-sm', 'data-list-key': 'add', onClick: () => this.addContact() }, tr('contact.add_contact')),
       ));
     } else if (rest.length > 0 || !this.filter) {
       const title = this.folders.length > 0 ? tr('sidebar.unfiled') : tr('forward.contacts');
       this.section('contacts', title, rest.length, rest.map((c) => this.contactRow(c)));
     }
     if (this.filter && this.listEl.childElementCount === 0) {
-      this.listEl.appendChild(h('div', { class: 'list-empty' }, h('div', { class: 'list-empty-sub' }, tr('sidebar.nothing_found'))));
+      this.listEl.appendChild(h('div', { class: 'list-empty', role: 'status' }, h('div', { class: 'list-empty-title' }, tr('sidebar.nothing_found'))));
     }
+    if (focusKey) this.focusItem(focusKey);
   }
 
-  private header(title: string, count: number, folded: boolean, onToggle: () => void, menu?: () => MenuItem[]): HTMLElement {
-    const el = h('div', { class: 'section-label' + (folded ? ' folded' : ''), role: 'button', onClick: onToggle },
-      h('span', { class: 'section-chevron' }, '▾'),
-      h('span', { class: 'section-title' }, title),
+  private header(key: string, title: string, count: number, folded: boolean, onToggle: () => void, menu?: () => MenuItem[]): HTMLElement {
+    const toggle = h('button', { class: 'section-toggle', type: 'button', 'data-list-key': key,
+      'aria-expanded': String(!folded), disabled: !!this.filter, onClick: onToggle },
+      h('span', { class: 'section-chevron', 'aria-hidden': 'true' }, '▾'),
+      h('span', { class: 'section-title', title }, title),
       h('span', { class: 'section-count' }, String(count)),
     );
+    const el = h('div', { class: 'section-label' + (folded ? ' folded' : '') }, toggle);
     if (menu) {
-      const more = h('button', { class: 'icon-btn section-more', title: tr('sidebar.folder_actions') }, icon('more', 16));
+      const more = h('button', { class: 'icon-btn section-more', 'data-list-key': key + '-menu', title: tr('sidebar.folder_actions') }, icon('more', 16));
       more.addEventListener('click', (e) => {
         e.stopPropagation();
         const r = more.getBoundingClientRect();
@@ -178,7 +188,7 @@ export class Sidebar extends View {
   private section(key: Section, title: string, count: number, rows: HTMLElement[]): void {
     // A search shows everything it found, folded or not.
     const folded = this.folded.has(key) && !this.filter;
-    this.listEl.appendChild(this.header(title, count, folded, () => {
+    this.listEl.appendChild(this.header(key, title, count, folded, () => {
       if (this.folded.has(key)) this.folded.delete(key); else this.folded.add(key);
       try { localStorage.setItem(FOLDED_KEY, JSON.stringify([...this.folded])); } catch { /* per-device nicety */ }
       this.renderList();
@@ -188,7 +198,7 @@ export class Sidebar extends View {
 
   private folderBlock(f: ContactFolder, members: Contact[]): void {
     const folded = f.collapsed && !this.filter;
-    this.listEl.appendChild(this.header(f.name, members.length, folded, () => {
+    this.listEl.appendChild(this.header('folder-' + f.id, f.name, members.length, folded, () => {
       f.collapsed = !f.collapsed;
       this.saveFolders();
     }, () => [
@@ -204,20 +214,23 @@ export class Sidebar extends View {
 
   private rowShell(target: ChatTarget, pinned: boolean, pic: HTMLElement, name: string, sub: string, when: number | null): HTMLElement {
     const u = this.store.unread.get().get(targetKey(target)) ?? 0;
-    return h('div', {
-      class: 'contact' + (sameTarget(this.store.selectedChat.get(), target) ? ' active' : '') + (pinned ? ' pinned' : '') + (u > 0 ? ' has-unread' : ''),
-      onClick: () => this.store.selectChat(target),
+    const active = sameTarget(this.store.selectedChat.get(), target);
+    pic.setAttribute('aria-hidden', 'true');
+    return h('button', {
+      type: 'button', 'data-list-key': targetKey(target), 'aria-current': active ? 'true' : undefined,
+      class: 'contact' + (active ? ' active' : '') + (pinned ? ' pinned' : '') + (u > 0 ? ' has-unread' : ''),
+      onClick: () => this.store.selectChat(target).catch(error => this.store.showToast(errorText(error), true)),
     },
       pic,
-      h('div', { class: 'contact-info' },
-        h('div', { class: 'contact-top' },
-          h('div', { class: 'contact-name' }, name),
-          h('div', { class: 'contact-when' }, fmtWhen(when)),
+      h('span', { class: 'contact-info' },
+        h('span', { class: 'contact-top' },
+          h('span', { class: 'contact-name', title: name }, name),
+          h('span', { class: 'contact-when' }, fmtWhen(when)),
         ),
-        h('div', { class: 'contact-bottom' },
-          h('div', { class: 'contact-sub' }, sub),
-          pinned && h('div', { class: 'contact-pin', title: tr('sidebar.pinned') }, '📌'),
-          u > 0 && h('div', { class: 'contact-badge' }, u > 99 ? '99+' : String(u)),
+        h('span', { class: 'contact-bottom' },
+          h('span', { class: 'contact-sub', title: sub }, sub),
+          pinned && h('span', { class: 'contact-pin', title: tr('sidebar.pinned') }, '📌'),
+          u > 0 && h('span', { class: 'contact-badge' }, u > 99 ? '99+' : String(u)),
         ),
       ),
     );
@@ -242,7 +255,7 @@ export class Sidebar extends View {
       : c.is_bot ? tr('sidebar.bot')
       : c.trust === 1 ? tr('sidebar.verified_contact')
       : tr('sidebar.offline');
-    const pic = h('div', { class: 'avatar-wrap' }, avatar(c.name, c.sign_pk), online && h('span', { class: 'presence' }));
+    const pic = h('span', { class: 'avatar-wrap' }, avatar(c.name, c.sign_pk), online && h('span', { class: 'presence' }));
     const row = this.rowShell(target, pinned, pic, c.name, sub, c.last_message_at);
     if (online) row.querySelector('.contact-sub')?.classList.add('online');
     attachContextMenu(row, () => [...this.chatMenu(target, pinned), ...this.folderMenu(c)]);
@@ -263,10 +276,10 @@ export class Sidebar extends View {
         h('div', { class: 'contact-name' }, c.name),
         h('div', { class: 'contact-sub' }, tr('sidebar.wants_to_add_you_as_a_contact')),
         h('div', { class: 'request-actions' },
-          h('button', { class: 'btn btn-sm', onClick: act(() => Api.acceptContactRequest(c.id), tr('sidebar.added', { p0: (c.name) })) }, tr('sidebar.accept')),
-          h('button', { class: 'btn btn-sm btn-ghost', onClick: act(() => Api.declineContactRequest(c.id), tr('sidebar.request_declined')) }, tr('sidebar.decline')),
+          h('button', { class: 'btn btn-sm', 'data-list-key': 'accept-' + c.id, onClick: act(() => Api.acceptContactRequest(c.id), tr('sidebar.added', { p0: (c.name) })) }, tr('sidebar.accept')),
+          h('button', { class: 'btn btn-sm btn-ghost', 'data-list-key': 'decline-' + c.id, onClick: act(() => Api.declineContactRequest(c.id), tr('sidebar.request_declined')) }, tr('sidebar.decline')),
           h('button', {
-            class: 'icon-btn', title: tr('sidebar.lock'),
+            class: 'icon-btn', 'data-list-key': 'block-' + c.id, title: tr('sidebar.block_contact'),
             onClick: act(() => Api.updateContact(c.id, c.name, 2), tr('sidebar.blocked', { p0: (c.name) })),
           }, icon('block', 16)),
         ),

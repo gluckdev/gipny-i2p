@@ -3,8 +3,11 @@
 ## Русский
 
 `site/` — короткая публичная страница: что такое Gipny, что доступно,
-ограничения безопасности, скачивание и переход к WASM-клиенту.
-Это не сервер переписки. Поддерживаются 8 языков (`ru`, `en`, `uk`, `de`, `km`,
+ограничения безопасности, переход к полноценному веб-клиенту и скачивание
+нативных приложений. Главный путь — запуск веб-мессенджера в браузере: он
+открывается кнопкой в навигации, первом экране, мобильной панели и разделе
+«Начать» и не уступает нативным клиентам по функциям, включая экспорт профиля.
+Нативные пакеты доступны как вторичный вариант. Это не сервер переписки. Поддерживаются 8 языков (`ru`, `en`, `uk`, `de`, `km`,
 `vi`, `hi`, `zh`) с одинаковым набором ключей: язык по умолчанию выбирается по той
 же логике, что и в приложении — явный `?lang=` или переключатель на странице →
 русский для русской локали или русской раскладки клавиатуры → предпочтительный
@@ -15,7 +18,9 @@
 На схеме пути сообщения можно выбрать отправителя, I2P или получателя. Снимки открываются в полном размере по нажатию и с клавиатуры, Escape закрывает просмотр. Секция «Как это выглядит» берёт снимки из `assets/screens/` (демонстрационный
 профиль `ui/dev/demo.ts`, `?demo=1`); снимок подбирается под язык через `:lang()`.
 
-- `index.html`: семантическая разметка, fallback-текст и ссылка `./app/browser.html`.
+- `index.html`: семантическая разметка, fallback-текст, кнопки перехода в
+  `./app/browser.html` и действие открытия установленного приложения с
+  возвратом к веб-клиенту, если оно не установлено.
 - `main.js`: тексты на 8 языках (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`), выбор языка по локалям/клавиатуре и определение ОС/архитектуры локально,
   без аналитики и передачи сведений об устройстве.
 - `build.mjs`: `_site/`, каталог GitHub Releases и проверка имён/размеров assets.
@@ -40,8 +45,10 @@ SHA, помещает клиент в `_site/app/`, проверяет публ�
 `scripts/prepare-browser-config.py`. Переменная репозитория
 `GIPNY_BROWSER_CONFIG_JSON` публикуется как `app/browser-config.json`.
 Это **публичные** данные, не место для master/API credentials. TURN credentials
-должны быть ограниченными и обновляемыми. Без конфигурации доступна только
-локальная offline-работа, сетевую готовность страница не обещает.
+должны быть ограниченными и обновляемыми. Веб-клиент содержит те же функции,
+что нативные приложения, включая зашифрованный экспорт профиля; для выхода в
+I2P нужен настроенный транспортный мост. Без конфигурации доступна локальная
+работа, сетевую готовность страница не обещает.
 
 Внешние snapshot, WSS/Rust bridge и TURN настраивает оператор;
 см. [размещение](../docs/browser-messenger.md#hosting-preparation).
@@ -49,8 +56,9 @@ GitHub Actions публикует проверенный артефакт из `
 разметка главной страницы и повторное открытие экрана профиля без сети.
 Порядок публикации и проверки доступен в [руководстве по деплою](../scripts/deploy/README.md).
 
-Карточка сетевой защиты описывает текущие трёхузловые туннели приложения
-в обоих направлениях и включённое выравнивание кадров. Скорость зависит от I2P;
+Карточка сетевой защиты описывает текущие туннели приложения с двумя
+промежуточными узлами в каждом направлении и включённое выравнивание кадров.
+Скорость зависит от I2P;
 ускорение и адаптация не объявляются поводом ослаблять эту политику.
 Текст не должен обещать неразличимость трафика, защиту от захваченной ОС,
 гарантированное удаление у получателя или реализованные лишь в планах функции.
@@ -59,7 +67,10 @@ WSS через CDN и WebRTC через ICE/TURN объясняются отде
 ## English
 
 `site/` is the short public landing page: purpose, available features, security
-limits, downloads and entry to the WASM messenger. It is not a messaging server.
+limits, entry to the full-featured web messenger and native downloads. The web
+app is the primary path: its buttons lead to `./app/browser.html` from the
+navigation, hero, mobile actions and getting-started section, while native
+packages remain a secondary option. It is not a messaging server.
 All 8 languages (`ru`, `en`, `uk`, `de`, `km`, `vi`, `hi`, `zh`) share the exact
 same keys and default selection priority as the app: explicit `?lang=` or page
 switch → Russian for a Russian locale or keyboard layout → first matching
@@ -68,8 +79,10 @@ when the first matched locale is `en`) → detected keyboard layout → `en`. Wi
 JavaScript the page is Russian. App screenshots in `assets/screens/` come from the demo profile
 (`ui/dev/demo.ts`, `?demo=1`) and follow the page language through `:lang()`.
 
-`index.html` contains markup and `./app/browser.html`; `main.js` handles language
-and copy, and detects the device locally without sending that information;
+`index.html` contains markup, the `./app/browser.html` calls to action and an
+action that opens the installed native app or falls back to the web app;
+`main.js` handles language and copy, and detects the device locally without
+sending that information;
 `build.mjs` prepares `_site/` and validates the release asset catalogue.
 An empty catalogue produces no invented download links. Data/copy checks live in
 `tests/site.test.mjs`; browser behavior is tested in CI.
@@ -87,14 +100,17 @@ distinguish current evidence from planned expansion.
 The Pages workflow builds the site and WASM UI from one SHA and places the app
 under `_site/app/`. The validated repository variable
 `GIPNY_BROWSER_CONFIG_JSON` becomes public `app/browser-config.json`; never put
-master/API secrets there. Use bounded, renewable TURN credentials. Without a
-network configuration the client provides local offline functionality only.
+master/API secrets there. Use bounded, renewable TURN credentials. The web
+client matches native clients feature for feature, including encrypted profile
+export; a configured transport bridge is required for I2P networking. Without a
+network configuration the client provides local functionality only.
 Operators separately provide the netDb snapshot, Rust bridge and TURN service.
 GitHub Actions deploys the tested artifact from `main`. Chrome checks the landing
 page layouts and reloads the profile screen offline. See the [deployment guide](../scripts/deploy/README.md).
 
-The network protection card describes current three-hop application tunnels
-in both directions and enabled frame padding. Throughput depends on I2P;
+The network protection card describes current application tunnels with two
+intermediate routers in each direction and enabled frame padding. Throughput
+depends on I2P;
 performance adaptation must preserve this policy.
 Copy must distinguish implemented behavior, plans and validation. It must not
 promise traffic indistinguishability, protection from a compromised OS, or

@@ -13,38 +13,45 @@ import { h, busy, humanSize } from '../../app/view';
 import type { App } from '../../app/app';
 
 import { icon } from '../../app/icons';
+
+function labelledField(label: string, control: HTMLElement): HTMLElement {
+  return h('label', { class: 'field settings-field' }, h('span', null, label), control);
+}
+
 export class SettingsModal {
   el: HTMLElement;
   constructor(store: Store, app: App, close: () => void) {
-    const oldP = h('input', { class: 'input', type: 'password', placeholder: tr('settings.current_passphrase') });
-    const newP = h('input', { class: 'input', type: 'password', placeholder: tr('settings.new_passphrase') });
-    const newP2 = h('input', { class: 'input', type: 'password', placeholder: tr('settings.repeat_new_passphrase') });
-    const passErr = h('div', { class: 'err' });
+    const oldP = h('input', { class: 'input', type: 'password' });
+    const newP = h('input', { class: 'input', type: 'password' });
+    const newP2 = h('input', { class: 'input', type: 'password' });
+    const passErr = h('div', { class: 'err', role: 'alert' });
 
-    const currP = h('input', { class: 'input', type: 'password', placeholder: tr('settings.current_passphrase') });
-    const duP = h('input', { class: 'input', type: 'password', placeholder: tr('settings.duress_passphrase_leave_empty_to_remove') });
+    const currP = h('input', { class: 'input', type: 'password' });
+    const duP = h('input', { class: 'input', type: 'password' });
     const duWipe = h('input', { type: 'checkbox', checked: true });
-    const duErr = h('div', { class: 'err' });
+    const duErr = h('div', { class: 'err', role: 'alert' });
 
-    const attP = h('input', { class: 'input', type: 'password', placeholder: tr('settings.current_passphrase') });
+    const attP = h('input', { class: 'input', type: 'password' });
     const attN = h('input', { class: 'input', type: 'number', value: '10', min: '0' });
-    const attErr = h('div', { class: 'err' });
+    const attErr = h('div', { class: 'err', role: 'alert' });
 
     const verSlot = h('div', { class: 'card-block' }, tr('media.loading'));
-    Api.currentVersion().then((v) => { verSlot.textContent = `gipny v${v}`; }).catch(() => { verSlot.textContent = '?'; });
-    const updErr = h('div', { class: 'err' });
+    Api.currentVersion().then((v) => { verSlot.textContent = `gipny v${v}`; }).catch(error => { verSlot.textContent = errorText(error); });
+    const updErr = h('div', { class: 'err', role: 'alert' });
     const updateSection = h('div', { class: 'stack update-section', 'data-update-section': '' });
     const updateSubs: Array<() => void> = [];
 
     const closeWrapped = close;
 
-    this.el = h('div', { class: 'modal' },
+    this.el = h('div', { class: 'modal settings-modal' },
       h('div', { class: 'modal-header' },
-        h('div', { class: 'modal-title' }, `${tr('settings.title')} · ${store.currentProfile.get() ?? ''}`),
+        h('div', { class: 'settings-heading' },
+          h('h1', { class: 'modal-title' }, tr('settings.title')),
+          h('div', { class: 'settings-profile', title: store.currentProfile.get() ?? '' }, store.currentProfile.get())),
         h('button', { class: 'icon-btn', title: tr('common.close'), onClick: closeWrapped }, icon('close')),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'card-label' }, tr('settings.version')),
+        h('h2', { class: 'settings-version-title' }, tr('settings.version')),
         verSlot,
         !usesBrowserCore() && (() => {
           const pending = h('div', { class: 'hint update-status', 'data-update-status': '', role: 'status', 'aria-live': 'polite' });
@@ -184,10 +191,10 @@ export class SettingsModal {
           return updateSection;
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.privacy')),
+        h('h2', { class: 'divider-text' }, tr('settings.privacy')),
         (() => {
           const cb = h('input', { type: 'checkbox' }) as HTMLInputElement;
-          const err = h('div', { class: 'err' });
+          const err = h('div', { class: 'err', role: 'alert' });
           Api.getAttachmentPrivacy().then((v) => { cb.checked = v; }).catch(() => { cb.checked = true; });
           cb.addEventListener('change', () => {
             err.textContent = '';
@@ -206,7 +213,7 @@ export class SettingsModal {
             h('div', { class: 'divider', style: { margin: '14px 0' } }),
             (() => {
               const wipe = h('input', { type: 'checkbox' }) as HTMLInputElement;
-              const wipeErr = h('div', { class: 'err' });
+              const wipeErr = h('div', { class: 'err', role: 'alert' });
               Api.getChatPrefs().then((p) => { wipe.checked = p.clearOnLock; }).catch(() => { wipe.checked = false; });
               wipe.addEventListener('change', () => {
                 wipeErr.textContent = '';
@@ -229,11 +236,11 @@ export class SettingsModal {
           );
         })(),
 
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.agent_mode')),
+        !usesBrowserCore() && h('h2', { class: 'divider-text' }, tr('settings.agent_mode')),
         !usesBrowserCore() && (() => {
           const picker = h('select', { class: 'input' }) as HTMLSelectElement;
-          const status = h('div', { class: 'hint', style: { margin: '8px 0 6px' } });
-          const err = h('div', { class: 'err' });
+          const status = h('div', { class: 'hint', role: 'status', style: { margin: '8px 0 6px' } });
+          const err = h('div', { class: 'err', role: 'alert' });
           const toggle = h('button', { class: 'btn btn-block' }) as HTMLButtonElement;
 
           const candidates = () => store.contacts.get().filter((c) => c.trust !== 2 && c.request !== 'incoming');
@@ -279,7 +286,7 @@ export class SettingsModal {
           return h('div', null,
             h('div', { class: 'hint', style: { marginBottom: '6px' } },
               tr('settings.the_master_can_run_commands_on_this_device')),
-            h('div', { class: 'field' }, picker),
+            labelledField(tr('settings.choose_a_master'), picker),
             status,
             err,
             toggle,
@@ -294,7 +301,7 @@ export class SettingsModal {
           }, tr('settings.connect_a_remote_server_agent')),
         ),
 
-        h('div', { class: 'divider-text' }, tr('settings.language')),
+        h('h2', { class: 'divider-text' }, tr('settings.language')),
         (() => {
           const current = getLang();
           const rows = LANGS.map(({ id, label }) => {
@@ -316,10 +323,10 @@ export class SettingsModal {
                 h('span', { class: 'opt-title' }, label)),
             );
           });
-          return h('div', { class: 'opt-group language-options' }, ...rows);
+          return h('div', { class: 'opt-group language-options', role: 'radiogroup', 'aria-label': tr('settings.language') }, ...rows);
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.osk')),
+        h('h2', { class: 'divider-text' }, tr('settings.osk')),
         h('div', { class: 'hint', style: { marginBottom: '8px' } }, tr('settings.osk_hint')),
         (() => {
           // The choice is read once per page load (oskActive() caches it), so
@@ -333,7 +340,7 @@ export class SettingsModal {
             { id: 'on', title: tr('settings.osk_on') },
             ...(android ? [] : [{ id: 'off' as OskMode, title: tr('settings.osk_off') }]),
           ];
-          const note = h('div', { class: 'hint hidden', style: { marginTop: '6px' } });
+          const note = h('div', { class: 'hint hidden', role: 'status', style: { marginTop: '6px' } });
           const current = getOskMode();
           const rows = choices.map(({ id, title }) => {
             const r = h('input', {
@@ -353,10 +360,10 @@ export class SettingsModal {
                 h('span', { class: 'opt-title' }, title)),
             );
           });
-          return h('div', { class: 'opt-group' }, ...rows, note);
+          return h('div', { class: 'opt-group', role: 'radiogroup', 'aria-label': tr('settings.osk') }, ...rows, note);
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.theme')),
+        h('h2', { class: 'divider-text' }, tr('settings.theme')),
         (() => {
           // Applied the moment it is picked — unlike the router settings there is
           // nothing to restart, so there is no "takes effect later" to explain.
@@ -379,13 +386,13 @@ export class SettingsModal {
                 h('span', { class: 'opt-blurb' }, blurb)),
             );
           });
-          return h('div', { class: 'opt-group' }, ...rows);
+          return h('div', { class: 'opt-group', role: 'radiogroup', 'aria-label': tr('settings.theme') }, ...rows);
         })(),
 
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.router_i2p')),
+        !usesBrowserCore() && h('h2', { class: 'divider-text' }, tr('settings.router_i2p')),
         !usesBrowserCore() && (() => {
-          const err = h('div', { class: 'err' });
-          const note = h('div', { class: 'hint', style: { marginTop: '6px' } });
+          const err = h('div', { class: 'err', role: 'alert' });
+          const note = h('div', { class: 'hint', role: 'status', style: { marginTop: '6px' } });
 
           // Transit is cover traffic other people generate and pay for: a router
           // carrying only its own messages is far easier to single out. The
@@ -443,7 +450,7 @@ export class SettingsModal {
           return h('div', null,
             h('div', { class: 'hint', style: { marginBottom: '8px' } },
               tr('settings.how_many_other_people_s_tunnels_your_router')),
-            h('div', { class: 'opt-group' }, ...options),
+            h('div', { class: 'opt-group', role: 'radiogroup', 'aria-label': tr('settings.router_i2p') }, ...options),
 
             h('div', { class: 'divider', style: { margin: '14px 0' } }),
             h('label', { class: 'opt', style: { alignItems: 'center' } },
@@ -457,10 +464,10 @@ export class SettingsModal {
           );
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.change_passphrase')),
-        h('div', { class: 'field' }, oldP),
-        h('div', { class: 'field' }, newP),
-        h('div', { class: 'field' }, newP2),
+        h('h2', { class: 'divider-text' }, tr('settings.change_passphrase')),
+        labelledField(tr('settings.current_passphrase'), oldP),
+        labelledField(tr('settings.new_passphrase'), newP),
+        labelledField(tr('settings.repeat_new_passphrase'), newP2),
         passErr,
         h('button', {
           class: 'btn btn-block',
@@ -477,7 +484,7 @@ export class SettingsModal {
         }, tr('actions.change')),
 
         usesBrowserCore() && (() => {
-          const error = h('div', { class: 'err' });
+          const error = h('div', { class: 'err', role: 'alert' });
           const button = h('button', { class: 'btn btn-block', onClick: () => busy(button as HTMLButtonElement, async () => {
             error.textContent = '';
             try {
@@ -487,12 +494,12 @@ export class SettingsModal {
               store.showToast(tr('browser.passkey_added'));
             } catch (err) { error.textContent = errorText(err); }
           }) }, tr('browser.add_passkey'));
-          return h('div', { class: 'stack' }, h('div', { class: 'divider-text' }, tr('browser.passkey')), h('div', { class: 'hint' }, tr('browser.passkey_hint')), button, error);
+          return h('div', { class: 'stack' }, h('h2', { class: 'divider-text' }, tr('browser.passkey')), h('div', { class: 'hint' }, tr('browser.passkey_hint')), button, error);
         })(),
 
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.duress_passphrase')),
-        !usesBrowserCore() && h('div', { class: 'field' }, currP),
-        !usesBrowserCore() && h('div', { class: 'field' }, duP, h('div', { class: 'hint' }, tr('settings.leave_empty_to_remove'))),
+        !usesBrowserCore() && h('h2', { class: 'divider-text' }, tr('settings.duress_passphrase')),
+        !usesBrowserCore() && labelledField(tr('settings.current_passphrase'), currP),
+        !usesBrowserCore() && labelledField(tr('settings.duress_passphrase_leave_empty_to_remove'), duP),
         !usesBrowserCore() && h('label', { class: 'chk', style: { marginBottom: '10px' } },
           duWipe, h('span', { class: 'box' }), h('span', null, tr('settings.wipe_on_duress_unchecked_decoy'))),
         !usesBrowserCore() && duErr,
@@ -508,9 +515,9 @@ export class SettingsModal {
           },
         }, tr('common.save')),
 
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.attempt_limit')),
-        !usesBrowserCore() && h('div', { class: 'field' }, attP),
-        !usesBrowserCore() && h('div', { class: 'field' }, attN, h('div', { class: 'hint' }, tr('settings.0_unlimited'))),
+        !usesBrowserCore() && h('h2', { class: 'divider-text' }, tr('settings.attempt_limit')),
+        !usesBrowserCore() && labelledField(tr('settings.current_passphrase'), attP),
+        !usesBrowserCore() && labelledField(tr('auth.max_attempts'), attN),
         !usesBrowserCore() && attErr,
         !usesBrowserCore() && h('button', {
           class: 'btn btn-block btn-amber',
@@ -524,41 +531,42 @@ export class SettingsModal {
           },
         }, tr('common.save')),
 
-
-        !usesBrowserCore() && h('div', { class: 'divider-text' }, tr('settings.backup')),
-        !usesBrowserCore() && h('div', { class: 'hint', style: { marginBottom: '8px' } },
+        h('h2', { class: 'divider-text' }, tr('settings.backup')),
+        h('div', { class: 'hint', style: { marginBottom: '8px' } },
           tr('settings.export_your_whole_profile_identity_contacts_groups_all'),
-          tr('settings.on_another_device_profile_selection_import_backup'),
+          usesBrowserCore() ? tr('settings.restore_browser_backup', { select: tr('profile.select_title'), restore: tr('profile.import_backup') })
+            : tr('settings.on_another_device_profile_selection_import_backup'),
           tr('settings.one_identity_means_one_active_device_after_importing')),
-        !usesBrowserCore() && (() => {
-          const passI = h('input', { class: 'input', type: 'password', placeholder: tr('settings.backup_passphrase_at_least_8_characters') }) as HTMLInputElement;
-          const errEl = h('div', { class: 'err' });
+        (() => {
+          const passI = h('input', { class: 'input', type: 'password' }) as HTMLInputElement;
+          const errEl = h('div', { class: 'err', role: 'alert' });
           const exportBtn = h('button', {
             class: 'btn btn-block',
-            onClick: async () => {
+            onClick: () => busy(exportBtn, async () => {
               errEl.textContent = '';
-              if (!isTauri) { errEl.textContent = tr('web.desktop_only'); return; }
+              if (!isTauri && !usesBrowserCore()) { errEl.textContent = tr('web.desktop_only'); return; }
               if (passI.value.length < 8) { errEl.textContent = tr('settings.too_short'); return; }
               try {
                 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                const path = await save({ defaultPath: `gipny-backup-${stamp}.bin` });
+                const filename = `gipny${isTauri ? '' : '-browser'}-backup-${stamp}.bin`;
+                const path = isTauri ? await save({ defaultPath: filename }) : filename;
                 if (!path) return;
-                await Api.exportIdentity(passI.value, path as string);
+                await Api.exportIdentity(passI.value, path);
                 store.showToast(tr('settings.backup_exported'));
                 passI.value = '';
               } catch (e) {
                 errEl.textContent = errorText(e);
               }
-            },
+            }),
           }, tr('settings.export_backup'));
           return h('div', null,
-            h('div', { class: 'field' }, passI),
+            labelledField(tr('settings.backup_passphrase_at_least_8_characters'), passI),
             errEl,
             exportBtn,
           );
         })(),
 
-        h('div', { class: 'divider-text' }, tr('settings.danger_zone')),
+        h('h2', { class: 'divider-text' }, tr('settings.danger_zone')),
         h('button', {
           class: 'btn btn-block btn-danger',
           onClick: async () => {
@@ -601,7 +609,7 @@ function remoteAgentModal(store: Store, close: () => void): HTMLElement {
     style: { fontFamily: 'monospace', resize: 'vertical', marginTop: '12px' },
   }) as HTMLTextAreaElement;
   const note = h('div', { class: 'hint', style: { marginTop: '10px' } });
-  const error = h('div', { class: 'err' });
+  const error = h('div', { class: 'err', role: 'alert' });
   const copy = h('button', {
     class: 'btn btn-amber btn-block',
     onClick: async () => {

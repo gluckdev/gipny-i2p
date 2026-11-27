@@ -41,9 +41,8 @@ const RECREATE_AFTER_FAILURES: u32 = 5;
 const RECREATE_COOLDOWN: Duration = Duration::from_secs(300);
 const RECREATE_MIN_AGE: Duration = Duration::from_secs(60);
 
-/// Hops in each tunnel, as i2p builds them by default and as this app has
-/// always asked for them.
-pub const DEFAULT_HOPS: u8 = 3;
+/// Hops in each tunnel, as this app asks for them by default (2 hops each way).
+pub const DEFAULT_HOPS: u8 = 2;
 /// The shortest tunnel we will build for client devices (desktop and mobile).
 /// Two keeps somebody in the middle who knows only half.
 pub const MIN_HOPS: u8 = 2;
@@ -524,7 +523,7 @@ mod hop_tests {
         // number were read first, zero would silently arrive as one.
         assert_eq!(resolve_hops(Some(SERVER.into()), Some(0), true), 0);
         assert_eq!(resolve_hops(Some(SERVER.into()), Some(1), true), 1);
-        assert_eq!(resolve_hops(Some(SERVER.into()), Some(3), true), 3);
+        assert_eq!(resolve_hops(Some(SERVER.into()), Some(3), true), DEFAULT_HOPS);
     }
 
     #[test]
@@ -534,7 +533,7 @@ mod hop_tests {
         assert_eq!(resolve_hops(Some("2".into()), None, false), 2);
         assert_eq!(resolve_hops(None, None, false), MIN_HOPS);
         assert_eq!(resolve_hops(Some("nonsense".into()), None, false), MIN_HOPS);
-        assert_eq!(resolve_hops(Some(" 3 ".into()), None, false), 3);
+        assert_eq!(resolve_hops(Some(" 3 ".into()), None, false), DEFAULT_HOPS);
     }
 
     #[test]
@@ -543,7 +542,7 @@ mod hop_tests {
         // profile may ask for it.
         assert_eq!(resolve_hops(Some("0".into()), None, false), 1);
         assert_eq!(resolve_hops(None, Some(0), false), MIN_HOPS);
-        // And nothing exceeds what i2pd builds.
-        assert_eq!(resolve_hops(Some("300".into()), None, true), 3);
+        // And nothing exceeds what we build.
+        assert_eq!(resolve_hops(Some("300".into()), None, true), DEFAULT_HOPS);
     }
 }

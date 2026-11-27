@@ -2,6 +2,13 @@ import type { en } from './en.ts';
 
 /** UI messages; user content and protocol identifiers remain unchanged. */
 export const hi = {
+  "native.open": "ऐप में खोलें",
+  "native.prompt": "अपने डिवाइस पर Gipny का परीक्षण संस्करण इंस्टॉल करें।",
+  "native.no_build": "इस डिवाइस पर आप ब्राउज़र में Gipny का इस्तेमाल जारी रख सकते हैं।",
+  "native.download": "{os} के लिए डाउनलोड करें ({format})",
+  "native.never": "दोबारा न दिखाएँ",
+  "native.all_builds": "सभी बिल्ड",
+
   "setup.title": "भाषा और कीबोर्ड",
   "setup.detected": "हमने आपके लिए {language} चुनी है। आप नीचे भाषा बदल सकते हैं।",
   "setup.layouts": "कीबोर्ड लेआउट",
@@ -176,6 +183,7 @@ export const hi = {
   "chat.unpin": "अनपिन करें",
   "chat.forward": "आगे",
   "chat.delete_msg": "संदेश हटाएँ",
+  "chat.no_messages": "अभी कोई संदेश नहीं है",
   "chat.empty_state": "बाईं ओर कोई संपर्क या समूह चुनें",
   "chat.ttl_label": "संदेश की अवधि",
   "chat.ttl_units": "समय की इकाई",
@@ -509,6 +517,7 @@ export const hi = {
   "settings.duress_passphrase": "जबरदस्ती की स्थिति वाला पासफ़्रेज़",
   "settings.attempt_limit": "प्रयास की सीमा",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "अपनी संपूर्ण प्रोफ़ाइल निर्यात करें: पहचान, संपर्क, समूह, सभी संदेश और अनुलग्नक, प्रीकी, पिन किए गए आइटम और सेटिंग्स एक एन्क्रिप्टेड फ़ाइल में। ",
+  "settings.restore_browser_backup": "इस फ़ाइल से डेटा बहाल करने के लिए ब्राउज़र ऐप खोलें और {select} → {restore} चुनें। ",
   "settings.on_another_device_profile_selection_import_backup": "किसी अन्य डिवाइस पर: प्रोफ़ाइल चयन → बैकअप आयात करें। ",
   "settings.one_identity_means_one_active_device_after_importing": "एक पहचान का अर्थ है एक सक्रिय उपकरण। आयात करने के बाद, पुराने डिवाइस पर gipny बंद करें; अन्यथा शाफ़्ट सत्र अलग हो जाते हैं और संदेशों को पुन: सिंक्रनाइज़ेशन की आवश्यकता होती है।",
   "settings.backup_passphrase_at_least_8_characters": "बैकअप पासफ़्रेज़ (कम से कम 8 अक्षर)",
@@ -552,6 +561,7 @@ export const hi = {
   "sidebar.accept": "स्वीकार करो",
   "sidebar.request_declined": "अनुरोध अस्वीकार कर दिया गया",
   "sidebar.decline": "अस्वीकार",
+  "sidebar.block_contact": "संपर्क को ब्लॉक करें",
   "sidebar.blocked": "{p0} अवरुद्ध",
   "sidebar.pin_to_top": "शीर्ष पर पिन करें",
   "sidebar.move_to": "“{p0}” पर जाएँ",

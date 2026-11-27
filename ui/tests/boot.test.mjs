@@ -209,7 +209,7 @@ test('startup selects the last successfully used profile but never unlocks or cr
       assert.equal(store.view.get(), expected ? 'auth-unlock' : 'auth-create');
       assert.equal(store.identity.get(), null);
       assert.equal(store.bootCanEnter.get(), false);
-      assert.deepEqual(prewarmed, expected ? [expected] : []);
+      assert.deepEqual(prewarmed, expected ? [expected] : ['']);
       assert.equal(localStorage.getItem('gipny:last-profile'), remembered && profiles.includes(remembered) ? remembered : null,
         'a fallback selection is not recorded as a successful login');
       store.endBoot();
@@ -467,6 +467,111 @@ test('native registration keeps duress optional and preserves exact passwords, w
   } finally {
     auth.destroy(); optional?.destroy(); store.endBoot(); Api.vaultCreate = original; ui.configureBrowserBackend(quietCore);
   }
+});
+
+test('browser Settings exports a named encrypted backup and allows retry after an error', async ctx => {
+  const store = new Store();
+  const app = new ui.App(store);
+  ctx.after(() => app.destroy());
+  document.body.append(app.el);
+  const close = app.openModal(dismiss => new ui.SettingsModal(store, app, dismiss).el);
+  ctx.after(close);
+  const button = [...document.querySelectorAll('.modal button')].find(el => el.textContent === t('settings.export_backup'));
+  assert.ok(button);
+  const { parentElement: section } = button;
+  const pass = section.querySelector('input[type=password]'), error = section.querySelector('[role=alert]');
+  const calls = [];
+  let finish;
+  ctx.mock.method(Api, 'exportIdentity', async (...args) => {
+    calls.push(args);
+    if (calls.length === 1) throw new Error('export interrupted');
+    return new Promise(resolve => { finish = resolve; });
+  });
+  pass.value = 'short';
+  button.click();
+  await tick();
+  assert.equal(error.textContent, t('settings.too_short'));
+  assert.equal(calls.length, 0);
+  pass.value = 'archive password';
+  button.click();
+  await tick();
+  assert.match(error.textContent, /export interrupted/);
+  assert.equal(pass.value, 'archive password');
+  button.click(); button.click();
+  assert.equal(button.disabled, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][0], pass.value);
+  assert.match(calls[1][1], /^gipny-browser-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.bin$/);
+  finish();
+  await tick();
+  assert.equal(error.textContent, '');
+  assert.equal(pass.value, '');
+  assert.equal(button.disabled, false);
+  assert.equal(store.toast.get()?.text, t('settings.backup_exported'));
+});
+
+test('a fresh browser can select a backup, retry its password and release its file on close', async ctx => {
+  const store = new Store();
+  store.beginPrewarm = () => {};
+  let restored = false;
+  ctx.mock.method(Api, 'listProfiles', async () => restored ? ['restored'] : []);
+  ctx.mock.method(Api, 'vaultStatus', async () => ({ exists: true, unlocked: false }));
+  const app = new ui.App(store);
+  ctx.after(() => app.destroy());
+  document.body.append(app.el);
+  await store.bootstrap();
+  const findButton = (root, key) => [...root.querySelectorAll('button')].find(el => el.textContent === t(key));
+  const select = findButton(app.el, 'profile.select_title');
+  assert.ok(select && !select.classList.contains('hidden'));
+  select.click();
+  const choose = findButton(app.el, 'profile.import_backup');
+  const file = new File(['archive'], 'my-backup.bin');
+  let picker;
+  ctx.mock.method(HTMLInputElement.prototype, 'click', function () { picker = this; });
+  const pick = () => {
+    choose.click();
+    assert.equal(picker.type, 'file');
+    assert.equal(picker.accept, '.bin');
+    Object.defineProperty(picker, 'files', { value: [file] });
+    picker.dispatchEvent(new win.Event('change'));
+    return document.querySelector('.modal');
+  };
+  choose.click();
+  picker.dispatchEvent(new win.Event('cancel'));
+  assert.equal(document.querySelector('.modal'), null);
+  let token;
+  ctx.mock.method(Api, 'importIdentityToProfile', async (name, vaultPass, backupPath, backupPass) => {
+    assert.equal(name, 'restored');
+    assert.equal(vaultPass, 'new vault password');
+    assert.equal(ui.selectedBrowserFile(backupPath), file);
+    token = backupPath;
+    if (backupPass !== 'backup password') throw new Error('incorrect backup password');
+    restored = true;
+  });
+  const submitWrongPassword = async modal => {
+    assert.ok(modal.textContent.includes(file.name));
+    assert.ok(!modal.textContent.includes('browser-file:'));
+    const [name, vaultPass, archivePass] = modal.querySelectorAll('input');
+    name.value = 'restored'; vaultPass.value = 'new vault password'; archivePass.value = 'incorrect';
+    findButton(modal, 'profile.import').click();
+    await tick();
+    assert.match(modal.querySelector('.err').textContent, /incorrect backup password/);
+    assert.equal(ui.selectedBrowserFile(token), file);
+    return archivePass;
+  };
+  const cancelled = pick();
+  await submitWrongPassword(cancelled);
+  findButton(cancelled, 'common.cancel').click();
+  assert.throws(() => ui.selectedBrowserFile(token), /select the file again/);
+  const modal = pick();
+  const archivePass = await submitWrongPassword(modal);
+  archivePass.value = 'backup password';
+  findButton(modal, 'profile.import').click();
+  await tick();
+  assert.throws(() => ui.selectedBrowserFile(token), /select the file again/);
+  assert.deepEqual(store.profiles.get(), ['restored']);
+  assert.equal(store.view.get(), 'auth-unlock');
+  assert.equal(store.currentProfile.get(), 'restored');
 });
 
 // Bypass only the native file picker: the modal, App lifecycle, Store and

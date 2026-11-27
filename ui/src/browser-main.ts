@@ -21,5 +21,7 @@ window.addEventListener('gipny-unlock-passkey', event => {
   const detail = (event as CustomEvent<{ profile: string; totpCode?: string; screenOnly?: boolean; done(error?: unknown): void }>).detail;
   void client.unlockPasskey(detail.profile, detail.totpCode, detail.screenOnly).then(() => detail.done(), error => detail.done(error));
 });
+const { installNativeHandoff } = await import('./features/native-handoff');
+installNativeHandoff();
 await import('./main');
 if ('serviceWorker' in navigator) void navigator.serviceWorker.register(new URL('browser-sw.js', document.baseURI), { scope: './' });

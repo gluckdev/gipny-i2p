@@ -13,6 +13,7 @@ export function addContact(state: BrowserState, identity: PublicIdentity, log: C
   const sign = text(args, 'signPk').toLowerCase(); const dh = text(args, 'dhPk').toLowerCase();
   unhex(sign); unhex(dh);
   if (sign === identity.sign_pk) throw new Error('Cannot add your own identity as a contact');
+  if (state.outbox.some(item => item.peer === sign && item.wipeRoute)) throw new Error('Contact removal is still pending');
   const existing = state.contacts.find(value => value.sign_pk === sign);
   if (existing) {
     if (existing.dh_pk !== dh) throw new Error('Contact identity key changed');
@@ -43,5 +44,9 @@ export function removeContact(state: BrowserState, log: ContactLog, id: number):
   state.messages = state.messages.filter(value => value.contact_id !== id);
   state.delivery_expiry_notices = state.delivery_expiry_notices.filter(notice => notice.contact_id !== id);
   state.attachments = state.attachments.filter(value => !ids.has(value.message_id));
+  state.pinnedMessages = state.pinnedMessages.filter(id => !ids.has(id));
+  state.transfers = state.transfers.filter(file => file.peer !== contact.sign_pk && !ids.has(file.message_id));
+  state.earlyParts = state.earlyParts.filter(part => part.peer !== contact.sign_pk);
+  for (const seen of state.seen) if (seen.peer === contact.sign_pk) { seen.ack = null; delete seen.file; }
   state.outbox = state.outbox.filter(value => value.peer !== contact.sign_pk);
 }

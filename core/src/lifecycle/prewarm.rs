@@ -86,7 +86,11 @@ pub(crate) async fn prewarm_network(
     ctx: State<'_, AppCtx>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let dir = profile_dir(&ctx, &profile)?;
+    let dir = if profile.trim().is_empty() {
+        ctx.base_dir.clone()
+    } else {
+        profile_dir(&ctx, &profile)?
+    };
     let mut slot = ctx.prewarm.lock().await;
     // Background preparation never holds the foreground-operation guard:
     // unlock can claim it immediately, then wait for this slot's cleanup.
@@ -99,11 +103,16 @@ pub(crate) async fn prewarm_network(
         return Ok(());
     }
     // Recheck while holding the same locks as deletion/wipe. A prewarm request
-    // that arrived before deletion must never recreate the deleted directory.
-    if !Vault::exists(&dir) {
+    // for a named profile that arrived before deletion must never recreate the
+    // deleted directory; an empty profile name prewarms in base_dir for first-run creation.
+    if !profile.trim().is_empty() && !Vault::exists(&dir) {
         return Err("no such profile".into());
     }
-    let settings = read_router_hint(&dir);
+    let settings = if profile.trim().is_empty() {
+        gipny_libcore::router::RouterSettings::default()
+    } else {
+        read_router_hint(&dir)
+    };
     if let Some(p) = slot.as_ref() {
         if p.profile() == profile
             && router_settings_match(p.settings(), settings)
@@ -227,7 +236,7 @@ pub(super) async fn take_prewarmed(
     settings: gipny_libcore::router::RouterSettings,
 ) -> Option<Arc<I2pNode>> {
     let taken = ctx.prewarm.lock().await.take()?;
-    if taken.profile() != profile
+    if (!taken.profile().trim().is_empty() && taken.profile() != profile)
         || !router_settings_match(taken.settings(), settings)
         || !ctx.prewarm_is_current(taken.generation())
     {

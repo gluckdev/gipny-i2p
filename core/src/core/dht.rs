@@ -4,9 +4,20 @@ use std::time::Instant;
 use tokio::time::MissedTickBehavior;
 
 use gipny_libcore::dht_client;
-use gipny_libcore::relay::{self, ClientToRelay};
+use gipny_libcore::relay::ClientToRelay;
 
 use super::{to_arr32, Core, CoreEvent, HostedRelayState, DHT_ADDRESS_LOOKUP_EVERY};
+
+async fn while_profile_unlocked(
+    mut locked: tokio::sync::watch::Receiver<bool>,
+    lookup: impl std::future::Future<Output = ()>,
+) {
+    tokio::select! {
+        biased;
+        _ = locked.wait_for(|locked| *locked) => {}
+        _ = lookup => {}
+    }
+}
 
 impl Core {
     /// Relay-network upkeep; joining happens when the built-in relay is up.
@@ -69,31 +80,46 @@ impl Core {
         ) else {
             return;
         };
-        let (this, id, known) = (self.clone(), contact.id, contact.relay_address.clone());
-        tokio::spawn(async move {
-            let Some((relay, _issued)) =
+        let this = self.clone();
+        let contact = contact.clone();
+        let id = contact.id;
+        let lookup = async move {
+            let Some((relay, issued)) =
                 dht_client::find_address(&this.dht, &this.identity, &their_sign, &their_dh).await
             else {
                 return;
             };
-            if known
-                .as_deref()
-                .is_some_and(|known| relay::same_destination(known, &relay))
-                || relay.trim().is_empty()
             {
-                return;
-            }
-            gipny_libcore::debug_trace!(
-                "[dht] contact {id} moved to a new relay; taking the address from the network"
-            );
-            if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
-                this.warm_relay_of(id);
+                // Shutdown locks the profile before draining tracked handles.
+                // Serialize the synchronous commit with that lock as well.
+                let locked = this.view_once_locked.borrow();
+                if *locked
+                    || !matches!(
+                        this.db.apply_dht_contact_relay(&contact, &relay, issued),
+                        Ok(true)
+                    )
+                {
+                    return;
+                }
+                gipny_libcore::debug_trace!("[dht] contact {id} moved to a new relay");
                 this.send_kick.notify_one();
                 let _ = this
                     .events
                     .try_send(CoreEvent::ContactUpdated { contact_id: id });
             }
-        });
+            // Warm the latest route inside the same tracked task.
+            if let Ok(Some(current)) = this.db.get_contact(id) {
+                if current.trust != super::TrustLevel::Blocked
+                    && current.request_state != super::RequestState::Incoming
+                {
+                    let _ = this.relay_for(&current).await;
+                }
+            }
+        };
+        self.track(tokio::spawn(while_profile_unlocked(
+            self.view_once_locked.subscribe(),
+            lookup,
+        )));
     }
 
     /// Put our prekey bundle in the network, so a contact can open a session
@@ -119,6 +145,30 @@ impl Core {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::while_profile_unlocked;
+    use tokio::sync::{oneshot, watch};
+
+    #[tokio::test]
+    async fn locked_profile_discards_a_delayed_address_lookup() {
+        let (lock, locked) = watch::channel(false);
+        let (started, waiting) = oneshot::channel();
+        let (release, reply) = oneshot::channel();
+        let (commit, committed) = oneshot::channel();
+        let task = tokio::spawn(while_profile_unlocked(locked, async move {
+            started.send(()).unwrap();
+            let _ = reply.await;
+            commit.send(()).unwrap();
+        }));
+        waiting.await.unwrap();
+        lock.send_replace(true);
+        let _ = release.send(());
+        task.await.unwrap();
+        assert!(committed.await.is_err());
     }
 }
 

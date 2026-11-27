@@ -667,3 +667,272 @@ async fn sybil_nodes_cannot_eclipse_key_from_seed() {
     assert_eq!(items.len(), 1, "reader retrieved item from seed");
     assert_eq!(items[0].value, b"hello-through-eclipse");
 }
+
+/// A finite set of pages per holder, addressed by the protocol's raw item cursor.
+#[derive(Clone, Default)]
+struct PageTransport {
+    holders: Arc<HashMap<String, Vec<Vec<StoredItem>>>>,
+    gets: Arc<Mutex<Vec<(String, u32)>>>,
+    find_delay: Duration,
+    page_delay: Duration,
+}
+
+struct PageConnection {
+    transport: PageTransport,
+    holder: String,
+}
+
+impl Transport for PageTransport {
+    type Conn = PageConnection;
+
+    fn open(&self, destination: &str) -> BoxFuture<'_, Result<Self::Conn, NetError>> {
+        let conn = PageConnection {
+            transport: self.clone(),
+            holder: destination.to_string(),
+        };
+        Box::pin(async move { Ok(conn) })
+    }
+}
+
+impl Connection for PageConnection {
+    fn challenge(&self) -> [u8; 32] {
+        [0; 32]
+    }
+
+    fn call(&mut self, env: DhtEnvelope) -> BoxFuture<'_, Result<DhtResponse, NetError>> {
+        Box::pin(async move {
+            match env.req {
+                DhtRequest::FindNode { .. } => {
+                    tokio::time::sleep(self.transport.find_delay).await;
+                    Ok(DhtResponse::Nodes {
+                        me: Some(NodeInfo {
+                            destination: self.holder.clone(),
+                            stores: true,
+                            version: PROTOCOL_VERSION,
+                        }),
+                        nodes: vec![],
+                    })
+                }
+                DhtRequest::Get { skip, .. } => {
+                    self.transport
+                        .gets
+                        .lock()
+                        .unwrap()
+                        .push((self.holder.clone(), skip));
+                    tokio::time::sleep(self.transport.page_delay).await;
+                    let pages = &self.transport.holders[&self.holder];
+                    let mut offset = 0;
+                    for (index, page) in pages.iter().enumerate() {
+                        if offset == skip as usize {
+                            return Ok(DhtResponse::Items {
+                                items: page.clone(),
+                                more: index + 1 < pages.len(),
+                                closer: vec![],
+                            });
+                        }
+                        offset += page.len();
+                    }
+                    panic!("unexpected Get cursor {skip}");
+                }
+                DhtRequest::Store { .. } => Ok(DhtResponse::Stored),
+                _ => panic!("unexpected request"),
+            }
+        })
+    }
+}
+
+fn paged_node(
+    transport: &PageTransport,
+    cfg: NodeConfig,
+    local: Option<StoredItem>,
+) -> DhtNode<PageTransport, MemStorage> {
+    use gipny_dht::store::Storage;
+    let storage = Arc::new(MemStorage::new(StoreLimits::default()));
+    if let Some(item) = local {
+        storage.put(item, 1).unwrap();
+    }
+    let node = DhtNode::new(Arc::new(transport.clone()), storage, cfg, Arc::new(|| 1));
+    node.set_me(Some(NodeInfo {
+        destination: "reader".into(),
+        stores: true,
+        version: PROTOCOL_VERSION,
+    }));
+    node.add_candidates(&transport.holders.keys().cloned().collect::<Vec<_>>(), true);
+    node
+}
+
+fn page_item(value: u8, size: usize) -> StoredItem {
+    StoredItem {
+        key: [5; 32],
+        value: vec![value; size],
+        expires_at_ms: 100,
+        delete_hash: None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn get_limits_pages_at_one_holder_and_keeps_another_holders_items() {
+    let first = page_item(1, 10);
+    let other = page_item(2, 10);
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([
+            ("paged".into(), vec![vec![first.clone()]; 64]),
+            ("other".into(), vec![vec![other.clone()]]),
+        ])),
+        ..Default::default()
+    };
+    let node = paged_node(&transport, config(), None);
+    let result = node.get_with_status(&first.key).await;
+    assert!(result.truncated);
+    assert_eq!(result.items.len(), 2);
+    assert!(result.items.contains(&first) && result.items.contains(&other));
+    assert_eq!(transport.gets.lock().unwrap().len(), 16 + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn get_shares_page_and_byte_limits_across_holders_and_local_storage() {
+    let local = page_item(0, 1024);
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([
+            (
+                "first".into(),
+                vec![vec![page_item(1, 1024)], vec![page_item(2, 1024)]],
+            ),
+            (
+                "other".into(),
+                vec![vec![page_item(3, 1024)], vec![page_item(4, 1024)]],
+            ),
+        ])),
+        ..Default::default()
+    };
+    let cfg = NodeConfig {
+        max_collect_pages: 2,
+        ..config()
+    };
+    let result = paged_node(&transport, cfg, None)
+        .get_with_status(&local.key)
+        .await;
+    assert!(result.truncated);
+    assert_eq!(result.items.len(), 2);
+    assert_eq!(transport.gets.lock().unwrap().len(), 2);
+
+    let cfg = NodeConfig {
+        max_collect_bytes: 2500,
+        ..config()
+    };
+    let result = paged_node(&transport, cfg, Some(local.clone()))
+        .get_with_status(&local.key)
+        .await;
+    assert!(result.truncated);
+    assert_eq!(result.items.len(), 2);
+    assert!(result.items.contains(&local));
+}
+
+#[tokio::test(start_paused = true)]
+async fn get_filters_items_without_losing_the_page_cursor_and_charges_duplicates() {
+    let item = page_item(1, 128);
+    let last = page_item(2, 128);
+    let mut wrong = item.clone();
+    wrong.key = [9; 32];
+    let mut expired = item.clone();
+    expired.expires_at_ms = 1;
+    let pages = vec![
+        vec![wrong, expired, item.clone(), item.clone()],
+        vec![
+            page_item(8, gipny_dht::proto::MAX_VALUE_BYTES + 1),
+            last.clone(),
+        ],
+    ];
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([("peer".into(), pages)])),
+        ..Default::default()
+    };
+    let result = paged_node(&transport, config(), None)
+        .get_with_status(&item.key)
+        .await;
+    assert!(!result.truncated);
+    assert_eq!(result.items, [item.clone(), last]);
+    assert_eq!(
+        *transport.gets.lock().unwrap(),
+        [("peer".into(), 0), ("peer".into(), 4)]
+    );
+
+    // Four empty copies cost metadata even though they all hash to one value.
+    let empty = page_item(0, 0);
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([(
+            "peer".into(),
+            vec![vec![empty.clone(); 4], vec![item.clone()]],
+        )])),
+        ..Default::default()
+    };
+    let cfg = NodeConfig {
+        max_collect_bytes: 3 * (std::mem::size_of::<StoredItem>() + 32),
+        ..config()
+    };
+    let result = paged_node(&transport, cfg, None)
+        .get_with_status(&item.key)
+        .await;
+    assert!(result.truncated);
+    assert_eq!(result.items, [empty]);
+    assert_eq!(transport.gets.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn get_marks_a_stalled_cursor_and_keeps_completed_pages() {
+    let item = page_item(1, 10);
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([(
+            "peer".into(),
+            vec![vec![item.clone()], vec![], vec![item.clone()]],
+        )])),
+        ..Default::default()
+    };
+    let result = paged_node(&transport, config(), None).get_with_status(&item.key).await;
+    assert!(result.truncated);
+    assert_eq!(result.items, [item]);
+    assert_eq!(transport.gets.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn get_deadline_covers_discovery_and_all_pages_and_preserves_the_prefix() {
+    let item = page_item(1, 10);
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([(
+            "peer".into(),
+            vec![vec![item.clone()]; 6],
+        )])),
+        find_delay: Duration::from_secs(2),
+        page_delay: Duration::from_secs(2),
+        ..Default::default()
+    };
+    let cfg = NodeConfig {
+        get_timeout: Duration::from_secs(5),
+        ..config()
+    };
+    let node = paged_node(&transport, cfg, None);
+    let started = tokio::time::Instant::now();
+    let result = node.get_with_status(&item.key).await;
+    assert!(result.truncated);
+    assert_eq!(result.items, [item]);
+    assert_eq!(started.elapsed(), Duration::from_secs(5));
+    assert_eq!(transport.gets.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn republish_bounds_its_possession_check_and_ignores_items_under_another_key() {
+    let item = page_item(1, 10);
+    let mut wrong = item.clone();
+    wrong.key = [9; 32];
+    let transport = PageTransport {
+        holders: Arc::new(HashMap::from([("peer".into(), vec![vec![wrong]; 6])])),
+        ..Default::default()
+    };
+    let cfg = NodeConfig {
+        max_collect_pages: 2,
+        ..config()
+    };
+    let node = paged_node(&transport, cfg, Some(item));
+    assert_eq!(node.republish().await, 1);
+    assert_eq!(transport.gets.lock().unwrap().len(), 2);
+}

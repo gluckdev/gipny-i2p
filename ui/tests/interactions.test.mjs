@@ -12,6 +12,7 @@ try {
   browser = await engines[engine].launch({ headless: true,
     ...(engine === 'chromium' && process.env.GIPNY_CHROMIUM ? { executablePath: process.env.GIPNY_CHROMIUM } : {}) });
   const page = await browser.newPage({ viewport: { width: 360, height: 780 } });
+  if (process.env.GIPNY_LAYOUT_TIMEOUT_MS) page.setDefaultTimeout(Number(process.env.GIPNY_LAYOUT_TIMEOUT_MS));
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'hardwareConcurrency', { value: 8, configurable: true });
@@ -52,6 +53,57 @@ try {
     assert.equal(await page.locator('.modal-backdrop').count(), 0, 'modal actions remain usable');
     await page.evaluate(() => document.documentElement.classList.remove('reduced-effects'));
   }
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto(`${base}/dev/frame.html?scene=list&theme=light&lang=en&demo=1`);
+  await page.waitForSelector('[data-preview-ready="list"]');
+  const groups = page.getByRole('button', { name: /^Groups \d/ });
+  await groups.focus();
+  await page.keyboard.press('Space');
+  assert.equal(await groups.getAttribute('aria-expanded'), 'false');
+  assert.equal(await groups.evaluate(el => el === document.activeElement), true, 'folding retains keyboard focus');
+  await page.keyboard.press('Enter');
+  assert.equal(await groups.getAttribute('aria-expanded'), 'true');
+
+  const search = page.getByRole('searchbox');
+  await search.fill('no such contact');
+  assert.equal(await page.locator('.list-empty [class]').innerText(), 'Nothing found');
+  await search.fill('');
+  const contact = page.getByRole('button', { name: /^Anna\b/ });
+  await contact.focus();
+  await page.keyboard.press('Enter');
+  const title = page.getByRole('heading', { name: 'Anna' });
+  assert.equal(await title.evaluate(el => el === document.activeElement), true);
+  assert.ok((await page.locator('.chat-input textarea').boundingBox()).width >= 200, 'composer fits a line of text at 320px');
+  const send = page.getByRole('button', { name: 'Send', exact: true });
+  assert.equal(await send.isDisabled(), true);
+  await page.locator('.chat-input textarea').fill('Draft');
+  assert.equal(await send.isEnabled(), true);
+  await page.locator('.chat-input textarea').fill('');
+  assert.equal(await send.isDisabled(), true);
+  const status = await page.locator('.network-ambient').boundingBox();
+  if (status) assert.ok(status.y + status.height <= (await page.locator('.chat-header').boundingBox()).y + 1);
+  await page.keyboard.press('Escape');
+  assert.equal(await contact.evaluate(el => el === document.activeElement), true);
+
+  const newChat = page.locator('.sidebar-actions .icon-btn-accent');
+  await newChat.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.getByRole('menuitem').nth(1).evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await newChat.evaluate(el => el === document.activeElement), true);
+
+  const settings = page.getByRole('button', { name: 'Settings', exact: true });
+  await settings.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  assert.equal(await dialog.evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await dialog.locator('.modal-footer button').evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await dialog.locator('.modal-header button').evaluate(el => el === document.activeElement), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await settings.evaluate(el => el === document.activeElement), true);
   assert.deepEqual(errors, []);
-  console.log(`${engine}: light/dark hover, keyboard focus, QR action, blur, reduced-motion/resource fallback PASS`);
+  console.log(`${engine}: theme and motion preferences, 320px composer, keyboard chat navigation, menus and dialog focus passed`);
 } finally { await browser?.close(); await server.close(); }

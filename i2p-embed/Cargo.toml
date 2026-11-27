@@ -2,6 +2,7 @@
 name = "i2p-embed"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 description = "The i2pd router inside the process: no SAM, no local port."
 

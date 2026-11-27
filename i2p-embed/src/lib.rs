@@ -9,8 +9,9 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::future::Future;
 use std::io;
+use std::path::Path;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -23,6 +24,10 @@ pub mod diagnostics;
 pub mod process_security;
 #[cfg(gipny_upnp)]
 mod upnp;
+#[cfg(test)]
+mod startup_tests;
+#[cfg(test)]
+mod test_support;
 
 mod ffi {
     use super::*;
@@ -73,6 +78,7 @@ mod ffi {
 #[derive(Debug)]
 pub enum Error {
     AlreadyStarted,
+    InvalidRouterArgument,
     InitFailed,
     BadKeys,
     BadAddress,
@@ -89,8 +95,9 @@ impl std::fmt::Display for Error {
         }
         f.write_str(match self {
             Error::Certificates(_) => unreachable!(),
-            Error::AlreadyStarted => "the router is already running in this process",
-            Error::InitFailed => "the router did not initialise",
+            Error::AlreadyStarted => "the router has already started in this process",
+            Error::InvalidRouterArgument => "invalid router startup argument",
+            Error::InitFailed => "native router initialization failed. Restart the process to retry",
             Error::BadKeys => "not i2p private keys",
             Error::BadAddress => "not an i2p destination",
             Error::Unreachable => "the destination could not be reached",
@@ -111,7 +118,53 @@ fn take_string(p: *mut c_char) -> Option<String> {
     Some(s)
 }
 
-static STARTED: OnceLock<()> = OnceLock::new();
+enum StartupState {
+    Ready,
+    NativeInitFailed,
+    Started,
+}
+
+static STARTUP: Mutex<StartupState> = Mutex::new(StartupState::Ready);
+
+impl StartupState {
+    fn start<'a>(
+        &mut self,
+        options: &'a [String],
+        log_path: Option<&str>,
+        start_native: impl FnOnce(c_int, *const *const c_char, *const c_char) -> bool,
+    ) -> Result<Option<&'a Path>, Error> {
+        match self {
+            Self::Started => return Err(Error::AlreadyStarted),
+            Self::NativeInitFailed => return Err(Error::InitFailed),
+            Self::Ready => {}
+        }
+        let datadir = options.iter().find_map(|o| o.strip_prefix("--datadir=")).map(Path::new);
+        let environment = std::env::var("GIPNY_I2P_LOGLEVEL").ok();
+        let options = diagnostics::router_options(options, environment.as_deref());
+        let mut args = vec![CString::new("gipny").unwrap()];
+        for o in &options {
+            args.push(CString::new(o.as_str()).map_err(|_| Error::InvalidRouterArgument)?);
+        }
+        let argc = c_int::try_from(args.len()).map_err(|_| Error::InvalidRouterArgument)?;
+        let ptrs: Vec<_> = args.iter().map(|a| a.as_ptr()).collect();
+        let log = diagnostics::router_log_path(log_path)
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| Error::InvalidRouterArgument)?;
+        if let Some(dir) = datadir {
+            if !options.iter().any(|o| o.starts_with("--certsdir=")) {
+                write_certificates(&dir.join("certificates")).map_err(Error::Certificates)?;
+            }
+        }
+        // InitI2P can mutate process globals before reporting failure.
+        *self = Self::NativeInitFailed;
+        if !start_native(argc, ptrs.as_ptr(), log.as_ref().map_or(std::ptr::null(), |p| p.as_ptr())) {
+            return Err(Error::InitFailed);
+        }
+        *self = Self::Started;
+        Ok(datadir)
+    }
+}
 
 /// The machine's network changed, told to the router whether or not one is
 /// running yet.
@@ -134,37 +187,21 @@ impl Router {
     /// Start the router with i2pd's own options, e.g. `--datadir=…`,
     /// `--bandwidth=L`. `log_path` `None` uses stderr. Release builds ignore
     /// requested file logging and verbose levels, retaining warnings/errors.
+    /// Argument and certificate errors can be corrected and retried.
+    /// [`Error::InitFailed`] requires a fresh process.
     pub fn start(options: &[String], log_path: Option<&str>) -> Result<Self, Error> {
-        if STARTED.get().is_some() {
-            return Err(Error::AlreadyStarted);
-        }
-        // The router verifies reseed bundles against these; with none it can
-        // never join from an empty netDb. Unless told to look elsewhere, it
-        // looks in <datadir>/certificates (see the shim).
-        let datadir = options.iter().find_map(|o| o.strip_prefix("--datadir="));
-        if let Some(dir) = datadir {
-            if !options.iter().any(|o| o.starts_with("--certsdir=")) {
-                write_certificates(&std::path::Path::new(dir).join("certificates")).map_err(Error::Certificates)?;
-            }
-        }
-        if STARTED.set(()).is_err() {
-            return Err(Error::AlreadyStarted);
-        }
-        let environment = std::env::var("GIPNY_I2P_LOGLEVEL").ok();
-        let options = diagnostics::router_options(options, environment.as_deref());
-        let mut args = vec![CString::new("gipny").unwrap()];
-        for o in &options {
-            args.push(CString::new(o.as_str()).map_err(|_| Error::InitFailed)?);
-        }
-        let ptrs: Vec<*const c_char> = args.iter().map(|a| a.as_ptr()).collect();
-        // SAFETY: argv outlives the call; the shim copies what it keeps.
-        if unsafe { ffi::gipny_router_init(ptrs.len() as c_int, ptrs.as_ptr()) } == 0 {
-            return Err(Error::InitFailed);
-        }
-        let log = diagnostics::router_log_path(log_path).map(|p| CString::new(p).unwrap_or_default());
-        unsafe { ffi::gipny_router_start(log.as_ref().map_or(std::ptr::null(), |l| l.as_ptr())) };
+        // Serialize certificate writes as well as the native singleton claim.
+        let _datadir = STARTUP.lock().map_err(|_| Error::InitFailed)?
+            .start(options, log_path, |argc, argv, log| unsafe {
+                // StartupState owns the C strings throughout both calls.
+                if ffi::gipny_router_init(argc, argv) == 0 {
+                    return false;
+                }
+                ffi::gipny_router_start(log);
+                true
+            })?;
         #[cfg(gipny_upnp)]
-        upnp::start(datadir.map(std::path::Path::new));
+        upnp::start(_datadir);
         Ok(Self { _private: () })
     }
 
@@ -213,11 +250,16 @@ mod certs {
 /// not carry (a revoked one must not outlive the build that dropped it).
 pub fn write_certificates(dir: &std::path::Path) -> std::io::Result<usize> {
     for sub in ["reseed", "family"] {
-        let Ok(entries) = std::fs::read_dir(dir.join(sub)) else { continue };
-        for entry in entries.flatten() {
+        let entries = match std::fs::read_dir(dir.join(sub)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        for entry in entries {
+            let entry = entry?;
             let name = format!("{sub}/{}", entry.file_name().to_string_lossy());
             if !certs::CERTIFICATES.iter().any(|(n, _)| *n == name) {
-                let _ = std::fs::remove_file(entry.path());
+                std::fs::remove_file(entry.path())?;
             }
         }
     }
@@ -277,7 +319,7 @@ pub struct DestinationOptions {
 
 impl Default for DestinationOptions {
     fn default() -> Self {
-        Self { publish: false, inbound_length: 3, outbound_length: 3, extra: Vec::new() }
+        Self { publish: false, inbound_length: 2, outbound_length: 2, extra: Vec::new() }
     }
 }
 

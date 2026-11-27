@@ -45,6 +45,7 @@ function measure() {
 }
 async function run() {
   const context = await browser.newContext();
+  if (process.env.GIPNY_LAYOUT_TIMEOUT_MS) context.setDefaultTimeout(Number(process.env.GIPNY_LAYOUT_TIMEOUT_MS));
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -89,10 +90,13 @@ async function run() {
   } finally { await context.close(); }
 }
 try {
-  await Promise.all(Array.from({ length: 4 }, run));
+  const workers = Number(process.env.GIPNY_LAYOUT_WORKERS || 4);
+  assert.ok(Number.isInteger(workers) && workers > 0, 'layout worker count must be a positive integer');
+  await Promise.all(Array.from({ length: workers }, run));
   // The outer preview forwards update modes to every frame; exercise the
   // real IPC facade as well as the DOM-only event tests.
   const page = await browser.newPage({ viewport: sizes[0] });
+  if (process.env.GIPNY_LAYOUT_TIMEOUT_MS) page.setDefaultTimeout(Number(process.env.GIPNY_LAYOUT_TIMEOUT_MS));
   for (const mode of ['current', 'no_release', 'available', 'unavailable', 'unsupported', 'no_asset', 'dismissed', 'error', 'staged']) {
     await page.goto(`${base}/dev/frame.html?scene=settings&theme=dark&lang=en&update=${mode}`);
     await page.waitForSelector('[data-preview-ready="settings"]');

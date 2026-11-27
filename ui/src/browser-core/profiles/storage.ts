@@ -2,8 +2,10 @@
  * handles and Web Locks protect a profile across tabs/workers; each transaction
  * replaces the older slot and flushes before the Rust core may send or acknowledge data. */
 const ROOT = 'gipny-browser-v1';
-const LIMIT = 16 * 1024 * 1024;
+export const VAULT_RECORD_LIMIT = 16 * 1024 * 1024;
+const LIMIT = VAULT_RECORD_LIMIT;
 const MAX_PROFILES = 32;
+const RESTORING = 'restore.pending';
 
 export type SyncFile = {
   getSize(): number;
@@ -138,6 +140,20 @@ async function label(directory: FileSystemDirectoryHandle): Promise<string> {
   return profileName((value as { name: string }).name);
 }
 
+async function restorePending(directory: FileSystemDirectoryHandle): Promise<boolean> {
+  try { await directory.getFileHandle(RESTORING); return true; }
+  catch (error) {
+    if (error instanceof DOMException && error.name === 'NotFoundError') return false;
+    throw error;
+  }
+}
+
+async function writeLabel(directory: FileSystemDirectoryHandle, name: string): Promise<void> {
+  const handle = await openSync(await directory.getFileHandle('profile.json', { create: true }));
+  try { writeAll(handle, new TextEncoder().encode(JSON.stringify({ name }))); }
+  finally { handle.close(); }
+}
+
 export async function listProfiles(): Promise<string[]> {
   const root = await profiles();
   const result: string[] = [];
@@ -156,7 +172,7 @@ export async function listProfiles(): Promise<string[]> {
           throw error;
         }
       }));
-      if (await directoryId(name) === id && hasData.some(Boolean)) {
+      if (await directoryId(name) === id && hasData.some(Boolean) && !await restorePending(directory)) {
         result.push(name);
       }
     } catch {
@@ -231,9 +247,11 @@ export class ProfileStorage {
     private slots: [SyncFile, SyncFile],
     private releaseLock: () => void,
     readonly directory: FileSystemDirectoryHandle,
+    private root: FileSystemDirectoryHandle,
+    private id: string,
   ) {}
 
-  static async open(raw: string, create: boolean): Promise<ProfileStorage> {
+  static async open(raw: string, create: boolean | 'restore'): Promise<ProfileStorage> {
     const name = profileName(raw);
     const root = await profiles();
     const id = await directoryId(name);
@@ -266,7 +284,14 @@ export class ProfileStorage {
             let existingDir: FileSystemDirectoryHandle | null = null;
             try {
               existingDir = await root.getDirectoryHandle(id, { create: false });
-            } catch {}
+            } catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
+
+            // A crashed import never published this directory. Reclaim it
+            // only while holding the same exclusive lock as its creator.
+            if (existingDir && await restorePending(existingDir)) {
+              await root.removeEntry(id, { recursive: true });
+              existingDir = null;
+            }
 
             if (existingDir) {
               let isCreatedProfile = false;
@@ -295,16 +320,12 @@ export class ProfileStorage {
             }
 
             const directory = existingDir ?? await root.getDirectoryHandle(id, { create: true });
+            if (create === 'restore') await directory.getFileHandle(RESTORING, { create: true });
             for (const slot of ['a', 'b'] as const) {
               handles.push(await openSync(await directory.getFileHandle(`vault-${slot}.bin`, { create: true })));
             }
 
-            const metaHandle = await openSync(await directory.getFileHandle('profile.json', { create: true }));
-            try {
-              writeAll(metaHandle, new TextEncoder().encode(JSON.stringify({ name })));
-            } finally {
-              metaHandle.close();
-            }
+            if (create !== 'restore') await writeLabel(directory, name);
           } else {
             let directory: FileSystemDirectoryHandle;
             try {
@@ -317,6 +338,7 @@ export class ProfileStorage {
             }
 
             // Verify metadata and directory hash before opening or recovering slots.
+            if (await restorePending(directory)) throw new Error('Profile restore is incomplete');
             if (await label(directory) !== name) {
               throw new Error('Profile metadata mismatch');
             }
@@ -348,7 +370,7 @@ export class ProfileStorage {
             throw new Error('Failed to open storage slots');
           }
 
-          const storage = new ProfileStorage(name, [slotA, slotB], releaseHold, await root.getDirectoryHandle(id));
+          const storage = new ProfileStorage(name, [slotA, slotB], releaseHold, await root.getDirectoryHandle(id), root, id);
           resolve(storage);
         } catch (error) {
           handles.forEach(h => {
@@ -374,6 +396,22 @@ export class ProfileStorage {
     });
   }
 
+  /** Publish only after all attachment parts and both vault slots are durable.
+   * The marker also keeps a terminated worker's incomplete import retryable. */
+  static async restore(name: string, populate: (storage: ProfileStorage) => Promise<void>, active: () => void): Promise<void> {
+    const storage = await ProfileStorage.open(name, 'restore');
+    try {
+      await populate(storage);
+      await writeLabel(storage.directory, storage.name);
+      active();
+      await storage.directory.removeEntry(RESTORING);
+    } catch (error) {
+      storage.closeSlots();
+      await storage.root.removeEntry(storage.id, { recursive: true });
+      throw error;
+    } finally { storage.close(); }
+  }
+
   readSlots(): [Uint8Array, Uint8Array] {
     if (this.closed) throw new Error('Profile is locked');
     return [tryReadSlot(this.slots[0]), tryReadSlot(this.slots[1])];
@@ -393,17 +431,13 @@ export class ProfileStorage {
     if (replaceRecovery) writeAll(target === this.slots[0] ? this.slots[1] : this.slots[0], bytes);
   };
 
-  close(): void {
+  private closeSlots(): void {
     if (this.closed) return;
     this.closed = true;
-    try {
-      this.slots[0].close();
-    } finally {
-      try {
-        this.slots[1].close();
-      } finally {
-        this.releaseLock();
-      }
-    }
+    try { this.slots[0].close(); } finally { this.slots[1].close(); }
+  }
+
+  close(): void {
+    try { this.closeSlots(); } finally { this.releaseLock(); }
   }
 }

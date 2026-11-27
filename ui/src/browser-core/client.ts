@@ -1,4 +1,6 @@
 import type { BrowserBackend, RelayInfo, UnlistenFn } from '../app/api';
+import { saveBrowserAttachment } from '../features/files/browser-download';
+import { forgetBrowserFiles, registerBrowserFile, selectedBrowserFile } from '../features/files/browser-files';
 import { enrollBrowserPasskey, unlockBrowserPasskey } from './authorization/passkeys';
 import { RtcBridge, rtcSettings } from './networking/rtc-transport';
 import { loadNetworkConfiguration } from './networking/config';
@@ -18,6 +20,7 @@ export class BrowserCoreClient implements BrowserBackend {
   private rtcConfig: ReturnType<typeof rtcSettings> | null = null;
   private generation = 0;
   private locking = false;
+  private profileOperation: symbol | null = null;
   private configured: Promise<void> | null = null;
   private configAbort: AbortController | null = null;
   private timings = new StartupTimings();
@@ -119,6 +122,21 @@ export class BrowserCoreClient implements BrowserBackend {
     });
   }
   async invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+    if (command === 'save_attachment') {
+      await saveBrowserAttachment(args?.attachmentId as number);
+      return null as T;
+    }
+    if (command === 'save_paste_temp') {
+      if (typeof args?.name !== 'string' || !Array.isArray(args.data) || !args.data.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) throw new Error('Invalid pasted attachment');
+      return registerBrowserFile(new File([Uint8Array.from(args.data)], args.name)) as T;
+    }
+    if (command === 'paste_clipboard_image') {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find(type => type.startsWith('image/'));
+        if (type) return registerBrowserFile(new File([await item.getType(type)], `paste.${type.slice(6)}`, { type })) as T;
+      }
+      return null as T;
+    }
     if (command === 'vault_lock') {
       const worker = this.worker;
       this.generation++; this.locking = true;
@@ -131,14 +149,35 @@ export class BrowserCoreClient implements BrowserBackend {
     }
     const generation = this.generation;
     const opening = command === 'vault_create' || command === 'vault_unlock' || command === 'vault_unlock_passkey';
+    const importing = command === 'import_identity_to_profile';
+    const operation = opening || importing ? Symbol() : null;
+    if (operation) {
+      if (this.profileOperation) throw new Error('Another profile operation is in progress');
+      if (this.unlocked) throw new Error('Lock the current profile first');
+      this.profileOperation = operation;
+    }
     try {
       // Profile listing and UI rendering do not wait for a remote code host.
       // Any operation that can start networking must see the config barrier.
       if (opening || command === 'prewarm_network' || command === 'retry_network') await this.configure();
       else await this.ensureWorker();
       this.active(generation);
-      const result = await this.send(command, args) as T;
+      const backupPath = importing && typeof args?.backupPath === 'string' && args.backupFile == null ? args.backupPath : null;
+      const request = backupPath !== null ? { ...args, backupFile: selectedBrowserFile(backupPath) } : args;
+      const result = await this.send(command, request) as T;
       this.active(generation);
+      if (backupPath !== null) forgetBrowserFiles([backupPath]);
+      if (command === 'export_identity' && typeof args?.destPath === 'string') {
+        const url = URL.createObjectURL(result as Blob);
+        try {
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = args.destPath.split(/[\\/]/).pop() || 'gipny-browser-backup.bin';
+          document.body.append(link);
+          try { link.click(); } finally { link.remove(); }
+        } finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+        return null as T;
+      }
       if (opening) {
         this.unlocked = true;
         if (this.reconnectAfterOpen) {
@@ -146,12 +185,14 @@ export class BrowserCoreClient implements BrowserBackend {
           void this.reconnect().catch(() => {});
         }
       }
-      if (command === 'vault_create') void navigator.storage?.persist?.().catch(() => false);
+      if (command === 'vault_create' || importing) void navigator.storage?.persist?.().catch(() => false);
       if (command === 'browser_diagnostics') return { ...result, page_startup_ms: this.timings.snapshot() } as T;
       return result;
     } catch (error) {
       if (opening && generation === this.generation) this.terminate('Profile opening failed');
       throw error;
+    } finally {
+      if (this.profileOperation === operation) this.profileOperation = null;
     }
   }
   listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn> {
@@ -169,6 +210,7 @@ export class BrowserCoreClient implements BrowserBackend {
     this.rtc?.close(); this.rtc = null;
     this.worker?.terminate(); this.worker = null; this.init = null;
     this.unlocked = false;
+    this.profileOperation = null;
     this.reconnectAfterOpen = false;
     for (const pending of this.pending.values()) pending.reject(new Error(message));
     this.pending.clear();

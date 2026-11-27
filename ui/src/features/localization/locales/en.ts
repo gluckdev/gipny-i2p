@@ -2,6 +2,13 @@ import type { ru } from './ru.ts';
 
 /** English UI messages. Technical payloads and user content are never translated. */
 export const en = {
+  "native.open": "Open in app",
+  "native.prompt": "Install the Gipny release candidate on your device.",
+  "native.no_build": "Continue using Gipny in your browser on this device.",
+  "native.download": "Download for {os} ({format})",
+  "native.never": "Don't show again",
+  "native.all_builds": "All builds",
+
   "setup.title": "Language and keyboard",
   "setup.detected": "We selected {language} for you. You can change it below.",
   "setup.layouts": "Keyboard layouts",
@@ -179,6 +186,7 @@ export const en = {
   "chat.unpin": "Unpin",
   "chat.forward": "Forward",
   "chat.delete_msg": "Delete message",
+  "chat.no_messages": "No messages yet",
   "chat.empty_state": "Select a contact or group on the left",
   "chat.ttl_label": "Message lifetime",
   "chat.ttl_units": "Time unit",
@@ -512,6 +520,7 @@ export const en = {
   "settings.duress_passphrase": "Duress passphrase",
   "settings.attempt_limit": "Attempt limit",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "Export your whole profile: identity, contacts, groups, all messages and attachments, prekeys, pinned items and settings in one encrypted file. ",
+  "settings.restore_browser_backup": "To restore this file, open the browser app and choose {select} → {restore}. ",
   "settings.on_another_device_profile_selection_import_backup": "On another device: profile selection → Import backup. ",
   "settings.one_identity_means_one_active_device_after_importing": "One identity means one active device. After importing, close gipny on the old device; otherwise ratchet sessions diverge and messages require resynchronization.",
   "settings.backup_passphrase_at_least_8_characters": "backup passphrase (at least 8 characters)",
@@ -555,6 +564,7 @@ export const en = {
   "sidebar.accept": "Accept",
   "sidebar.request_declined": "Request declined",
   "sidebar.decline": "Decline",
+  "sidebar.block_contact": "Block contact",
   "sidebar.blocked": "{p0} blocked",
   "sidebar.pin_to_top": "Pin to top",
   "sidebar.move_to": "Move to “{p0}”",

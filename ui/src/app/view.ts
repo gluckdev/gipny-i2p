@@ -56,7 +56,7 @@ export function appendAll(parent: Node, children: Child[]): void {
  * name's initials in a colour that stays the same for the same `seed`. */
 export function avatar(name: string, seed: string, extra = '', picture = true): HTMLElement {
   if (picture) {
-    const pic = h('div', { class: 'avatar' + (extra ? ' ' + extra : ''), role: 'img', 'aria-label': name });
+    const pic = h('span', { class: 'avatar' + (extra ? ' ' + extra : ''), role: 'img', 'aria-label': name });
     paintAvatar(pic, avatarIndex(seed));
     return pic;
   }
@@ -65,7 +65,7 @@ export function avatar(name: string, seed: string, extra = '', picture = true): 
   const initials = (a && b ? a.charAt(0) + b.charAt(0) : (a ?? '?').slice(0, 2)).toUpperCase();
   let hash = 0;
   for (const ch of seed || name) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  const el = h('div', { class: 'avatar' + (extra ? ' ' + extra : '') }, initials);
+  const el = h('span', { class: 'avatar' + (extra ? ' ' + extra : '') }, initials);
   el.style.setProperty('--avatar-hue', String(hash % 360));
   return el;
 }
@@ -102,13 +102,12 @@ export function trustLabel(t: number): string {
 
 export async function busy(btn: HTMLButtonElement, fn: () => Promise<void>): Promise<void> {
   if (btn.disabled) return;
-  const orig = btn.textContent ?? '';
   btn.disabled = true;
-  btn.textContent = '...';
+  btn.setAttribute('aria-busy', 'true');
   try { await fn(); }
   finally {
     btn.disabled = false;
-    btn.textContent = orig;
+    btn.removeAttribute('aria-busy');
   }
 }
 

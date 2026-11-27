@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <climits>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <openssl/rand.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -34,6 +36,7 @@
 #include "Transports.h"
 #include "NTCP2.h"
 #include "SSU2.h"
+#include "Tunnel.h"
 #include "TunnelPool.h"
 #include "api.h"
 #include "util.h"
@@ -102,6 +105,44 @@ std::atomic<int> online_wanted{-1};
 // its next received chunk instead of holding the exit for its full timeout.
 std::atomic<unsigned> upnp_abort_epoch{0};
 
+// api::InitI2P parses the daemon options but leaves its transit setters to
+// the host. Read the final options here, including measuring-mode overrides.
+void apply_transit_options() {
+	bool no_transit;
+	i2p::config::GetOption("notransit", no_transit);
+	i2p::context.SetAcceptsTunnels(!no_transit);
+
+	if (!i2p::config::IsDefault("limits.transittunnels")) {
+		uint32_t limit;
+		i2p::config::GetOption("limits.transittunnels", limit);
+		// i2pd uses a minimum of two for congestion calculations. The
+		// Zero profile disables admission with notransit.
+		i2p::tunnel::tunnels.SetMaxNumTransitTunnels(std::max<uint32_t>(2, limit));
+	}
+
+	std::string bandwidth;
+	i2p::config::GetOption("bandwidth", bandwidth);
+	if (bandwidth.size() == 1 && std::string_view("KLMNOPX").find(bandwidth[0]) != std::string_view::npos) {
+		i2p::context.SetBandwidth(bandwidth[0]); // sets the limit and RouterInfo caps
+	} else if (!bandwidth.empty()) {
+		// The daemon also accepts a decimal rate in KB/s, or b/kb/mb/gb.
+		uint64_t rate = 0;
+		const auto end = bandwidth.data() + bandwidth.size();
+		const auto [suffix, error] = std::from_chars(bandwidth.data(), end, rate);
+		const std::string_view unit(suffix, end - suffix);
+		if (unit == "b") rate /= 1000;
+		const int scale = unit == "gb" ? 1000000 : unit == "mb" ? 1000 : 1;
+		if (error == std::errc{} && rate <= static_cast<uint64_t>(INT_MAX / scale) &&
+		    ((unit.empty() && rate > 0) || unit == "b" || unit == "kb" || unit == "mb" || unit == "gb"))
+			i2p::context.SetBandwidth(static_cast<int>(rate) * scale);
+		else
+			i2p::context.SetBandwidth(i2p::data::CAPS_FLAG_LOW_BANDWIDTH2);
+	}
+	int share;
+	i2p::config::GetOption("share", share);
+	i2p::context.SetShareRatio(share);
+}
+
 // Stop once, whoever asks first: gipny_router_stop, or the process exiting.
 void stop_router() {
 	if (!running.exchange(false)) return;
@@ -132,6 +173,7 @@ int gipny_router_init(int argc, const char *const *argv) {
 		}
 		i2p::log::Logger().SetLogLevel(level);
 		i2p::api::InitI2P(static_cast<int>(copies.size()), args.data(), "gipny-i2pd");
+		apply_transit_options();
 		// api.cpp leaves this to the daemon, which we are not: without it the
 		// reseed and family certificates are looked for under "" and a router
 		// with no usable netDb can never join. --certsdir, else

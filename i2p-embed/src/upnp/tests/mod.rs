@@ -9,7 +9,6 @@ mod session;
 use std::collections::HashSet;
 use std::ffi::{c_char, c_int};
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::mapping::{cleanup_except, decision, maintain, Decision, Igd, Mapping, Outcome, Rule};
@@ -21,26 +20,7 @@ use super::protocol::{c, endpoint, public, root_udn};
 use super::session::{backoff, Env, Ports, Session, BACKOFF_CAP, RECHECK, RENEW, RETRY};
 use super::{Control, Woke};
 
-/// A directory under the system temporary directory, removed on drop.
-pub(super) struct Scratch(pub(super) PathBuf);
-impl Scratch {
-    pub(super) fn new() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "gipny-upnp-{}-{}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+pub(super) use crate::test_support::Scratch;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};

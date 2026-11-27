@@ -1,7 +1,8 @@
 [package]
 name = "gipny"
-version = "0.5.0-beta.1"
+version = "0.5.0-rc.7"
 edition = "2021"
+license.workspace = true
 
 [lib]
 name = "gipny_lib"

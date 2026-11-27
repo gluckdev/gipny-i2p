@@ -31,7 +31,7 @@ ui.mockIPC((cmd, args) => {
   const responses = {
     get_contact_folders: [], get_avatar_choices: {}, get_chat_prefs: { ttlSecs: null, ttlChosen: true },
     list_attachments: [], files_progress: [], list_group_members: [], list_media_contact: [], list_media_group: [],
-    link_stats: { our_hops: 3, their_hops: 3, padded: true, route: 'relay', rtt_ms: null }, get_relay_info: null, get_relay_address: '', my_b32: '',
+    link_stats: { our_hops: 2, their_hops: 2, padded: true, route: 'relay', rtt_ms: null }, get_relay_info: null, get_relay_address: '', my_b32: '',
     update_configured: false, list_apk_artifacts: { version: '0.4.18', artifacts: [] },
     current_version: '0.4.18', get_attachment_privacy: true, get_clear_on_lock: false,
     get_agent_mode: null, get_router_settings: { transit: 'balanced', upnp: 'on' },
@@ -799,6 +799,29 @@ function chatStore() {
   store.view.set('main');
   return store;
 }
+
+test('chat history distinguishes loading, a failed read and a confirmed empty conversation', async () => {
+  const original = Api.listMessages;
+  const store = chatStore(), target = { kind: 'contact', id: 1 };
+  store.messages.set(new Map());
+  const app = new App(store);
+  document.body.append(app.el);
+  const pending = deferred();
+  try {
+    Api.listMessages = async () => { await pending.promise; throw new Error('read failed'); };
+    const selecting = store.selectChat(target);
+    const status = () => app.el.querySelector('.chat-history-status').textContent;
+    assert.equal(status(), t('media.loading'));
+    pending.resolve();
+    await assert.rejects(selecting, /read failed/);
+    assert.equal(status(), t('chat.load_failed'));
+    Api.listMessages = async () => [];
+    await store.loadMessages(target);
+    assert.equal(status(), t('chat.no_messages'));
+    store.messages.set(new Map([['contact:1', [{ id: 7, outgoing: false, body: 'Hello', sent_at: Date.now() }]]]));
+    assert.equal(status(), '');
+  } finally { app.destroy(); Api.listMessages = original; }
+});
 
 test('a custom lifetime belongs to its chat and supports whole minutes up to ninety days', async () => {
   const before = { get: Api.getChatPrefs, update: Api.updateChatPrefs };

@@ -18,6 +18,7 @@ declare module '*gipny_browser_router.js' {
     free(): void;
   }
   export class BrowserEngine {
+    fork_for_backup(profile: string, password: string): BrowserEngine;
     view_once_offer(peer: string, dh: string, id: Uint8Array, nonce: Uint8Array, expiresAt: number): ViewOnceOffer;
     view_once_accept(offer: ViewOnceOffer, envelope: Uint8Array): ViewOnceLetter;
     view_once_seal(peer: string, dh: string, id: Uint8Array, nonce: Uint8Array, expiresAt: number, offer: Uint8Array, body: Uint8Array): Uint8Array;

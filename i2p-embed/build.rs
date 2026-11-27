@@ -30,6 +30,7 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(gipny_upnp)");
+    println!("cargo:rustc-check-cfg=cfg(gipny_native_tests)");
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let i2pd = env::var_os("I2P_EMBED_I2PD_SRC")
         .map(PathBuf::from)
@@ -91,6 +92,10 @@ fn main() {
         .include(&lib)
         .include(manifest.join("shim"))
         .file(manifest.join("shim/shim.cpp"));
+    // A separate archive member, linked only by the native regression test.
+    build.file(manifest.join("tests/transit_snapshot.cpp"));
+    println!("cargo:rustc-cfg=gipny_native_tests");
+    println!("cargo:rerun-if-changed=tests/transit_snapshot.cpp");
     for entry in std::fs::read_dir(&lib).expect("read libi2pd") {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "cpp") {

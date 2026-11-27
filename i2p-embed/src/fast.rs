@@ -20,8 +20,8 @@
 //! are work the router does that the conversation between our two nodes does
 //! not need, so turning them off costs the measurement nothing.
 
-/// The most hops i2p builds by default, and the top of every clamp below.
-pub const MAX_HOPS: u8 = 3;
+/// The most hops this client builds by default (2 hops each way), and the top of every clamp below.
+pub const MAX_HOPS: u8 = 2;
 
 /// Whether the measuring profile is on: `GIPNY_FAST` is set to something
 /// other than `0`, `no`, `off` or the empty string.
@@ -68,10 +68,8 @@ pub fn effective_hops() -> u8 {
 /// spare gateways; 3 in and 3 out at two hops is steady traffic), transit for
 /// strangers, and the RouterInfo republication the router runs on a timer.
 ///
-/// The RouterInfo one is `trust.hidden`, and it is the only entry here the
-/// shim has to be told about: `api::InitI2P` never reads that option, it is
-/// the daemon's to apply, so without the shim change it would be a flag that
-/// reads as if it worked. See `gipny_router_init`.
+/// The shim applies the transit options and `trust.hidden` after
+/// `api::InitI2P` parses them and before the network services start.
 ///
 /// What is left cannot be turned off and is not noise: the transports'
 /// keepalives, and the LeaseSet republication, without which the other node
@@ -145,7 +143,7 @@ mod tests {
 
     #[test]
     fn hop_numbers_out_of_range_are_clamped_and_words_are_ignored() {
-        for (raw, want) in [("0", 0), ("1", 1), ("3", 3), ("9", MAX_HOPS), ("300", MAX_HOPS), (" 2 ", 2)] {
+        for (raw, want) in [("0", 0), ("1", 1), ("3", MAX_HOPS), ("9", MAX_HOPS), ("300", MAX_HOPS), (" 2 ", 2)] {
             assert_eq!(parse_hops(raw), Some(want), "{raw:?}");
         }
         // Not a number: no opinion, so the default stands.
@@ -180,6 +178,7 @@ mod tests {
             "--datadir=/tmp/r",
             "--bandwidth=O",
             "--share=50",
+            "--notransit",
             "--limits.transittunnels=256",
             "--exploratory.inbound.quantity=3",
             "--sam.enabled=false",

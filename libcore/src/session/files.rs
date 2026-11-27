@@ -2,6 +2,110 @@
 
 use super::*;
 
+impl crate::db::Db {
+    /// Send the parts due for every file still going to `contact_id`.
+    ///
+    /// The desktop core and the embedded session share this loop so the
+    /// reservation, lane rounding, retry and progress rules cannot drift.
+    /// `send` gets an owned part payload and the lane to write it to;
+    /// `failed` and `queued` are the caller's event and metric hooks.
+    pub async fn send_due_file_parts<L, SendFn, Fut, SendErr, FailedFn, QueuedFn>(
+        &self,
+        contact_id: i64,
+        attachments_dir: &std::path::Path,
+        lanes: &[L],
+        now: i64,
+        heard: Option<i64>,
+        flows: &std::sync::Mutex<std::collections::HashMap<i64, crate::files::Flow>>,
+        mut send: SendFn,
+        failed: FailedFn,
+        queued: QueuedFn,
+    ) -> super::Result<()>
+    where
+        L: Clone,
+        SendFn: FnMut(WirePayload, L) -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<(), SendErr>>,
+        SendErr: std::fmt::Debug,
+        FailedFn: Fn(i64, &str),
+        QueuedFn: Fn(bool, usize),
+    {
+        use crate::files;
+
+        for peer in self.file_peers_for(contact_id)? {
+            let Some(file) = self.file_out(&peer.file_id)? else {
+                continue;
+            };
+            let a = &file.attachment;
+            let chunk_size = a.chunk_size.unwrap_or(files::CHUNK_SIZE as i64) as u32;
+            let total = files::chunk_count(a.size as u64, chunk_size);
+            let (plan, window, in_flight, rto, srtt) = {
+                let mut flows = flows.lock().unwrap_or_else(|p| p.into_inner());
+                let flow = flows.entry(contact_id).or_default();
+                let plan =
+                    self.reserve_file_batch(&file.file_id, contact_id, total, flow, now, heard)?;
+                (
+                    plan,
+                    flow.window(),
+                    flow.in_flight(),
+                    flow.rto_ms(),
+                    flow.srtt_ms(),
+                )
+            };
+            let Some(plan) = plan else { continue };
+            if plan.gave_up {
+                failed(file.message_id, "not taken");
+                continue;
+            }
+            let due = plan.due;
+            let next_before = plan.next_before;
+            if due.is_empty() {
+                continue;
+            }
+            // One line a part (192 KiB): what went, and why it was its turn.
+            let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
+            crate::debug_trace!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, lanes {} (incl main), in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
+                a.name, contact_id, due, again, lanes.len());
+            let path = attachments_dir.join(&a.path);
+            let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
+            for index in &due {
+                let data = files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
+                let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
+                payload.file_chunk = Some(WireFileChunk {
+                    file_id: file.file_id,
+                    index: *index,
+                    data,
+                });
+                if let Ok(reference) = self.dm_reference(file.message_id) {
+                    payload.dm = Some(WireDm { kind: 0, reference });
+                }
+                // Round the lanes: each is its own i2p stream.
+                let lane = flows
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .entry(contact_id)
+                    .or_default()
+                    .next_lane(lanes.len());
+                let via = lanes[lane].clone();
+                if let Err(e) = send(payload, via).await {
+                    crate::debug_trace!(
+                        "[files] part {index} of {} to contact {}: {e:?}",
+                        a.name,
+                        contact_id
+                    );
+                    // What did not go goes again next time.
+                    let mut flows = flows.lock().unwrap_or_else(|p| p.into_inner());
+                    let flow = flows.entry(contact_id).or_default();
+                    let retry: Vec<u32> = due.iter().copied().filter(|i| i >= index).collect();
+                    self.retry_file_parts(&file.file_id, contact_id, &retry, flow)?;
+                    break;
+                }
+                queued(*index < next_before, lanes.len());
+            }
+        }
+        Ok(())
+    }
+}
+
 impl SessionManager {
     /// Transfer counters for this session only; no identifiers or payload data.
     pub fn file_metrics(&self) -> crate::files::metrics::FileMetricsSnapshot {
@@ -408,93 +512,27 @@ impl SessionManager {
             .unwrap_or_else(|p| p.into_inner())
             .get(&contact.id)
             .copied();
-        for peer in self.db.file_peers_for(contact.id)? {
-            let Some(file) = self.db.file_out(&peer.file_id)? else {
-                continue;
-            };
-            let a = &file.attachment;
-            let chunk_size = a.chunk_size.unwrap_or(crate::files::CHUNK_SIZE as i64) as u32;
-            let total = crate::files::chunk_count(a.size as u64, chunk_size);
-            let (plan, window, in_flight, rto, srtt) = {
-                let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                let flow = flows.entry(contact.id).or_default();
-                let plan = self.db.reserve_file_batch(
-                    &file.file_id,
-                    contact.id,
-                    total,
-                    flow,
-                    now,
-                    heard,
-                )?;
-                (
-                    plan,
-                    flow.window(),
-                    flow.in_flight(),
-                    flow.rto_ms(),
-                    flow.srtt_ms(),
-                )
-            };
-            let Some(plan) = plan else { continue };
-            if plan.gave_up {
-                let _ = self.events.try_send(SessionEvent::FileFailed {
-                    message_id: file.message_id,
-                    contact_id: contact.id,
-                    reason: "not taken".into(),
-                });
-                continue;
-            }
-            let due = plan.due;
-            let next_before = plan.next_before;
-            if due.is_empty() {
-                continue;
-            }
-            // One line a part (192 KiB): what went, and why it was its turn.
-            let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
-            crate::debug_trace!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, lanes {} (incl main), in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
-                a.name, contact.id, due, again, lanes.len());
-            let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
-            let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
-            for index in &due {
-                let data =
-                    crate::files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
-                let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
-                payload.file_chunk = Some(WireFileChunk {
-                    file_id: file.file_id,
-                    index: *index,
-                    data,
-                });
-                if let Ok(reference) = self.db.dm_reference(file.message_id) {
-                    payload.dm = Some(WireDm { kind: 0, reference });
-                }
-                // Round the lanes: each is its own i2p stream.
-                let lane = self
-                    .flows
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .entry(contact.id)
-                    .or_default()
-                    .next_lane(lanes.len());
-                let via = lanes[lane].clone();
-                if let Err(e) = self
-                    .send_payload_via_relay(contact, &mut payload, &via)
-                    .await
-                {
-                    crate::debug_trace!(
-                        "[files] part {index} of {} to contact {}: {e:?}",
-                        a.name,
-                        contact.id
-                    );
-                    // What did not go goes again next time.
-                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                    let flow = flows.entry(contact.id).or_default();
-                    let retry: Vec<u32> = due.iter().copied().filter(|i| i >= index).collect();
-                    self.db
-                        .retry_file_parts(&file.file_id, contact.id, &retry, flow)?;
-                    break;
-                }
-                self.file_metrics.queued(*index < next_before, lanes.len());
-            }
-        }
+        self.db
+            .send_due_file_parts(
+                contact.id,
+                &self.data_dir.join(ATTACHMENTS_DIR),
+                &lanes,
+                now,
+                heard,
+                &self.flows,
+                |mut payload, via| async move {
+                    self.send_payload_via_relay(contact, &mut payload, &via).await
+                },
+                |message_id, reason| {
+                    let _ = self.events.try_send(SessionEvent::FileFailed {
+                        message_id,
+                        contact_id: contact.id,
+                        reason: reason.into(),
+                    });
+                },
+                |retransmission, lanes| self.file_metrics.queued(retransmission, lanes),
+            )
+            .await?;
         Ok(())
     }
 
@@ -508,5 +546,185 @@ impl SessionManager {
             }
         }
         let _ = self.db.file_early_gc(cutoff);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{Db, Direction, NewAttachment};
+    use std::path::Path;
+
+    fn outgoing_file(db: &Db, dir: &Path) -> ([u8; 16], i64, i64) {
+        let peer = db
+            .add_contact(&[1; 32], &[2; 32], "relay", "peer", None)
+            .unwrap();
+        let cipher = AttachmentCipher::from_key([3; 32]);
+        let (size, sha256) = crate::files::seal_from(
+            &b"abcdefgh"[..],
+            &dir.join("sealed"),
+            &cipher,
+            4,
+        )
+        .unwrap();
+        assert_eq!(size, 8);
+        let attachment = NewAttachment {
+            name: "file.bin".into(),
+            size: size as i64,
+            key: vec![3; 32],
+            path: "sealed".into(),
+            chunk_size: Some(4),
+        };
+        let message = db
+            .insert_message(peer, Direction::Out, "", 100, None, &[attachment])
+            .unwrap();
+        let file = [9; 16];
+        db.file_out_add(
+            &file,
+            db.list_attachments(message).unwrap()[0].id,
+            message,
+            &sha256,
+            &[peer],
+        )
+        .unwrap();
+        (file, peer, message)
+    }
+
+    fn flows() -> std::sync::Mutex<HashMap<i64, crate::files::Flow>> {
+        std::sync::Mutex::new(HashMap::new())
+    }
+
+    #[tokio::test]
+    async fn shared_sender_sends_due_parts_and_reports_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("db")).unwrap();
+        db.configure_dm_identity(&[1; 32]).unwrap();
+        let (file, peer, _) = outgoing_file(&db, dir.path());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let failed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let queued = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let flow = flows();
+
+        db.send_due_file_parts(
+            peer,
+            dir.path(),
+            &[()],
+            1000,
+            Some(1200),
+            &flow,
+            |mut payload, ()| {
+                let seen = seen.clone();
+                async move {
+                    seen.lock()
+                        .unwrap()
+                        .push(payload.file_chunk.take().unwrap());
+                    Ok::<(), ()>(())
+                }
+            },
+            |message_id, reason| {
+                failed
+                    .lock()
+                    .unwrap()
+                    .push((message_id, reason.to_string()));
+            },
+            |retransmission, lanes| queued.lock().unwrap().push((retransmission, lanes)),
+        )
+        .await
+        .unwrap();
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].file_id, file);
+        assert_eq!(seen[0].index, 0);
+        assert_eq!(seen[0].data, b"abcd");
+        assert_eq!(seen[1].index, 1);
+        assert_eq!(seen[1].data, b"efgh");
+        assert!(seen.iter().all(|chunk| chunk.data.len() == 4));
+        assert!(failed.lock().unwrap().is_empty());
+        assert_eq!(*queued.lock().unwrap(), vec![(false, 1), (false, 1)]);
+        assert_eq!(db.file_peer(&file, peer).unwrap().unwrap().next, 2);
+    }
+
+    #[tokio::test]
+    async fn shared_sender_retries_from_the_failed_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("db")).unwrap();
+        db.configure_dm_identity(&[1; 32]).unwrap();
+        let (file, peer, _) = outgoing_file(&db, dir.path());
+        let attempts = Arc::new(std::sync::Mutex::new(0));
+        let flow = flows();
+
+        db.send_due_file_parts(
+            peer,
+            dir.path(),
+            &[()],
+            1000,
+            Some(1200),
+            &flow,
+            |_, ()| {
+                let attempts = attempts.clone();
+                async move {
+                    *attempts.lock().unwrap() += 1;
+                    Err::<(), ()>(())
+                }
+            },
+            |_, _| {},
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*attempts.lock().unwrap(), 1);
+        let row = db.file_peer(&file, peer).unwrap().unwrap();
+        assert_eq!(row.resend, vec![0, 1]);
+        assert_eq!(row.next, 2);
+    }
+
+    #[tokio::test]
+    async fn shared_sender_reports_a_file_nobody_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_plain(&dir.path().join("db")).unwrap();
+        db.configure_dm_identity(&[1; 32]).unwrap();
+        let (file, peer, message) = outgoing_file(&db, dir.path());
+        let flow = flows();
+        {
+            let mut guard = flow.lock().unwrap();
+            let batch = db
+                .reserve_file_batch(&file, peer, 2, guard.entry(peer).or_default(), 1000, None)
+                .unwrap()
+                .unwrap();
+            assert_eq!(batch.due, vec![0, 1]);
+        }
+        let failed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let attempts = Arc::new(std::sync::Mutex::new(0));
+
+        db.send_due_file_parts(
+            peer,
+            dir.path(),
+            &[()],
+            1000 + 24 * 3600 * 1000 + 1,
+            Some(2000),
+            &flow,
+            |_, ()| {
+                let attempts = attempts.clone();
+                async move {
+                    *attempts.lock().unwrap() += 1;
+                    Ok::<(), ()>(())
+                }
+            },
+            |message_id, reason| {
+                failed
+                    .lock()
+                    .unwrap()
+                    .push((message_id, reason.to_string()));
+            },
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*attempts.lock().unwrap(), 0);
+        assert_eq!(*failed.lock().unwrap(), vec![(message, "not taken".into())]);
+        assert!(db.file_peer(&file, peer).unwrap().unwrap().failed);
     }
 }

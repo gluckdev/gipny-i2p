@@ -1134,7 +1134,7 @@ mod tests {
             address: String::new(),
             store: Arc::new(MemStore::unclaimed(MemStoreLimits::default())),
             tasks,
-            hops: Arc::new(AtomicU8::new(3)),
+            hops: Arc::new(AtomicU8::new(2)),
             rebuild: Arc::new(tokio::sync::Notify::new()),
             connections: Arc::default(),
             destination_hash: [0; 32],

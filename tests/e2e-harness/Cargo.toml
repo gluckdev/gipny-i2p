@@ -2,6 +2,7 @@
 name = "e2e-harness"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 description = "End-to-end test harness: two headless bot instances exchange messages through personal I2P terminals and report latency."
 

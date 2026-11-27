@@ -2,6 +2,13 @@ import type { en } from './en.ts';
 
 /** UI messages; user content and protocol identifiers remain unchanged. */
 export const km = {
+  "native.open": "បើកក្នុងកម្មវិធី",
+  "native.prompt": "ដំឡើងកំណែសាកល្បងរបស់ Gipny លើឧបករណ៍របស់អ្នក។",
+  "native.no_build": "អ្នកអាចបន្តប្រើ Gipny ក្នុងកម្មវិធីរុករកលើឧបករណ៍នេះ។",
+  "native.download": "ទាញយកសម្រាប់ {os} ({format})",
+  "native.never": "កុំបង្ហាញម្តងទៀត",
+  "native.all_builds": "កំណែទាំងអស់",
+
   "setup.title": "ភាសា និងក្ដារចុច",
   "setup.detected": "យើងបានជ្រើសរើសភាសា {language} សម្រាប់អ្នក។ អ្នកអាចប្ដូរភាសានៅខាងក្រោម។",
   "setup.layouts": "ប្លង់ក្ដារចុច",
@@ -176,6 +183,7 @@ export const km = {
   "chat.unpin": "ដកខ្ទាស់",
   "chat.forward": "ទៅមុខ",
   "chat.delete_msg": "លុបសារ",
+  "chat.no_messages": "មិនទាន់មានសារទេ",
   "chat.empty_state": "ជ្រើសរើសទំនាក់ទំនង ឬក្រុមនៅខាងឆ្វេង",
   "chat.ttl_label": "អាយុកាលសារ",
   "chat.ttl_units": "ឯកតាពេលវេលា",
@@ -509,6 +517,7 @@ export const km = {
   "settings.duress_passphrase": "ឃ្លាសម្ងាត់ពេលរងការបង្ខំ",
   "settings.attempt_limit": "ការព្យាយាមមានកំណត់",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "នាំចេញទម្រង់ទាំងមូលរបស់អ្នក៖ អត្តសញ្ញាណ ទំនាក់ទំនង ក្រុម សារទាំងអស់ និងឯកសារភ្ជាប់ សោជាមុន ធាតុដែលបានខ្ទាស់ និងការកំណត់នៅក្នុងឯកសារដែលបានអ៊ិនគ្រីបមួយ។ ",
+  "settings.restore_browser_backup": "ដើម្បីស្ដារទិន្នន័យពីឯកសារនេះ សូមបើកកម្មវិធីក្នុងកម្មវិធីរុករក ហើយជ្រើសរើស «{select}» → «{restore}»។ ",
   "settings.on_another_device_profile_selection_import_backup": "នៅលើឧបករណ៍ផ្សេងទៀត៖ ការជ្រើសរើសទម្រង់ → នាំចូលការបម្រុងទុក។ ",
   "settings.one_identity_means_one_active_device_after_importing": "អត្តសញ្ញាណមួយមានន័យថាឧបករណ៍សកម្មមួយ។ បន្ទាប់ពីនាំចូល សូមបិទ gipny នៅលើឧបករណ៍ចាស់។ បើមិនដូច្នេះទេ វគ្គ ratchet ខុសគ្នា ហើយសារត្រូវការការធ្វើសមកាលកម្មឡើងវិញ។",
   "settings.backup_passphrase_at_least_8_characters": "ឃ្លាសម្ងាត់បម្រុងទុក (យ៉ាងហោចណាស់ 8 តួអក្សរ)",
@@ -552,6 +561,7 @@ export const km = {
   "sidebar.accept": "ទទួលយក",
   "sidebar.request_declined": "សំណើត្រូវបានបដិសេធ",
   "sidebar.decline": "បដិសេធ",
+  "sidebar.block_contact": "ទប់ស្កាត់ទំនាក់ទំនង",
   "sidebar.blocked": "{p0} ត្រូវបានរារាំង",
   "sidebar.pin_to_top": "ខ្ទាស់ទៅកំពូល",
   "sidebar.move_to": "ផ្លាស់ទីទៅ \"{p0}\"",

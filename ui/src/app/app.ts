@@ -4,6 +4,7 @@ import { LanguageSetup, SetupLayoutSelection, needsLanguageSetup } from '../feat
 import { Api, type UpdateInfo } from './api';
 import { emptyChatArt, icon } from './icons';
 import type { Store, UpdateProgress, ChatTarget } from './state';
+import { targetKey } from './state';
 import { View, h, busy, humanSize } from './view';
 import { ProfileSelect } from '../features/profiles/profile';
 import { AuthCreate } from '../features/profiles/create';
@@ -28,6 +29,7 @@ export class App extends View {
   private updateStatusEl: HTMLElement | null = null;
   private updateActionsEl: HTMLElement | null = null;
   private modalClosers = new Set<() => void>();
+  private modalSequence = 0;
   private toasts = new ToastLayer();
 
   readonly calls: Calls;
@@ -148,8 +150,10 @@ export class App extends View {
   openModal(build: (close: () => void) => HTMLElement, onClose?: () => void): () => void {
     if (this.store.screenLocked.get()) { onClose?.(); return () => {}; }
     const backdrop = h('div', { class: 'modal-backdrop' });
+    const previous = document.activeElement;
     const close = () => {
       if (!this.modalClosers.delete(close)) return;
+      const containedFocus = backdrop.contains(document.activeElement);
       backdrop.firstElementChild?.dispatchEvent(new Event('gipny-modal-close'));
       onClose?.();
       backdrop.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea').forEach((input) => { input.value = ''; });
@@ -157,11 +161,36 @@ export class App extends View {
       backdrop.querySelectorAll('img').forEach((image) => image.removeAttribute('src'));
       backdrop.replaceChildren();
       backdrop.remove();
+      if (containedFocus && previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true });
     };
     this.modalClosers.add(close);
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
-    backdrop.appendChild(build(close));
+    const panel = build(close);
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    const heading = panel.querySelector<HTMLElement>('.modal-title, h1, h2');
+    if (heading && !panel.hasAttribute('aria-label') && !panel.hasAttribute('aria-labelledby')) {
+      if (!heading.id) heading.id = 'modal-title-' + ++this.modalSequence;
+      panel.setAttribute('aria-labelledby', heading.id);
+    }
+    // The on-screen keyboard lives beside the backdrop. Keep the existing
+    // overlay and contain hardware keyboard navigation within its controls.
+    panel.tabIndex = -1;
+    panel.addEventListener('keydown', event => {
+      if (event.defaultPrevented || event.isComposing) return;
+      if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+      if (event.key !== 'Tab') return;
+      const controls = Array.from(panel.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex], summary, audio[controls]'))
+        .filter(el => el.tabIndex >= 0 && !el.matches(':disabled') && el.getClientRects().length > 0);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (!first || (event.shiftKey ? document.activeElement === first || document.activeElement === panel : document.activeElement === last)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      }
+    });
+    backdrop.appendChild(panel);
     document.body.appendChild(backdrop);
+    panel.focus({ preventScroll: true });
     return close;
   }
 
@@ -405,7 +434,7 @@ class MainView extends View {
   constructor(store: Store, app: App) {
     super();
     const sidebar = new Sidebar(store, app);
-    const chatSlot = h('div', { class: 'stack grow', style: { minHeight: '0' } });
+    const chatSlot = h('main', { class: 'stack grow', style: { minHeight: '0' } });
     const empty = h('div', { class: 'empty empty-chat' },
       emptyChatArt(),
       h('div', { class: 'empty-title' }, tr('app.select_a_chat')),
@@ -415,9 +444,7 @@ class MainView extends View {
     const main = h('div', { class: 'main' }, sidebar.el, chatSlot);
     // Ambient connection feedback never takes pointer events or focus.
     const networkText = h('span', { class: 'network-ambient-label', role: 'status', 'aria-live': 'polite' });
-    const network = h('div', { class: 'network-ambient hidden' },
-      h('div', { class: 'network-ambient-lines', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
-      networkText);
+    const network = h('div', { class: 'network-ambient hidden' }, networkText);
     const paintNetwork = (): void => {
       const info = store.relayInfo.get();
       const discovery = store.bootSteps.get().find(step => step.id === 'dht')?.state;
@@ -427,14 +454,15 @@ class MainView extends View {
       network.classList.toggle('hidden', ready);
       network.classList.toggle('is-retrying', failed);
       network.classList.toggle('is-offline', unconfigured);
-      networkText.textContent = tr(unconfigured ? 'app.network_unconfigured' : failed ? 'app.network_retry' : 'app.network_connecting');
+      const label = ready ? '' : tr(unconfigured ? 'app.network_unconfigured' : failed ? 'app.network_retry' : 'app.network_connecting');
+      if (networkText.textContent !== label) networkText.textContent = label;
     };
     this.sub(store.relayConnected, paintNetwork);
     this.sub(store.relayInfo, paintNetwork);
     this.sub(store.dhtReached, paintNetwork);
     this.sub(store.bootSteps, paintNetwork);
     this.sub(store.contacts, paintNetwork);
-    main.appendChild(network);
+    main.insertBefore(network, sidebar.el);
 
     // Agent mode remains an explicit, actionable safety control. A remote shell should never be easy to forget or accidentally
     // leave enabled after the user returns to an ordinary chat.
@@ -460,18 +488,24 @@ class MainView extends View {
     };
     main.insertBefore(agentBanner, main.firstChild);
     this.subs.push(store.agentMode.subscribe(paintAgentBanner, true));
+    let lastTarget: ChatTarget | null = null;
     this.subs.push(store.selectedChat.subscribe((target: ChatTarget | null) => {
+      const fromChat = chatSlot.contains(document.activeElement);
+      const fromSidebar = sidebar.el.contains(document.activeElement);
       this.chat?.destroy();
       this.chat = null;
       chatSlot.replaceChildren();
       if (!target) {
         main.classList.remove('has-chat');
         chatSlot.appendChild(empty);
+        if (fromChat && lastTarget) sidebar.focusItem(targetKey(lastTarget));
       } else {
         main.classList.add('has-chat');
         this.chat = new ChatView(store, app, target);
         chatSlot.appendChild(this.chat.el);
+        if (fromSidebar) this.chat.el.querySelector<HTMLElement>('.chat-title')?.focus({ preventScroll: true });
       }
+      lastTarget = target;
     }));
     this.subs.push(() => { sidebar.destroy(); this.chat?.destroy(); });
     this.el = main;

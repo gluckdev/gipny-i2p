@@ -68,7 +68,7 @@ build, новый signed APK и runtime 16 KiB ещё не проверены**.
 Следующий обязательный gate: fresh APK на Android 15+ image/device, где
 `adb shell getconf PAGE_SIZE` возвращает 16384; без режимов 4-KiB compatibility.
 Проверить загрузку обеих библиотек, создание/повторное открытие профиля,
-Keystore, реальные 3-hop tunnels и сообщение/файл. Повторить на 4-KiB ARM64
+Keystore, реальные 2-hop tunnels и сообщение/файл. Повторить на 4-KiB ARM64
 и старом ARMv7 устройстве. Руководство Android отдельно описывает
 [16-KiB emulator/device testing](https://android-developers.googleblog.com/2024/12/get-your-apps-ready-for-16-kb-page-size-devices.html).
 
@@ -247,7 +247,7 @@ provider. Новый installer не должен мигрировать ключ
 
 Реально измеренные ресурсы нужны до численных minimumRAM claims: vault KDF в
 нашем коде использует 256 MiB desktop и 64 MiB mobile, сверх router/UI/SQLCipher.
-Нельзя автоматически ослаблять KDF, padding или 3-hop policy для слабого
+Нельзя автоматически ослаблять KDF, padding или 2-hop policy для слабого
 устройства. Допустимы bounded queues, concurrency и UI effects, с повторными
 измерениями goodput/latency/loss/CPU/RSS и отдельной проверкой privacy.
 

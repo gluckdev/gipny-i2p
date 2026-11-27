@@ -2,6 +2,7 @@
 name = "gipny-dht"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 # Consumers supply their own persistence through the storage trait.
 [dependencies]

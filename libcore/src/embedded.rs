@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod initialization;
 
 use crate::net::NetError;
-use crate::router::RouterSettings;
+use crate::router::{RouterSettings, TransitProfile};
 
 static ROUTER: OnceLock<Arc<i2p_embed::Router>> = OnceLock::new();
 static ROUTER_INITIALIZATION: Mutex<()> = Mutex::new(());
@@ -49,8 +49,17 @@ fn start_router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_emb
             Err(e) => eprintln!("[i2p] bundled network snapshot not used: {e}"),
         }
     }
-    // The embedded library exposes only the router's own network transports.
-    let options = vec![
+    // The measuring profile replaces any options that it overrides.
+    let options = i2p_embed::fast::merge(router_options(&router_dir, settings));
+    // The i2p-embed boundary applies the compile-time diagnostics policy.
+    let log = router_dir.join("i2pd.log");
+    let started = i2p_embed::Router::start(&options, log.to_str())
+        .map_err(|e| NetError::I2p(format!("in-process router: {e}")))?;
+    Ok(Arc::new(started))
+}
+
+fn router_options(router_dir: &Path, settings: RouterSettings) -> Vec<String> {
+    let mut options = vec![
         format!("--datadir={}", router_dir.display()),
         "--sam.enabled=false".into(),
         "--http.enabled=false".into(),
@@ -80,17 +89,12 @@ fn start_router(data_dir: &Path, settings: RouterSettings) -> Result<Arc<i2p_emb
         format!("--share={}", settings.transit.share_percent()),
         format!("--limits.transittunnels={}", settings.transit.transit_tunnels()),
     ];
-    // The i2p-embed boundary applies the compile-time diagnostics policy:
-    // debug/test honors GIPNY_I2P_LOGLEVEL and this path; release forces
-    // warnings/errors to stderr and never opens a router log file.
-    let log = router_dir.join("i2pd.log");
-    // The measuring profile (`GIPNY_FAST`) takes the options it covers out of
-    // the list rather than adding to it, so the router is never handed the same
-    // flag twice — see `i2p_embed::fast::merge` for why that is fatal.
-    let options = i2p_embed::fast::merge(options);
-    let started = i2p_embed::Router::start(&options, log.to_str())
-        .map_err(|e| NetError::I2p(format!("in-process router: {e}")))?;
-    Ok(Arc::new(started))
+    // i2pd requires a positive internal tunnel limit. Disable admission
+    // explicitly so the Zero profile rejects every transit build request.
+    if settings.transit == TransitProfile::Zero {
+        options.push("--notransit".into());
+    }
+    options
 }
 
 /// The router, if this process started one.
@@ -142,4 +146,27 @@ pub(crate) fn destination_from_sealed(
     let private = std::str::from_utf8(&guard).map_err(|_| crate::net::NetError::I2p("invalid private destination encoding".into()))?;
     i2p_embed::Destination::new(router, Some(private), options)
         .map_err(|error| crate::net::NetError::I2p(format!("destination: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transit_profiles_supply_the_native_startup_options() {
+        use TransitProfile::*;
+        for (transit, bandwidth, share, cap, disabled) in [
+            (Zero, "L", 0, 0, true),
+            (Frugal, "L", 15, 32, false),
+            (Balanced, "O", 50, 256, false),
+            (Generous, "P", 80, 2048, false),
+        ] {
+            let settings = RouterSettings { transit, ..Default::default() };
+            let options = router_options(Path::new("router"), settings);
+            assert!(options.contains(&format!("--bandwidth={bandwidth}")));
+            assert!(options.contains(&format!("--share={share}")));
+            assert!(options.contains(&format!("--limits.transittunnels={cap}")));
+            assert_eq!(options.iter().any(|o| o == "--notransit"), disabled);
+        }
+    }
 }

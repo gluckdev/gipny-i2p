@@ -2,6 +2,13 @@ import type { ru } from './ru.ts';
 
 /** German UI messages. Keep keys and placeholders aligned with en.ts. */
 export const de = {
+  "native.open": "In der App öffnen",
+  "native.prompt": "Installieren Sie die Vorabversion von Gipny.",
+  "native.no_build": "Sie können Gipny auf diesem Gerät im Browser verwenden.",
+  "native.download": "Für {os} herunterladen ({format})",
+  "native.never": "Nicht mehr anzeigen",
+  "native.all_builds": "Alle Builds",
+
   "setup.title": "Sprache und Tastatur",
   "setup.detected": "Wir haben {language} für Sie ausgewählt. Sie können die Sprache unten ändern.",
   "setup.layouts": "Tastaturbelegungen",
@@ -179,6 +186,7 @@ export const de = {
   "chat.unpin": "Lösen",
   "chat.forward": "Weiterleiten",
   "chat.delete_msg": "Nachricht löschen",
+  "chat.no_messages": "Noch keine Nachrichten",
   "chat.empty_state": "Wählen Sie links einen Kontakt oder eine Gruppe aus",
   "chat.ttl_label": "Nachrichtenlebensdauer",
   "chat.ttl_units": "Zeiteinheit",
@@ -512,6 +520,7 @@ export const de = {
   "settings.duress_passphrase": "Notfallpassphrase",
   "settings.attempt_limit": "Versuchslimit",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "Exportieren Sie Ihr gesamtes Profil: Identität, Kontakte, Gruppen, alle Nachrichten und Anhänge, Prekeys, angeheftete Inhalte und Einstellungen in einer verschlüsselten Datei. ",
+  "settings.restore_browser_backup": "Öffne zum Wiederherstellen dieser Datei die Browser-App und wähle {select} → {restore}. ",
   "settings.on_another_device_profile_selection_import_backup": "Auf einem anderen Gerät: Profilauswahl → Sicherung importieren. ",
   "settings.one_identity_means_one_active_device_after_importing": "Eine Identität bedeutet ein aktives Gerät. Schließen Sie nach dem Import gipny auf dem alten Gerät; sonst laufen die Ratchet-Sitzungen auseinander und Nachrichten müssen erneut synchronisiert werden.",
   "settings.backup_passphrase_at_least_8_characters": "Sicherungspassphrase (mindestens 8 Zeichen)",
@@ -555,6 +564,7 @@ export const de = {
   "sidebar.accept": "Annehmen",
   "sidebar.request_declined": "Anfrage abgelehnt",
   "sidebar.decline": "Ablehnen",
+  "sidebar.block_contact": "Kontakt blockieren",
   "sidebar.blocked": "{p0} blockiert",
   "sidebar.pin_to_top": "Oben anheften",
   "sidebar.move_to": "Nach „{p0}“ verschieben",

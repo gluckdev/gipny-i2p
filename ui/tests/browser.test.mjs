@@ -11,14 +11,169 @@ import { Window } from 'happy-dom';
 const dir = await mkdtemp(join(tmpdir(), 'gipny-browser-'));
 await build({ configFile: false, logLevel: 'silent', build: {
   outDir: dir, emptyOutDir: false, rolldownOptions: { output: { banner: 'const Event = window.Event;' } },
-  lib: { entry: 'tests/browser-entry.ts', formats: ['es'], fileName: () => 'entry.mjs' },
+  lib: { entry: { entry: 'tests/browser-entry.ts', handoff: 'src/features/native-handoff.ts' }, formats: ['es'], fileName: (_, name) => `${name}.mjs` },
 } });
 const win = new Window({ url: 'https://gluckdev.github.io/gipny-i2p/app/' });
 for (const key of ['window', 'document', 'localStorage', 'navigator', 'Node', 'HTMLElement', 'HTMLInputElement', 'File', 'MessageEvent', 'CloseEvent']) {
   Object.defineProperty(globalThis, key, { value: key === 'window' ? win : win[key], configurable: true });
 }
 const ui = await import(pathToFileURL(join(dir, 'entry.mjs')).href);
+const { nativeDownload, installNativeHandoff } = await import(pathToFileURL(join(dir, 'handoff.mjs')).href);
 after(async () => { await win.happyDOM.abort(); await rm(dir, { recursive: true, force: true }); });
+
+test('native downloads select a published installer for the reported platform', () => {
+  const assets = 'https://github.com/gluckdev/gipny-i2p/releases/download/v0.5.0-rc3/gipny-i2p_0.5.0-rc3_';
+  for (const [userAgent, platform, suffix] of [
+    ['Windows NT 10.0; Win64; x64', 'Win32', 'x64-setup.exe'],
+    ['X11; Linux x86_64', 'Linux x86_64', 'amd64.AppImage'],
+    ['X11; Linux aarch64', 'Linux aarch64', 'aarch64.AppImage'],
+    ['Macintosh; Intel Mac OS X', 'MacIntel', 'x64.dmg'],
+    ['Linux; Android 10', 'Linux armv8l', 'android-arm64.apk'],
+    ['Linux; Android 10', 'Linux x86_64', 'android-arm64.apk'],
+    ['Linux; Android 9; armv7l', 'Linux armv7l', 'android-armv7.apk'],
+  ]) {
+    assert.equal(nativeDownload({ userAgent, platform, maxTouchPoints: 0 })?.url, assets + suffix);
+  }
+  const mac = { userAgent: 'Macintosh; Intel Mac OS X', platform: 'MacIntel', maxTouchPoints: 0 };
+  assert.equal(nativeDownload(mac, { architecture: 'arm', bitness: '64' })?.url, assets + 'aarch64.dmg');
+  for (const device of [ { ...mac, maxTouchPoints: 5 }, { userAgent: 'iPhone; like Mac OS X' },
+    { userAgent: 'X11; CrOS x86_64', platform: 'Linux x86_64' }, { userAgent: 'Linux i686' },
+    { userAgent: 'Android 12; x86_64' }, { userAgent: 'unknown' } ]) {
+    assert.equal(nativeDownload(device), null);
+  }
+});
+
+function nativeHandoffFixture(t) {
+  const opened = [];
+  const local = win.localStorage, session = win.sessionStorage;
+  let focused = true, visible = true;
+  t.mock.method(win.location, 'assign', url => { opened.push(url); });
+  t.mock.getter(win.navigator, 'userAgent', () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+  t.mock.getter(win.document, 'visibilityState', () => visible ? 'visible' : 'hidden');
+  t.mock.method(win.document, 'hasFocus', () => focused);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(win, 'setTimeout', (fn, delay) => setTimeout(fn, delay));
+  t.mock.method(win, 'clearTimeout', id => clearTimeout(id));
+  ui.setLang('en');
+  const leave = () => win.dispatchEvent(new win.Event('pagehide'));
+  t.after(() => {
+    leave();
+    local.removeItem('gipny:hide-native-prompt');
+    session.removeItem('gipny:native-handoff');
+    ui.setLang('en');
+  });
+  return {
+    opened, leave,
+    mount() {
+      installNativeHandoff();
+      return { launch: document.querySelector('.native-handoff-launch'), card: document.querySelector('#native-prompt') };
+    },
+    focus(value) { focused = value; win.dispatchEvent(new win.Event(value ? 'focus' : 'blur')); },
+    visibility(value) { visible = value; document.dispatchEvent(new win.Event('visibilitychange')); },
+  };
+}
+
+test('startup card is nonmodal, localizes in place, and distinguishes close from persistent dismissal', t => {
+  const f = nativeHandoffFixture(t);
+  const input = document.createElement('input');
+  document.body.append(input);
+  input.focus();
+  t.after(() => input.remove());
+  const { launch, card } = f.mount();
+  assert.deepEqual(f.opened, []);
+  assert.equal(document.activeElement, input);
+  assert.equal(launch.parentElement.tagName, 'HEADER');
+  assert.equal(launch.textContent, 'Open in app');
+  assert.equal(card.hidden, false);
+  const [never, download, builds] = card.querySelectorAll('a');
+  const close = card.querySelector('button');
+  assert.equal(never.nextElementSibling, close);
+  assert.equal(close.textContent, '×');
+  assert.equal(close.getAttribute('aria-label'), 'Close');
+  assert.equal(download.textContent, 'Download for Windows (.exe)');
+  assert.match(download.href, /x64-setup\.exe$/);
+  assert.equal(builds.href, 'https://github.com/gluckdev/gipny-i2p/releases');
+  assert.equal(card.lastElementChild, builds);
+  for (const lang of ['ru', 'uk', 'de', 'km', 'vi', 'hi', 'zh', 'en']) {
+    ui.setLang(lang);
+    assert.equal(launch.textContent, ui.t('native.open'));
+    assert.equal(never.textContent, ui.t('native.never'));
+    assert.equal(builds.textContent, ui.t('native.all_builds'));
+    assert.equal(card.hidden, false);
+  }
+  close.focus();
+  close.click();
+  assert.equal(card.hidden, true);
+  assert.equal(document.activeElement, launch);
+  assert.equal(win.localStorage.getItem('gipny:hide-native-prompt'), null);
+  f.leave();
+  const next = f.mount();
+  assert.equal(next.card.hidden, false);
+  next.card.querySelector('a').click();
+  assert.ok(win.localStorage.getItem('gipny:hide-native-prompt'));
+  f.leave();
+  const manual = f.mount();
+  assert.equal(manual.card.hidden, true);
+  manual.launch.click();
+  assert.deepEqual(f.opened, ['gipny://open']);
+  assert.equal(manual.card.hidden, true);
+  t.mock.timers.tick(2000);
+  assert.equal(manual.card.hidden, false, 'an explicit failed launch still offers the installer');
+  const chatShortcut = t.mock.fn();
+  win.addEventListener('keydown', chatShortcut, true);
+  try {
+    manual.card.querySelector('.native-download').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.equal(manual.card.hidden, true);
+    assert.equal(chatShortcut.mock.callCount(), 0);
+  } finally { win.removeEventListener('keydown', chatShortcut, true); }
+});
+
+test('only the current launch can show a fallback, and a hidden page suppresses the startup card for this tab', t => {
+  const f = nativeHandoffFixture(t);
+  const { launch, card } = f.mount();
+  launch.click();
+  t.mock.timers.tick(1000);
+  launch.click();
+  t.mock.timers.tick(1000);
+  assert.equal(card.hidden, true);
+  f.focus(false);
+  t.mock.timers.tick(2000);
+  assert.equal(card.hidden, true, 'wait while the browser chooser has focus');
+  f.focus(true);
+  assert.equal(card.hidden, false, 'a dismissed chooser returns to downloads');
+  launch.click();
+  f.visibility(false);
+  f.visibility(true);
+  f.focus(true);
+  t.mock.timers.tick(4000);
+  assert.equal(card.hidden, true);
+  f.leave();
+  const later = f.mount();
+  assert.equal(later.card.hidden, true);
+  assert.equal(win.localStorage.getItem('gipny:hide-native-prompt'), null);
+  later.launch.click();
+  t.mock.timers.tick(2000);
+  assert.equal(later.card.hidden, false);
+  f.leave();
+  assert.equal(f.mount().card.hidden, false, 'a later failure supersedes the earlier handoff');
+});
+
+test('restricted storage and an unsupported device still allow dismissal and a synchronous launch fallback', t => {
+  const f = nativeHandoffFixture(t);
+  t.mock.getter(win.navigator, 'userAgent', () => 'iPhone; like Mac OS X');
+  t.mock.getter(win, 'localStorage', () => { throw new Error('restricted'); });
+  t.mock.getter(win, 'sessionStorage', () => { throw new Error('restricted'); });
+  t.mock.method(win.location, 'assign', () => { throw new Error('protocol blocked'); });
+  const { launch, card } = f.mount();
+  assert.equal(card.hidden, false);
+  assert.equal(card.querySelector('.native-download').hasAttribute('href'), false);
+  assert.equal(card.querySelector('.native-download').hidden, true);
+  card.querySelector('a').click();
+  assert.equal(card.hidden, true);
+  launch.click();
+  assert.equal(card.hidden, false);
+  assert.equal(card.querySelector('.native-all-builds').textContent, 'All builds');
+});
 
 test('changing one chat choice leaves the profile default and other choices alone', async () => {
   const original = { getChatPrefs: ui.Api.getChatPrefs, updateChatPrefs: ui.Api.updateChatPrefs };
@@ -176,6 +331,15 @@ test('browser file handles pass immutable File objects without reading complete 
   assert.throws(() => ui.selectedBrowserFiles([handle]));
 });
 
+test('registered backup files can exceed the individual chat attachment limit', () => {
+  const archive = new File([], 'backup.bin');
+  Object.defineProperty(archive, 'size', { value: 2 ** 31 + 1 });
+  const handle = ui.registerBrowserFile(archive);
+  try {
+    assert.equal(ui.selectedBrowserFile(handle), archive);
+    assert.throws(() => ui.selectedBrowserFiles([handle]), /File size limit/);
+  } finally { ui.forgetBrowserFiles([handle]); }
+});
 
 test('browser notification bootstrap is quiet and permission is requested on first send', async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'Notification');

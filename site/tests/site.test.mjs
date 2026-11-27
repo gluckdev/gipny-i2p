@@ -29,9 +29,10 @@ function documentFixture(source = html) {
   const alternates = [openGraph['locale:alternate'], ...Array.from({ length: 6 }, () => new Element())];
   const languageSwitch = new Element();
   const browserLinks = [...source.matchAll(/data-browser-app\b/g)].map(() => new Element());
+  const nativeOpen = [...source.matchAll(/data-native-open\b/g)].map(() => new Element());
   return {
-    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch, alternates, browserLinks,
-    querySelectorAll(selector) { return { '[data-browser-app]': browserLinks, '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons, 'meta[property="og:locale:alternate"]': alternates }[selector]; },
+    documentElement: {}, title: '', text, aria, buttons, description, openGraph, languageSwitch, alternates, browserLinks, nativeOpen,
+    querySelectorAll(selector) { return { '[data-browser-app]': browserLinks, '[data-native-open]': nativeOpen, '[data-i18n]': text, '[data-i18n-aria]': aria, '[data-language]': buttons, 'meta[property="og:locale:alternate"]': alternates }[selector]; },
     querySelector(selector) {
       return { 'meta[name="description"]': description, '.language-switch': languageSwitch,
         ...Object.fromEntries(Object.entries(openGraph).map(([key, node]) => [`meta[property="og:${key}"]`, node])),
@@ -61,13 +62,15 @@ test('all eight languages cover every rendered string and accessible label', () 
     assert.equal(match[1], messages.ru[match[2]], `Russian accessible name differs for ${match[2]}`);
   }
   assert.match(html, /<html lang="ru">/);
-  assert.match(messages.en.browserStatus, /Experimental/i);
-  assert.match(messages.ru.browserStatus, /Эксперимент/i);
+  assert.match(messages.en.browserStatus, /Full-featured/i);
+  assert.match(messages.ru.browserStatus, /Полноценный/i);
   assert.match(messages.en.browserBoundary, /does not send or receive messages/);
   assert.match(messages.ru.browserBoundary, /не отправляет и не принимает сообщения/);
   assert.match(messages.ru.browserLocal, /HTTPS.*WebAssembly.*OPFS/);
-  assert.match(messages.ru.browserTimeline, /проходит проверку/);
-  assert.match(messages.en.browserTimeline, /under validation/);
+  assert.match(messages.ru.browserLocal, /экспорт.*доступны/i);
+  assert.match(messages.en.browserLocal, /export.*available/i);
+  assert.match(messages.ru.browserTimeline, /готов к использованию/);
+  assert.match(messages.en.browserTimeline, /ready to use/);
   assert.match(messages.ru.browserStandaloneBody, /OPFS.*WASM/);
   assert.match(messages.en.browserStandaloneBody, /OPFS.*WASM/);
   assert.match(messages.ru.i2pProTunnelsTitle, /Чесночная маршрутизация/);
@@ -430,8 +433,10 @@ test('mobile controls expose flags and readable names, with safe-area space for 
     assert.match(button, /<span aria-hidden="true">\p{Regional_Indicator}{2}<\/span>/u);
   }
   const actions = html.match(/<div class="mobile-actions">([\s\S]*?)<\/div>/)[1];
-  assert.match(actions, /href="\.\/app\/browser\.html" data-browser-app data-i18n="heroWeb"/);
-  assert.match(actions, /href="#downloads" data-i18n="download"/);
+  assert.match(actions, /button button-primary" href="\.\/app\/browser\.html" data-browser-app data-i18n="heroWeb"/);
+  assert.match(actions, /button button-secondary" href="#downloads" data-i18n="download"/);
+  assert.match(actions, /data-native-open data-i18n="openNative"/);
+  assert.ok(actions.indexOf('button button-primary') < actions.indexOf('href="#downloads"'), 'the web app is the first mobile action');
   assert.match(html, /viewport-fit=cover/);
   const mobile = blocks(css, /@media \(max-width: 740px\)/g).map(block => block.body).join('\n');
   assert.match(mobile, /body \{ padding-bottom: var\(--mobile-actions-height\)/);
@@ -462,16 +467,89 @@ test('homepage leads with a truthful, localized web-client entrance', () => {
   assert.match(hero, /data-i18n="heroWebBenefit"/);
   assert.match(hero, /data-i18n="heroWebLimit"/);
   assert.doesNotMatch(hero, /href="#browser"/);
-  assert.match(messages.ru.heroWebBenefit, /самостоятельный клиент.*привязанный телефон.*номер телефона/i);
-  assert.match(messages.en.heroWebBenefit, /standalone client.*paired phone.*phone number/i);
-  assert.match(messages.ru.heroWebLimit, /сейчас офлайн.*настроенный.*транспортный мост/i);
-  assert.match(messages.en.heroWebLimit, /currently offline.*configured.*transport bridge/i);
+  assert.match(messages.ru.heroWebBenefit, /как нативное приложение.*экспорт профиля/i);
+  assert.match(messages.en.heroWebBenefit, /same features as the native apps.*encrypted profile export/i);
+  assert.match(messages.ru.heroWebLimit, /нужны HTTPS.*транспортный мост/i);
+  assert.match(messages.en.heroWebLimit, /Messaging needs HTTPS.*transport bridge/i);
+  assert.doesNotMatch(messages.ru.heroWebLimit, /офлайн/i);
+  assert.doesNotMatch(messages.en.heroWebLimit, /offline/i);
   for (const copy of Object.values(messages)) {
     assert.ok(copy.heroWebKicker.trim());
     assert.ok(copy.heroWebBenefit.trim());
     assert.ok(copy.heroWebLimit.trim());
   }
   assert.match(css, /\.web-entrance-action \{ min-height: 58px/);
+});
+
+test('navigation, hero, downloads, getting started and mobile actions lead with the web app', () => {
+  const nav = html.slice(html.indexOf('<nav class="main-nav"'), html.indexOf('</nav>'));
+  assert.match(nav, /<a class="nav-open" href="\.\/app\/browser\.html" data-browser-app data-i18n="navOpen">/);
+  assert.ok(nav.indexOf('data-browser-app') < nav.indexOf('href="#principles"'), 'web launch comes first in navigation');
+  const heroStart = html.indexOf('<div class="hero-copy">');
+  const hero = html.slice(heroStart, html.indexOf('<figure class="message-path">', heroStart));
+  assert.match(hero, /<a class="button button-primary" href="\.\/app\/browser\.html" data-browser-app>/);
+  assert.match(hero, /<a class="button button-secondary" href="#downloads">/);
+  assert.ok(hero.indexOf('button button-primary') < hero.indexOf('button button-secondary'), 'hero download is secondary');
+  assert.match(hero, /data-native-open data-i18n="openNative"/);
+  const downloads = html.slice(html.indexOf('<section class="downloads-section'), html.indexOf('<section class="native-section'));
+  assert.match(downloads, /data-i18n="downloadsWebFirst"/);
+  assert.ok(downloads.indexOf('href="./app/browser.html"') < downloads.indexOf('download-catalog:start'), 'native catalog follows the web launch');
+  const started = html.slice(html.indexOf('<section class="native-section'), html.indexOf('<section class="plans-section'));
+  assert.ok(started.indexOf('href="./app/browser.html"') < started.indexOf('href="#downloads"'), 'getting started opens the web app first');
+  assert.match(started, /data-native-open data-i18n="openNative"/);
+  const actions = html.match(/<div class="mobile-actions">([\s\S]*?)<\/div>/)[1];
+  assert.match(actions, /data-native-open data-i18n="openNative"/);
+  assert.equal([...html.matchAll(/data-native-open\b/g)].length, 3);
+});
+
+test('native app action tries the installed client and falls back to the localized web app', () => {
+  const doc = documentFixture();
+  const events = {};
+  const navigations = [];
+  const pending = [];
+  const browser = {
+    location: { search: '', get href() { return 'https://example.test/project/'; }, set href(value) { navigations.push(value); } },
+    navigator: { languages: ['en-US'] },
+    history: {},
+    addEventListener(name, callback) { events[name] = callback; },
+    setTimeout(callback) { pending.push(callback); },
+  };
+  initialize(doc, browser);
+  assert.equal(doc.nativeOpen.length, 3);
+  doc.nativeOpen[0].listeners.click();
+  assert.equal(navigations[0], 'gipny://open');
+  assert.equal(pending.length, 1);
+  pending[0]();
+  assert.equal(navigations[1], './app/browser.html?lang=en');
+  navigations.length = 0;
+  pending.length = 0;
+  doc.nativeOpen[1].listeners.click();
+  events.blur();
+  pending[0]();
+  assert.deepEqual(navigations, ['gipny://open'], 'an opened native app must not be overwritten by the fallback');
+  doc.nativeOpen[2].listeners.click();
+  assert.equal(navigations.at(-1), 'gipny://open');
+});
+
+test('web copy promises full feature parity and two intermediate tunnel hops in every language', async () => {
+  const experimental = /experimental|эксперимент|експеримент|experimentell|សាកល្បង|thử nghiệm|प्रायोगिक|实验/i;
+  const missingExport = /not implemented|не реализован|не реалізован|nicht implementiert|មិនទាន់មាន|chưa hỗ trợ|उपलब्ध नहीं|暂不支持/i;
+  const twoHops = /two intermediate|два промежуточных|два проміжні|zwei Zwischenrouter|អន្តរការីពីរ|hai bộ định tuyến trung gian|दो मध्यवर्ती|两个中间/i;
+  const threeHops = /three intermediate|три промежуточных|три проміжні|drei Zwischenrouter|អន្តរការីបី|ba bộ định tuyến trung gian|तीन मध्यवर्ती|三个中间/i;
+  for (const [lang, copy] of Object.entries(messages)) {
+    assert.doesNotMatch(copy.browserStatus, experimental, lang);
+    assert.doesNotMatch(copy.browserTimeline, /under validation|проходит проверку|перевіряється|validiert|ក្រោមការបញ្ជាក់|đang được xác thực|सत्यापनाधीन|正在验证中/i, lang);
+    assert.match(copy.browserLocal, /export|экспорт|експорт|Export|នាំចេញ|xuất|निर्यात|导出/i, lang);
+    assert.doesNotMatch(copy.browserLocal, missingExport, lang);
+    assert.match(copy.deviceBrowser5, /export|экспорт|експорт|Export|នាំចេញ|xuất|निर्यात|导出/i, lang);
+    assert.match(copy.featNetworkPolicyBody, twoHops, lang);
+    assert.doesNotMatch(copy.featNetworkPolicyBody, threeHops, lang);
+    assert.doesNotMatch(copy.featFilesBody, /PDF.*(apps only|в приложениях|у програмах|nur in|ក្នុងកម្មវិធី|trong ứng dụng|ऐप्स में|应用程序中的)/i, lang);
+  }
+  const readme = await readFile(resolve(root, 'README.md'), 'utf8');
+  assert.match(readme, /двумя\s+промежуточными/i);
+  assert.match(readme, /two\s+intermediate routers/i);
+  assert.doesNotMatch(readme, /трёхузловые|three-hop/i);
 });
 
 test('download rendering preserves native choices and localizes the unsupported-device browser fallback', async () => {

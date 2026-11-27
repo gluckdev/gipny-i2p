@@ -14,7 +14,7 @@
   Выбор не требует открывать vault.
 - `gipny.lang` в `localStorage` хранит один из 8 кодов: `ru`, `en`, `uk`, `de`,
   `km`, `vi`, `hi`, `zh`.
-  Порядок выбора по умолчанию (одинаковый в приложении `ui/src/i18n.ts` и на
+  Порядок выбора по умолчанию (одинаковый в приложении `ui/src/features/localization/i18n.ts` и на
   сайте `site/main.js`):
   1. Явный выбор (`localStorage` `gipny.lang` в приложении / `?lang=` на сайте).
   2. Русский (`ru`) при русской локали среди предпочтительных языков
@@ -45,16 +45,16 @@
 
 | Файл | Ответственность |
 |---|---|
-| `ui/src/locales/{en,ru,uk,de,km,vi,hi,zh}.ts` | Словари интерфейса (8 языков); одинаковые ключи и параметры подстановки |
-| `ui/src/i18n.ts` | `LANGS` с названиями языков на самих языках, `detectLang`, `detectKeyboardLang`, `detectSystemLangs`, предпочтение, `getLocale`, `setLang`, подписки, `t` |
+| `ui/src/features/localization/locales/{en,ru,uk,de,km,vi,hi,zh}.ts` | Словари интерфейса (8 языков); одинаковые ключи и параметры подстановки |
+| `ui/src/features/localization/i18n.ts` | `LANGS` с названиями языков на самих языках, `detectLang`, `detectKeyboardLang`, `detectSystemLangs`, предпочтение, `getLocale`, `setLang`, подписки, `t` |
 | `site/main.js`, `site/index.html` | Словари сайта на тех же 8 языках (`messages`), `resolveLanguage`, `detectKeyboardLanguage`, переключатель и Open Graph `og:locale` |
-| `ui/src/language-picker.ts` | Выбор языка до входа |
-| `ui/src/app.ts` | Перерисовка активного представления и освобождение дочерних views |
-| `ui/src/chat.ts` | Сохранение и восстановление состояния ввода при смене языка |
-| `ui/src/avatars.ts`, `auth.ts` | `avatarNames()` и `bootLabels()`: подписи вычисляются при показе |
-| `ui/src/error-text.ts` | Только отображение известных ошибок старого backend; не протокол |
+| `ui/src/features/onboarding/language-picker.ts` | Выбор языка до входа |
+| `ui/src/app/app.ts` | Перерисовка активного представления и освобождение дочерних views |
+| `ui/src/features/messaging/chat.ts` | Сохранение и восстановление состояния ввода при смене языка |
+| `ui/src/features/identity/avatars.ts`, `ui/src/features/authorization/boot.ts` | `avatarNames()` и `bootLabels()`: подписи вычисляются при показе |
+| `ui/src/app/error-text.ts` | Только отображение известных ошибок старого backend; не протокол |
 | `ui/tests/localization.test.mjs` | Проверка переводов и поведения настоящих UI-компонентов в DOM |
-| `ui/dev/mock.ts`, `preview.html` | Превью `lang=en\|ru\|uk\|de\|km\|vi\|hi\|zh`, селекторы по актуальным переводам |
+| `ui/dev/mock.ts`, `ui/dev/preview.html` | Превью `lang=en\|ru\|uk\|de\|km\|vi\|hi\|zh`, селекторы по актуальным переводам |
 
 Все словари проверяются TypeScript по ключам русского (`satisfies Record<keyof typeof ru, string>`).
 `npm test` дополнительно сравнивает каждый из 8 словарей из `translations` с английским:

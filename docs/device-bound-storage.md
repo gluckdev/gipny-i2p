@@ -5,6 +5,10 @@
 введён новый формат; это пока описание исходного кода, а не завершённая
 сертификация устройств или результат новой сборки.
 
+В текущем дереве зафиксированы `rusqlite 0.43.0`, `libsqlite3-sys 0.40.0`
+и SQLCipher 4.20.0. Ниже результаты CI привязаны к версиям на указанных коммитах.
+[Cargo.lock](../Cargo.lock) · [Сборка и релизы](build-release.md).
+
 ## Формат v2 и граница доверия
 
 В старой реализации `DeviceBind::ensure` записывал случайные 32 байта открытым
@@ -155,8 +159,8 @@ legacy rejection, enrollment interruption, одновременная публи
 сохранность чужой metadata и encrypted headless reopen. Native Windows test
 проверяет реальный DPAPI roundtrip, чужой ID/AAD и tampering.
 
-После уточнения владельца новые Rust/JNI/SDK сборки и тесты запускаются **только
-в GitHub Actions**, см. [build-release.md](build-release.md).
+Локальные проверки можно выполнять в рабочем дереве. Финальную платформенную
+матрицу запускают на общем коммите в GitHub Actions. [Сборка и релизы](build-release.md).
 
 Проверено **2026-10-28**, commit `a66d223`: [native Linux job](https://github.com/gluckdev/gipny-i2p/actions/runs/40763085227/job/123079901381)
 прошёл 175 libcore unit tests и 9 `first_run` tests, включая оба independent-open
@@ -187,9 +191,9 @@ constraints macOS arm64. Он отменён до исполнения; native p
 после `sqlcipher_mlock: VirtualLock() returned 0 LastError=1453`.
 Исходник pinned SQLCipher 4.14 и [upstream issue #619](https://github.com/sqlcipher/sqlcipher/issues/619)
 подтвердили рекурсию Windows logger через собственный защищённый allocator.
-На `93295f1` выполнен переход на `rusqlite 0.41.1` / `libsqlite3-sys 0.39.1` /
-публичный `sqlcipher-src 419.0.6` (SQLCipher 4.19): logger использует исправление
-upstream `afbb132`, без отключения `cipher_memory_security` и увеличения стека.
+В прогоне на `93295f1` использовались `rusqlite 0.41.1`, `libsqlite3-sys 0.39.1`
+и `sqlcipher-src 419.0.6` (SQLCipher 4.19). В эту версию вошло исправление
+логгера из upstream-коммита `afbb132`. Настройки стека и `cipher_memory_security` были штатными.
 Source archive проверен по checksum `Cargo.lock`; новый Windows integration
 `sqlcipher_windows` исчерпывает lock quota отдельного child process и требует
 успешного SQL запроса и настоящего предупреждения отказа `VirtualLock`.
@@ -205,9 +209,9 @@ Dedicated SQLCipher quota test после этого был skipped; успеш�
 protected-key recovery/budget test уже PASS. SQLCipher child также exit0 после
 SQL assertions, но parent test ожидал старое `VirtualLock()` вместо реального
 `VirtualLock(ADDR,SIZE)`: шаг FAILED, следующий полный suite skipped.
-Oracle исправлен по actual pinned 4.19 source: real call и точный LastError1453
-должны присутствовать на одной строке; child success и включённая memory security
-обязательны. Повторный общий Windows результат пока требуется.
+По исходникам SQLCipher 4.19 для того прогона уточнили условие проверки.
+Строка журнала должна содержать вызов `VirtualLock` и код 1453, а дочерний
+процесс должен завершиться успешно с включённым `cipher_memory_security`. Повторный общий Windows результат пока требуется.
 SQLCipher memory locking остаётся best effort при отказе OS quota; это отличается
 от наших обязательных locked pages для ключей и не даёт гарантии полного
 закрепления SQL workspace в RAM.

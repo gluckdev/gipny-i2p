@@ -1,7 +1,7 @@
 # Задачи проекта
 
 Сверено 2026-11-18. [Аудит всех разделов и исторических планов](docs/audits/2026-11-18-plan-review.md). Интеграционная ветка `release/0.5.0-beta.1`.
-Выпуск alpha2 отменён новым scope: beta только после всех условий ниже.
+Версия пакетов — `0.5.0-rc.7`. Выпуск alpha2 отменён; rc.7 после всех условий ниже.
 Контекст и история проверок: [WORK_NOTES.md](WORK_NOTES.md).
 Checkpoint для возобновления сессии: [SESSION_HANDOFF.md](SESSION_HANDOFF.md).
 
@@ -141,28 +141,34 @@ upstream i2pd и vendored miniupnpc не менялись. Common wire codec н�
 
 ### Остальные крупные Rust-исходники
 
-Актуальная инвентаризация после переносов:
+Снимок рабочего дерева на 2026-11-27. Для повторного подсчёта собственных Rust- и
+JS/TS-исходников от 1000 строк выполните из корня репозитория:
+
+```sh
+rg --files -0 -g '*.rs' -g '*.ts' -g '*.js' -g '*.mjs' -g '!**/vendor/**' -g '!**/gen/**' \
+  agent bot-sdk browser-router core dht i2p-embed libcore tests/e2e-harness ui/src ui/dev ui/tests site |
+  xargs -0 wc -l | awk '$1 >= 1000 && $2 != "total"' | sort -nr
+```
 
 | Файл | Строк | Направление разбиения |
 | --- | ---: | --- |
-| `libcore/src/relay_server.rs` | 1758 | Auth, storage/delivery, lanes, ограничения, тесты |
-| `tests/e2e-harness/src/main.rs` | 1444 | Setup, сценарии, измерения, assertions |
-| `browser-router/src/engine.rs` | 1389 | Доменные части движка и адаптеры |
-| `libcore/src/update.rs` | 1303 | Metadata, download, verification, install, тесты |
-| `libcore/src/files.rs` | 1244 | Staging, transfer state, flow control, тесты |
+| `libcore/src/relay_server.rs` | 2069 | Auth, storage/delivery, lanes, ограничения, тесты |
+| `browser-router/src/engine.rs` | 1512 | Доменные части движка и адаптеры |
+| `libcore/src/update.rs` | 1327 | Metadata, download, verification, install, тесты |
+| `libcore/src/files.rs` | 1190 | Staging, transfer state, flow control, тесты |
+| `tests/e2e-harness/src/main.rs` | 1169 | Setup, сценарии, измерения, assertions |
 
-- [ ] Разбить оставшиеся перечисленные файлы на логически цельные модули.
+- [ ] Разбить перечисленные Rust-файлы на логически цельные модули.
 - [ ] Отдельно устранить дублирование общей логики между Core и SessionManager;
   простое перемещение двух одинаковых реализаций не считать устранением дублей.
 
 ### UI и сайт
 
-- [ ] Разбить `ui/src/app/state.ts` (1736 строк при инвентаризации).
-- [ ] Разбить `ui/src/features/messaging/chat.ts` (1775 строк).
-- [ ] Разбить `site/main.js` (2044 строки), сохранив загрузку сайта и тесты.
-- [ ] Проверить прочие крупные UI/browser-runtime файлы и дублирование helpers.
-  Повторная инвентаризация также выявила `ui/tests/localization.test.mjs`
-  (1324 строки) и `ui/tests/browser.test.mjs` (1070); разделять тесты по сценариям.
+- [ ] Разбить `site/main.js` (2138 строк), сохранив загрузку сайта и тесты.
+- [ ] Разбить `ui/src/app/state.ts` (1797 строк) и `ui/src/features/messaging/chat.ts` (1718 строк).
+- [ ] Разбить `ui/src/browser-core/backend.ts` (1221 строка) и проверить дублирование helpers.
+- [ ] Разделить тесты по сценариям в `ui/tests/localization.test.mjs` (1490 строк)
+  и `ui/tests/browser.test.mjs` (1314 строк).
 - [ ] Проверить импорты, frontend build/test и совместимость WebView/browser.
 
 ## 2. DHT — самостоятельный аудит, приоритет высокий

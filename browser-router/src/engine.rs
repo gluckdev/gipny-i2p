@@ -687,6 +687,35 @@ mod implementation {
             Ok(engine)
         }
 
+        /// Fork the committed messaging identity and sessions into an independent
+        /// vault. Its fresh master key, credentials and generation belong solely
+        /// to the copy. The caller must re-encrypt referenced attachment parts.
+        pub fn fork_for_backup(
+            &self,
+            profile: &str,
+            password: &str,
+        ) -> Result<BrowserEngine, JsValue> {
+            if password.len() < 8 {
+                return Err(JsValue::from_str("passphrase too short (min 8)"));
+            }
+            let inner = self.inner.borrow();
+            if inner.candidate.is_some() {
+                return Err(JsValue::from_str("profile transaction in progress"));
+            }
+            let mut state = inner.committed_state()?.clone();
+            state.vault = Vault::create(profile, password).map_err(|e| JsValue::from_str(&e))?;
+            state.profile = profile.into();
+            Ok(BrowserEngine {
+                lifetime: Rc::default(),
+                inner: RefCell::new(EngineInner {
+                    committed: Some(state),
+                    candidate: None,
+                    metadata: None,
+                    closed: false,
+                }),
+            })
+        }
+
         /// Opens an existing profile using password from the newest complete record of slotA / slotB.
         pub fn open_password(
             profile: &str,

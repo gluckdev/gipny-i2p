@@ -2,6 +2,13 @@ import type { en } from './en.ts';
 
 /** UI messages; user content and protocol identifiers remain unchanged. */
 export const vi = {
+  "native.open": "Mở trong ứng dụng",
+  "native.prompt": "Cài bản thử nghiệm Gipny trên thiết bị của bạn.",
+  "native.no_build": "Bạn có thể tiếp tục dùng Gipny trong trình duyệt trên thiết bị này.",
+  "native.download": "Tải xuống cho {os} ({format})",
+  "native.never": "Không hiển thị lại",
+  "native.all_builds": "Tất cả bản dựng",
+
   "setup.title": "Ngôn ngữ và bàn phím",
   "setup.detected": "Chúng tôi đã chọn {language} cho bạn. Bạn có thể đổi ngôn ngữ bên dưới.",
   "setup.layouts": "Bố cục bàn phím",
@@ -176,6 +183,7 @@ export const vi = {
   "chat.unpin": "Bỏ ghim",
   "chat.forward": "Chuyển tiếp",
   "chat.delete_msg": "Xóa tin nhắn",
+  "chat.no_messages": "Chưa có tin nhắn",
   "chat.empty_state": "Chọn một liên hệ hoặc nhóm ở bên trái",
   "chat.ttl_label": "Thời gian lưu tin",
   "chat.ttl_units": "Đơn vị thời gian",
@@ -509,6 +517,7 @@ export const vi = {
   "settings.duress_passphrase": "Cụm mật khẩu khi bị ép buộc",
   "settings.attempt_limit": "Giới hạn nỗ lực",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "Xuất toàn bộ hồ sơ của bạn: danh tính, danh bạ, nhóm, tất cả tin nhắn và tệp đính kèm, khóa trước, mục được ghim và cài đặt trong một tệp được mã hóa. ",
+  "settings.restore_browser_backup": "Để khôi phục dữ liệu từ tệp này, hãy mở ứng dụng trong trình duyệt và chọn {select} → {restore}. ",
   "settings.on_another_device_profile_selection_import_backup": "Trên thiết bị khác: chọn cấu hình → Nhập bản sao lưu. ",
   "settings.one_identity_means_one_active_device_after_importing": "Một danh tính có nghĩa là một thiết bị hoạt động. Sau khi nhập, đóng gipny trên thiết bị cũ; nếu không thì các phiên ratchet sẽ khác nhau và các tin nhắn yêu cầu đồng bộ lại.",
   "settings.backup_passphrase_at_least_8_characters": "cụm mật khẩu dự phòng (ít nhất 8 ký tự)",
@@ -552,6 +561,7 @@ export const vi = {
   "sidebar.accept": "Chấp nhận",
   "sidebar.request_declined": "Yêu cầu bị từ chối",
   "sidebar.decline": "Từ chối",
+  "sidebar.block_contact": "Chặn liên hệ",
   "sidebar.blocked": "{p0} bị chặn",
   "sidebar.pin_to_top": "Ghim lên đầu",
   "sidebar.move_to": "Di chuyển đến “{p0}”",

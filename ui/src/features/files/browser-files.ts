@@ -8,11 +8,15 @@ export function registerBrowserFile(file: File): string {
 }
 export function forgetBrowserFiles(paths: string[]): void { paths.forEach((path) => files.delete(path)); }
 export function clearBrowserFiles(): void { files.clear(); }
+export function selectedBrowserFile(path: string): File {
+  const file = files.get(path);
+  if (!file) throw new Error('Please select the file again');
+  return file;
+}
 export function selectedBrowserFiles(paths: string[]): File[] {
   if (paths.length > 16) throw new Error('Message size limit');
   return paths.map(path => {
-    const file = files.get(path);
-    if (!file) throw new Error('Please select the file again');
+    const file = selectedBrowserFile(path);
     if (file.size > 2 * 1024 * 1024 * 1024) throw new Error('File size limit is 2 GiB');
     return file;
   });

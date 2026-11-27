@@ -2,6 +2,13 @@ import type { en } from './en.ts';
 
 /** UI messages; user content and protocol identifiers remain unchanged. */
 export const zh = {
+  "native.open": "在应用中打开",
+  "native.prompt": "在设备上安装 Gipny 候选发布版。",
+  "native.no_build": "你可以继续在此设备的浏览器中使用 Gipny。",
+  "native.download": "下载 {os} 版（{format}）",
+  "native.never": "不再显示",
+  "native.all_builds": "所有构建版本",
+
   "setup.title": "语言和键盘",
   "setup.detected": "我们已为您选择了{language}。您可以在下方更改语言。",
   "setup.layouts": "键盘布局",
@@ -176,6 +183,7 @@ export const zh = {
   "chat.unpin": "取消固定",
   "chat.forward": "前进",
   "chat.delete_msg": "删除留言",
+  "chat.no_messages": "暂无消息",
   "chat.empty_state": "选择左侧的联系人或群组",
   "chat.ttl_label": "消息保留时间",
   "chat.ttl_units": "时间单位",
@@ -509,6 +517,7 @@ export const zh = {
   "settings.duress_passphrase": "胁迫口令",
   "settings.attempt_limit": "尝试限制",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "导出您的整个个人档案：身份、联系人、群组、所有消息和附件、预密钥、固定项目和设置在一个加密文件中。 ",
+  "settings.restore_browser_backup": "要从此文件恢复数据，请打开浏览器应用并选择“{select}” → “{restore}”。 ",
   "settings.on_another_device_profile_selection_import_backup": "在另一台设备上：个人档案选择 → 导入备份。 ",
   "settings.one_identity_means_one_active_device_after_importing": "一种身份意味着一台活动设备。导入后，在旧设备上关闭gipny；否则，棘轮会话会出现分歧并且消息需要重新同步。",
   "settings.backup_passphrase_at_least_8_characters": "备份密码（至少 8 个字符）",
@@ -552,6 +561,7 @@ export const zh = {
   "sidebar.accept": "接受",
   "sidebar.request_declined": "请求被拒绝",
   "sidebar.decline": "拒绝",
+  "sidebar.block_contact": "屏蔽联系人",
   "sidebar.blocked": "{p0} 被阻止",
   "sidebar.pin_to_top": "固定到顶部",
   "sidebar.move_to": "移至“{p0}”",

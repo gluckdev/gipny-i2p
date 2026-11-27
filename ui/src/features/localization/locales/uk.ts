@@ -2,6 +2,13 @@ import type { en } from './en.ts';
 
 /** UI messages; user content and protocol identifiers remain unchanged. */
 export const uk = {
+  "native.open": "Відкрити в застосунку",
+  "native.prompt": "Установіть тестову версію Gipny на свій пристрій.",
+  "native.no_build": "На цьому пристрої можна користуватися Gipny у браузері.",
+  "native.download": "Завантажити для {os} ({format})",
+  "native.never": "Більше не показувати",
+  "native.all_builds": "Усі збірки",
+
   "setup.title": "Мова та клавіатура",
   "setup.detected": "Ми вибрали для вас мову: {language}. Її можна змінити нижче.",
   "setup.layouts": "Розкладки клавіатури",
@@ -176,6 +183,7 @@ export const uk = {
   "chat.unpin": "Відкріпити",
   "chat.forward": "вперед",
   "chat.delete_msg": "Видалити повідомлення",
+  "chat.no_messages": "Повідомлень поки немає",
   "chat.empty_state": "Виберіть контакт або групу ліворуч",
   "chat.ttl_label": "Строк життя",
   "chat.ttl_units": "Одиниця часу",
@@ -509,6 +517,7 @@ export const uk = {
   "settings.duress_passphrase": "Парольна фраза на випадок примусу",
   "settings.attempt_limit": "Обмеження спроб",
   "settings.export_your_whole_profile_identity_contacts_groups_all": "Експортуйте весь свій профіль: дані, контакти, групи, усі повідомлення та вкладення, попередні ключі, закріплені елементи та налаштування в одному зашифрованому файлі. ",
+  "settings.restore_browser_backup": "Щоб відновити дані з цього файлу, відкрийте застосунок у браузері та виберіть «{select}» → «{restore}». ",
   "settings.on_another_device_profile_selection_import_backup": "На іншому пристрої: вибір профілю → Імпорт резервної копії. ",
   "settings.one_identity_means_one_active_device_after_importing": "Одна ідентифікація означає один активний пристрій. Після імпорту закрийте gipny на старому пристрої; інакше сеанси з храповим механізмом розходяться, і повідомлення потребують повторної синхронізації.",
   "settings.backup_passphrase_at_least_8_characters": "резервна парольна фраза (принаймні 8 символів)",
@@ -552,6 +561,7 @@ export const uk = {
   "sidebar.accept": "прийняти",
   "sidebar.request_declined": "Запит відхилено",
   "sidebar.decline": "відхилити",
+  "sidebar.block_contact": "Заблокувати контакт",
   "sidebar.blocked": "{p0} заблоковано",
   "sidebar.pin_to_top": "Прикріпити до верху",
   "sidebar.move_to": "Перейти до «{p0}»",

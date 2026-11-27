@@ -1,7 +1,7 @@
 # Текущее состояние / Current state
 
 Сверка: **2026-11-18**. Ветка `release/0.5.0-beta.1`; alpha2 не публикуется.
-Метаданные пока `0.5.0-beta.1`. [Условия beta](plans/2026-11-16-beta.md)
+Метаданные `0.5.0-rc.7`. [Условия beta](plans/2026-11-16-beta.md)
 обязательны до выпуска. Ни версия исходников, ни старый успешный CI сами по
 себе не означают готовую бету или развёрнутый публичный сервис.
 
@@ -20,7 +20,7 @@ GitHub ответил через outproxy. Стабильного релиза �
 | Native I2P, сообщения, группы, файлы | Собственный Core/Session поверх встроенного C++i2pd. Native external/embedded/agent/offline CI на `2139725` PASS; новые beta изменения требуют повторения |
 | Браузерная самостоятельная сеть | JavaScript/Worker управляет локальным WASM router/криптографией и OPFS. WSS/WebRTC bridge переносит NTCP2-байты; сервер не хранит профиль и не заменяет browser Core |
 | Browser WSS и WebRTC | [Baseline CI](https://github.com/gluckdev/gipny-i2p/actions/runs/43891713781): по11 assertions, 5MiB файл, переписка, receipts, reload и работа после остановки app host. Физические телефоны/TURN не проверены |
-| Защитная политика | Application Destination:3 hops inbound/3 outbound, padding включён; caffeine/cocaine режимы удалены. Exploratory pool — отдельная политика; не приравнивать hops, tunnels, streams и router sessions |
+| Защитная политика | Application Destination: 2 hops inbound / 2 outbound, padding включён; caffeine/cocaine режимы удалены. Exploratory pool — отдельная политика; не приравнивать hops, tunnels, streams и router sessions |
 | Файловые lanes | Default до4, measurement override1…8; окно16. Первый sweep1…8 доставил все файлы, но нарушил probes deadline на1/3/8. Native пробует по одному потоку и сравнивает скорость подтверждения частей; браузер регулирует число одновременных отправок по подтверждениям и таймаутам |
 | Предзапуск | Native единый router, параллельные client/relay и owned cancellation; browser public bootstrap/cache/preload до unlock, generation guards. Измеренный выигрыш cold/warm ещё не установлен |
 | Durable inbox | Ratchet, расход OPK и ciphertext inbox фиксируются синхронно до relay ACK. Unit и live delivery есть; устойчивость к реальной потере питания проверяется отдельно |
@@ -80,7 +80,7 @@ Those results do not validate subsequent beta code, public hosting, physical
 phones or TURN. The web client owns its I2P router and keys locally; the byte
 forwarder does not replace it with a server-owned messenger.
 
-Application tunnels retain3/3 hops and padding. Default file lanes remain4;
+Application tunnels retain 2/2 hops and padding. Default file lanes remain 4;
 the first1…8 sweep delivered every file but missed interactive deadlines.
 Live validation of adaptive concurrency, stronger resume verification, wider platform
 coverage and the I2P-only profile move remain beta gates. UI improvements and

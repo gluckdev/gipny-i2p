@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 const server = await createServer({ logLevel: 'error', server: { host: '127.0.0.1', port: 0 } });
@@ -7,6 +9,7 @@ let browser;
 try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.GIPNY_CHROMIUM || '/usr/bin/google-chrome' });
   const context = await browser.newContext({ hasTouch: true });
+  if (process.env.GIPNY_LAYOUT_TIMEOUT_MS) context.setDefaultTimeout(Number(process.env.GIPNY_LAYOUT_TIMEOUT_MS));
   const page = await context.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   let checked = 0;
@@ -36,7 +39,7 @@ try {
     assert.ok(geometry.keys.every(key => key.x >= 0 && key.right <= viewport.width + 1 && key.width >= 24 && key.height >= (viewport.height > 500 ? 42 : 28) && key.hit), JSON.stringify(geometry));
     const before = await field.inputValue(); await numbers.first().click(); assert.equal(await field.inputValue(), before + '1');
     await page.locator('[data-k="shift"]').click(); const symbol = await numbers.first().textContent(); assert.notEqual(symbol, '1');
-    if (lang === 'en' && scene === 'chat') await page.screenshot({ path: `/tmp/gipny-beta-keyboard-${viewport.width}.png` });
+    if (lang === 'en' && scene === 'chat') await page.screenshot({ path: join(tmpdir(), `gipny-beta-keyboard-${viewport.width}.png`) });
     await numbers.first().click(); assert.equal(await field.inputValue(), before + '1' + symbol);
     assert.deepEqual(await numbers.allTextContents(), [...'1234567890']);
     await page.locator('[data-k="symbols"]').click(); assert.equal(await page.locator('.osk').getAttribute('data-page'), 'symbols');

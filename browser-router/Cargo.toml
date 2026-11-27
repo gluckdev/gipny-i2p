@@ -3,7 +3,7 @@ name = "gipny-browser-router"
 version = "0.1.0"
 edition = "2021"
 publish = false
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Experimental browser runtime for the emissary I2P router"
 
 # Keep native application dependencies (Tokio, SQLCipher, OpenSSL) out of WASM.

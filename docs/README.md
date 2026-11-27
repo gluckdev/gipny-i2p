@@ -4,10 +4,7 @@
 
 ## Русский
 
-Основной язык — русский; английское описание следует вторым в каждом текущем
-руководстве. Обновление: **2026-11-16**, ветка `release/0.5.0-beta.1`.
-CI baseline `2139725` проверен; новые beta-изменения требуют свою матрицу.
-Номер версии не означает опубликованный релиз.
+Основной язык документации — русский. Версия исходного дерева — **0.5.0-rc.7**.
 
 Начните с [README](../README.md), [состояния функций](current-state.md) и
 [модели безопасности](../SECURITY.md). Откройте
@@ -33,7 +30,7 @@ CI baseline `2139725` проверен; новые beta-изменения тр�
 | Контакты и доставка | [Карточки](contact-cards.md), [группы](group-delivery.md), [удаление](message-deletion.md) |
 | Размеры, хранение и подтверждения вложений | [Передача файлов](file-transfer.md) |
 | Сеть роутера, UPnP | [UPnP](upnp.md), [источники и настройки](upstreams-and-settings.md) |
-| Что нового в версии | [0.5.0-rc3](releases/0.5.0-rc3.md), [передача контекста](handoff-brief.md) |
+| Что изменилось в beta | [Состояние функций](current-state.md), [задачи выпуска](../TASKS.md) |
 | Android и переводы | [JNI](android-jni-build.md), [локализация](localization.md) |
 | Карта исходников | [Core](../core/README.md), [libcore](../libcore/README.md), [UI](../ui/README.md), [DHT](../dht/README.md), [agent](../agent/README.md), [bot SDK](../bot-sdk/README.md) |
 | Сайт проекта и его независимость от переписки | [Site](../site/README.md), [план зеркал I2P](site-mirrors.md) |
@@ -43,9 +40,14 @@ WSS или WebRTC → Rust-форвардер → I2P. Отдельный лок
 удалён. Упоминания SAM, daemon gateway или Python production forwarder в старых
 планах не являются текущей инструкцией.
 
+Пути к исходникам и локальные ссылки проверяются из корня репозитория командой
+`python3 scripts/check-doc-paths.py`. Проверка охватывает оба корневых README,
+TASKS.md, руководство по workflows и текущие руководства в этом каталоге.
+
 ### Исторические материалы
 
-`plans/`, `releases/`, `today-2026-10-28.md`, `handoff-brief.md`,
+Датированные планы и заметки о выпусках, включая [rc3](releases/0.5.0-rc3.md),
+`today-2026-10-28.md`, [старый бриф](handoff-brief.md),
 `relay-independence.md`, оценки старых транспортов и корневой `MIGRATION-i2p.md`
 сохраняют решения и результаты своих дат. Они не заменяют матрицу текущего
 состояния. [Старые результаты браузерного CI](archive/browser-validation-2026-11-01.md)
@@ -54,9 +56,7 @@ WSS или WebRTC → Rust-форвардер → I2P. Отдельный лок
 
 ## English
 
-Russian is primary; English follows in current guides. Source snapshot:
-2026-11-16, branch `release/0.5.0-beta.1`. Baseline `2139725` passed CI;
-new beta changes need their own evidence. A source version is not a published release.
+Russian is the primary documentation language. The source tree is at **0.5.0-rc.7**.
 
 For Pages deployment and offline checks, see the [deployment guide](../scripts/deploy/README.md).
 
@@ -64,8 +64,8 @@ Start with the [English README](../README.en.md), [feature status](current-state
 and [security model](../SECURITY.md). The table above links browser setup,
 forwarder operation, upstream/configuration, builds/releases, platform updates,
 profile/memory/logging security, contact cards, delivery, Android, localization,
-router UPnP, the 0.5.0-rc3 notes and component maps. Each current guide provides
-an English section.
+router UPnP and component maps. Run `python3 scripts/check-doc-paths.py` at the
+repository root to check local links and source paths in the active guides.
 
 Native clients embed i2pd through Rust/C++ FFI. The web client uses
 WASM/Worker/OPFS with WSS or WebRTC via a Rust transport forwarder. The separate

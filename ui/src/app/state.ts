@@ -145,6 +145,7 @@ export class Store {
   groups = new Signal<Group[]>([]);
   selectedChat = new Signal<ChatTarget | null>(null);
   messages = new Signal<Map<string, Message[]>>(new Map());
+  historyLoadFailed = new Signal(false);
   private contentEpoch = 0;
   private static readonly VISIBLE_MESSAGES = 2000;
   private profileEpoch = 0;
@@ -563,6 +564,7 @@ export class Store {
     this.authError.set(null);
     this.currentProfile.set(null);
     this.view.set('auth-create');
+    this.beginPrewarm('');
   }
 
   async cancelToProfileSelect(): Promise<void> {
@@ -1098,10 +1100,17 @@ export class Store {
 
   async selectChat(target: ChatTarget | null): Promise<void> {
     if (this.contentLocked) return;
+    this.historyLoadFailed.set(false);
     this.selectedChat.set(target);
     if (!target) return;
     const epoch = this.contentEpoch;
-    await this.loadMessages(target);
+    try {
+      await this.loadMessages(target);
+    } catch (error) {
+      if (!this.acceptsContent(target, epoch)) return;
+      this.historyLoadFailed.set(true);
+      throw error;
+    }
     if (!this.acceptsContent(target, epoch)) return;
     await this.loadPinned(target);
     if (!this.acceptsContent(target, epoch)) return;

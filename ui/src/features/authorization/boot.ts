@@ -23,7 +23,7 @@ export class AuthBooting extends View {
   constructor(private store: Store) {
     super();
 
-    const list = h('div', { class: 'boot-steps' });
+    const list = h('ol', { class: 'boot-steps' });
     for (const [id, label, hint] of bootLabels()) {
       const row = this.makeRow(label, hint);
       this.rows.set(id, row);
@@ -37,7 +37,7 @@ export class AuthBooting extends View {
       'aria-label': tr('boot.title'), 'aria-valuemin': '0', 'aria-valuemax': '100',
       'aria-valuenow': '0',
     }, this.progressFill);
-    this.progressText = h('span', { class: 'boot-progress-text' }, '0%');
+    this.progressText = h('span', { class: 'boot-progress-text', 'aria-hidden': 'true' }, '0%');
     this.enterBtn = h('button', {
       class: 'btn boot-button boot-enter hidden', type: 'button',
       onClick: () => store.enterMain(),
@@ -93,7 +93,7 @@ export class AuthBooting extends View {
   }
 
   private makeRow(label: string, hint: string): HTMLElement {
-    return h('div', { class: 'boot-step boot-idle', title: hint },
+    return h('li', { class: 'boot-step boot-idle', title: hint },
       h('span', { class: 'boot-mark' }, '[  --  ]'),
       h('div', { class: 'boot-step-main' },
         h('div', { class: 'boot-step-label' }, label,

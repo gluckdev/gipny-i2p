@@ -1,6 +1,7 @@
 {
   "name": "gipny-project-site",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "test": "node --test --test-isolation=none tests/site.test.mjs",

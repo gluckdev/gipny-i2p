@@ -15,7 +15,7 @@ pub fn application_tunnel_hops() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn application_policy_is_three_hops_in_both_directions() {
-        assert_eq!(super::application_tunnel_hops(), [3, 3]);
+    fn application_policy_is_two_hops_in_both_directions() {
+        assert_eq!(super::application_tunnel_hops(), [2, 2]);
     }
 }

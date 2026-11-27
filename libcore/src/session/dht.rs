@@ -67,33 +67,35 @@ impl SessionManager {
             return;
         };
         let this = self.clone();
+        let contact = contact.clone();
         let id = contact.id;
-        let known = contact.relay_address.clone();
         self.spawn_task(async move {
-            let Some((relay, _)) =
+            let Some((relay, issued)) =
                 dht_client::find_address(&this.dht, &this.identity, &their_sign, &their_dh).await
             else {
                 return;
             };
-            if relay.trim().is_empty()
-                || known
-                    .as_deref()
-                    .is_some_and(|known| relay::same_destination(known, &relay))
             {
-                return;
+                let tasks = this.tasks.lock().unwrap_or_else(|p| p.into_inner());
+                if tasks.is_none()
+                    || !matches!(
+                        this.db.apply_dht_contact_relay(&contact, &relay, issued),
+                        Ok(true)
+                    )
+                {
+                    return;
+                }
             }
             crate::debug_trace!("[dht/session] contact {id} published a new relay address");
-            if this.db.set_contact_relay(id, Some(&relay)).is_ok() {
-                if let Some(old) = known.as_deref() {
-                    this.peer_relays.lock().await.remove(old);
-                }
-                this.warm_relay_of(id);
-                this.send_kick.notify_one();
-                let _ = this
-                    .events
-                    .send(SessionEvent::ContactUpdated { contact_id: id })
-                    .await;
+            if let Some(old) = contact.relay_address.as_deref() {
+                this.peer_relays.lock().await.remove(old);
             }
+            this.warm_relay_of(id);
+            this.send_kick.notify_one();
+            let _ = this
+                .events
+                .send(SessionEvent::ContactUpdated { contact_id: id })
+                .await;
         });
     }
 

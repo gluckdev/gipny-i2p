@@ -1,7 +1,8 @@
 import { errorText } from '../../app/error-text';
 import { t as tr } from '../localization/i18n';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Api, isTauri } from '../../app/api';
+import { Api, isTauri, usesBrowserCore } from '../../app/api';
+import { forgetBrowserFiles, registerBrowserFile } from '../files/browser-files';
 import type { Store } from '../../app/state';
 import { View, h } from '../../app/view';
 import { salonBackdrop, authHeader } from './profile-salon';
@@ -68,9 +69,18 @@ export class ProfileSelect extends View {
 
   private async startImport(): Promise<void> {
     if (this.disposed || this.store.view.get() !== 'profile-select') return;
-    if (!isTauri) { this.store.showToast(tr('web.desktop_only'), true); return; }
     const operation = this.beginImport();
     try {
+      if (!isTauri) {
+        if (!usesBrowserCore()) { this.store.showToast(tr('web.desktop_only'), true); return; }
+        const picker = h('input', { type: 'file', accept: '.bin' });
+        picker.addEventListener('change', () => {
+          const file = picker.files?.[0];
+          if (file && this.isImportActive(operation)) this.showImportModal(file, operation);
+        }, { once: true });
+        picker.click();
+        return;
+      }
       const sel = await open({ multiple: false, filters: [{ name: tr('profile.gipny_backup'), extensions: ['bin'] }] });
       if (!this.isImportActive(operation) || !sel || Array.isArray(sel)) return;
       this.showImportModal(sel, operation);
@@ -79,8 +89,10 @@ export class ProfileSelect extends View {
     }
   }
 
-  private showImportModal(backupPath: string, operation = this.beginImport()): void {
+  private showImportModal(backup: string | File, operation = this.beginImport()): void {
     if (!this.isImportActive(operation)) return;
+    const backupPath = typeof backup === 'string' ? backup : registerBrowserFile(backup);
+    const filename = typeof backup === 'string' ? backup : backup.name;
     const profileI = h('input', { class: 'input', placeholder: tr('profile.new_profile_name') }) as HTMLInputElement;
     const vaultI = h('input', { class: 'input', type: 'password', placeholder: tr('profile.new_vault_passphrase_min_8') }) as HTMLInputElement;
     const backupI = h('input', { class: 'input', type: 'password', placeholder: tr('profile.backup_passphrase') }) as HTMLInputElement;
@@ -123,7 +135,7 @@ export class ProfileSelect extends View {
         h('button', { class: 'icon-btn', onClick: close }, 'x'),
       ),
       h('div', { class: 'modal-body' },
-        h('div', { class: 'hint', style: { marginBottom: '10px' } }, tr('profile.from', { p0: (backupPath) })),
+        h('div', { class: 'hint', style: { marginBottom: '10px' } }, tr('profile.from', { p0: filename })),
         h('div', { class: 'field' }, h('label', null, tr('profile.profile_name')), profileI),
         h('div', { class: 'field' }, h('label', null, tr('profile.new_vault_passphrase')), vaultI),
         h('div', { class: 'field' }, h('label', null, tr('profile.backup_passphrase_2')), backupI),
@@ -134,6 +146,7 @@ export class ProfileSelect extends View {
         h('button', { class: 'btn', onClick: () => submit(close) }, tr('profile.import')),
       ),
     ), () => {
+      if (typeof backup !== 'string') forgetBrowserFiles([backupPath]);
       operation.active = false;
       if (this.importOperation === operation) this.closeImport = null;
       profileI.value = ''; vaultI.value = ''; backupI.value = '';

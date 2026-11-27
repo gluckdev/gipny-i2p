@@ -15,30 +15,49 @@ export class ContextMenu {
   private static current: HTMLElement | null = null;
   private static listenerTimer: number | null = null;
   private static removeListeners: (() => void) | null = null;
+  private static trigger: HTMLElement | null = null;
 
   static open(x: number, y: number, items: MenuItem[]): void {
     this.close();
-    const menu = h('div', { class: 'ctx-menu' });
+    this.trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const menu = h('div', { class: 'ctx-menu', role: 'menu', 'aria-label': tr('chat.more_actions') });
     for (const item of items) {
-      menu.appendChild(h('div', {
+      menu.appendChild(h('button', {
+        type: 'button', role: 'menuitem', tabindex: '-1',
         class: 'ctx-menu-item' + (item.danger ? ' danger' : ''),
-        onClick: () => { item.onClick(); this.close(); },
+        onClick: () => { this.close(true); item.onClick(); },
       }, item.label));
     }
     document.body.appendChild(menu);
     const rect = menu.getBoundingClientRect();
-    const px = Math.min(x, window.innerWidth - rect.width - 8);
-    const py = Math.min(y, window.innerHeight - rect.height - 8);
+    const px = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+    const py = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
     menu.style.left = px + 'px';
     menu.style.top = py + 'px';
     this.current = menu;
+    const buttons = Array.from(menu.querySelectorAll('button'));
+    buttons[0]?.focus({ preventScroll: true });
+    menu.addEventListener('keydown', event => {
+      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      switch (event.key) {
+        case 'ArrowDown': buttons[(index + 1) % buttons.length]?.focus(); break;
+        case 'ArrowUp': buttons[(index + buttons.length - 1) % buttons.length]?.focus(); break;
+        case 'Home': buttons[0]?.focus(); break;
+        case 'End': buttons[buttons.length - 1]?.focus(); break;
+        case 'Escape': this.close(true); break;
+        case 'Tab': this.close(true); return;
+        default: return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    });
     this.listenerTimer = window.setTimeout(() => {
       this.listenerTimer = null;
       if (this.current !== menu) return;
       const onDown = (ev: Event) => {
         if (!menu.contains(ev.target as Node)) this.close();
       };
-      const onEsc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') this.close(); };
+      const onEsc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') this.close(true); };
       document.addEventListener('pointerdown', onDown);
       document.addEventListener('keydown', onEsc);
       this.removeListeners = () => {
@@ -48,12 +67,14 @@ export class ContextMenu {
     }, 0);
   }
 
-  static close(): void {
+  static close(restoreFocus = false): void {
     if (this.listenerTimer != null) { window.clearTimeout(this.listenerTimer); this.listenerTimer = null; }
     this.removeListeners?.(); this.removeListeners = null;
     this.current?.replaceChildren();
     this.current?.remove();
     this.current = null;
+    if (restoreFocus && this.trigger?.isConnected) this.trigger.focus({ preventScroll: true });
+    this.trigger = null;
   }
 }
 
@@ -152,6 +173,7 @@ export class PinnedBanner {
       class: 'pinned-toggle',
       onClick: () => this.toggle(),
       title: tr('actions.show_all_pinned'),
+      'aria-label': tr('actions.pinned_messages'),
     }, '▾') as HTMLButtonElement;
 
     this.el = h('div', { class: 'pinned-banner', style: { display: 'none' } },
@@ -188,6 +210,7 @@ export class PinnedBanner {
       this.listEl.appendChild(this.renderItem(m));
     }
     const hiddenCount = this.items.length - visible.length;
+    this.toggleBtn.setAttribute('aria-expanded', String(this.expanded));
     if (!this.expanded && this.items.length > 1) {
       this.toggleBtn.textContent = `▾ +${hiddenCount}`;
       this.toggleBtn.style.display = '';
@@ -201,17 +224,14 @@ export class PinnedBanner {
 
   private renderItem(m: Message): HTMLElement {
     const preview = m.body.length > 100 ? m.body.slice(0, 100) + '…' : (m.body || tr('chat.attachment'));
-    return h('div', {
-      class: 'pin-item',
-      onClick: () => this.store.requestScrollTo(this.target, m.id),
-    },
-      h('div', { class: 'pin-item-body' }, preview),
+    return h('div', { class: 'pin-item' },
+      h('button', { type: 'button', class: 'pin-item-body', title: preview,
+        onClick: () => this.store.requestScrollTo(this.target, m.id) }, preview),
       h('button', {
         class: 'pin-item-unpin',
-        title: tr('chat.unpin'),
-        onClick: (e: Event) => {
-          e.stopPropagation();
-          this.store.unpinMessage(this.target, m.id).catch((err) => this.store.showToast('unpin failed: ' + err, true));
+        title: tr('chat.unpin'), 'aria-label': tr('chat.unpin'),
+        onClick: () => {
+          this.store.unpinMessage(this.target, m.id).catch((err) => this.store.showToast(tr('actions.unpin_failed') + err, true));
         },
       }, '×'),
     );
@@ -273,7 +293,8 @@ export class EditInline {
 export function scrollLogToMessage(log: HTMLElement, messageId: number): void {
   const el = log.querySelector(`[data-mid="${messageId}"]`) as HTMLElement | null;
   if (!el) return;
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
   el.classList.add('msg-flash');
   setTimeout(() => el.classList.remove('msg-flash'), 1500);
 }

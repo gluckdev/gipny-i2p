@@ -4,7 +4,7 @@ use tauri::State;
 
 #[cfg(target_os = "android")]
 use crate::android_keystore;
-use crate::{backup, core_of, err, AppCtx};
+use crate::{backup, core_of, err, profile_dir, AppCtx};
 
 #[tauri::command]
 pub(crate) async fn export_identity(
@@ -15,8 +15,12 @@ pub(crate) async fn export_identity(
     if passphrase.len() < 8 {
         return Err("passphrase too short (min 8)".into());
     }
-    let core = core_of(&ctx).await?;
-    let bytes = backup::export_raw_backup_data(core.db())?;
+    let bytes = {
+        let _operation = ctx.begin_profile_operation()?;
+        let core = core_of(&ctx).await?;
+        let profile = ctx.profile.lock().await.clone().ok_or("locked")?;
+        backup::export_raw_backup_data(core.db(), &profile_dir(&ctx, &profile)?)?
+    };
     let sealed = gipny_libcore::security::backup_seal(&passphrase, &bytes).map_err(err)?;
     std::fs::write(&dest_path, &sealed).map_err(err)?;
     Ok(())

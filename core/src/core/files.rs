@@ -310,7 +310,6 @@ impl Core {
         contact: &gipny_libcore::db::Contact,
         route: &Route,
     ) -> Result<()> {
-        use gipny_libcore::files;
         let now = now_ms();
         let main=route;
         let wanted = self
@@ -327,89 +326,31 @@ impl Core {
             .unwrap_or_else(|p| p.into_inner())
             .get(&contact.id)
             .copied();
-        for peer in self.db.file_peers_for(contact.id)? {
-            let Some(file) = self.db.file_out(&peer.file_id)? else {
-                continue;
-            };
-            let a = &file.attachment;
-            let chunk_size = a.chunk_size.unwrap_or(files::CHUNK_SIZE as i64) as u32;
-            let total = files::chunk_count(a.size as u64, chunk_size);
-            let (plan, window, in_flight, rto, srtt) = {
-                let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                let flow = flows.entry(contact.id).or_default();
-                let plan = self.db.reserve_file_batch(
-                    &file.file_id,
-                    contact.id,
-                    total,
-                    flow,
-                    now,
-                    heard,
-                )?;
-                (
-                    plan,
-                    flow.window(),
-                    flow.in_flight(),
-                    flow.rto_ms(),
-                    flow.srtt_ms(),
-                )
-            };
-            let Some(plan) = plan else { continue };
-            if plan.gave_up {
-                let _ = self.events.try_send(CoreEvent::FileFailed {
-                    message_id: file.message_id,
-                    contact_id: contact.id,
-                    reason: "not taken".into(),
-                });
-                continue;
-            }
-            let due = plan.due;
-            let next_before = plan.next_before;
-            if due.is_empty() {
-                continue;
-            }
-            // One line a part (192 KiB): what went, and why it was its turn.
-            let again: Vec<u32> = due.iter().copied().filter(|i| *i < next_before).collect();
-            gipny_libcore::debug_trace!("[files] {} to contact {}: parts {:?} (again {:?}), window {window}, lanes {} (incl main), in flight {in_flight}, timeout {rto} ms, round trip {srtt:?} ms",
-                a.name, contact.id, due, again, lanes.len());
-            let path = self.data_dir.join(ATTACHMENTS_DIR).join(&a.path);
-            let cipher = AttachmentCipher::from_key(to_arr32(a.key.clone())?);
-            for index in &due {
-                let data = files::read_part(&path, &cipher, a.size as u64, chunk_size, *index)?;
-                let mut payload = WirePayload::simple(0, String::new(), Vec::new(), now, None);
-                payload.file_chunk = Some(WireFileChunk {
-                    file_id: file.file_id,
-                    index: *index,
-                    data,
-                });
-                if let Ok(reference) = self.db.dm_reference(file.message_id) {
-                    payload.dm = Some(gipny_libcore::session::WireDm { kind: 0, reference });
-                }
-                let lane = self
-                    .flows
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .entry(contact.id)
-                    .or_default()
-                    .next_lane(lanes.len());
-                let via = lanes[lane].clone();
-                if let Err(e) = self
-                    .send_payload_via_relay(contact, &mut payload, &via)
-                    .await
-                {
-                    gipny_libcore::debug_trace!(
-                        "[files] part {index} of {} to contact {}: {e:?}",
-                        a.name,
-                        contact.id
-                    );
-                    let mut flows = self.flows.lock().unwrap_or_else(|p| p.into_inner());
-                    let flow = flows.entry(contact.id).or_default();
-                    let retry: Vec<u32> = due.iter().copied().filter(|i| i >= index).collect();
-                    self.db
-                        .retry_file_parts(&file.file_id, contact.id, &retry, flow)?;
-                    break;
-                }
-            }
-        }
+        self.db
+            .send_due_file_parts(
+                contact.id,
+                &self.data_dir.join(ATTACHMENTS_DIR),
+                &lanes,
+                now,
+                heard,
+                &self.flows,
+                |mut payload, via| async move {
+                    self.send_payload_via_relay(contact, &mut payload, &via).await
+                },
+                |message_id, reason| {
+                    let _ = self.events.try_send(CoreEvent::FileFailed {
+                        message_id,
+                        contact_id: contact.id,
+                        reason: reason.into(),
+                    });
+                },
+                |_, _| {},
+            )
+            .await
+            .map_err(|e| match e {
+                gipny_libcore::session::SessionError::Db(e) => CoreError::Db(e),
+                _ => CoreError::State,
+            })?;
         Ok(())
     }
 

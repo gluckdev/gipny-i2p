@@ -81,6 +81,7 @@ export class AuthCreate extends View {
       class: 'btn btn-ghost', type: 'button', onClick: () => {
         if (this.submitting) return;
         if (this.step > 1) this.showStep((this.step - 1) as 1 | 2);
+        else if (this.browser && !store.profiles.get().length) store.view.set('profile-select');
         else void store.cancelToProfileSelect();
       },
     }, tr('common.back'));
@@ -125,7 +126,9 @@ export class AuthCreate extends View {
       panel.classList.toggle('hidden', panel.hidden);
     });
     this.stepLabel.textContent = tr('auth.create_step', { p0: step });
-    this.backBtn.classList.toggle('hidden', step === 1 && this.store.profiles.get().length === 0);
+    const firstProfile = step === 1 && !this.store.profiles.get().length;
+    this.backBtn.classList.toggle('hidden', firstProfile && !this.browser);
+    this.backBtn.textContent = tr(firstProfile && this.browser ? 'profile.select_title' : 'common.back');
     this.nextBtn.textContent = tr(step === 3 ? 'auth.create_btn' : 'auth.next');
     if (focus) {
       const target = step === 1 ? this.displayI : step === 2 ? this.passI : this.browser ? this.nextBtn : this.duressI;

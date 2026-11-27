@@ -2,6 +2,35 @@
 
 use super::*;
 
+fn relay_timestamp_key(dh: &[u8]) -> String {
+    format!("contact_relay_timestamp_{}", hex(dh))
+}
+
+fn advance_relay_timestamp(tx: &Transaction<'_>, dh: &[u8], issued: u64) -> Result<bool> {
+    // Fixed-width big-endian blobs compare in timestamp order, including
+    // unsigned signed-record timestamps outside SQLite's integer range.
+    Ok(tx.execute(
+        "INSERT INTO settings(k, v) VALUES (?1, ?2)
+         ON CONFLICT(k) DO UPDATE SET v=excluded.v WHERE settings.v < excluded.v",
+        params![relay_timestamp_key(dh), &issued.to_be_bytes()[..]],
+    )? == 1)
+}
+
+fn set_direct_relay(tx: &Transaction<'_>, id: i64, relay: Option<&str>) -> Result<()> {
+    let dh: Option<Vec<u8>> = tx
+        .query_row(
+            "UPDATE contacts SET relay_address=?2 WHERE id=?1 AND relay_address IS NOT ?2
+         RETURNING identity_dh",
+            params![id, relay],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(dh) = dh {
+        advance_relay_timestamp(tx, &dh, now_ms() as u64)?;
+    }
+    Ok(())
+}
+
 impl Db {
     pub fn add_contact(
         &self,
@@ -14,16 +43,16 @@ impl Db {
         let relay = relay.map(str::trim).filter(|r| !r.is_empty());
         self.with_tx(|conn| {
             conn.execute(
-                "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, i2p_address, display_name, trust, created_at, relay_address) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
-                params![sign, dh, i2p_address, name, now_ms(), relay],
+                "INSERT OR IGNORE INTO contacts (identity_sign, identity_dh, i2p_address, display_name, trust, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+                params![sign, dh, i2p_address, name, now_ms()],
             )?;
             let (id,pinned): (i64,Vec<u8>)=conn.query_row("SELECT id,identity_sign FROM contacts WHERE identity_dh=?1",[dh],|r|Ok((r.get(0)?,r.get(1)?)))?;
             if pinned.as_slice()!=sign { return Err(DbError::State); }
             if crate::is_valid_i2p_address(i2p_address) {
                 conn.execute("UPDATE contacts SET i2p_address=?2 WHERE id=?1",params![id,i2p_address])?;
             }
-            if let Some(addr)=relay {
-                conn.execute("UPDATE contacts SET relay_address=?2 WHERE id=?1",params![id,addr])?;
+            if relay.is_some() {
+                set_direct_relay(conn, id, relay)?;
             }
             Ok(id)
         })
@@ -44,12 +73,49 @@ impl Db {
 
     pub fn set_contact_relay(&self, id: i64, relay: Option<&str>) -> Result<()> {
         let relay = relay.map(str::trim).filter(|r| !r.is_empty());
-        self.with_conn(|c| {
-            c.execute(
-                "UPDATE contacts SET relay_address = ?2 WHERE id = ?1",
-                params![id, relay],
+        self.with_tx(|tx| set_direct_relay(tx, id, relay))
+    }
+
+    /// Apply a signed lookup result only while the contact still matches its
+    /// pre-lookup snapshot and the record is fresher than the last route update.
+    /// A newer publication of the current address advances its timestamp too.
+    pub fn apply_dht_contact_relay(
+        &self,
+        contact: &Contact,
+        relay: &str,
+        issued: u64,
+    ) -> Result<bool> {
+        let relay = relay.trim();
+        if relay.is_empty() {
+            return Ok(false);
+        }
+        self.with_tx(|tx| {
+            let current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM contacts WHERE id=?1 AND identity_sign=?2
+                 AND identity_dh=?3 AND relay_address IS ?4)",
+                params![
+                    contact.id,
+                    contact.identity_sign,
+                    contact.identity_dh,
+                    contact.relay_address
+                ],
+                |r| r.get(0),
             )?;
-            Ok(())
+            if !current || !advance_relay_timestamp(tx, &contact.identity_dh, issued)? {
+                return Ok(false);
+            }
+            if contact
+                .relay_address
+                .as_deref()
+                .is_some_and(|old| old == relay || crate::relay::same_destination(old, relay))
+            {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE contacts SET relay_address=?2 WHERE id=?1",
+                params![contact.id, relay],
+            )?;
+            Ok(true)
         })
     }
 
@@ -166,8 +232,20 @@ impl Db {
     }
 
     pub fn delete_contact(&self, id: i64) -> Result<()> {
-        self.with_conn(|c| {
-            c.execute("DELETE FROM contacts WHERE id = ?1", params![id])?;
+        self.with_tx(|tx| {
+            let dh: Option<Vec<u8>> = tx
+                .query_row(
+                    "DELETE FROM contacts WHERE id=?1 RETURNING identity_dh",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(dh) = dh {
+                tx.execute(
+                    "DELETE FROM settings WHERE k=?1",
+                    [relay_timestamp_key(&dh)],
+                )?;
+            }
             Ok(())
         })
     }
@@ -212,6 +290,92 @@ impl Db {
 
     pub fn find_contact_by_sign_pk(&self, sign: &[u8]) -> Result<Option<Contact>> {
         self.find_contact_by_sign(sign)
+    }
+}
+
+#[cfg(test)]
+mod dht_route_tests {
+    use super::*;
+
+    #[test]
+    fn delayed_lookup_cannot_replace_a_new_direct_route() {
+        let db = Db::open_plain(Path::new(":memory:")).unwrap();
+        let id = db
+            .add_contact(&[1; 32], &[2; 32], "", "peer", Some("initial"))
+            .unwrap();
+        let snapshot = db.get_contact(id).unwrap().unwrap();
+        db.set_contact_relay(id, Some("direct")).unwrap();
+        assert!(!db
+            .apply_dht_contact_relay(&snapshot, "delayed", u64::MAX)
+            .unwrap());
+
+        // Even a subsequent lookup from the current route must reject a
+        // publication issued before the direct update.
+        let current = db.get_contact(id).unwrap().unwrap();
+        assert!(!db.apply_dht_contact_relay(&current, "delayed", 1).unwrap());
+        assert_eq!(db.contact_relay(id).unwrap().as_deref(), Some("direct"));
+    }
+
+    #[test]
+    fn contact_added_with_a_relay_records_its_timestamp() {
+        let db = Db::open_plain(Path::new(":memory:")).unwrap();
+        let id = db
+            .add_contact(&[1; 32], &[2; 32], "", "peer", Some("card"))
+            .unwrap();
+        let snapshot = db.get_contact(id).unwrap().unwrap();
+        assert_eq!(snapshot.relay_address.as_deref(), Some("card"));
+        assert!(!db.apply_dht_contact_relay(&snapshot, "stale", 1).unwrap());
+        assert_eq!(db.contact_relay(id).unwrap().as_deref(), Some("card"));
+    }
+
+    #[test]
+    fn repeated_signed_address_advances_freshness_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("routes.db");
+        let db = Db::open_plain(&path).unwrap();
+        let id = db
+            .add_contact(&[1; 32], &[2; 32], "", "peer", None)
+            .unwrap();
+        let snapshot = db.get_contact(id).unwrap().unwrap();
+        assert!(db.apply_dht_contact_relay(&snapshot, "first", 10).unwrap());
+        let current = db.get_contact(id).unwrap().unwrap();
+        assert!(!db.apply_dht_contact_relay(&current, "first", 20).unwrap());
+        drop(db);
+
+        let db = Db::open_plain(&path).unwrap();
+        assert!(!db.apply_dht_contact_relay(&current, "older", 19).unwrap());
+        assert!(!db.apply_dht_contact_relay(&current, "tied", 20).unwrap());
+        assert!(db.apply_dht_contact_relay(&current, "newer", 21).unwrap());
+        assert_eq!(db.contact_relay(id).unwrap().as_deref(), Some("newer"));
+    }
+
+    #[test]
+    fn lookup_requires_the_original_contact_identity_and_an_existing_row() {
+        let db = Db::open_plain(Path::new(":memory:")).unwrap();
+        let id = db
+            .add_contact(&[1; 32], &[2; 32], "", "peer", None)
+            .unwrap();
+        let snapshot = db.get_contact(id).unwrap().unwrap();
+        for other in [
+            Contact {
+                identity_sign: vec![3; 32],
+                ..snapshot.clone()
+            },
+            Contact {
+                identity_dh: vec![4; 32],
+                ..snapshot.clone()
+            },
+        ] {
+            assert!(!db.apply_dht_contact_relay(&other, "unrelated", 10).unwrap());
+        }
+        assert!(db.apply_dht_contact_relay(&snapshot, "first", 1).unwrap());
+        let current = db.get_contact(id).unwrap().unwrap();
+        db.delete_contact(id).unwrap();
+        assert!(!db.apply_dht_contact_relay(&current, "gone", 11).unwrap());
+        assert!(db
+            .get_setting(&relay_timestamp_key(&current.identity_dh))
+            .unwrap()
+            .is_none());
     }
 }
 

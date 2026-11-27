@@ -16,8 +16,8 @@ pub(super) fn get_or_start<T: Clone, E>(
         return Ok(value.clone());
     }
     let started = start()?;
-    // All callers pass through the same lock. Failed starts remain retryable;
-    // a panic poisons the lock and cannot trigger another native initialization.
+    // Keep pre-native failures retryable. The embedded router records partial
+    // native initialization and rejects further starts in that process.
     Ok(value.get_or_init(|| started).clone())
 }
 

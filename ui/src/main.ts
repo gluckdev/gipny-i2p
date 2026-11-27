@@ -49,7 +49,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (store.view.get() !== 'main' || store.screenLocked.get()) return;
-  if (app.isModalActive()) return;
+  if (app.isModalActive() || (e.target instanceof Element && e.target.closest('.ctx-menu'))) return;
   if (e.key === 'Escape') {
     if (store.selectedChat.get() != null) {
       e.preventDefault();

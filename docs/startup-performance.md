@@ -21,7 +21,7 @@
 | Движок | C++ i2pd через собственный Rust/FFI слой `i2p-embed` | Rust Emissary, собственный WASM runtime и JS Worker |
 | Сеть | Native NTCP2 и SSU2; встроенный router | Client-only NTCP2 через настроенный WSS/WebRTC forwarder; нет native UDP/SSU2 или local SAM listener |
 | Время жизни router | Один `OnceLock` на процесс; первый каталог/settings остаются до выхода | `TaskScope` и Worker; lock/close прекращают текущий runtime |
-| Клиентские туннели | Обычно inbound/outbound 3/3; benchmark проверяет оба клиента и оба relay | Собственный adapter явно создаёт 3/3; исторический baseline наследовал default 2/2 |
+| Клиентские туннели | Inbound/outbound 2/2; benchmark проверяет оба клиента и оба relay | Собственный adapter явно создаёт 2/2; исторический baseline наследовал default 2/2 |
 | Exploratory pool | По 2 туннеля длиной 2 в каждом направлении | По 3 туннеля длиной 2 в каждом направлении |
 | Router capacity | Настройка TransitProfile; default Balanced: O, share 50%, transit 256 | Client-only; NTCP2 max 16; профиль native bandwidth сюда не переносится |
 | Состояние профиля | Зашифрованная БД; router public cache отдельно по назначению | Зашифрованный профиль OPFS; private state в Worker/WASM, public caches отдельно |
@@ -35,13 +35,13 @@ Upstream-исходники изучались read-only; большие чуж�
 
 Исходная разница browser 2/2 и native 3/3 обнаружена в **нашем добавленном модуле**
 `ClientHandle::create(identity)` внутри `client-only-ntcp2.patch`: его
-`TunnelPoolConfig` наследовал upstream default 2/2. Это собственный adapter,
-который теперь явно задаёт 3/3, сохраняя чужие defaults. UI получает hops из
+`TunnelPoolConfig` наследовал upstream default 2/2. Промежуточная версия явно
+задавала 3/3; текущая политика вернулась к 2/2 (native `DEFAULT_HOPS = 2`,
+browser `application_tunnel_hops() == [2, 2]`). UI получает hops из
 Rust `application_tunnel_hops()`, а не отдельной константы. Source verification,
 WASM release build и UI builds прошли; новая live проверка ещё ожидается.
 `Config.exploratory` меняет другой pool и сам по себе не решает
-эту задачу. Исторический browser baseline 2/2 нельзя смешивать с будущим 3/3
-при оценке скорости. Native sweep также не заменяет browser измерение.
+эту задачу. Native sweep также не заменяет browser измерение.
 Exploratory readiness отдельно не доказывает готовность клиентского Destination.
 
 Browser forwarder — отдельная точка наблюдения транспорта: он видит подключение
@@ -97,8 +97,8 @@ CacheStorage, ограничена 60 с. Оба JS cache readers огранич
 | --- | --- | --- | --- |
 | Persistent native file cursor между короткими batches | Реализовано, выигрыш ещё не измерен | Per-lane распределение, goodput и p95 echo под нагрузкой | Не увеличивает окно или размер padding; сохраняет последовательную фиксацию ratchet |
 | Native controlled cap 1…8 и JSON transport counters | Реализовано в benchmark | Один pinned build, последовательный sweep 32 MiB, повтор baseline | Default 4 сохранён; open peak не означает использование всех streams |
-| Standalone relay client hops 2→3, readiness sidecar | Исторический baseline 16 ноября. Текущий harness проверяет длину туннелей личных терминалов через runtime API | Destination binding и inbound/outbound policy каждого relay | Устраняет несовпадение baseline; sidecar описывает принятую конфигурацию, не трассу пакета |
-| Browser application hops 2→3 в собственном adapter patch | Реализовано; source verification и WASM/UI builds прошли, live CI ожидается | Explicit config assertions и live browser messaging на новом baseline | Чужой `TunnelPoolConfig::default` и exploratory pool не меняются; ускорение от сокращения пути не допускается |
+| Standalone relay client hops 2→3→2, readiness sidecar | Исторический baseline 16 ноября (3/3); текущая политика 2/2. Harness проверяет длину туннелей личных терминалов через runtime API | Destination binding и inbound/outbound policy каждого relay | Sidecar описывает принятую конфигурацию, не трассу пакета |
+| Browser application hops 2→3→2 в собственном adapter patch | Реализовано 2/2; source verification и WASM/UI builds прошли | Explicit config assertions и live browser messaging на текущем baseline | Чужой `TunnelPoolConfig::default` и exploratory pool не меняются |
 | Native finished-prewarm cancellation | Исправлено: completed outer result больше не теряет child relay JoinHandle; child abort+await | Детерминированные ownership tests; profile-switch smoke test | Сначала корректное завершение старых задач, затем новый prewarm |
 | Awaitable shutdown подготовленного native relay | Реализовано; прямой libcore regression прошёл | После completed builder явно abort+await его accept/gc tasks | Вложенные client tasks отменяются через JoinSet Drop; глобальный router живёт, мгновенное отсутствие всех packets не заявлено |
 | Native router/client/relay build overlap | Реализовано; lifecycle 20/20, Core all-targets и libcore 214/214 прошли | Время отдельно router ready/client ready/relay ready/first send | Один sync router bootstrap, затем existing bounded pools под единым owner/profile/settings/generation |

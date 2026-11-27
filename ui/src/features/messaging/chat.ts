@@ -75,8 +75,8 @@ export class ChatView extends View {
   /** The files each row was last drawn with (JSON), to skip redraws that
    *  would change nothing. */
   private drawnFiles = new Map<number, string>();
-  private composer!: HTMLElement;
-  private composerObserver: ResizeObserver | null = null;
+  private historyStatus = h('div', { class: 'chat-history-status', role: 'status' });
+  private sendBtn: HTMLButtonElement;
   /** What the user typed into the inline editor, kept across re-renders. */
   private editDraft: string | undefined;
   private replyTo: Message | null = null;
@@ -157,14 +157,14 @@ export class ChatView extends View {
     };
     renderStatus();
 
-    this.log = h('div', { class: 'chat-log' });
+    this.log = h('div', { class: 'chat-log', tabindex: '0', role: 'region', 'aria-label': tr('state.messages') });
     this.jumpBtn = h('button', {
       class: 'jump-btn',
-      title: tr('chat.jump_to_latest'),
+      title: tr('chat.jump_to_latest'), 'aria-label': tr('chat.jump_to_latest'),
       style: { display: 'none' },
       onClick: () => this.scrollBottom(),
     }, '↓');
-    this.logWrap = h('div', { class: 'chat-log-wrap' }, this.log, this.jumpBtn);
+    this.logWrap = h('div', { class: 'chat-log-wrap' }, this.log, this.historyStatus, this.jumpBtn);
     this.log.addEventListener('scroll', () => {
       const now = this.log.scrollTop;
       if (now < this.lastScrollTop - 1) {
@@ -193,7 +193,6 @@ export class ChatView extends View {
       const ke = e as KeyboardEvent;
       if (ke.isComposing) return;
       if (store.isConsoleMode(target)) {
-        if (ke.key === 'Tab') { e.preventDefault(); return; }
         if (ke.ctrlKey && !ke.altKey && (ke.key.toLowerCase() === 'c' || ke.key.toLowerCase() === 'l')) {
           e.preventDefault();
           if (ke.key.toLowerCase() === 'c') {
@@ -222,6 +221,7 @@ export class ChatView extends View {
           } else return;
           this.input.value = this.historyIndex === -1 ? this.consoleDraft : this.consoleHistory[this.historyIndex]!;
           this.input.setSelectionRange(this.input.value.length, this.input.value.length);
+          this.updateSendButton();
           resizeInput();
           return;
         }
@@ -245,6 +245,7 @@ export class ChatView extends View {
     };
     this.input.addEventListener('input', () => {
       resizeInput();
+      this.updateSendButton();
       this.historyIndex = -1;
       this.consoleDraft = this.input.value;
       if (!store.isConsoleMode(target)) this.bumpTyping();
@@ -319,6 +320,7 @@ export class ChatView extends View {
       this.el?.classList.toggle('console', consoleMode);
       this.promptEl.textContent = consoleMode ? '$' : '>';
       this.input.placeholder = placeholderFor(consoleMode);
+      this.input.setAttribute('aria-label', tr(consoleMode ? 'chat.command' : 'chat.message'));
       this.ttlRow.classList.toggle('hidden', consoleMode);
       if (this.viewOnce) this.viewOnce.compose.hidden = consoleMode || !peer || peer.request !== 'none' || peer.trust === 2;
       this.replyChip.classList.toggle('hidden', consoleMode);
@@ -355,7 +357,7 @@ export class ChatView extends View {
       headerAvatar.replaceChildren(avatar(title, avatarSeed, (isGroup ? 'avatar-group ' : '') + 'chat-avatar', !isGroup));
     }));
 
-    this.unreachableNote = h('div', { class: 'chat-notice hidden' },
+    this.unreachableNote = h('div', { class: 'chat-notice hidden', role: 'status' },
       tr('chat.waiting_for_peer'));
     this.sub(store.unreachable, (set) => {
       const hit = target.kind === 'contact' && set.has(target.id as number);
@@ -382,7 +384,7 @@ export class ChatView extends View {
     void this.loadPrefs();
 
     this.el = h('div', { class: 'chat' },
-      h('div', { class: 'chat-header' },
+      h('header', { class: 'chat-header' },
         h('button', {
           class: 'chat-back icon-btn',
           title: tr('common.back'),
@@ -390,7 +392,7 @@ export class ChatView extends View {
         }, icon('back')),
         headerAvatar,
         h('div', { class: 'chat-heading' },
-          h('div', { class: 'chat-title', title }, title),
+          h('h1', { class: 'chat-title', title, tabindex: '-1' }, title),
           subEl,
           statusEl,
           this.typingHeader,
@@ -404,7 +406,7 @@ export class ChatView extends View {
       this.peerNote,
       this.pinnedBanner.el,
       this.logWrap,
-      this.composer = h('div', { class: 'chat-input' },
+      h('div', { class: 'chat-input' },
         this.replyChip,
         this.fileChips,
         h('div', { class: 'chat-input-row' },
@@ -429,7 +431,7 @@ export class ChatView extends View {
           } }, icon('microphone')),
           this.viewOnce?.compose ?? null,
           h('button', { class: 'icon-btn chat-attach', title: tr('chat.attach_file'), onClick: () => this.pickFiles() }, icon('attach')),
-          h('button', { class: 'btn chat-send', title: tr('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, tr('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
+          this.sendBtn = h('button', { class: 'btn chat-send', disabled: true, title: tr('chat.send'), 'aria-label': tr('chat.send'), onClick: () => this.send() }, icon('send', 18), h('span', { class: 'chat-send-label' }, tr('chat.send')), h('span', { class: 'console-send-label' }, '↵')),
         ),
         h('div', { class: 'chat-input-meta' },
           h('span', { class: 'chat-e2e' }, icon('lock', 13), tr('about.end_to_end_encryption')),
@@ -438,15 +440,7 @@ export class ChatView extends View {
       ),
     );
 
-    // The connection status floats just above the composer instead of over
-    // its controls; it reads the height from here.
-    if (typeof ResizeObserver !== 'undefined') {
-      this.composerObserver = new ResizeObserver(() => {
-        document.documentElement.style.setProperty('--composer-height', `${this.composer.offsetHeight}px`);
-      });
-      this.composerObserver.observe(this.composer);
-    }
-
+    this.sub(store.historyLoadFailed, () => this.renderLog(), false);
     this.sub(store.messages, () => {
       const messages = store.messages.get().get(targetKey(this.target)) ?? [];
       for (const message of messages) {
@@ -579,8 +573,6 @@ export class ChatView extends View {
     this.viewOnce?.destroy();
     setChatLayouts([]);
     this.draftEpoch++;
-    this.composerObserver?.disconnect();
-    document.documentElement.style.removeProperty('--composer-height');
     ContextMenu.close();
     if (this.consoleRunningTimer != null) window.clearInterval(this.consoleRunningTimer);
     document.removeEventListener('paste', this.pasteHandler);
@@ -844,12 +836,16 @@ export class ChatView extends View {
     if (this.disposed) return;
     const consoleMode = this.store.isConsoleMode(this.target);
     const key = targetKey(this.target) + (consoleMode ? ':console' : ':chat');
-    const all = this.store.messages.get().get(targetKey(this.target)) ?? [];
+    const history = this.store.messages.get().get(targetKey(this.target));
+    const all = history ?? [];
     const windowIds = new Set(all.map(row => row.id));
     for (const id of this.fileCache.keys()) if (!windowIds.has(id)) { this.fileCache.delete(id); this.attachmentCache.delete(id); this.fileMessageSignatures.delete(id); this.drawnFiles.delete(id); }
     const rows = deletionRuns(all.filter((m) => this.showsInLog(m)));
     this.deletionGroups = new Map(rows.filter(row => row.message.deleted_at != null).map(row => [row.message.id, row.members]));
     const list = rows.map(row => row.message);
+    const status = list.length || consoleMode ? '' : history ? tr('chat.no_messages')
+      : tr(this.store.historyLoadFailed.get() ? 'chat.load_failed' : 'media.loading');
+    if (this.historyStatus.textContent !== status) this.historyStatus.textContent = status;
     this.log.querySelector('.console-running')?.remove();
     const newIds = list.map((m) => m.id);
 
@@ -1565,13 +1561,18 @@ export class ChatView extends View {
 
   private renderFileChips(): void {
     if (this.disposed) return;
+    this.updateSendButton();
     this.fileChips.replaceChildren();
     this.pending.forEach((f, i) => {
-      this.fileChips.appendChild(h('div', {
-        class: 'attachment',
+      this.fileChips.appendChild(h('button', {
+        class: 'attachment', type: 'button', 'aria-label': tr('common.cancel') + ' · ' + f.name,
         onClick: () => { if (!isTauri) forgetBrowserFiles([f.path]); this.pending.splice(i, 1); this.renderFileChips(); },
       }, `◆ ${f.name} [x]`));
     });
+  }
+
+  private updateSendButton(): void {
+    this.sendBtn.disabled = !this.input.value.trim() && this.pending.length === 0;
   }
 
   /** Show only an explicitly reported peer preference as a history choice. */

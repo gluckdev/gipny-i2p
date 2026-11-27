@@ -291,18 +291,25 @@ def unlock_ui(cdp, profile, password, wrong_password='incorrect password'):
 
 def check_view_once(alice, bob, alice_contact, bob_contact):
     body = secrets.token_hex(5200)  # Over two 4 KiB parts even before authenticated encryption.
-    # A fresh I2P stream may spend longer in connect/auth than CDP's receive
-    # deadline. Poll the real RPC result without repeating the live send.
+    # Enqueue returns a local ID before the worker delivers the parts. Both
+    # enqueue and the appearance of the peer's notice share the exchange budget.
+    deadline = time.monotonic() + 230
     args = json.dumps(dict(contactId=alice_contact, body=body, ttlSecs=300))
-    evaluate(alice, f"""void (__coreCall('send_view_once', {args}).then(
+    evaluate(alice, f"""delete globalThis.__viewOnceSent; void (__coreCall('send_view_once', {args}).then(
       id => {{ globalThis.__viewOnceSent = {{id}}; }},
       () => {{ globalThis.__viewOnceSent = {{failed:true}}; }}))""")
-    result = wait_for(lambda: evaluate(alice, 'globalThis.__viewOnceSent || null'), 230, 'direct view-once exchange')
+    result = wait_for(lambda: evaluate(alice, 'globalThis.__viewOnceSent || null'),
+                      deadline - time.monotonic(), 'view-once enqueue')
     if result.get('failed'):
-        raise RuntimeError('peer did not confirm the direct view-once exchange')
+        raise RuntimeError('sender could not queue the view-once message')
     item = result['id']
-    pending = rpc(bob, 'list_view_once', contactId=bob_contact)
-    if not any(entry.get('id') == item and set(entry) == {'id', 'contact_id', 'sent_at', 'expires_at'} for entry in pending):
+
+    def received_notice():
+        pending = rpc(bob, 'list_view_once', contactId=bob_contact)
+        return next((entry for entry in pending if entry.get('id') == item), None)
+
+    notice = wait_for(received_notice, deadline - time.monotonic(), 'view-once recipient notice')
+    if set(notice) != {'id', 'contact_id', 'sent_at', 'expires_at'} or notice['contact_id'] != bob_contact:
         raise RuntimeError('view-once receiver did not list a metadata-only notice')
     for client, contact in [(alice, alice_contact), (bob, bob_contact)]:
         if any(body in row.get('body', '') for row in rpc(client, 'list_messages', contactId=contact)):
@@ -424,9 +431,9 @@ def main():
                 stats = rpc(client, 'link_stats')
                 policy = {key: stats.get(key) for key in ('our_hops', 'their_hops', 'padded')}
                 receipt['application_tunnel_policy'].append(policy)
-                if policy != dict(our_hops=3, their_hops=3, padded=True):
+                if policy != dict(our_hops=2, their_hops=2, padded=True):
                     raise RuntimeError('Ready client reported an unexpected application tunnel policy')
-            receipt['assertions'].append('both ready clients report configured 3/3 application tunnel policy and padding')
+            receipt['assertions'].append('both ready clients report configured 2/2 application tunnel policy and padding')
             print('MESSENGER_PROGRESS live destinations ready', flush=True)
             alice_card, bob_card = rpc(alice, 'my_card'), rpc(bob, 'my_card')
             alice_address, bob_address = rpc(alice, 'my_b32'), rpc(bob, 'my_b32')
