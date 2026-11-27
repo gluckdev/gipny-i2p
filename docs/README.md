@@ -60,6 +60,8 @@ Russian is the primary documentation language. The source tree is at **0.5.0-rc.
 
 For Pages deployment and offline checks, see the [deployment guide](../scripts/deploy/README.md).
 
+For Pages deployment and offline checks, see the [deployment guide](../scripts/deploy/README.md).
+
 Start with the [English README](../README.en.md), [feature status](current-state.md)
 and [security model](../SECURITY.md). The table above links browser setup,
 forwarder operation, upstream/configuration, builds/releases, platform updates,
