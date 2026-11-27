@@ -179,7 +179,9 @@ impl Vault {
         .concat();
         let cipher = XChaCha20Poly1305::new((&*key).into());
         if opening {
-            let nonce: &[u8; 24] = data[..24].try_into().map_err(|_| "invalid attachment nonce")?;
+            let nonce: &[u8; 24] = data[..24]
+                .try_into()
+                .map_err(|_| "invalid attachment nonce")?;
             cipher
                 .decrypt(
                     nonce.into(),
@@ -414,7 +416,6 @@ impl Vault {
         });
         Ok(())
     }
-
 }
 
 impl<'a> Record<'a> {
