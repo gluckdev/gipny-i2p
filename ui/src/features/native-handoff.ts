@@ -68,15 +68,14 @@ export function installNativeHandoff(): void {
 
   // A manual popover leaves the messenger interactive and preserves the
   // focused field on startup. Older supported browsers use the same inline card.
-  const supportsPopover = typeof card.showPopover === 'function';
-  if (supportsPopover) card.setAttribute('popover', 'manual');
+  if (typeof card.showPopover === 'function') card.setAttribute('popover', 'manual');
   function showCard(): void {
     card.hidden = false;
-    if (supportsPopover) card.showPopover();
+    card.showPopover?.();
   }
   function hideCard(): void {
     const restoreFocus = card.contains(document.activeElement);
-    if (supportsPopover && !card.hidden) card.hidePopover();
+    if (!card.hidden) card.hidePopover?.();
     card.hidden = true;
     if (restoreFocus) launch.focus({ preventScroll: true });
   }
