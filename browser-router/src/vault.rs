@@ -6,7 +6,7 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     aead::{Aead, Payload},
-    KeyInit, XChaCha20Poly1305, XNonce,
+    KeyInit, XChaCha20Poly1305,
 };
 use gipny_libcore::crypto::random_array;
 use hkdf::Hkdf;
@@ -59,7 +59,7 @@ pub(crate) struct Record<'a> {
     header: Header,
     pub generation: u64,
     aad: &'a [u8],
-    nonce: &'a [u8],
+    nonce: &'a [u8; 24],
     ciphertext: &'a [u8],
 }
 
@@ -96,7 +96,7 @@ fn password_aad(header: &Header) -> Vec<u8> {
 fn wrap(key: &[u8; 32], secret: &[u8; 32], aad: &[u8]) -> Result<WrappedKey, String> {
     let nonce = random_array();
     let ciphertext = XChaCha20Poly1305::new(key.into())
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: secret, aad })
+        .encrypt((&nonce).into(), Payload { msg: secret, aad })
         .map_err(|_| "profile key wrapping failed")?;
     Ok(WrappedKey { nonce, ciphertext })
 }
@@ -105,7 +105,7 @@ fn unwrap(key: &[u8; 32], wrapped: &WrappedKey, aad: &[u8]) -> Result<Zeroizing<
     let secret = Zeroizing::new(
         XChaCha20Poly1305::new(key.into())
             .decrypt(
-                XNonce::from_slice(&wrapped.nonce),
+                (&wrapped.nonce).into(),
                 Payload {
                     msg: &wrapped.ciphertext,
                     aad,
@@ -179,9 +179,10 @@ impl Vault {
         .concat();
         let cipher = XChaCha20Poly1305::new((&*key).into());
         if opening {
+            let nonce: &[u8; 24] = data[..24].try_into().map_err(|_| "invalid attachment nonce")?;
             cipher
                 .decrypt(
-                    XNonce::from_slice(&data[..24]),
+                    nonce.into(),
                     Payload {
                         msg: &data[24..],
                         aad: &aad,
@@ -193,7 +194,7 @@ impl Vault {
             let nonce: [u8; 24] = random_array();
             let sealed = cipher
                 .encrypt(
-                    XNonce::from_slice(&nonce),
+                    (&nonce).into(),
                     Payload {
                         msg: data,
                         aad: &aad,
@@ -297,7 +298,7 @@ impl Vault {
         let plaintext = Zeroizing::new(
             XChaCha20Poly1305::new((&*key).into())
                 .decrypt(
-                    XNonce::from_slice(record.nonce),
+                    record.nonce.into(),
                     Payload {
                         msg: record.ciphertext,
                         aad: record.aad,
@@ -338,7 +339,7 @@ impl Vault {
         bytes.extend_from_slice(&((plaintext.len() + 16) as u32).to_le_bytes());
         let ciphertext = XChaCha20Poly1305::new((&*self.key).into())
             .encrypt(
-                XNonce::from_slice(&nonce),
+                (&nonce).into(),
                 Payload {
                     msg: plaintext,
                     aad: &bytes,
@@ -414,13 +415,6 @@ impl Vault {
         Ok(())
     }
 
-    pub fn profile(&self) -> &str {
-        &self.header.profile
-    }
-
-    pub fn passkeys(&self) -> &[Passkey] {
-        &self.header.passkeys
-    }
 }
 
 impl<'a> Record<'a> {
@@ -467,14 +461,13 @@ impl<'a> Record<'a> {
             header,
             generation,
             aad: &bytes[..aad_len],
-            nonce: &bytes[nonce_offset..nonce_offset + 24],
+            nonce: bytes[nonce_offset..nonce_offset + 24]
+                .try_into()
+                .map_err(|_| "invalid browser profile nonce")?,
             ciphertext: &bytes[aad_len..checksum_offset],
         })
     }
 
-    pub fn profile(&self) -> &str {
-        &self.header.profile
-    }
     pub fn passkeys(&self) -> &[Passkey] {
         &self.header.passkeys
     }
