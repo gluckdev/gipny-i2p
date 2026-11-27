@@ -1077,6 +1077,18 @@ impl EphemeralRelay {
     /// republish its LeaseSet before anyone can find it again, so this relay is
     /// unreachable for a minute or two afterwards — letters sent meanwhile wait
     /// at their senders and arrive when it is back.
+    /// Rebuild the tunnels at the same length, on the same address.
+    ///
+    /// For a relay the network can no longer reach — after a network change
+    /// the old inbound tunnels are dead and the router replaces them on its
+    /// own schedule, which has taken half an hour. Costs what [`Self::set_hops`]
+    /// costs: connected clients are dropped and the relay is unreachable for a
+    /// minute or two, so the caller only asks when it already is.
+    pub fn rebuild_tunnels(&self) {
+        crate::debug_trace!("[relay-server] rebuilding inbound tunnels: not reachable from the network");
+        self.rebuild.notify_one();
+    }
+
     pub fn set_hops(&self, hops: u8) {
         let hops = hops.clamp(crate::net::min_hops(), crate::net::DEFAULT_HOPS);
         if self.hops.swap(hops, Ordering::Relaxed) == hops {

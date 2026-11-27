@@ -2,6 +2,43 @@
 
 use super::*;
 
+/// What the built-in relay's reach check does next. Reading our own relay
+/// goes over a pipe that outlives its tunnels, so an unreachable relay shows
+/// only in this check — and the check is what has to act on it.
+#[derive(Default)]
+struct ReachHeal {
+    failures: u32,
+    rebuilt_at: Option<Instant>,
+}
+
+struct ReachStep {
+    rebuild: bool,
+    wait: Duration,
+}
+
+impl ReachHeal {
+    const EVERY: Duration = Duration::from_secs(180);
+    const EVERY_FAILING: Duration = Duration::from_secs(60);
+    const REBUILD_AFTER: u32 = 2;
+    const REBUILD_COOLDOWN: Duration = Duration::from_secs(600);
+    const AFTER_REBUILD: Duration = Duration::from_secs(120);
+
+    fn after_check(&mut self, reachable: bool, now: Instant) -> ReachStep {
+        if reachable {
+            self.failures = 0;
+            return ReachStep { rebuild: false, wait: Self::EVERY };
+        }
+        self.failures = self.failures.saturating_add(1);
+        let cooled = self.rebuilt_at.is_none_or(|at| now.duration_since(at) >= Self::REBUILD_COOLDOWN);
+        if self.failures >= Self::REBUILD_AFTER && cooled {
+            self.failures = 0;
+            self.rebuilt_at = Some(now);
+            return ReachStep { rebuild: true, wait: Self::AFTER_REBUILD };
+        }
+        ReachStep { rebuild: false, wait: Self::EVERY_FAILING }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum HostedRelayState {
@@ -79,13 +116,14 @@ impl Core {
     }
 
     /// While our built-in relay is up, reach it from the network now and then,
-    /// as a contact would. Stops with the relay; started again with it.
+    /// as a contact would, and rebuild its tunnels when that keeps failing.
+    /// Stops with the relay; started again with it.
     pub(super) fn spawn_reach_check(self: &Arc<Self>, address: String) {
-        const EVERY: Duration = Duration::from_secs(180);
         let this = self.clone();
         let handle = tokio::spawn(async move {
             // Give the new LeaseSet a moment to reach the floodfills.
             tokio::time::sleep(Duration::from_secs(60)).await;
+            let mut heal = ReachHeal::default();
             loop {
                 let still_ours = matches!(
                     &*this.hosted_state.read().unwrap_or_else(|p| p.into_inner()),
@@ -100,7 +138,7 @@ impl Core {
                     relay::probe(&this.node, &address),
                 )
                 .await;
-                match result {
+                match &result {
                     Ok(Ok(())) => this.note_relay_reach(None),
                     Ok(Err(e)) => {
                         gipny_libcore::debug_error!(
@@ -115,7 +153,13 @@ impl Core {
                         )));
                     }
                 }
-                tokio::time::sleep(EVERY).await;
+                let step = heal.after_check(matches!(result, Ok(Ok(()))), Instant::now());
+                if step.rebuild {
+                    if let Some(relay) = &*this.hosted_relay.lock().unwrap_or_else(|p| p.into_inner()) {
+                        relay.rebuild_tunnels();
+                    }
+                }
+                tokio::time::sleep(step.wait).await;
             }
         });
         self.tasks.lock().unwrap().push(handle);
@@ -298,5 +342,65 @@ impl Core {
 
     pub fn get_relay_address(&self) -> String {
         self.relay_address()
+    }
+}
+
+#[cfg(test)]
+mod reach_heal_tests {
+    use super::*;
+
+    #[test]
+    fn reachable_relay_left_alone() {
+        let mut h = ReachHeal::default();
+        let now = Instant::now();
+        let s = h.after_check(true, now);
+        assert!(!s.rebuild);
+        assert_eq!(s.wait, ReachHeal::EVERY);
+        assert_eq!(h.failures, 0);
+    }
+
+    #[test]
+    fn one_failure_only_looks_sooner() {
+        let mut h = ReachHeal::default();
+        let now = Instant::now();
+        let s = h.after_check(false, now);
+        assert!(!s.rebuild);
+        assert_eq!(s.wait, ReachHeal::EVERY_FAILING);
+        assert_eq!(h.failures, 1);
+    }
+
+    #[test]
+    fn second_failure_rebuilds() {
+        let mut h = ReachHeal::default();
+        let now = Instant::now();
+        h.after_check(false, now);
+        let s = h.after_check(false, now);
+        assert!(s.rebuild);
+        assert_eq!(s.wait, ReachHeal::AFTER_REBUILD);
+        assert_eq!(h.failures, 0);
+    }
+
+    #[test]
+    fn success_between_failures_resets_count() {
+        let mut h = ReachHeal::default();
+        let now = Instant::now();
+        h.after_check(false, now);
+        h.after_check(true, now);
+        let s = h.after_check(false, now);
+        assert!(!s.rebuild);
+        assert_eq!(h.failures, 1);
+    }
+
+    #[test]
+    fn cooldown_prevents_rapid_rebuilds() {
+        let mut h = ReachHeal::default();
+        let now = Instant::now();
+        h.after_check(false, now);
+        h.after_check(false, now);
+        // Just rebuilt; two more failures within cooldown should not rebuild.
+        h.after_check(false, now);
+        let s = h.after_check(false, now);
+        assert!(!s.rebuild);
+        assert_eq!(s.wait, ReachHeal::EVERY_FAILING);
     }
 }
